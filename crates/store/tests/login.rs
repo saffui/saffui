@@ -410,7 +410,10 @@ async fn announced_credential_changes(
         .query(
             "SELECT payload FROM event_outbox WHERE kind = $1 AND user_id = $2 \
              ORDER BY event_id",
-            &[&store::providers::outbox::CREDENTIAL_CHANGED, &user_id],
+            &[
+                &store::providers::events::outbox::CREDENTIAL_CHANGED,
+                &user_id,
+            ],
         )
         .await
         .unwrap()

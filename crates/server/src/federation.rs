@@ -570,7 +570,7 @@ pub async fn deliver_outbox(
     };
     let issuer = origin.issuer(&context.realm_id);
 
-    let due = store::providers::outbox::due(transaction, DELIVERY_CEILING, backoff_seconds)
+    let due = store::providers::events::outbox::due(transaction, DELIVERY_CEILING, backoff_seconds)
         .await
         .map_err(|_| ())?;
     for event in due {
@@ -625,7 +625,7 @@ pub async fn deliver_outbox(
                 match receiver.delivery {
                     // A collector's tokens wait here; queueing is delivery.
                     services::messaging::caep::Delivery::Poll => {
-                        if store::providers::caep_queue::queue(
+                        if store::providers::events::caep_queue::queue(
                             transaction,
                             &row.internal_id,
                             &set.token_id,
@@ -702,12 +702,12 @@ pub async fn deliver_outbox(
             }
         }
         if landed {
-            store::providers::outbox::delivered(transaction, event.event_id)
+            store::providers::events::outbox::delivered(transaction, event.event_id)
                 .await
                 .map_err(|_| ())?;
             told.delivered += 1;
         } else if event.attempts >= DEAD_AFTER {
-            store::providers::outbox::dead(transaction, event.event_id)
+            store::providers::events::outbox::dead(transaction, event.event_id)
                 .await
                 .map_err(|_| ())?;
             told.dead += 1;
@@ -929,7 +929,7 @@ async fn push_set(
 async fn push_one(
     connector: &services::scim::outbound::Connector,
     bearer: Option<&str>,
-    event: &store::providers::outbox::OutboxEvent,
+    event: &store::providers::events::outbox::OutboxEvent,
     egress: Egress,
 ) -> bool {
     let base = connector.base_url.clone();
@@ -961,12 +961,12 @@ async fn push_one(
             });
 
         match (event.kind.as_str(), found) {
-            (store::providers::outbox::USER_DELETED, Some(id)) => agent
+            (store::providers::events::outbox::USER_DELETED, Some(id)) => agent
                 .delete(&format!("{base}/Users/{id}"))
                 .header("authorization", &authorization)
                 .call()
                 .is_ok(),
-            (store::providers::outbox::USER_DELETED, None) => true,
+            (store::providers::events::outbox::USER_DELETED, None) => true,
             (_, Some(id)) => {
                 let patch = serde_json::json!({
                     "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
@@ -1116,7 +1116,7 @@ pub async fn prove_delivery(
                 push_verification(&receiver, bearer.as_deref(), &set.token, egress).await
             }
             services::messaging::caep::Delivery::Poll => {
-                store::providers::caep_queue::queue(
+                store::providers::events::caep_queue::queue(
                     transaction,
                     &row.internal_id,
                     &set.token_id,

@@ -6,8 +6,8 @@ use models::entities::mail::MailSettings;
 use models::entities::realm::RealmModel;
 use models::entities::user::{UserModel, profile};
 use serde_json::Value;
-use store::providers::notices::{self, HeldNotice, Noted, Settled};
-use store::providers::outbox::{self, OutboxEvent};
+use store::providers::events::notices::{self, HeldNotice, Noted, Settled};
+use store::providers::events::outbox::{self, OutboxEvent};
 use store::providers::{brokering, credentials, users, webauthn};
 use store::tenancy::UnitOfWork;
 

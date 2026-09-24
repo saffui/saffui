@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
+use store::providers::events::{caep_queue, deliveries, notices, outbox};
 use store::providers::{
-    backchannel, brokering, caep_queue, deliveries, devices, dpop, form_post, login, notices, oidc,
-    one_time_tokens, outbox, page_previews, pushed, replay, saml_brokering, sessions, sms,
-    source_failures, ussd,
+    backchannel, brokering, devices, dpop, form_post, login, oidc, one_time_tokens, page_previews,
+    pushed, replay, saml_brokering, sessions, sms, source_failures, ussd,
 };
 use store::tenancy::UnitOfWork;
 
@@ -192,7 +192,7 @@ pub async fn drop_expired_rows(
         )
         .await
         .map_err(failed)?,
-        login_events: store::providers::login_events::drop_older_than(
+        login_events: store::providers::events::login_events::drop_older_than(
             transaction,
             (now - chrono::Duration::days(LOGIN_EVENTS_KEPT_DAYS)).timestamp(),
         )

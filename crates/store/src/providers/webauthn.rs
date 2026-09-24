@@ -206,9 +206,9 @@ async fn announce_key_change(
     attachment: Option<AuthenticatorAttachment>,
     passkey: &Value,
 ) -> StoreResult<()> {
-    super::outbox::emit(
+    crate::providers::events::outbox::emit(
         transaction,
-        super::outbox::CREDENTIAL_CHANGED,
+        crate::providers::events::outbox::CREDENTIAL_CHANGED,
         user_id,
         &serde_json::json!({
             "credential_type": CREDENTIAL_TYPE,

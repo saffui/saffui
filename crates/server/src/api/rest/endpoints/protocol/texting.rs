@@ -3,7 +3,7 @@ use chrono::Utc;
 use crypto::provider::CryptoProvider;
 use data_encoding::HEXLOWER;
 use models::messaging::Delivery;
-use store::providers::deliveries;
+use store::providers::events::deliveries;
 use store::tenancy::{Tenancy, TenantContext};
 
 use crate::api::config::Sealing;

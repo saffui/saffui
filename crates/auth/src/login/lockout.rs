@@ -41,10 +41,10 @@ pub async fn count(
     // The sign-in log records the failure whether or not lockout is armed:
     // the switch is the realm's events_enabled, not the brute force policy.
     if realm.events_enabled == Some(true) {
-        let _ = store::providers::login_events::record(
+        let _ = store::providers::events::login_events::record(
             transaction,
             now.timestamp(),
-            &store::providers::login_events::LoginEventWrite {
+            &store::providers::events::login_events::LoginEventWrite {
                 kind: "sign_in_failed",
                 user_id: Some(user_id),
                 ip: from,

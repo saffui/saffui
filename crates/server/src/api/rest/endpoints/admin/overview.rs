@@ -45,7 +45,7 @@ pub async fn read(
         .await
         .map_err(|_| internal())?;
 
-    let waiting = store::providers::outbox::count_waiting(&transaction)
+    let waiting = store::providers::events::outbox::count_waiting(&transaction)
         .await
         .map_err(|_| internal())?;
 

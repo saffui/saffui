@@ -783,10 +783,10 @@ pub async fn text_brakes(
     let held = brakes_say(transaction, realm, recipient, now).await?;
     if let Some(held) = held {
         tracing::warn!(brake = held.as_str(), "a text was held back");
-        let _ = store::providers::login_events::record(
+        let _ = store::providers::events::login_events::record(
             transaction,
             now.timestamp(),
-            &store::providers::login_events::LoginEventWrite {
+            &store::providers::events::login_events::LoginEventWrite {
                 kind: "sms_throttled",
                 user_id: Some(user_id),
                 detail: Some(serde_json::json!({

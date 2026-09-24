@@ -191,7 +191,7 @@ async fn ending_the_other_logins_keeps_the_one_named() {
     let told: i64 = transaction
         .query_one(
             "SELECT count(*) FROM event_outbox WHERE kind = $1 AND user_id = 'ada'",
-            &[&store::providers::outbox::SESSION_REVOKED],
+            &[&store::providers::events::outbox::SESSION_REVOKED],
         )
         .await
         .unwrap()

@@ -68,10 +68,10 @@ pub async fn end_session(
         if let Ok(Some(realm)) = store::providers::realms::of_context(transaction).await
             && realm.events_enabled == Some(true)
         {
-            let _ = store::providers::login_events::record(
+            let _ = store::providers::events::login_events::record(
                 transaction,
                 now.timestamp(),
-                &store::providers::login_events::LoginEventWrite {
+                &store::providers::events::login_events::LoginEventWrite {
                     kind: "signed_out",
                     session_id: Some(session_id),
                     user_id: session.as_ref().map(|held| held.user_id.as_str()),

@@ -769,10 +769,10 @@ async fn open_login(
     if let Ok(Some(realm)) = store::providers::realms::of_context(transaction).await
         && realm.events_enabled == Some(true)
     {
-        let _ = store::providers::login_events::record(
+        let _ = store::providers::events::login_events::record(
             transaction,
             now.timestamp(),
-            &store::providers::login_events::LoginEventWrite {
+            &store::providers::events::login_events::LoginEventWrite {
                 kind: "signed_in",
                 user_id: Some(user_id),
                 client_id: Some(&client.client_id),

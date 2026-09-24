@@ -831,7 +831,10 @@ async fn announced_changes(transaction: &UnitOfWork, user_id: &str) -> Vec<Strin
         .query(
             "SELECT concat_ws(' ', payload->>'credential_type', payload->>'change_type') \
              FROM event_outbox WHERE kind = $1 AND user_id = $2 ORDER BY event_id",
-            &[&store::providers::outbox::CREDENTIAL_CHANGED, &user_id],
+            &[
+                &store::providers::events::outbox::CREDENTIAL_CHANGED,
+                &user_id,
+            ],
         )
         .await
         .unwrap()

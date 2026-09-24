@@ -44,7 +44,7 @@ async fn pump(
         loop {
             match std::future::poll_fn(|cx| held.poll_message(cx)).await {
                 Some(Ok(AsyncMessage::Notification(spoken))) => {
-                    if spoken.channel() == crate::providers::outbox::CHANNEL
+                    if spoken.channel() == crate::providers::events::outbox::CHANNEL
                         && let Ok(told) = serde_json::from_str::<Told>(spoken.payload())
                     {
                         // Nobody watching is not an error: the feed simply
@@ -58,7 +58,10 @@ async fn pump(
         }
     });
     client
-        .batch_execute(&format!("LISTEN {}", crate::providers::outbox::CHANNEL))
+        .batch_execute(&format!(
+            "LISTEN {}",
+            crate::providers::events::outbox::CHANNEL
+        ))
         .await?;
     // The client half must outlive the pump: dropping it hangs up the very
     // connection the messages arrive on.

@@ -212,9 +212,9 @@ pub async fn close(transaction: &UnitOfWork, session_id: &str) -> StoreResult<bo
         return Ok(false);
     };
     let user_id: String = row.get("user_id");
-    super::outbox::emit(
+    crate::providers::events::outbox::emit(
         transaction,
-        super::outbox::SESSION_REVOKED,
+        crate::providers::events::outbox::SESSION_REVOKED,
         &user_id,
         &serde_json::json!({ "session_id": session_id }),
     )
@@ -246,9 +246,9 @@ pub async fn end_all_of_user(transaction: &UnitOfWork, user_id: &str) -> StoreRe
         .await
         .map_err(|_| StoreError::Backend)?;
     if removed > 0 {
-        super::outbox::emit(
+        crate::providers::events::outbox::emit(
             transaction,
-            super::outbox::SESSION_REVOKED,
+            crate::providers::events::outbox::SESSION_REVOKED,
             user_id,
             &serde_json::json!({ "all": true }),
         )
@@ -278,9 +278,9 @@ pub async fn end_others_of_user(
         .map_err(|_| StoreError::Backend)?;
     for row in &ended {
         let session_id: String = row.get("session_id");
-        super::outbox::emit(
+        crate::providers::events::outbox::emit(
             transaction,
-            super::outbox::SESSION_REVOKED,
+            crate::providers::events::outbox::SESSION_REVOKED,
             user_id,
             &serde_json::json!({ "session_id": session_id }),
         )

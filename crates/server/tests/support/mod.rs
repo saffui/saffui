@@ -1133,7 +1133,10 @@ impl Plane {
             .query(
                 "SELECT payload FROM event_outbox WHERE kind = $1 AND user_id = $2 \
                  ORDER BY event_id",
-                &[&store::providers::outbox::CREDENTIAL_CHANGED, &user_id],
+                &[
+                    &store::providers::events::outbox::CREDENTIAL_CHANGED,
+                    &user_id,
+                ],
             )
             .await
             .expect("the outbox")
@@ -1179,9 +1182,9 @@ impl Plane {
         dead_code,
         reason = "only the protocol suite checks logout event context"
     )]
-    pub async fn last_logout_event(&self) -> store::providers::login_events::LoginEvent {
+    pub async fn last_logout_event(&self) -> store::providers::events::login_events::LoginEvent {
         let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
-        store::providers::login_events::list(&transaction, 0, 100, false)
+        store::providers::events::login_events::list(&transaction, 0, 100, false)
             .await
             .unwrap()
             .0

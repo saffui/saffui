@@ -2236,9 +2236,9 @@ async fn an_erasure_erases_and_tells_the_world_on_its_way_out() {
             )
             .await
             .unwrap();
-        store::providers::outbox::emit(
+        store::providers::events::outbox::emit(
             &transaction,
-            store::providers::outbox::USER_UPDATED,
+            store::providers::events::outbox::USER_UPDATED,
             "grace",
             &serde_json::json!({ "email": "grace@example.test" }),
         )
@@ -2443,7 +2443,7 @@ async fn an_erasure_erases_and_tells_the_world_on_its_way_out() {
         let kinds: Vec<String> = outgoing.iter().map(|row| row.get(0)).collect();
         assert_eq!(
             kinds,
-            vec![store::providers::outbox::USER_DELETED.to_owned()],
+            vec![store::providers::events::outbox::USER_DELETED.to_owned()],
             "the outbox holds more than the parting word"
         );
     }
@@ -3448,10 +3448,10 @@ async fn the_days_texting_counters_are_the_ones_the_brakes_read() {
             .expect("a send counted");
     }
     for brake in ["blocked-prefix", "blocked-prefix", "number-velocity"] {
-        store::providers::login_events::record(
+        store::providers::events::login_events::record(
             &transaction,
             now.timestamp(),
-            &store::providers::login_events::LoginEventWrite {
+            &store::providers::events::login_events::LoginEventWrite {
                 kind: "sms_throttled",
                 user_id: Some(support::SUBJECT),
                 detail: Some(serde_json::json!({ "brake": brake, "to": "+22890000000" })),

@@ -535,7 +535,7 @@ async fn credential_changes_told(plane: &Plane) -> i64 {
         .query_one(
             "SELECT count(*) FROM event_outbox WHERE kind = $1 AND user_id = $2",
             &[
-                &store::providers::outbox::CREDENTIAL_CHANGED,
+                &store::providers::events::outbox::CREDENTIAL_CHANGED,
                 &support::SUBJECT,
             ],
         )

@@ -1,7 +1,7 @@
 mod support;
 
 use chrono::{Duration, Utc};
-use store::providers::{login_events, metrics};
+use store::providers::events::{login_events, metrics};
 use store::tenancy::TenantContext;
 use support::Fixture;
 

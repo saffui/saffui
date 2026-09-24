@@ -167,7 +167,7 @@ pub async fn fulfil_erasure(
             store::providers::devices::erase_for_user(transaction, &user_id)
                 .await
                 .map_err(|_| Unactionable::Backend)?;
-            store::providers::outbox::erase_pending_for_user(transaction, &user_id)
+            store::providers::events::outbox::erase_pending_for_user(transaction, &user_id)
                 .await
                 .map_err(|_| Unactionable::Backend)?;
             store::providers::authz_policies::pseudonymize_decisions_of(

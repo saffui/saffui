@@ -403,11 +403,11 @@ pub async fn update(
             .is_some_and(|bag| bag.contains_key(crate::oidc::grant::AGENT_CAPABILITIES));
         if is_agent {
             let kind = if at != 0 {
-                store::providers::outbox::AGENT_REVOKED
+                store::providers::events::outbox::AGENT_REVOKED
             } else {
-                store::providers::outbox::AGENT_LIFTED
+                store::providers::events::outbox::AGENT_LIFTED
             };
-            store::providers::outbox::emit(
+            store::providers::events::outbox::emit(
                 transaction,
                 kind,
                 client_id,

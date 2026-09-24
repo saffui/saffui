@@ -220,9 +220,9 @@ async fn a_host_clock_behind_the_database_does_not_hold_back_a_due_change() {
             .execute("DELETE FROM event_outbox", &[])
             .await
             .expect("a clean outbox");
-        store::providers::outbox::emit(
+        store::providers::events::outbox::emit(
             &transaction,
-            store::providers::outbox::USER_UPDATED,
+            store::providers::events::outbox::USER_UPDATED,
             support::SUBJECT,
             &json!({ "user_name": support::SUBJECT, "enabled": false }),
         )

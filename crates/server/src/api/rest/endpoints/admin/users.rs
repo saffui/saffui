@@ -393,7 +393,7 @@ pub async fn messages(
         .await
         .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
-    let held = store::providers::deliveries::of_user(&transaction, &user_id, 50)
+    let held = store::providers::events::deliveries::of_user(&transaction, &user_id, 50)
         .await
         .map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(serde_json::json!({ "deliveries": held })))

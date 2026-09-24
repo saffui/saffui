@@ -466,7 +466,7 @@ async fn receipts(plane: &Plane) -> Vec<models::messaging::Delivery> {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
-    store::providers::deliveries::of_user(&transaction, support::SUBJECT, 50)
+    store::providers::events::deliveries::of_user(&transaction, support::SUBJECT, 50)
         .await
         .expect("the deliveries table")
 }

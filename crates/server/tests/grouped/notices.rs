@@ -239,7 +239,7 @@ async fn a_notice_is_mailed_once_while_a_webhook_keeps_failing() {
         .query_one(
             "SELECT state::text, attempts FROM event_outbox WHERE kind = $1 \
              ORDER BY event_id DESC LIMIT 1",
-            &[&store::providers::outbox::CREDENTIAL_CHANGED],
+            &[&store::providers::events::outbox::CREDENTIAL_CHANGED],
         )
         .await
         .expect("the outbox");
@@ -337,9 +337,9 @@ async fn a_sheet_revoked_at_once_is_one_notice() {
     {
         let transaction = plane.scoped(&within()).await;
         for _ in 0..2 {
-            store::providers::outbox::emit(
+            store::providers::events::outbox::emit(
                 &transaction,
-                store::providers::outbox::CREDENTIAL_CHANGED,
+                store::providers::events::outbox::CREDENTIAL_CHANGED,
                 support::SUBJECT,
                 &json!({ "credential_type": "recovery-code", "change_type": "revoke" }),
             )
@@ -388,7 +388,7 @@ async fn a_notice_refused_every_time_is_given_up_on_the_record() {
 
     let transaction = plane.scoped(&within()).await;
     let receipts: Vec<_> =
-        store::providers::deliveries::of_user(&transaction, support::SUBJECT, 50)
+        store::providers::events::deliveries::of_user(&transaction, support::SUBJECT, 50)
             .await
             .expect("the deliveries table")
             .into_iter()
@@ -417,9 +417,9 @@ async fn a_happening_about_nobody_held_does_not_stop_the_walk() {
 
     {
         let transaction = plane.scoped(&within()).await;
-        store::providers::outbox::emit(
+        store::providers::events::outbox::emit(
             &transaction,
-            store::providers::outbox::CREDENTIAL_CHANGED,
+            store::providers::events::outbox::CREDENTIAL_CHANGED,
             "somebody-gone",
             &json!({ "credential_type": "password", "change_type": "update" }),
         )

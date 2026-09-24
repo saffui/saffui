@@ -34,7 +34,7 @@ fn live_events_replay_limit(asked: &LiveEventsReplayQuery) -> Result<i64, ApiErr
 
 fn to_live_event_summary(
     tenant: &str,
-    event: &store::providers::outbox::OutboxEvent,
+    event: &store::providers::events::outbox::OutboxEvent,
 ) -> store::live::Told {
     store::live::Told {
         tenant: tenant.to_owned(),
@@ -61,7 +61,7 @@ pub async fn list_sign_ins(
         .await
         .map_err(refuse_unopened_work)?;
 
-    let (events, total) = store::providers::login_events::list(
+    let (events, total) = store::providers::events::login_events::list(
         &transaction,
         window.first,
         window.max,
@@ -113,10 +113,13 @@ pub async fn replay_live_events(
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let stored_events =
-        store::providers::outbox::list_events_after_id(&transaction, last_event_id, limit + 1)
-            .await
-            .map_err(|_| internal())?;
+    let stored_events = store::providers::events::outbox::list_events_after_id(
+        &transaction,
+        last_event_id,
+        limit + 1,
+    )
+    .await
+    .map_err(|_| internal())?;
     let more = stored_events.len() as i64 > limit;
     let items: Vec<_> = stored_events
         .into_iter()
@@ -162,7 +165,7 @@ pub async fn stream(
             Ok(transaction) => transaction,
             Err(why) => return refuse_unopened_work(why).error_response(),
         };
-        let Ok(stored_events) = store::providers::outbox::list_events_after_id(
+        let Ok(stored_events) = store::providers::events::outbox::list_events_after_id(
             &transaction,
             last_event_id,
             LIVE_EVENTS_REPLAY_LIMIT + 1,
@@ -274,7 +277,7 @@ pub async fn dead_letters(
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let held = store::providers::outbox::dead_list(&transaction, 200)
+    let held = store::providers::events::outbox::dead_list(&transaction, 200)
         .await
         .map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(
@@ -303,7 +306,7 @@ pub async fn requeue(
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let requeued = store::providers::outbox::requeue(&transaction, event_id)
+    let requeued = store::providers::events::outbox::requeue(&transaction, event_id)
         .await
         .map_err(|_| internal())?;
     if !requeued {
@@ -372,7 +375,7 @@ pub async fn redeliver_to_connector(
         )
     })?;
 
-    let held = store::providers::outbox::retained(
+    let held = store::providers::events::outbox::retained(
         &transaction,
         asked.from_event_id,
         asked.to_event_id,

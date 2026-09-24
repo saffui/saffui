@@ -3,7 +3,7 @@ use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use serde::Deserialize;
-use store::providers::birthright::{self, BirthrightRule};
+use store::providers::governance::birthright::{self, BirthrightRule};
 use store::tenancy::Tenancy;
 
 use crate::error::refuse_unopened_work;
@@ -204,7 +204,7 @@ pub async fn put_grant(
     {
         return Err(refused("no role answers to that name"));
     }
-    store::providers::sod::hold_person(&transaction, user_id)
+    store::providers::governance::sod::hold_person(&transaction, user_id)
         .await
         .map_err(|_| internal())?;
     store::providers::roles::grant_to_user(&transaction, user_id, role_id)
@@ -338,7 +338,7 @@ pub async fn sod_rules(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let held = store::providers::sod::rules(&transaction)
+    let held = store::providers::governance::sod::rules(&transaction)
         .await
         .map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(
@@ -411,13 +411,13 @@ pub async fn put_sod_rule(
             return Err(refused(&format!("no role answers to {role}")));
         }
     }
-    let rule = store::providers::sod::SodRule {
+    let rule = store::providers::governance::sod::SodRule {
         rule_id: rule_id.clone(),
         roles,
         min_conflicting,
         enabled: asked.enabled.unwrap_or(true),
     };
-    store::providers::sod::keep_rule(&transaction, &rule, admin.context.principal.id())
+    store::providers::governance::sod::keep_rule(&transaction, &rule, admin.context.principal.id())
         .await
         .map_err(|_| internal())?;
     transaction.commit().await.map_err(|_| internal())?;
@@ -439,7 +439,7 @@ pub async fn delete_sod_rule(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let removed = store::providers::sod::drop_rule(&transaction, &rule_id)
+    let removed = store::providers::governance::sod::drop_rule(&transaction, &rule_id)
         .await
         .map_err(|_| internal())?;
     if !removed {
@@ -463,7 +463,7 @@ pub async fn sod_violations(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let rules = store::providers::sod::rules(&transaction)
+    let rules = store::providers::governance::sod::rules(&transaction)
         .await
         .map_err(|_| internal())?;
     let mut told = Vec::new();
@@ -495,9 +495,10 @@ pub async fn sod_violations(
                 if reached.is_empty() {
                     continue;
                 }
-                let standing = store::providers::sod::exceptions_of(&transaction, &person.user_id)
-                    .await
-                    .map_err(|_| internal())?;
+                let standing =
+                    store::providers::governance::sod::exceptions_of(&transaction, &person.user_id)
+                        .await
+                        .map_err(|_| internal())?;
                 for offence in reached {
                     told.push(serde_json::json!({
                         "user_id": person.user_id,
@@ -523,7 +524,7 @@ pub async fn sod_exceptions(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let held = store::providers::sod::exceptions(&transaction)
+    let held = store::providers::governance::sod::exceptions(&transaction)
         .await
         .map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(
@@ -580,7 +581,7 @@ pub async fn put_sod_exception(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let rule = store::providers::sod::rules(&transaction)
+    let rule = store::providers::governance::sod::rules(&transaction)
         .await
         .map_err(|_| internal())?
         .into_iter()
@@ -605,9 +606,9 @@ pub async fn put_sod_exception(
         ));
     }
 
-    store::providers::sod::keep_exception(
+    store::providers::governance::sod::keep_exception(
         &transaction,
-        &store::providers::sod::SodException {
+        &store::providers::governance::sod::SodException {
             rule_id: rule_id.clone(),
             user_id: user_id.clone(),
             covered_roles: covered.clone(),
@@ -638,9 +639,10 @@ pub async fn delete_sod_exception(
         .await
         .map_err(refuse_unopened_work)?;
     let user_id = super::users::named_user(&transaction, &user_id).await?;
-    let removed = store::providers::sod::drop_exception(&transaction, &rule_id, &user_id)
-        .await
-        .map_err(|_| internal())?;
+    let removed =
+        store::providers::governance::sod::drop_exception(&transaction, &rule_id, &user_id)
+            .await
+            .map_err(|_| internal())?;
     if !removed {
         return Err(ApiError::new(ErrorCode::RoleNotFound));
     }

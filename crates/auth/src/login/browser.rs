@@ -741,7 +741,7 @@ async fn named_subject(
         let shadow = shadow_row(provider, tenant, held.alias, &person, now)?;
         // Seated in the default groups like any newcomer: a set that breaks a
         // separation leaves the person unmirrored, refused as nobody known.
-        store::providers::sod::hold_person(transaction, &shadow.user_id)
+        store::providers::governance::sod::hold_person(transaction, &shadow.user_id)
             .await
             .map_err(|_| Unanswerable::Unreadable)?;
         match crate::sod::weigh_newcomer(transaction).await {

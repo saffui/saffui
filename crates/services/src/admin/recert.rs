@@ -1,8 +1,9 @@
 use chrono::Utc;
 use crypto::provider::{CryptoProvider, HashAlg};
 use serde_json::{Value, json};
-use store::providers::recert::{self, Campaign, Item};
-use store::providers::{birthright, roles, users};
+use store::providers::governance::birthright;
+use store::providers::governance::recert::{self, Campaign, Item};
+use store::providers::{roles, users};
 use store::tenancy::UnitOfWork;
 
 #[derive(Debug, Clone, Eq, PartialEq, thiserror::Error)]

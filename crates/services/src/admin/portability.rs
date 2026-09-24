@@ -732,7 +732,7 @@ pub async fn import_partial_realm(
     roles::lock_role_composites(transaction)
         .await
         .map_err(|_| Unportable::Backend)?;
-    store::providers::sod::hold_realm(transaction)
+    store::providers::governance::sod::hold_realm(transaction)
         .await
         .map_err(|_| Unportable::Backend)?;
     let mut reached_groups: Vec<String> = Vec::new();

@@ -386,7 +386,7 @@ async fn a_lifecycle_grant_that_breaks_a_separation_is_withheld() {
             .await
             .unwrap()
             .expect("the subject");
-        store::providers::birthright::governed_of(&transaction, &person.user_id)
+        store::providers::governance::birthright::governed_of(&transaction, &person.user_id)
             .await
             .unwrap()
     };

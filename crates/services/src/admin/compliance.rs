@@ -6,7 +6,8 @@ use models::compliance::evidence_pack::{
     ChainAttestation, ChainVerification, EvidencePack, PackSection,
 };
 use models::compliance::subject_request::{DsarKind, DsarLodgement, DsarRequest, Jurisdiction};
-use store::providers::{compliance, users};
+use store::providers::governance::compliance;
+use store::providers::users;
 use store::tenancy::UnitOfWork;
 
 /// Why the register could not do what was asked.
@@ -521,7 +522,7 @@ async fn drawn_subject_bundle(
             })
         })
         .collect::<Vec<_>>();
-    let grants = store::providers::birthright::ledger_of(transaction, user_id)
+    let grants = store::providers::governance::birthright::ledger_of(transaction, user_id)
         .await
         .map_err(|_| Unactionable::Backend)?
         .into_iter()

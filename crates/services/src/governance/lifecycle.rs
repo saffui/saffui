@@ -1,6 +1,6 @@
 use models::entities::attributes::AttributeValue;
 use models::entities::user::UserModel;
-use store::providers::birthright::BirthrightRule;
+use store::providers::governance::birthright::BirthrightRule;
 
 /// The roles this person should hold under the rules: the union of every
 /// enabled rule whose predicate matches. Pure, and the whole of joiner,

@@ -196,7 +196,7 @@ pub async fn create(
 
     // The same seat every newcomer takes: default groups that break a
     // separation refuse the person, and the provisioner hears why.
-    if store::providers::sod::hold_person(&transaction, &person.user_id)
+    if store::providers::governance::sod::hold_person(&transaction, &person.user_id)
         .await
         .is_err()
     {

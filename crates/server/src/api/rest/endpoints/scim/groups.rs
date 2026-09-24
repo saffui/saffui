@@ -199,7 +199,7 @@ pub async fn patch(
         )
     });
     let standing_before = if seats {
-        if store::providers::sod::hold_realm(&transaction)
+        if store::providers::governance::sod::hold_realm(&transaction)
             .await
             .is_err()
         {
@@ -358,7 +358,7 @@ pub async fn replace(
             Some(wanted) => wanted,
             None => return refused(&Refusal::invalid("members is an array of values")),
         };
-        if store::providers::sod::hold_realm(&transaction)
+        if store::providers::governance::sod::hold_realm(&transaction)
             .await
             .is_err()
         {

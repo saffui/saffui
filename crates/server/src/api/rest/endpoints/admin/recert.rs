@@ -23,7 +23,7 @@ fn refused(why: Unreviewable) -> ApiError {
     }
 }
 
-fn shaped(campaign: &store::providers::recert::Campaign) -> serde_json::Value {
+fn shaped(campaign: &store::providers::governance::recert::Campaign) -> serde_json::Value {
     json!({
         "campaign_id": campaign.campaign_id,
         "name": campaign.name,

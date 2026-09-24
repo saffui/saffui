@@ -1,7 +1,8 @@
 use chrono::Utc;
 use crypto::provider::CryptoProvider;
-use store::providers::requests::{self, AccessRequest};
-use store::providers::{birthright, roles, sod};
+use store::providers::governance::requests::{self, AccessRequest};
+use store::providers::governance::{birthright, sod};
+use store::providers::roles;
 use store::tenancy::UnitOfWork;
 
 /// Why a request could not be lodged, decided or withdrawn.

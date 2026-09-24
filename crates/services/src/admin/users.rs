@@ -96,7 +96,7 @@ pub async fn create(
     }
     // Every newcomer is seated in the default groups: a set that breaks a
     // separation refuses the person rather than seating them in breach.
-    store::providers::sod::hold_person(transaction, &user.user_id)
+    store::providers::governance::sod::hold_person(transaction, &user.user_id)
         .await
         .map_err(|_| Uncreatable::Unwritable)?;
     match crate::governance::sod::weigh_newcomer(transaction).await {

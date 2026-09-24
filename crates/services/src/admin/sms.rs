@@ -2,7 +2,7 @@ use crypto::envelope::Envelope;
 use models::entities::sms::SmsSettings;
 use secrecy::SecretBox;
 use store::keyring::RealmKeyring;
-use store::providers::sms;
+use store::providers::realms::sms;
 use store::tenancy::UnitOfWork;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

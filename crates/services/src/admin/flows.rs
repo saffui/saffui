@@ -10,7 +10,8 @@ use models::entities::auth::{
 };
 use models::entities::user::RequiredAction;
 use store::error::StoreError;
-use store::providers::{auth_flows, users};
+use store::providers::realms::auth_flows;
+use store::providers::users;
 use store::tenancy::UnitOfWork;
 
 /// The alias every realm's browser login rests on when no client says

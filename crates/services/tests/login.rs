@@ -10,7 +10,8 @@ use models::entities::auth::{
 };
 use models::entities::credentials::{CredentialModel, CredentialSecret, CredentialType};
 use secrecy::SecretBox;
-use store::providers::{auth_flows, credentials, realms};
+use store::providers::realms::auth_flows;
+use store::providers::{credentials, realms};
 use store::tenancy::{TenantContext, UnitOfWork};
 use support::{Fixture, provider};
 

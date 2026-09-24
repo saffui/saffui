@@ -7327,7 +7327,7 @@ async fn only_a_factor_can_be_asked_for_and_only_with_a_screen() {
             (RequiredAction::ConfigureTotp, false),
             (RequiredAction::ConfigureRecoveryCodes, true),
         ] {
-            store::providers::auth_flows::register_action(
+            store::providers::realms::auth_flows::register_action(
                 &transaction,
                 &models::entities::auth::RequiredActionModel {
                     action_id: format!("registered-{action}"),

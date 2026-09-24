@@ -1,3 +1,15 @@
+//! A realm's own configuration: keys, features, flows, channels and pages,
+//! and the tenant it belongs to.
+
+pub mod auth_flows;
+pub mod mail;
+pub mod page_previews;
+pub mod realm_features;
+pub mod realm_keys;
+pub mod sms;
+pub mod tenants;
+pub mod ussd;
+
 use crate::tenancy::UnitOfWork;
 use models::entities::realm::{ClientRegistration, RealmModel, RegistrationBounds, SslEnforcement};
 use models::paging::Page;

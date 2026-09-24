@@ -259,7 +259,7 @@ async fn the_account_console_carries_the_account_scope_and_keeps_what_the_operat
 async fn provisioning_a_realm_gives_it_the_scopes_it_cannot_work_without() {
     let fixture = Fixture::empty().await;
     let transaction = fixture.scoped(&TenantContext::tenant_wide("acme")).await;
-    store::providers::tenants::create(&transaction, &tenant())
+    store::providers::realms::tenants::create(&transaction, &tenant())
         .await
         .unwrap();
     transaction.commit().await.unwrap();
@@ -305,7 +305,7 @@ async fn provisioning_a_realm_gives_it_the_scopes_it_cannot_work_without() {
 async fn a_late_failure_rolls_back_the_whole_realm_birth() {
     let fixture = Fixture::empty().await;
     let transaction = fixture.scoped(&TenantContext::tenant_wide("acme")).await;
-    store::providers::tenants::create(&transaction, &tenant())
+    store::providers::realms::tenants::create(&transaction, &tenant())
         .await
         .unwrap();
     transaction.commit().await.unwrap();
@@ -368,7 +368,8 @@ async fn a_deployment_is_provisioned_once_and_left_alone_after() {
         provision_realm_administration, provision_signing_key, provision_tenant, provision_user,
     };
     use std::sync::Arc;
-    use store::providers::{auth_flows, clients, credentials, realm_keys, users};
+    use store::providers::realms::{auth_flows, realm_keys};
+    use store::providers::{clients, credentials, users};
 
     let fixture = Fixture::empty().await;
     let provider = support::provider();
@@ -683,7 +684,7 @@ async fn a_realm_is_offered_flows_and_binds_none_of_them() {
         "mailed-link",
         "desktop",
     ] {
-        let flow = store::providers::auth_flows::flow_by_alias(&transaction, alias)
+        let flow = store::providers::realms::auth_flows::flow_by_alias(&transaction, alias)
             .await
             .expect("the store answered")
             .unwrap_or_else(|| panic!("{alias} was not offered"));
@@ -697,7 +698,7 @@ async fn a_realm_is_offered_flows_and_binds_none_of_them() {
     // What makes the second factor a second factor: the password is required
     // and every other way is an alternative, so a person holding none of them
     // is refused rather than let through on the password alone.
-    let steps = store::providers::auth_flows::executions_of(&transaction, "two-factor")
+    let steps = store::providers::realms::auth_flows::executions_of(&transaction, "two-factor")
         .await
         .expect("the store answered");
     let requirement = |alias: &str| {
@@ -723,7 +724,7 @@ async fn a_realm_is_offered_flows_and_binds_none_of_them() {
     // enrolled through a required action, which is only reached once somebody
     // has been admitted, so a key-only flow shuts out everyone who does not
     // already hold one, including the first person ever to sign in.
-    let passkey = store::providers::auth_flows::executions_of(&transaction, "passwordless")
+    let passkey = store::providers::realms::auth_flows::executions_of(&transaction, "passwordless")
         .await
         .expect("the store answered");
     for step in &passkey {
@@ -743,7 +744,7 @@ async fn a_realm_is_offered_flows_and_binds_none_of_them() {
     // And it says what it depends on, because neither dependency is in the
     // flow: without passkey-only sign-in nobody is named before the key step
     // runs, and without signing in by address the link step never sends.
-    let passkey = store::providers::auth_flows::flow_by_alias(&transaction, "passwordless")
+    let passkey = store::providers::realms::auth_flows::flow_by_alias(&transaction, "passwordless")
         .await
         .expect("the store answered")
         .expect("it was offered");
@@ -756,7 +757,7 @@ async fn a_realm_is_offered_flows_and_binds_none_of_them() {
     }
 
     // And the mailed one says the same about the door that names the person.
-    let mailed = store::providers::auth_flows::flow_by_alias(&transaction, "mailed-link")
+    let mailed = store::providers::realms::auth_flows::flow_by_alias(&transaction, "mailed-link")
         .await
         .expect("the store answered")
         .expect("it was offered");
@@ -769,7 +770,7 @@ async fn a_realm_is_offered_flows_and_binds_none_of_them() {
     // The desktop flow offers two ways in rather than requiring either: a
     // browser with no ticket types a password, and the password passing
     // settles the ticket step rather than leaving the login held open.
-    let desktop = store::providers::auth_flows::executions_of(&transaction, "desktop")
+    let desktop = store::providers::realms::auth_flows::executions_of(&transaction, "desktop")
         .await
         .expect("the store answered");
     for step in &desktop {
@@ -784,7 +785,7 @@ async fn a_realm_is_offered_flows_and_binds_none_of_them() {
 
     // A texted code is the whole of the phone-first flow: a proven number is
     // an identifier here, so the code is a way in and not a second one.
-    let texted = store::providers::auth_flows::executions_of(&transaction, "phone-first")
+    let texted = store::providers::realms::auth_flows::executions_of(&transaction, "phone-first")
         .await
         .expect("the store answered");
     assert_eq!(texted.len(), 1, "phone-first carries more than the code");

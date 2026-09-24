@@ -225,7 +225,7 @@ pub async fn verify_answer(
     // refusal here would make that the authenticator's decision instead of
     // the flow's, and it would read as a wrong credential.
     if let Some(behind) = capability_behind(authenticator)
-        && !store::providers::realm_features::runs_for_realm(transaction, behind).await
+        && !store::providers::realms::realm_features::runs_for_realm(transaction, behind).await
     {
         return Answered::plain(Outcome::Skipped);
     }

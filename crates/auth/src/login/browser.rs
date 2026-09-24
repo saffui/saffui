@@ -195,10 +195,10 @@ pub async fn answer_step(
     let (mail, sms) = match sealing {
         None => (None, None),
         Some(sealing) => (
-            store::providers::mail::load(transaction, sealing.ring, sealing.envelope)
+            store::providers::realms::mail::load(transaction, sealing.ring, sealing.envelope)
                 .await
                 .map_err(|_| Unanswerable::Unreadable)?,
-            store::providers::sms::load(transaction, sealing.ring, sealing.envelope)
+            store::providers::realms::sms::load(transaction, sealing.ring, sealing.envelope)
                 .await
                 .map_err(|_| Unanswerable::Unreadable)?,
         ),
@@ -704,7 +704,7 @@ async fn named_subject(
     let compact: String = named.chars().filter(|held| !held.is_whitespace()).collect();
     if compact.starts_with('+')
         && compact[1..].chars().all(|held| held.is_ascii_digit())
-        && store::providers::realm_features::runs_for_realm(
+        && store::providers::realms::realm_features::runs_for_realm(
             transaction,
             commons::feature::Feature::PhoneFirstLogin,
         )

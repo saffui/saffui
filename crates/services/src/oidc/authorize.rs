@@ -11,7 +11,8 @@ use models::sessions::records::{UserSessionModel, UserSessionState};
 use serde_json::{Value, json};
 use store::providers::clients::client_scopes;
 use store::providers::login::{self, AuthSession};
-use store::providers::{auth_flows, clients, realms, sessions};
+use store::providers::realms::auth_flows;
+use store::providers::{clients, realms, sessions};
 use store::tenancy::{TenantContext, UnitOfWork};
 
 use crate::oidc::landing::{Landing, ResponseMode};

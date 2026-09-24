@@ -11,7 +11,7 @@ use models::entities::keys::{
     KeyStatus, KeyUse, RealmEncryptionKeyView, RealmSigningKey, RealmSigningKeyView,
 };
 use store::keyring::RealmKeyring;
-use store::providers::realm_keys;
+use store::providers::realms::realm_keys;
 use store::tenancy::UnitOfWork;
 
 /// Why the plane could not turn a key.

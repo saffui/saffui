@@ -10,7 +10,7 @@ use models::entities::keys::{
     JweAlgorithm, KeyStatus, KeyUse, RealmEncryptionKey, RealmSigningKey,
 };
 use store::keyring;
-use store::providers::realm_keys;
+use store::providers::realms::realm_keys;
 use store::tenancy::TenantContext;
 use support::Fixture;
 

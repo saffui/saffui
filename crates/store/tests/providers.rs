@@ -14,7 +14,8 @@ use pgcore::tls::PgConnector;
 use std::collections::HashMap;
 
 use crypto::provider::SignAlg;
-use store::providers::{realms, tenants};
+use store::providers::realms;
+use store::providers::realms::tenants;
 use store::query::list_query::ListQuery;
 use store::schema::migrations;
 use store::tenancy::{Tenancy, TenantContext, UnitOfWork};

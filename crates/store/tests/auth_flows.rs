@@ -8,7 +8,8 @@ use models::entities::auth::{
 };
 use models::entities::realm::RealmCreateModel;
 use models::entities::user::RequiredAction;
-use store::providers::{auth_flows, realms};
+use store::providers::realms;
+use store::providers::realms::auth_flows;
 use store::tenancy::TenantContext;
 use support::Fixture;
 

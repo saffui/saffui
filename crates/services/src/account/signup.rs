@@ -11,7 +11,8 @@ use crypto::provider::CryptoProvider;
 use models::entities::realm::{About, RealmModel};
 use models::entities::user::RequiredAction;
 use secrecy::SecretBox;
-use store::providers::{auth_flows, users};
+use store::providers::realms::auth_flows;
+use store::providers::users;
 use store::tenancy::UnitOfWork;
 
 /// What the form posted.

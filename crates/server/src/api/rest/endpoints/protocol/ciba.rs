@@ -831,7 +831,7 @@ async fn doorbell_text(
     )
     .await
     .ok()?;
-    let settings = store::providers::sms::load(transaction, &ring, &sealing.envelope)
+    let settings = store::providers::realms::sms::load(transaction, &ring, &sealing.envelope)
         .await
         .ok()
         .flatten()?;

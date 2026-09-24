@@ -56,7 +56,7 @@ async fn arrange_mail(plane: &Plane) {
     )
     .await
     .expect("a keyring");
-    store::providers::mail::keep(
+    store::providers::realms::mail::keep(
         &transaction,
         &ring,
         &sealing.envelope,

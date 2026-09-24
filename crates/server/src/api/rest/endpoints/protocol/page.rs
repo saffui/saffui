@@ -240,7 +240,7 @@ async fn draft_of_realm(
     draft: &str,
 ) -> Option<serde_json::Value> {
     let transaction = tenancy.begin_in(RealmNamed::ByName(realm)).await.ok()?;
-    store::providers::page_previews::read(&transaction, draft)
+    store::providers::realms::page_previews::read(&transaction, draft)
         .await
         .ok()
         .flatten()
@@ -397,7 +397,7 @@ fn federated_doors(rows: &[models::entities::authz::IdentityProviderModel]) -> S
 /// nothing this build provisions.
 async fn offers_recovery_codes(transaction: &UnitOfWork, bound: Option<&str>) -> bool {
     use models::entities::auth::ExecutionStep;
-    use store::providers::auth_flows;
+    use store::providers::realms::auth_flows;
 
     let Ok(Some(flow)) = auth_flows::flow_by_alias(transaction, bound.unwrap_or("browser")).await
     else {

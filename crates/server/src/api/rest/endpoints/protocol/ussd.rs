@@ -65,7 +65,7 @@ pub async fn callback(
     };
     // A realm that closed the bridge answers as one that never named a
     // gateway, which is the same door and the same silence.
-    if !store::providers::realm_features::runs_for_realm(
+    if !store::providers::realms::realm_features::runs_for_realm(
         &transaction,
         commons::feature::Feature::UssdBridge,
     )
@@ -74,7 +74,7 @@ pub async fn callback(
         return plain(StatusCode::NOT_FOUND, "");
     }
     let Ok(Some(secret)) =
-        store::providers::ussd::load_secret(&transaction, &ring, &sealing.envelope).await
+        store::providers::realms::ussd::load_secret(&transaction, &ring, &sealing.envelope).await
     else {
         // No gateway named is a door that does not exist.
         return plain(StatusCode::NOT_FOUND, "");
@@ -121,7 +121,7 @@ pub async fn callback(
         (None, _) => end(nothing_waiting(tongue)),
         (Some(person), "1" | "2") => {
             let Ok(anchored) =
-                store::providers::ussd::take_anchor(&transaction, &session_id, now).await
+                store::providers::realms::ussd::take_anchor(&transaction, &session_id, now).await
             else {
                 return plain(StatusCode::INTERNAL_SERVER_ERROR, "");
             };
@@ -172,7 +172,7 @@ pub async fn callback(
             match waiting.first() {
                 None => end(nothing_waiting(tongue)),
                 Some((digest, request)) => {
-                    if store::providers::ussd::anchor(
+                    if store::providers::realms::ussd::anchor(
                         &transaction,
                         &session_id,
                         &person.user_id,

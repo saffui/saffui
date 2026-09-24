@@ -20,7 +20,8 @@ use pgcore::migrations::MigrationRunner;
 use pgcore::tls::PgConnector;
 use secrecy::SecretBox;
 use store::keyring;
-use store::providers::{clients, realm_keys, realms, roles, sessions, tenants, users};
+use store::providers::realms::{realm_keys, tenants};
+use store::providers::{clients, realms, roles, sessions, users};
 use store::schema::migrations;
 use store::tenancy::{Tenancy, TenantContext, UnitOfWork};
 use tokio::sync::{Mutex, MutexGuard};
@@ -1329,7 +1330,7 @@ impl Plane {
     #[allow(dead_code, reason = "only the encryption suite encrypts to it")]
     pub async fn realm_encryption_key(&self) -> models::entities::keys::RealmEncryptionKeyView {
         let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
-        store::providers::realm_keys::published_encryption(&transaction)
+        store::providers::realms::realm_keys::published_encryption(&transaction)
             .await
             .expect("the keys table")
             .into_iter()
@@ -2199,7 +2200,7 @@ async fn plant_the_common_world(tenancy: &Tenancy) {
         built_in: Some(false),
     }
     .into_model("browser".into(), REALM.into(), metadata());
-    store::providers::auth_flows::create_flow(&transaction, &flow)
+    store::providers::realms::auth_flows::create_flow(&transaction, &flow)
         .await
         .unwrap();
 
@@ -2216,7 +2217,7 @@ async fn plant_the_common_world(tenancy: &Tenancy) {
         requirement: models::entities::auth::AuthenticatorRequirement::Required,
     }
     .into_model("exec-1".into(), REALM.into(), metadata());
-    store::providers::auth_flows::create_execution(&transaction, &execution)
+    store::providers::realms::auth_flows::create_execution(&transaction, &execution)
         .await
         .unwrap();
 
@@ -2230,7 +2231,7 @@ async fn plant_the_common_world(tenancy: &Tenancy) {
         built_in: Some(false),
     }
     .into_model(KEYED_FLOW.into(), REALM.into(), metadata());
-    store::providers::auth_flows::create_flow(&transaction, &keyed)
+    store::providers::realms::auth_flows::create_flow(&transaction, &keyed)
         .await
         .unwrap();
     for (id, authenticator, priority) in [
@@ -2248,7 +2249,7 @@ async fn plant_the_common_world(tenancy: &Tenancy) {
             requirement: models::entities::auth::AuthenticatorRequirement::Required,
         }
         .into_model(id.into(), REALM.into(), metadata());
-        store::providers::auth_flows::create_execution(&transaction, &step)
+        store::providers::realms::auth_flows::create_execution(&transaction, &step)
             .await
             .unwrap();
     }
@@ -2263,7 +2264,7 @@ async fn plant_the_common_world(tenancy: &Tenancy) {
         built_in: Some(false),
     }
     .into_model(STRONG_FLOW.into(), REALM.into(), metadata());
-    store::providers::auth_flows::create_flow(&transaction, &strong)
+    store::providers::realms::auth_flows::create_flow(&transaction, &strong)
         .await
         .unwrap();
     for (id, authenticator, priority) in [
@@ -2281,7 +2282,7 @@ async fn plant_the_common_world(tenancy: &Tenancy) {
             requirement: models::entities::auth::AuthenticatorRequirement::Required,
         }
         .into_model(id.into(), REALM.into(), metadata());
-        store::providers::auth_flows::create_execution(&transaction, &step)
+        store::providers::realms::auth_flows::create_execution(&transaction, &step)
             .await
             .unwrap();
     }
@@ -2294,7 +2295,7 @@ async fn plant_the_common_world(tenancy: &Tenancy) {
         built_in: Some(false),
     }
     .into_model(PASSKEY_FLOW.into(), REALM.into(), metadata());
-    store::providers::auth_flows::create_flow(&transaction, &passkey_only)
+    store::providers::realms::auth_flows::create_flow(&transaction, &passkey_only)
         .await
         .unwrap();
     let step = models::entities::auth::AuthenticationExecutionMutationModel {
@@ -2308,7 +2309,7 @@ async fn plant_the_common_world(tenancy: &Tenancy) {
         requirement: models::entities::auth::AuthenticatorRequirement::Required,
     }
     .into_model("exec-passkey-1".into(), REALM.into(), metadata());
-    store::providers::auth_flows::create_execution(&transaction, &step)
+    store::providers::realms::auth_flows::create_execution(&transaction, &step)
         .await
         .unwrap();
 
@@ -2320,7 +2321,7 @@ async fn plant_the_common_world(tenancy: &Tenancy) {
         built_in: Some(false),
     }
     .into_model(SHEET_FLOW.into(), REALM.into(), metadata());
-    store::providers::auth_flows::create_flow(&transaction, &sheet)
+    store::providers::realms::auth_flows::create_flow(&transaction, &sheet)
         .await
         .unwrap();
     for (id, authenticator, priority) in [
@@ -2338,7 +2339,7 @@ async fn plant_the_common_world(tenancy: &Tenancy) {
             requirement: models::entities::auth::AuthenticatorRequirement::Required,
         }
         .into_model(id.into(), REALM.into(), metadata());
-        store::providers::auth_flows::create_execution(&transaction, &step)
+        store::providers::realms::auth_flows::create_execution(&transaction, &step)
             .await
             .unwrap();
     }

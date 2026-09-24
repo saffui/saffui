@@ -4,7 +4,8 @@ use models::auditable::AuditableModel;
 use models::entities::realm::RealmCreateModel;
 use models::entities::tenant::TenantCreateModel;
 use store::error::StoreError;
-use store::providers::{realms, tenants};
+use store::providers::realms;
+use store::providers::realms::tenants;
 use store::tenancy::{RealmNamed, TenantContext};
 use support::Fixture;
 

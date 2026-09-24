@@ -1044,7 +1044,7 @@ async fn texting_arranged(plane: &Plane, phone_verified: bool) {
     let ring = store::keyring::load(&transaction, &sealing.envelope, support::TENANT, REALM)
         .await
         .expect("a keyring");
-    store::providers::sms::keep(
+    store::providers::realms::sms::keep(
         &transaction,
         &ring,
         &sealing.envelope,

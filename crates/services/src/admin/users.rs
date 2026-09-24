@@ -6,7 +6,8 @@ use models::paging::Page;
 use models::sessions::login_failure::UserLoginFailure;
 use secrecy::SecretBox;
 use store::error::StoreError;
-use store::providers::{auth_flows, login, users};
+use store::providers::realms::auth_flows;
+use store::providers::{login, users};
 use store::query::list_query::ListQuery;
 use store::tenancy::UnitOfWork;
 

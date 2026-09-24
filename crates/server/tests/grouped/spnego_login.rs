@@ -57,7 +57,7 @@ async fn negotiating(plane: &Plane, realm: &str) {
         built_in: Some(false),
     }
     .into_model("desk".into(), REALM.into(), metadata());
-    store::providers::auth_flows::create_flow(&transaction, &flow)
+    store::providers::realms::auth_flows::create_flow(&transaction, &flow)
         .await
         .unwrap();
     for (id, authenticator, priority) in
@@ -74,7 +74,7 @@ async fn negotiating(plane: &Plane, realm: &str) {
             requirement: models::entities::auth::AuthenticatorRequirement::Alternative,
         }
         .into_model(id.into(), REALM.into(), metadata());
-        store::providers::auth_flows::create_execution(&transaction, &step)
+        store::providers::realms::auth_flows::create_execution(&transaction, &step)
             .await
             .unwrap();
     }

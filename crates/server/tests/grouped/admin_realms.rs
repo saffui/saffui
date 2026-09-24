@@ -436,7 +436,7 @@ async fn concurrent_births_share_one_ceiling_count() {
         .scoped(&store::tenancy::TenantContext::tenant_wide(support::TENANT))
         .await;
     assert_eq!(
-        store::providers::tenants::count_realms(&transaction)
+        store::providers::realms::tenants::count_realms(&transaction)
             .await
             .unwrap(),
         2

@@ -3443,7 +3443,7 @@ async fn the_days_texting_counters_are_the_ones_the_brakes_read() {
         .await;
     let now = Utc::now();
     for _ in 0..2 {
-        store::providers::sms::record_send(&transaction, now.timestamp())
+        store::providers::realms::sms::record_send(&transaction, now.timestamp())
             .await
             .expect("a send counted");
     }

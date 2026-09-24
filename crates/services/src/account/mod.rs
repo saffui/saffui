@@ -17,8 +17,9 @@ use models::entities::credentials::{CredentialModel, CredentialType};
 use models::entities::realm::RealmModel;
 use models::entities::user::{RequiredAction, UserModel, UserStorage};
 use secrecy::SecretBox;
+use store::providers::realms::auth_flows;
 use store::providers::webauthn::EnrolledCredential;
-use store::providers::{auth_flows, clients, credentials, realms, sessions, users, webauthn};
+use store::providers::{clients, credentials, realms, sessions, users, webauthn};
 use store::tenancy::UnitOfWork;
 
 /// Why a person's own password was not changed.

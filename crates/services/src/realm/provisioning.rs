@@ -27,7 +27,8 @@ use crate::admin;
 use models::entities::authz::{AdminAction, RoleModel};
 use models::entities::user::RequiredAction;
 use store::providers::clients::client_scopes;
-use store::providers::{auth_flows, clients, realm_keys, realms, roles, tenants, users};
+use store::providers::realms::{auth_flows, realm_keys, tenants};
+use store::providers::{clients, realms, roles, users};
 
 /// Who the audit trail names for rows nobody typed in.
 const PROVISIONER: &str = "provisioner";

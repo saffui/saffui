@@ -9,7 +9,7 @@ use models::entities::client::{ClientModel, JweRegistration};
 use models::entities::keys::JweAlgorithm;
 use serde_json::Value;
 use store::keyring::RealmKeyring;
-use store::providers::realm_keys;
+use store::providers::realms::realm_keys;
 use store::tenancy::UnitOfWork;
 
 /// Why a client that registered encryption could not be encrypted to.

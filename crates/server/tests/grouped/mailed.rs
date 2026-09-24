@@ -45,7 +45,7 @@ async fn arrange(plane: &Plane) {
     )
     .await
     .expect("a keyring");
-    store::providers::mail::keep(
+    store::providers::realms::mail::keep(
         &transaction,
         &ring,
         &sealing.envelope,
@@ -449,7 +449,7 @@ async fn writing_without_a_password_keeps_the_one_held() {
     )
     .await
     .expect("a keyring");
-    let held = store::providers::mail::load(&transaction, &ring, &sealing.envelope)
+    let held = store::providers::realms::mail::load(&transaction, &ring, &sealing.envelope)
         .await
         .expect("the settings")
         .expect("settings");

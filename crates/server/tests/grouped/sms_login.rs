@@ -50,7 +50,7 @@ async fn arrange(plane: &Plane, phone_verified: bool) {
     )
     .await
     .expect("a keyring");
-    store::providers::sms::keep(
+    store::providers::realms::sms::keep(
         &transaction,
         &ring,
         &sealing.envelope,
@@ -91,7 +91,7 @@ async fn require_sms_otp(plane: &Plane) {
         support::REALM.to_owned(),
         AuditableModel::from_creator(support::TENANT.to_owned(), "test".to_owned()),
     );
-    store::providers::auth_flows::create_execution(&transaction, &step)
+    store::providers::realms::auth_flows::create_execution(&transaction, &step)
         .await
         .expect("the step kept");
     transaction.commit().await.expect("the flow kept");

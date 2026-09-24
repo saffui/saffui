@@ -2,7 +2,7 @@ use crypto::envelope::Envelope;
 use models::entities::mail::{MailCredentials, MailSettings};
 use secrecy::SecretBox;
 use store::keyring::RealmKeyring;
-use store::providers::mail;
+use store::providers::realms::mail;
 use store::tenancy::UnitOfWork;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

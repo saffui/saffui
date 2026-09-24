@@ -57,7 +57,7 @@ async fn arranged(plane: &Plane) {
     let ring = store::keyring::load(&transaction, &sealing.envelope, support::TENANT, REALM)
         .await
         .expect("a keyring");
-    store::providers::ussd::keep_secret(
+    store::providers::realms::ussd::keep_secret(
         &transaction,
         &ring,
         &sealing.envelope,

@@ -48,7 +48,7 @@ pub async fn send_due_notices(
     .await
     .ok();
     let settings = match ring {
-        Some(ring) => store::providers::mail::load(&transaction, &ring, &sealing.envelope)
+        Some(ring) => store::providers::realms::mail::load(&transaction, &ring, &sealing.envelope)
             .await
             .ok()
             .flatten(),

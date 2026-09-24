@@ -42,6 +42,52 @@ fn owner_config() -> Config {
     config
 }
 
+/// The application role's side of this binary's database: its name, the role
+/// and the password, to write after a host.
+#[allow(dead_code, reason = "each test binary compiles this module on its own")]
+pub fn as_the_application() -> String {
+    format!(
+        "dbname={} user=saffui_app password=saffui_app_test",
+        owner_config().get_dbname().unwrap_or("saffui")
+    )
+}
+
+/// This binary's database as the application role reaches it directly.
+#[allow(dead_code, reason = "each test binary compiles this module on its own")]
+pub fn direct_address() -> String {
+    format!(
+        "{} {}",
+        std::env::var("SAFFUI_TEST_PG").expect("checked at owner_config"),
+        as_the_application()
+    )
+}
+
+/// The same through the pooler in transaction mode `SAFFUI_TEST_PG_POOLER`
+/// names, or nothing when none is named.
+#[allow(dead_code, reason = "each test binary compiles this module on its own")]
+pub fn pooled_address() -> Option<String> {
+    let pooler = std::env::var("SAFFUI_TEST_PG_POOLER").ok()?;
+    Some(format!("{pooler} {}", as_the_application()))
+}
+
+/// End every other connection to this binary's database, a pooler's server
+/// connections included: the statements they keep were prepared against the
+/// schema the fixture just dropped.
+#[allow(dead_code, reason = "each test binary compiles this module on its own")]
+pub async fn cut_lingering_connections() {
+    let (owner, connection) = owner_config().connect(NoTls).await.expect("the owner");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    owner
+        .batch_execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+             WHERE datname = current_database() AND pid <> pg_backend_pid()",
+        )
+        .await
+        .expect("the lingering connections end");
+}
+
 /// The test binary's own name, hash suffix shorn: `suite_admin-3fe9` is
 /// `suite_admin`, and one binary is one database.
 fn binary_stem() -> Option<String> {

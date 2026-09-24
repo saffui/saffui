@@ -430,6 +430,103 @@ async fn a_statement_is_prepared_once_per_connection() {
     assert_eq!(kept, 1, "the statement was not kept between the two units");
 }
 
+/// Behind a pooler the bound on an idle transaction rides in the transaction,
+/// a pooler refusing it at startup, and leaves the connection as it was.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn behind_a_pooler_the_idle_bound_rides_in_the_unit() {
+    let _turn = DATABASE.lock().await;
+    let pool = one_connection_pool().await;
+    let tenancy = Tenancy::unpinned(pool.clone()).behind_a_pooler(Duration::from_secs(7));
+
+    let unit = tenancy
+        .begin(&TenantContext::tenant_wide("acme"))
+        .await
+        .unwrap();
+    let inside: String = unit
+        .query_one("SHOW idle_in_transaction_session_timeout", &[])
+        .await
+        .unwrap()
+        .get(0);
+    unit.commit().await.unwrap();
+    assert_eq!(inside, "7s");
+
+    let after: String = pool
+        .get()
+        .await
+        .unwrap()
+        .query_typed_one("SHOW idle_in_transaction_session_timeout", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_ne!(
+        after, "7s",
+        "the bound outlived the transaction it was set in"
+    );
+}
+
+/// Behind a pooler the bound rides in the request that opens the unit, so a
+/// unit still opens in one round trip and reads and commits as it did.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn behind_a_pooler_a_unit_still_opens_in_one_round_trip() {
+    const READ: &str = "SELECT tenant_id FROM tenants";
+
+    let _turn = DATABASE.lock().await;
+    let pool = one_connection_pool().await;
+    plant(&Tenancy::unpinned(pool), "acme").await;
+    let acme = TenantContext::tenant_wide("acme");
+
+    let relay = Relay::start().await;
+    let relayed =
+        Tenancy::unpinned(relay.one_connection_pool()).behind_a_pooler(Duration::from_secs(7));
+    // The first unit opens the connection, whose handshake waits on answers,
+    // and prepares the scope and the read.
+    let first = relayed.begin(&acme).await.unwrap();
+    first.query(READ, &[]).await.unwrap();
+    first.commit().await.unwrap();
+
+    let unit = relay
+        .run_in_one_round_trip("opening", 2, relayed.begin(&acme))
+        .await
+        .unwrap();
+    relay
+        .run_in_one_round_trip("reading", 1, unit.query(READ, &[]))
+        .await
+        .unwrap();
+    relay
+        .run_in_one_round_trip("committing", 2, unit.commit())
+        .await
+        .unwrap();
+}
+
+/// The role the served connections log in as, as the database sees it: the
+/// application role answers to row security, the owner's superuser does not.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_served_role_is_read_as_the_database_sees_it() {
+    let _turn = DATABASE.lock().await;
+    let served = Tenancy::unpinned(one_connection_pool().await)
+        .read_served_role()
+        .await
+        .unwrap();
+    assert_eq!(served.name, "saffui_app");
+    assert!(!served.above_the_rules);
+
+    let owner = Pool::builder(Manager::new(owner_config(), NoTls))
+        .max_size(1)
+        .build()
+        .expect("a pool of one");
+    assert!(
+        Tenancy::unpinned(owner)
+            .read_served_role()
+            .await
+            .unwrap()
+            .above_the_rules,
+        "a superuser was read as answering to row security"
+    );
+}
+
 /// What a connection keeps has a ceiling. A statement built at run time is a
 /// new text for every shape, and a long lived connection would otherwise keep
 /// one of each on both sides of the wire.

@@ -27,6 +27,7 @@ otel = ["server/otel"]
 [dependencies]
 commons = { workspace = true, features = ["http", "request-span"] }
 config = { workspace = true }
+tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 ldapfront = { path = "../ldapfront" }
 openssl = { workspace = true }

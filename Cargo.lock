@@ -3019,6 +3019,7 @@ dependencies = [
  "store",
  "tokio",
  "tokio-postgres",
+ "tracing",
  "tracing-subscriber",
  "ureq",
 ]

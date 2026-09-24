@@ -2,12 +2,13 @@
 
 Every connection this server opens to Postgres, the served pool, the
 migrations, the owner's grant, the chain reader and the notification
-listener, is built from one address and one TLS policy. Seven settings say
-what they are.
+listener, is built from one address, or two where a pooler stands in front,
+and one TLS policy. Eight settings say what they are.
 
 | Setting | Default | What it says |
 | --- | --- | --- |
 | `SAFFUI_DATABASE_URL` | required | Where the database is, as a key=value string or a `postgresql://` URL. |
+| `SAFFUI_DATABASE_POOLER_URL` | unset | A pooler in front of the same database, which the served requests go through. |
 | `SAFFUI_DATABASE_TLS` | unset | `verify-full`, `require` or `disabled`. |
 | `SAFFUI_DATABASE_TLS_CA` | unset | The CA bundle `verify-full` checks the server's certificate against. |
 | `SAFFUI_DATABASE_POOL_SIZE` | `16` | How many connections the served pool holds at most. |
@@ -69,9 +70,38 @@ refusing it, or nothing answering at its address. The driver's own account,
 the certificate check or the password it refused, is in the log line where
 the live feed loses its connection.
 
-Statements are prepared once per connection and kept. Behind PgBouncer in
-transaction mode that needs 1.21 or later with `max_prepared_statements` set,
-or session mode.
+## Behind a pooler
+
+Without a pooler there is nothing to set. Where one stands in front of the
+database, as a cloud deployment often has, name its address in
+`SAFFUI_DATABASE_POOLER_URL` and keep `SAFFUI_DATABASE_URL` the direct one.
+
+The served requests go through the pooler. What needs a session of its own
+stays on the direct address: the live feed holds a `LISTEN`, which a pooler
+in transaction mode lets go between transactions, and `migrate` holds a
+session lock. Both addresses are held to the same TLS policy and checked
+against the same bundle.
+
+Through the pooler nothing rides at startup: a pooler refuses the options it
+cannot keep track of, so the bound on an idle transaction is set inside each
+transaction instead, in the same request that opens it. Statements are
+prepared once and kept, as they are without a pooler, so the pooler has to
+keep prepared statements itself: PgBouncer does from 1.21 when
+`max_prepared_statements` is above zero, which recent versions set by
+default. A pooler that keeps none is named in the log the first time a
+statement goes missing.
+
+The pooler logs in to the database with a role of its own configuration's
+choosing. At startup saffui asks the database who that is, and refuses to
+start when it is a superuser or holds `BYPASSRLS`: row security is what keeps
+each realm to its own rows. Have it log in as `saffui_app`.
+
+Two things stay the pooler's own. Encryption between it and the database is
+its setting (`server_tls_sslmode` for PgBouncer), which saffui cannot see.
+And the statements it keeps were prepared against the schema of the day:
+after `migrate`, have it drop its server connections (`RECONNECT` on
+PgBouncer's console), so none answers with a plan made for a table that has
+since changed.
 
 ## The application role's password
 

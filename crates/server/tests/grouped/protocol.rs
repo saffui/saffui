@@ -4437,7 +4437,7 @@ async fn a_scope_of_another_protocol_entitles_no_claim_asked_by_name() {
                 support::REALM,
             ))
             .await;
-        store::providers::client_scopes::create_scope(
+        store::providers::clients::client_scopes::create_scope(
             &transaction,
             &models::entities::client::ClientScopeModel {
                 client_scope_id: "docker-email".to_owned(),
@@ -4455,7 +4455,7 @@ async fn a_scope_of_another_protocol_entitles_no_claim_asked_by_name() {
         )
         .await
         .expect("a docker scope named email");
-        store::providers::client_scopes::attach_scope(
+        store::providers::clients::client_scopes::attach_scope(
             &transaction,
             support::CONFIDENTIAL,
             "docker-email",

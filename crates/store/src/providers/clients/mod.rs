@@ -1,3 +1,7 @@
+//! The applications a realm serves, and the scopes they may ask for.
+
+pub mod client_scopes;
+
 use crate::tenancy::UnitOfWork;
 use models::entities::client::{ClientModel, ClientSecret, JweRegistration, Protocol};
 use models::entities::keys::{JweAlgorithm, JweEncryption};

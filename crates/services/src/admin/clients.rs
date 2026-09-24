@@ -8,7 +8,8 @@ use models::entities::client::{ClientCreateModel, ClientModel, JweRegistration, 
 use models::paging::Page;
 use secrecy::{ExposeSecret, SecretBox};
 use store::error::StoreError;
-use store::providers::{client_scopes, clients};
+use store::providers::clients;
+use store::providers::clients::client_scopes;
 use store::query::list_query::ListQuery;
 use store::tenancy::UnitOfWork;
 use url::Url;

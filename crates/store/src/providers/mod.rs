@@ -1,7 +1,6 @@
 pub mod auth_flows;
 pub mod authorization;
 pub mod backchannel;
-pub mod client_scopes;
 pub mod clients;
 pub mod consents;
 pub mod credentials;

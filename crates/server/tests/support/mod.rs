@@ -2143,16 +2143,26 @@ async fn plant_the_common_world(tenancy: &Tenancy) {
         .await
         .unwrap();
     for client_id in [CONFIDENTIAL, OTHER, PUBLIC] {
-        store::providers::client_scopes::attach_scope(&transaction, client_id, "profile", false)
-            .await
-            .unwrap();
+        store::providers::clients::client_scopes::attach_scope(
+            &transaction,
+            client_id,
+            "profile",
+            false,
+        )
+        .await
+        .unwrap();
     }
     // Optional, so a test has to ask for it: what exercises a scope that
     // is granted only by name.
-    store::providers::client_scopes::attach_scope(&transaction, CONFIDENTIAL, "address", true)
-        .await
-        .unwrap();
-    store::providers::client_scopes::attach_scope(
+    store::providers::clients::client_scopes::attach_scope(
+        &transaction,
+        CONFIDENTIAL,
+        "address",
+        true,
+    )
+    .await
+    .unwrap();
+    store::providers::clients::client_scopes::attach_scope(
         &transaction,
         CONFIDENTIAL,
         "offline_access",

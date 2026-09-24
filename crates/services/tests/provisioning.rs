@@ -9,7 +9,7 @@ use services::realm::provisioning::{
     ADMIN_SCOPE, ADMINISTRATOR_ROLE, AccountConsole, AdminConsole, provision_account_console,
     provision_admin_console, provision_offered_flows, provision_realm_administration,
 };
-use store::providers::client_scopes;
+use store::providers::clients::client_scopes;
 use store::providers::roles;
 use store::tenancy::TenantContext;
 use support::Fixture;

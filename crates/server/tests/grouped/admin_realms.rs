@@ -535,7 +535,7 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, "staging"))
             .await;
-        let scopes = store::providers::client_scopes::list_scopes(&transaction)
+        let scopes = store::providers::clients::client_scopes::list_scopes(&transaction)
             .await
             .expect("a scope catalogue");
         let names: Vec<&str> = scopes.iter().map(|held| held.name.as_str()).collect();

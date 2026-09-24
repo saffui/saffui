@@ -11,7 +11,8 @@ use models::paging::Window;
 use std::collections::HashSet;
 use store::error::StoreError;
 use store::providers::authorization::{authz_policies, authz_surface};
-use store::providers::{auth_flows, client_scopes, clients, organizations, realms, roles, users};
+use store::providers::clients::client_scopes;
+use store::providers::{auth_flows, clients, organizations, realms, roles, users};
 use store::query::list_query::ListQuery;
 use store::tenancy::UnitOfWork;
 

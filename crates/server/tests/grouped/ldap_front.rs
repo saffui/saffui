@@ -19,6 +19,11 @@ const PEOPLE: &str = "ou=people,dc=id,dc=example";
 /// Spawn the front for one plane on a loopback port, sealed when an
 /// acceptor is handed in, and hand back the port.
 async fn fronted(plane: &Plane, tls: Option<openssl::ssl::SslContext>) -> u16 {
+    fronted_in(plane, support::REALM, tls).await
+}
+
+/// The same, answering for another realm of the plane's tenant.
+async fn fronted_in(plane: &Plane, realm_id: &str, tls: Option<openssl::ssl::SslContext>) -> u16 {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let sealing = support::sealing();
@@ -29,7 +34,7 @@ async fn fronted(plane: &Plane, tls: Option<openssl::ssl::SslContext>) -> u16 {
         sealing.provider,
         sealing.names,
         ldapfront::Front {
-            realm_id: support::REALM.into(),
+            realm_id: realm_id.into(),
             base_dn: BASE.into(),
         },
     ));
@@ -457,9 +462,40 @@ async fn a_count_made_at_another_door_holds_this_one() {
         .expect("an answer");
     assert_eq!(held.rc, 51, "another door's count was not read: {held:?}");
     assert_eq!(
-        plane.named_failures().await,
-        [(support::keyed_name(support::SUBJECT), 3)],
+        plane.named_failures(support::REALM).await,
+        [(support::keyed_name(support::REALM, support::SUBJECT), 3)],
         "the doors counted the name apart, or under another key"
+    );
+}
+
+/// One name failed in two realms leaves two digests, each keyed with its own
+/// realm, so whoever reads the table whole without the key cannot tell that
+/// the two rows name the same person.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn one_name_failed_in_two_realms_is_kept_under_two_digests() {
+    let plane = Plane::with_actions(&[]).await;
+    plane.plant_realm("other").await;
+    for realm_id in [support::REALM, "other"] {
+        let port = fronted_in(&plane, realm_id, None).await;
+        let mut ldap = dialled(&format!("ldap://127.0.0.1:{port}")).await;
+        let wrong = ldap
+            .simple_bind(&subject_dn(), "not-the-password")
+            .await
+            .expect("an answer");
+        assert_eq!(wrong.rc, 49, "{realm_id}: {wrong:?}");
+    }
+
+    let here = plane.named_failures(support::REALM).await;
+    let there = plane.named_failures("other").await;
+    assert_eq!(
+        here,
+        [(support::keyed_name(support::REALM, support::SUBJECT), 1)]
+    );
+    assert_eq!(there, [(support::keyed_name("other", support::SUBJECT), 1)]);
+    assert_ne!(
+        here[0].0, there[0].0,
+        "one name left one digest in two realms"
     );
 }
 

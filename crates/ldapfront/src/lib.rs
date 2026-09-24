@@ -278,7 +278,8 @@ async fn bind(
     // address turned away costs one read and no hash.
     let now = Utc::now();
     let from = peer.ip().to_string();
-    let Ok(knock) = throttle::Knock::new(provider, names, Some(&from), Some(&user_name)) else {
+    let Ok(knock) = throttle::Knock::new(provider, names, &realm, Some(&from), Some(&user_name))
+    else {
         return Err(refused());
     };
     match throttle::until(&transaction, &realm, &knock, now).await {

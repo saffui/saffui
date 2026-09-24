@@ -387,7 +387,7 @@ async fn a_typed_name_is_kept_under_a_key_the_database_does_not_hold() {
     let (status, body) = answered_from(&plane, Some(HERE), " Winter2026! ", "a-guess").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
 
-    let kept = plane.named_failures().await;
+    let kept = plane.named_failures(support::REALM).await;
     let plain = support::provider()
         .digest()
         .hash(HashAlg::Sha256, b"winter2026!")
@@ -397,7 +397,10 @@ async fn a_typed_name_is_kept_under_a_key_the_database_does_not_hold() {
         [(HEXLOWER.encode(&plain), 1)],
         "the name was kept as its plain digest"
     );
-    assert_eq!(kept, [(support::keyed_name("winter2026!"), 1)]);
+    assert_eq!(
+        kept,
+        [(support::keyed_name(support::REALM, "winter2026!"), 1)]
+    );
 }
 
 /// Failures older than the window no longer count, whatever their number.
@@ -515,9 +518,14 @@ async fn minted_at(plane: &Plane, typed: &str, at: chrono::DateTime<chrono::Utc>
     )
     .await
     .expect("the realm's keyring");
+    let realm = store::providers::realms::load(&transaction, support::REALM)
+        .await
+        .expect("the realms table")
+        .expect("a planted realm");
     let knock = auth::login::throttle::Knock::new(
         sealing.provider.as_ref(),
         &sealing.names,
+        &realm,
         None,
         Some(typed),
     )

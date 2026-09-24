@@ -365,21 +365,27 @@ pub fn sealing_carrying(
     server::api::config::Sealing::new(sender, texter, shared, envelope).expect("a sealing")
 }
 
-/// What a count keeps of a typed name, worked out here rather than by the
-/// server: a MAC under the key this suite's KEK expands to for names, under
-/// the label spelled out, so a key derived for any other purpose shows.
+/// What a count keeps of a name typed in `realm_id`, worked out here rather
+/// than by the server: a MAC under the key this suite's KEK expands to for
+/// names, over the tenant, the realm and the name, each led by its length.
+/// The label and the layout are spelled out, so any other shows.
 #[allow(dead_code, reason = "only the suites that count failures read it")]
-pub fn keyed_name(counted: &str) -> String {
+pub fn keyed_name(realm_id: &str, counted: &str) -> String {
     let provider = provider();
     let kek = SecretBox::new(Box::new(KEK.as_bytes().to_vec()));
     let key = provider
         .kdf()
         .hkdf(HashAlg::Sha256, &kek, None, b"saffui/typed-names/v1", 32)
         .expect("a key");
+    let mut keyed = Vec::new();
+    for field in [TENANT, realm_id, counted] {
+        keyed.extend_from_slice(&(field.len() as u32).to_be_bytes());
+        keyed.extend_from_slice(field.as_bytes());
+    }
     data_encoding::HEXLOWER.encode(
         &provider
             .hmac()
-            .hmac(HmacAlg::Hs256, &key, counted.as_bytes())
+            .hmac(HmacAlg::Hs256, &key, &keyed)
             .expect("a digest"),
     )
 }
@@ -1096,10 +1102,11 @@ impl Plane {
         transaction.commit().await.unwrap();
     }
 
-    /// What is counted under each typed name, whichever door counted it.
+    /// What is counted in `realm_id` under each typed name, whichever door
+    /// counted it.
     #[allow(dead_code, reason = "only the suites that count failures read it")]
-    pub async fn named_failures(&self) -> Vec<(String, i64)> {
-        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
+    pub async fn named_failures(&self, realm_id: &str) -> Vec<(String, i64)> {
+        let transaction = self.scoped(&TenantContext::new(TENANT, realm_id)).await;
         transaction
             .query(
                 "SELECT named, SUM(failures)::bigint FROM source_failures \

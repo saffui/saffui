@@ -67,12 +67,13 @@ pub struct Knock {
 }
 
 impl Knock {
-    /// An attempt from `address`, naming `typed`. Nothing is counted for an
-    /// attempt nobody can say the address of, and only the address is for one
-    /// that typed no name.
+    /// An attempt on `realm` from `address`, naming `typed`. Nothing is
+    /// counted for an attempt nobody can say the address of, and only the
+    /// address is for one that typed no name.
     pub fn new(
         provider: &dyn CryptoProvider,
         names: &NameKey,
+        realm: &RealmModel,
         address: Option<&str>,
         typed: Option<&str>,
     ) -> Result<Knock, Unweighed> {
@@ -82,7 +83,7 @@ impl Knock {
                 HEXLOWER.encode(
                     &provider
                         .hmac()
-                        .hmac(HmacAlg::Hs256, names.0.secret(), kept.as_bytes())
+                        .hmac(HmacAlg::Hs256, names.0.secret(), &scoped_name(realm, &kept))
                         .map_err(|_| Unweighed)?,
                 ),
             ),
@@ -235,9 +236,33 @@ fn counted_name(typed: &str) -> String {
         .collect()
 }
 
+/// What is keyed for a name: the tenant and the realm it was typed in, then
+/// the name, each led by its length. One name typed in two realms leaves two
+/// digests that nobody without the key can match.
+fn scoped_name(realm: &RealmModel, counted: &str) -> Vec<u8> {
+    let fields = [
+        realm.metadata.tenant.as_str(),
+        realm.realm_id.as_str(),
+        counted,
+    ];
+    let mut scoped = Vec::with_capacity(fields.iter().map(|field| 4 + field.len()).sum());
+    for field in fields {
+        scoped.extend_from_slice(&(field.len() as u32).to_be_bytes());
+        scoped.extend_from_slice(field.as_bytes());
+    }
+    scoped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crypto::provider::openssl::OpenSslProvider;
+    use crypto::provider::{CryptoConfig, HashAlg};
+    use models::auditable::AuditableModel;
+    use models::entities::realm::RealmCreateModel;
+    use std::sync::Arc;
+
+    const KEK: &str = "a deployment key encryption key";
 
     fn minute(named: &str, minute: i64, failures: i32) -> Counted {
         Counted {
@@ -339,38 +364,87 @@ mod tests {
         assert_eq!(counted_name("ÉLODIE"), "élodie");
     }
 
+    fn provider() -> Arc<OpenSslProvider> {
+        Arc::new(OpenSslProvider::new(&CryptoConfig::default()).unwrap())
+    }
+
+    fn realm(tenant: &str, realm_id: &str) -> RealmModel {
+        RealmCreateModel {
+            name: realm_id.into(),
+            display_name: realm_id.into(),
+            enabled: true,
+        }
+        .into_model(
+            realm_id.into(),
+            AuditableModel::from_creator(tenant.into(), "test".into()),
+        )
+    }
+
+    /// What a failure naming `typed` in `realm` keeps of the name.
+    fn kept(
+        provider: &OpenSslProvider,
+        names: &NameKey,
+        realm: &RealmModel,
+        typed: &str,
+    ) -> String {
+        Knock::new(provider, names, realm, Some("203.0.113.7"), Some(typed))
+            .unwrap()
+            .named
+            .unwrap()
+    }
+
     /// A name is kept under the deployment's key: not as the digest anybody
     /// could work out from a guess, alike for one KEK, apart for two.
     #[test]
     fn a_name_is_kept_under_the_deployments_key() {
-        use crypto::provider::openssl::OpenSslProvider;
-        use crypto::provider::{CryptoConfig, HashAlg};
-        use std::sync::Arc;
-
-        let provider = Arc::new(OpenSslProvider::new(&CryptoConfig::default()).unwrap());
+        let provider = provider();
         let derived =
             |kek: &str| NameKey::derive(&Envelope::new(provider.clone(), kek).unwrap()).unwrap();
-        let kept = |names: &NameKey, typed: &str| {
-            Knock::new(provider.as_ref(), names, Some("203.0.113.7"), Some(typed))
-                .unwrap()
-                .named
-                .unwrap()
-        };
-        let ours = derived("a deployment key encryption key");
+        let main = realm("acme", "main");
 
-        let named = kept(&ours, " Ada.Lovelace ");
+        let named = kept(&provider, &derived(KEK), &main, " Ada.Lovelace ");
         let plain = provider
             .digest()
             .hash(HashAlg::Sha256, b"ada.lovelace")
             .unwrap();
         assert_ne!(named, HEXLOWER.encode(&plain), "kept as its plain digest");
-        assert_eq!(
-            named,
-            kept(&derived("a deployment key encryption key"), "ada.lovelace")
-        );
+        assert_eq!(named, kept(&provider, &derived(KEK), &main, "ada.lovelace"));
         assert_ne!(
             named,
-            kept(&derived("another deployment's key"), "ada.lovelace")
+            kept(
+                &provider,
+                &derived("another deployment's key"),
+                &main,
+                "ada.lovelace"
+            )
+        );
+    }
+
+    /// One name typed in two realms, or in two tenants under one realm's
+    /// name, is kept under two digests, and so is one whose tenant and realm
+    /// split the same characters differently.
+    #[test]
+    fn one_name_typed_in_two_realms_is_kept_apart() {
+        let provider = provider();
+        let names = NameKey::derive(&Envelope::new(provider.clone(), KEK).unwrap()).unwrap();
+        let in_realm =
+            |tenant: &str, realm_id: &str| kept(&provider, &names, &realm(tenant, realm_id), "ada");
+
+        assert_eq!(in_realm("acme", "main"), in_realm("acme", "main"));
+        assert_ne!(
+            in_realm("acme", "main"),
+            in_realm("acme", "other"),
+            "two realms, one digest"
+        );
+        assert_ne!(
+            in_realm("acme", "main"),
+            in_realm("globex", "main"),
+            "two tenants, one digest"
+        );
+        assert_ne!(
+            in_realm("ab", "c"),
+            in_realm("a", "bc"),
+            "the tenant and the realm ran together"
         );
     }
 }

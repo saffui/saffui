@@ -82,8 +82,14 @@ pub async fn change_own_password(
     if person.user_storage == Some(UserStorage::Ldap) {
         return Err(Unchanged::NotHeldHere);
     }
-    let knock = throttle::Knock::new(provider, names, changing.from, Some(&person.user_name))
-        .map_err(|_| Unchanged::Backend)?;
+    let knock = throttle::Knock::new(
+        provider,
+        names,
+        changing.realm,
+        changing.from,
+        Some(&person.user_name),
+    )
+    .map_err(|_| Unchanged::Backend)?;
     if let Some(until) = throttle::until(transaction, changing.realm, &knock, changing.now)
         .await
         .map_err(|_| Unchanged::Backend)?

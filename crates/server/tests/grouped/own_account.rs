@@ -312,8 +312,8 @@ async fn a_current_password_guessed_from_one_address_is_turned_away() {
     assert_eq!(heard, expected);
     assert!(held_password_is(&plane, support::PASSWORD).await);
     assert_eq!(
-        plane.named_failures().await,
-        [(support::keyed_name(support::SUBJECT), 4)],
+        plane.named_failures(support::REALM).await,
+        [(support::keyed_name(support::REALM, support::SUBJECT), 4)],
         "the change counted the name under another key than the other doors"
     );
 }

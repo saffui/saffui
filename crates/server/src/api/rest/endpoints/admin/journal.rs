@@ -5,6 +5,7 @@ use commons::http::ApiError;
 use data_encoding::HEXLOWER;
 use models::paging::PagingParams;
 use serde::Deserialize;
+use services::admin::journal::{self, Unjournalled};
 use store::tenancy::Tenancy;
 
 use crate::error::refuse_unopened_work;
@@ -35,7 +36,7 @@ pub async fn list_entries(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let (entries, total) = store::audit::list_entries(
+    let (entries, total) = journal::read_entries(
         &transaction,
         window.first,
         window.max,
@@ -72,18 +73,9 @@ pub async fn verify_chain(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let verified = match store::audit::verify(&transaction, sealing.provider.digest()).await {
-        Ok(verified) => verified,
-        Err(store::error::StoreError::NoChain) => {
-            // Nothing has been written yet: an empty record is a whole one.
-            return Ok(HttpResponse::Ok().json(serde_json::json!({
-                "holds": true,
-                "entries": 0,
-                "broken_at": null,
-            })));
-        }
-        Err(_) => return Err(internal()),
-    };
+    let verified = journal::verify_chain(&transaction, sealing.provider.digest())
+        .await
+        .map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(serde_json::json!({
         "holds": verified.holds(),
         "entries": verified.entries,
@@ -120,15 +112,15 @@ pub async fn anchor_head(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let anchored = match store::audit::anchor(&transaction, &witness, &receipt).await {
+    let anchored = match journal::anchor_head(&transaction, &witness, &receipt).await {
         Ok(anchored) => anchored,
-        Err(store::error::StoreError::NoChain) => {
+        Err(Unjournalled::NoChain) => {
             return Err(ApiError::with_detail(
                 ErrorCode::ValidationError,
                 "nothing has been journalled yet".to_owned(),
             ));
         }
-        Err(_) => return Err(internal()),
+        Err(Unjournalled::Backend) => return Err(internal()),
     };
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::Created().json(serde_json::json!({
@@ -148,7 +140,7 @@ pub async fn list_anchors(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let held = store::audit::list_anchors(&transaction)
+    let held = journal::read_anchors(&transaction)
         .await
         .map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(serde_json::json!({

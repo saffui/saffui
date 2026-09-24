@@ -7,6 +7,7 @@ use actix_web::HttpMessage;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
 use chrono::Utc;
 use crypto::provider::CryptoProvider;
+use services::admin::journal;
 use std::sync::Arc;
 use store::tenancy::{Tenancy, TenantContext};
 
@@ -162,12 +163,12 @@ async fn record_or_warn(
 ) {
     let written = async {
         let first = tenancy.begin(context).await.ok()?;
-        if store::audit::append(&first, envelope).await.is_ok() {
+        if journal::append_entry(&first, envelope).await.is_ok() {
             return first.commit().await.ok();
         }
         let _ = first.rollback().await;
         let transaction = tenancy.begin(context).await.ok()?;
-        store::audit::start(
+        journal::start_chain(
             &transaction,
             provider.digest(),
             &context.tenant,
@@ -175,7 +176,7 @@ async fn record_or_warn(
         )
         .await
         .ok()?;
-        store::audit::append(&transaction, envelope).await.ok()?;
+        journal::append_entry(&transaction, envelope).await.ok()?;
         transaction.commit().await.ok()
     }
     .await;

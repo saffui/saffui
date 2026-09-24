@@ -42,6 +42,7 @@ pub fn sweep_expired_rows(tenancy: Tenancy, every: Option<Duration>) -> Option<J
                     logins_in_progress = swept.logins_in_progress,
                     one_time_tokens = swept.one_time_tokens,
                     sms_counters = swept.sms_counters,
+                    source_failures = swept.source_failures,
                     ussd_anchors = swept.ussd_anchors,
                     replayed = swept.replayed,
                     delivery_receipts = swept.delivery_receipts,

@@ -62,6 +62,56 @@ impl BruteForce {
     }
 }
 
+/// When failures from one address turn that address away.
+///
+/// On by default, unlike [`BruteForce`]: a count per address shuts out that
+/// address and nobody else, where a lock per person is one anybody can close.
+/// Two counts share the window: the address's own, which one password tried
+/// against many names fills, and the address with each name typed, which one
+/// account guessed at from one place fills long before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceThrottle {
+    pub throttled: bool,
+    /// Failures from one address, whatever name came with them.
+    pub max_failures: i32,
+    /// Failures from one address with one name.
+    pub max_name_failures: i32,
+    /// How far back a failure still counts.
+    pub window_seconds: i32,
+}
+
+impl Default for SourceThrottle {
+    fn default() -> Self {
+        SourceThrottle {
+            throttled: true,
+            max_failures: 100,
+            max_name_failures: 10,
+            window_seconds: 900,
+        }
+    }
+}
+
+impl SourceThrottle {
+    pub const MAX_FAILURES: std::ops::RangeInclusive<i32> = 1..=100_000;
+    pub const MAX_NAME_FAILURES: std::ops::RangeInclusive<i32> = 1..=10_000;
+    /// A minute is what one count covers, and a day is as far back as any
+    /// address is remembered.
+    pub const WINDOW_SECONDS: std::ops::RangeInclusive<i32> = 60..=86_400;
+
+    /// What is wrong with these values, in words, or nothing when the table
+    /// would take them.
+    pub fn refuse_out_of_bounds(&self) -> Option<&'static str> {
+        if !Self::MAX_FAILURES.contains(&self.max_failures) {
+            return Some("source_throttle.max_failures must be between 1 and 100000");
+        }
+        if !Self::MAX_NAME_FAILURES.contains(&self.max_name_failures) {
+            return Some("source_throttle.max_name_failures must be between 1 and 10000");
+        }
+        (!Self::WINDOW_SECONDS.contains(&self.window_seconds))
+            .then_some("source_throttle.window_seconds must be between 60 and 86400")
+    }
+}
+
 str_enum! {
     /// Whether a realm lets a client register itself, RFC 7591 §3.
     pub enum ClientRegistration {
@@ -400,6 +450,10 @@ pub struct RealmModel {
     pub client_registration: ClientRegistration,
     /// What this realm does about a password being guessed at.
     pub brute_force: BruteForce,
+    /// What this realm does about one address guessing. Defaulted, so a realm
+    /// exported before it existed still imports.
+    #[serde(default)]
+    pub source_throttle: SourceThrottle,
     /// What an open registration is bounded by, which a closed one never
     /// reaches.
     pub registration_bounds: RegistrationBounds,
@@ -532,6 +586,7 @@ impl RealmCreateModel {
             client_registration: ClientRegistration::Disabled,
             registration_bounds: RegistrationBounds::default(),
             brute_force: BruteForce::default(),
+            source_throttle: SourceThrottle::default(),
             offline_session_max_lifespan: 0,
             max_offline_grants: 0,
             require_pushed_authorization_requests: false,
@@ -670,6 +725,8 @@ pub struct RealmUpdateModel {
     pub client_registration: Option<ClientRegistration>,
     /// What this realm does about a password being guessed at.
     pub brute_force: Option<BruteForce>,
+    /// What this realm does about one address guessing.
+    pub source_throttle: Option<SourceThrottle>,
     /// What an open registration is bounded by.
     pub registration_bounds: Option<RegistrationBounds>,
     /// The oldest an offline grant may get. Zero is no bound.
@@ -708,6 +765,9 @@ impl RealmUpdateModel {
         }
         if let Some(brute_force) = self.brute_force {
             realm.brute_force = brute_force;
+        }
+        if let Some(source_throttle) = self.source_throttle {
+            realm.source_throttle = source_throttle;
         }
         if let Some(registration_bounds) = self.registration_bounds {
             realm.registration_bounds = registration_bounds;

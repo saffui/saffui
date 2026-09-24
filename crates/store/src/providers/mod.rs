@@ -39,6 +39,7 @@ pub mod saml_brokering;
 pub mod sessions;
 pub mod sms;
 pub mod sod;
+pub mod source_failures;
 pub mod tenants;
 pub mod users;
 pub mod ussd;

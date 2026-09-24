@@ -8,6 +8,8 @@ use super::support;
 use super::support::Plane;
 use ldap3::exop::{WhoAmI, WhoAmIResp};
 use ldap3::{Ldap, LdapConnAsync, Scope, SearchEntry};
+use models::entities::realm::SourceThrottle;
+use store::tenancy::TenantContext;
 
 const BASE: &str = "dc=id,dc=example";
 const PEOPLE: &str = "ou=people,dc=id,dc=example";
@@ -331,6 +333,106 @@ async fn a_hammered_password_locks_this_door_too() {
         .await
         .expect("an answer");
     assert_eq!(locked.rc, 49, "the lockout did not hold: {locked:?}");
+}
+
+fn turning_away(max_failures: i32, max_name_failures: i32) -> SourceThrottle {
+    SourceThrottle {
+        throttled: true,
+        max_failures,
+        max_name_failures,
+        window_seconds: 900,
+    }
+}
+
+/// One password tried against many names from one address is counted here as
+/// at the sign-in page, and the address is told apart from a wrong password:
+/// what is turned away is where the binds come from, which names no account.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_address_spraying_names_is_turned_away_at_this_door_too() {
+    let plane = Plane::with_actions(&[]).await;
+    plane.throttle_sources(turning_away(3, 10)).await;
+    let port = fronted(&plane, None).await;
+    let mut ldap = dialled(&format!("ldap://127.0.0.1:{port}")).await;
+
+    for name in ["nobody-1", "nobody-2", "nobody-3"] {
+        let wrong = ldap
+            .simple_bind(&format!("uid={name},{PEOPLE}"), "Winter2026!")
+            .await
+            .expect("an answer");
+        assert_eq!(wrong.rc, 49, "{wrong:?}");
+    }
+    let held = ldap
+        .simple_bind(&subject_dn(), support::PASSWORD)
+        .await
+        .expect("an answer");
+    assert_eq!(held.rc, 51, "the address was not turned away: {held:?}");
+}
+
+/// The doors share one count, so an attacker cannot pick the entrance that
+/// does not keep one: failures another door counted for this name from this
+/// address hold the bind.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_count_made_at_another_door_holds_this_one() {
+    let plane = Plane::with_actions(&[]).await;
+    plane.throttle_sources(turning_away(100, 2)).await;
+    let transaction = plane
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
+        .await;
+    let realm = store::providers::realms::load(&transaction, support::REALM)
+        .await
+        .expect("the realms table")
+        .expect("a planted realm");
+    let knock = auth::login::throttle::Knock::new(
+        &support::provider(),
+        Some("127.0.0.1"),
+        Some(support::SUBJECT),
+    )
+    .expect("a knock");
+    for _ in 0..2 {
+        auth::login::throttle::count(&transaction, &realm, &knock, chrono::Utc::now())
+            .await
+            .expect("counted");
+    }
+    transaction.commit().await.expect("kept");
+
+    let port = fronted(&plane, None).await;
+    let mut ldap = dialled(&format!("ldap://127.0.0.1:{port}")).await;
+    let held = ldap
+        .simple_bind(&subject_dn(), support::PASSWORD)
+        .await
+        .expect("an answer");
+    assert_eq!(held.rc, 51, "another door's count was not read: {held:?}");
+}
+
+/// A bind the person's lock refuses counts against the address like any
+/// other, so a held name and one nobody holds are turned away at the same
+/// count: a count that skipped the lock would say which names are held.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_locked_name_counts_like_one_nobody_holds() {
+    let plane = Plane::with_actions(&[]).await;
+    plane.count_logins(2).await;
+    plane.throttle_sources(turning_away(100, 4)).await;
+    let port = fronted(&plane, None).await;
+    let mut ldap = dialled(&format!("ldap://127.0.0.1:{port}")).await;
+
+    let nobody = format!("uid=nobody,{PEOPLE}");
+    for dn in [subject_dn(), nobody] {
+        for _ in 0..4 {
+            let wrong = ldap
+                .simple_bind(&dn, "not-the-password")
+                .await
+                .expect("an answer");
+            assert_eq!(wrong.rc, 49, "{dn}: {wrong:?}");
+        }
+        let held = ldap
+            .simple_bind(&dn, "not-the-password")
+            .await
+            .expect("an answer");
+        assert_eq!(held.rc, 51, "{dn} was not held at the same count: {held:?}");
+    }
 }
 
 #[tokio::test]

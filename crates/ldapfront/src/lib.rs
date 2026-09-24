@@ -1,4 +1,4 @@
-use auth::login::lockout;
+use auth::login::{lockout, throttle};
 use chrono::Utc;
 use crypto::password::migration::burn_verification_time;
 use crypto::password::{StoredPassword, verify_and_plan};
@@ -231,7 +231,7 @@ async fn opened(tenancy: &Tenancy, front: &Front) -> Option<UnitOfWork> {
 }
 
 /// A simple bind, against the same credential the HTTP door checks, behind
-/// the same count.
+/// the same counts.
 ///
 /// Anonymous binds are refused: a directory that answers strangers says
 /// which names exist. People the realm only mirrors are refused too, with
@@ -240,7 +240,8 @@ async fn opened(tenancy: &Tenancy, front: &Front) -> Option<UnitOfWork> {
 /// dance. Every caller-facing refusal is the same invalid-credentials,
 /// because who exists is exactly what a bind must not leak, and every
 /// refusal that never reached a verification burns the time one would have
-/// taken, so the clock does not answer what the code will not.
+/// taken, so the clock does not answer what the code will not. The one
+/// refusal said apart is an address turned away, which names no account.
 async fn bind(
     tenancy: &Tenancy,
     provider: &dyn CryptoProvider,
@@ -250,10 +251,6 @@ async fn bind(
 ) -> Result<String, (LdapResultCode, &'static str)> {
     let refused = || (LdapResultCode::InvalidCredentials, "the bind did not hold");
     let offered = SecretBox::new(Box::new(asked.pw.clone()));
-    let burned = |kept: (LdapResultCode, &'static str)| {
-        burn_verification_time(provider, &offered, Argon2Params::default());
-        kept
-    };
     if asked.dn.is_empty() || asked.pw.is_empty() {
         return Err((
             LdapResultCode::UnwillingToPerform,
@@ -261,7 +258,8 @@ async fn bind(
         ));
     }
     let Some(user_name) = front.named_by(&asked.dn) else {
-        return Err(burned(refused()));
+        burn_verification_time(provider, &offered, Argon2Params::default());
+        return Err(refused());
     };
 
     let Some(transaction) = opened(tenancy, front).await else {
@@ -271,66 +269,130 @@ async fn bind(
         return Err(refused());
     };
 
-    let Some(person) = users::load_by_name(&transaction, &user_name)
-        .await
-        .map_err(|_| refused())?
-        .filter(|held| held.enabled)
-    else {
-        return Err(burned(refused()));
-    };
-    if person.user_storage == Some(models::entities::user::UserStorage::Ldap) {
-        tracing::warn!(
-            user = %user_name,
-            "a mirrored person tried the ldap front; their password lives upstream"
-        );
-        return Err(burned(refused()));
-    }
-
-    // Before anything is verified, and without counting: an answer that is
-    // never looked at cannot be wrong, and counting here would let anybody
-    // hold somebody else's account shut indefinitely.
+    // Weighed before the name is looked up or any password verified, so an
+    // address turned away costs one read and no hash.
     let now = Utc::now();
-    match lockout::until(&transaction, &realm, &person.user_id, now).await {
+    let from = peer.ip().to_string();
+    let Ok(knock) = throttle::Knock::new(provider, Some(&from), Some(&user_name)) else {
+        return Err(refused());
+    };
+    match throttle::until(&transaction, &realm, &knock, now).await {
         Ok(None) => {}
-        Ok(Some(_)) => return Err(burned(refused())),
+        Ok(Some(_)) => {
+            return Err((
+                LdapResultCode::Busy,
+                "too many failed binds from this address; try again later",
+            ));
+        }
         Err(_) => return Err(refused()),
     }
 
-    let held =
-        credentials::load_for_user_of_type(&transaction, &person.user_id, CredentialType::Password)
-            .await
-            .map_err(|_| refused())?;
-    let Some(credential) = held.into_iter().next() else {
-        return Err(burned(refused()));
-    };
-    let Ok(stored) = (StoredPassword::Argon2id {
-        encoded: credential.secret.expose().to_owned(),
-    })
-    .to_legacy_hash() else {
-        return Err(burned(refused()));
-    };
-    let from = peer.ip().to_string();
-    match verify_and_plan(provider, &offered, &stored) {
-        Ok(plan) if plan.valid => {
-            // What was counted against them was noise, and the forgetting has
-            // to outlive this conversation, so the transaction commits.
-            if lockout::clear(&transaction, &person.user_id).await.is_err()
-                || transaction.commit().await.is_err()
-            {
-                return Err(refused());
-            }
-            Ok(person.user_name)
-        }
-        _ => {
-            // A wrong password on this door counts exactly as it counts on
-            // the HTTP door, and a refusal must not roll its own count back.
-            if lockout::count(&transaction, &realm, &person.user_id, Some(&from), now)
+    match verified(
+        &transaction,
+        provider,
+        &realm,
+        &user_name,
+        &offered,
+        &from,
+        now,
+    )
+    .await
+    {
+        // What was counted against them was noise, and the forgetting has to
+        // outlive this conversation, so the transaction commits.
+        Ok(bound) => match transaction.commit().await {
+            Ok(()) => Ok(bound),
+            Err(_) => Err(refused()),
+        },
+        // Counted against the address whoever the name belongs to, and
+        // committed though the bind is refused: a refusal that rolled its
+        // counts back would cost a guess nothing.
+        Err(Unbound::Refused) => {
+            if throttle::count(&transaction, &realm, &knock, now)
                 .await
                 .is_ok()
             {
                 let _ = transaction.commit().await;
             }
             Err(refused())
+        }
+        Err(Unbound::Unreadable) => Err(refused()),
+    }
+}
+
+/// Why a bind that reached the person was not one.
+enum Unbound {
+    /// Refused, and counted: a wrong password, or nobody to hold one.
+    Refused,
+    /// The store could not say, which is nobody's guess to count.
+    Unreadable,
+}
+
+/// The name this bind proves, verified against what the realm holds.
+///
+/// A wrong password is counted against the person as on the HTTP door. The
+/// lock is asked before anything is verified, and without counting: counting
+/// there would let anybody hold somebody else's account shut indefinitely.
+async fn verified(
+    transaction: &UnitOfWork,
+    provider: &dyn CryptoProvider,
+    realm: &models::entities::realm::RealmModel,
+    user_name: &str,
+    offered: &SecretBox<String>,
+    from: &str,
+    now: chrono::DateTime<Utc>,
+) -> Result<String, Unbound> {
+    let burned = || {
+        burn_verification_time(provider, offered, Argon2Params::default());
+        Unbound::Refused
+    };
+    let Some(person) = users::load_by_name(transaction, user_name)
+        .await
+        .map_err(|_| Unbound::Unreadable)?
+        .filter(|held| held.enabled)
+    else {
+        return Err(burned());
+    };
+    if person.user_storage == Some(models::entities::user::UserStorage::Ldap) {
+        tracing::warn!(
+            user = %user_name,
+            "a mirrored person tried the ldap front; their password lives upstream"
+        );
+        return Err(burned());
+    }
+    match lockout::until(transaction, realm, &person.user_id, now).await {
+        Ok(None) => {}
+        Ok(Some(_)) => return Err(burned()),
+        Err(_) => return Err(Unbound::Unreadable),
+    }
+
+    let held =
+        credentials::load_for_user_of_type(transaction, &person.user_id, CredentialType::Password)
+            .await
+            .map_err(|_| Unbound::Unreadable)?;
+    let Some(credential) = held.into_iter().next() else {
+        return Err(burned());
+    };
+    let Ok(stored) = (StoredPassword::Argon2id {
+        encoded: credential.secret.expose().to_owned(),
+    })
+    .to_legacy_hash() else {
+        return Err(burned());
+    };
+    match verify_and_plan(provider, offered, &stored) {
+        Ok(plan) if plan.valid => {
+            lockout::clear(transaction, &person.user_id)
+                .await
+                .map_err(|_| Unbound::Unreadable)?;
+            Ok(person.user_name)
+        }
+        // A wrong password on this door counts exactly as it counts on the
+        // HTTP door.
+        _ => {
+            lockout::count(transaction, realm, &person.user_id, Some(from), now)
+                .await
+                .map_err(|_| Unbound::Unreadable)?;
+            Err(Unbound::Refused)
         }
     }
 }

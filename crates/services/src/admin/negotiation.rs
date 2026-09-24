@@ -2,7 +2,7 @@
 
 use models::auditable::AuditableModel;
 use models::entities::brokering::{RealmSpnegoModel, RealmSpnegoMutationModel};
-use store::providers::brokering;
+use store::providers::federation::brokering;
 use store::tenancy::UnitOfWork;
 
 use crate::federation::negotiation::{SpnegoSettings, check_bag};

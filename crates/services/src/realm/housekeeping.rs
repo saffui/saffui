@@ -1,8 +1,9 @@
 use chrono::{DateTime, Utc};
 use store::providers::events::{caep_queue, deliveries, notices, outbox};
+use store::providers::federation::{brokering, saml_brokering};
 use store::providers::{
-    backchannel, brokering, devices, dpop, form_post, login, oidc, one_time_tokens, page_previews,
-    pushed, replay, saml_brokering, sessions, sms, source_failures, ussd,
+    backchannel, devices, dpop, form_post, login, oidc, one_time_tokens, page_previews, pushed,
+    replay, sessions, sms, source_failures, ussd,
 };
 use store::tenancy::UnitOfWork;
 

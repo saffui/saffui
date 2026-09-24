@@ -525,7 +525,7 @@ pub async fn deliver_outbox(
         failed: 0,
         dead: 0,
     };
-    let rows = store::providers::brokering::list_providers(transaction)
+    let rows = store::providers::federation::brokering::list_providers(transaction)
         .await
         .map_err(|_| ())?;
     let connectors: Vec<_> = rows
@@ -1036,7 +1036,7 @@ pub async fn prove_delivery(
     alias: &str,
     egress: Egress,
 ) -> Result<Proof, Unprovable> {
-    let row = store::providers::brokering::provider_by_alias(transaction, alias)
+    let row = store::providers::federation::brokering::provider_by_alias(transaction, alias)
         .await
         .map_err(|_| Unprovable::Backend)?
         .ok_or(Unprovable::NoSuchProvider)?;

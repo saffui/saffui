@@ -5,7 +5,7 @@ use models::auditable::AuditableModel;
 use models::entities::brokering::{
     ClaimSourceKind, UserClaimSourceModel, UserClaimSourceMutationModel,
 };
-use store::providers::brokering::{self, CONCEALED_TOKEN, TokenToSeal};
+use store::providers::federation::brokering::{self, CONCEALED_TOKEN, TokenToSeal};
 use store::providers::users;
 use store::tenancy::UnitOfWork;
 

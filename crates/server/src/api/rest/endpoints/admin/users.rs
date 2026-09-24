@@ -88,7 +88,7 @@ pub async fn get(
     // The single read carries what the listing keeps to itself: the whole
     // attribute bag, and which identity providers this account is bound to.
     let attributes = found.attributes.clone();
-    let links = store::providers::brokering::links_of(&transaction, &found.user_id)
+    let links = store::providers::federation::brokering::links_of(&transaction, &found.user_id)
         .await
         .map_err(|_| internal())?;
     let mut answer = serde_json::to_value(UserBrief::from(found)).map_err(|_| internal())?;

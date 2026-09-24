@@ -49,7 +49,8 @@ pub async fn poll(
         Err(StoreError::Unavailable) => return answer_unavailable(),
         Err(_) => return refused(),
     };
-    let Ok(rows) = store::providers::brokering::list_providers(&transaction).await else {
+    let Ok(rows) = store::providers::federation::brokering::list_providers(&transaction).await
+    else {
         return refused();
     };
     // The collector is whichever collecting row's sealed bearer matches what

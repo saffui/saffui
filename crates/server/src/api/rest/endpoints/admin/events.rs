@@ -358,7 +358,7 @@ pub async fn redeliver_to_connector(
         .await
         .map_err(refuse_unopened_work)?;
 
-    let row = store::providers::brokering::provider_by_alias(&transaction, &alias)
+    let row = store::providers::federation::brokering::provider_by_alias(&transaction, &alias)
         .await
         .map_err(|_| internal())?
         .ok_or_else(|| ApiError::new(ErrorCode::IdentityProviderNotFound))?;

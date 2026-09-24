@@ -327,7 +327,7 @@ async fn doors_of_realm(
     if offers_recovery_codes(&transaction, held.browser_flow.as_deref()).await {
         doors.push("recovery-code");
     }
-    let idps = match store::providers::brokering::list_providers(&transaction).await {
+    let idps = match store::providers::federation::brokering::list_providers(&transaction).await {
         Ok(rows) => federated_doors(&rows),
         Err(_) => String::new(),
     };

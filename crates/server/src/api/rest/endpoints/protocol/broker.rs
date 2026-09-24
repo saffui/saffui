@@ -57,7 +57,7 @@ pub async fn begin(
     };
 
     let Ok(Some(provider)) =
-        store::providers::brokering::provider_by_alias(&transaction, &alias).await
+        store::providers::federation::brokering::provider_by_alias(&transaction, &alias).await
     else {
         return told(StatusCode::NOT_FOUND, "no-such-provider");
     };
@@ -94,7 +94,7 @@ pub async fn begin(
     ) else {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };
-    if store::providers::brokering::open_state(&transaction, &departure.state)
+    if store::providers::federation::brokering::open_state(&transaction, &departure.state)
         .await
         .is_err()
         || transaction.commit().await.is_err()
@@ -155,9 +155,12 @@ async fn leave_for_saml(
     ) else {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };
-    if store::providers::saml_brokering::open_login_request(&transaction, &departure.request)
-        .await
-        .is_err()
+    if store::providers::federation::saml_brokering::open_login_request(
+        &transaction,
+        &departure.request,
+    )
+    .await
+    .is_err()
         || transaction.commit().await.is_err()
     {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
@@ -218,7 +221,7 @@ pub async fn conclude(
     };
 
     let Ok(Some(provider)) =
-        store::providers::brokering::provider_by_alias(&transaction, &alias).await
+        store::providers::federation::brokering::provider_by_alias(&transaction, &alias).await
     else {
         return refused();
     };
@@ -704,7 +707,7 @@ pub async fn dismiss(
         Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
     };
     let Ok(Some(provider)) =
-        store::providers::brokering::provider_by_alias(&transaction, &alias).await
+        store::providers::federation::brokering::provider_by_alias(&transaction, &alias).await
     else {
         tracing::warn!(alias, "an upstream logout named a provider nobody holds");
         return refused();

@@ -493,7 +493,7 @@ pub async fn take_answer(
     let message = decode_posted_message(posted).ok_or(Untaken::Unreadable)?;
     let document = read_message(&message, Limits::MESSAGE).map_err(|_| Untaken::Unreadable)?;
     let request_id = read_answered_request_id(&document).ok_or(Untaken::NoOpenRequest)?;
-    let request = store::providers::saml_brokering::consume_login_request(
+    let request = store::providers::federation::saml_brokering::consume_login_request(
         transaction,
         request_id,
         alias,
@@ -562,7 +562,7 @@ pub async fn record_named_session(
     accepted: &Accepted,
 ) -> Result<(), Unbrokered> {
     let named = &accepted.name_id;
-    store::providers::saml_brokering::record_broker_session(
+    store::providers::federation::saml_brokering::record_broker_session(
         transaction,
         &SamlBrokerSession {
             session_id: session_id.to_owned(),
@@ -805,7 +805,7 @@ async fn heed_logout_request(
     if !fresh {
         return Err(Unheeded::Replayed);
     }
-    let sessions = store::providers::saml_brokering::find_named_sessions(
+    let sessions = store::providers::federation::saml_brokering::find_named_sessions(
         transaction,
         alias,
         &requested.name_id.value,
@@ -860,7 +860,7 @@ async fn take_logout_answer(
     };
     let document = read_message(xml, Limits::MESSAGE).map_err(|_| Unheeded::Unreadable)?;
     let request_id = read_answered_logout_request_id(&document).ok_or(Unheeded::NoOpenRequest)?;
-    let request = store::providers::saml_brokering::consume_logout_request(
+    let request = store::providers::federation::saml_brokering::consume_logout_request(
         transaction,
         request_id,
         alias,
@@ -953,16 +953,18 @@ pub async fn open_provider_logout(
     now: DateTime<Utc>,
 ) -> Result<Option<String>, Unbrokered> {
     let Some(named) =
-        store::providers::saml_brokering::read_broker_session(transaction, session_id)
+        store::providers::federation::saml_brokering::read_broker_session(transaction, session_id)
             .await
             .map_err(|_| Unbrokered::Backend)?
     else {
         return Ok(None);
     };
-    let Some(opener) =
-        store::providers::brokering::provider_by_alias(transaction, &named.provider_alias)
-            .await
-            .map_err(|_| Unbrokered::Backend)?
+    let Some(opener) = store::providers::federation::brokering::provider_by_alias(
+        transaction,
+        &named.provider_alias,
+    )
+    .await
+    .map_err(|_| Unbrokered::Backend)?
     else {
         return Ok(None);
     };
@@ -986,9 +988,12 @@ pub async fn open_provider_logout(
     else {
         return Ok(None);
     };
-    store::providers::saml_brokering::open_logout_request(transaction, &departure.request)
-        .await
-        .map_err(|_| Unbrokered::Backend)?;
+    store::providers::federation::saml_brokering::open_logout_request(
+        transaction,
+        &departure.request,
+    )
+    .await
+    .map_err(|_| Unbrokered::Backend)?;
     Ok(Some(departure.location))
 }
 

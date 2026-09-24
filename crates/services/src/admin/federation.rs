@@ -4,7 +4,7 @@ use models::auditable::AuditableModel;
 use models::entities::attributes::AttributeValue;
 use models::entities::brokering::{UserFederationModel, UserFederationMutationModel};
 use store::keyring::RealmKeyring;
-use store::providers::brokering;
+use store::providers::federation::brokering;
 use store::tenancy::UnitOfWork;
 
 use crate::federation::ldap::{

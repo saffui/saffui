@@ -270,7 +270,8 @@ pub async fn sync_every_realm(
             continue;
         }
 
-        let Ok(rows) = store::providers::brokering::federations(&transaction).await else {
+        let Ok(rows) = store::providers::federation::brokering::federations(&transaction).await
+        else {
             continue;
         };
         // All-or-nothing per realm still: every directory's pass rides one

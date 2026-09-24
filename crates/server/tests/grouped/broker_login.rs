@@ -297,11 +297,14 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        let linked =
-            store::providers::brokering::linked_user(&transaction, ALIAS, support::SUBJECT)
-                .await
-                .unwrap()
-                .expect("a link was written");
+        let linked = store::providers::federation::brokering::linked_user(
+            &transaction,
+            ALIAS,
+            support::SUBJECT,
+        )
+        .await
+        .unwrap()
+        .expect("a link was written");
         let person = store::providers::users::load(&transaction, &linked)
             .await
             .unwrap()
@@ -380,7 +383,7 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::brokering::linked_user(&transaction, ALIAS, support::SUBJECT)
+        store::providers::federation::brokering::linked_user(&transaction, ALIAS, support::SUBJECT)
             .await
             .unwrap()
             .expect("the link still stands")
@@ -496,9 +499,10 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        let sources = store::providers::brokering::claim_sources_of(&transaction, &linked)
-            .await
-            .unwrap();
+        let sources =
+            store::providers::federation::brokering::claim_sources_of(&transaction, &linked)
+                .await
+                .unwrap();
         assert_eq!(sources.len(), 1, "one source per provider per person");
         let kept = &sources[0];
         assert_eq!(kept.source_id, format!("idp-{ALIAS}-{linked}"));
@@ -1072,11 +1076,14 @@ async fn a_login_crosses_a_plain_oauth2_upstream_and_comes_back_admitted() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        let linked =
-            store::providers::brokering::linked_user(&transaction, alias, support::SUBJECT)
-                .await
-                .expect("the link table")
-                .expect("the arrival was linked under its subject");
+        let linked = store::providers::federation::brokering::linked_user(
+            &transaction,
+            alias,
+            support::SUBJECT,
+        )
+        .await
+        .expect("the link table")
+        .expect("the arrival was linked under its subject");
         assert_ne!(
             linked,
             support::SUBJECT,
@@ -1125,11 +1132,14 @@ async fn a_plain_oauth2_upstream_links_only_by_an_address_its_list_verifies() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        let linked =
-            store::providers::brokering::linked_user(&transaction, alias, support::SUBJECT)
-                .await
-                .expect("the link table")
-                .expect("the arrival was linked");
+        let linked = store::providers::federation::brokering::linked_user(
+            &transaction,
+            alias,
+            support::SUBJECT,
+        )
+        .await
+        .expect("the link table")
+        .expect("the arrival was linked");
         assert_eq!(
             linked == support::SUBJECT,
             verified,
@@ -1262,14 +1272,18 @@ async fn a_registration_on_an_unproven_address_is_not_handed_an_arrival_vouching
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        let linked =
-            store::providers::brokering::linked_user(&transaction, "vouching", support::SUBJECT)
+        let linked = store::providers::federation::brokering::linked_user(
+            &transaction,
+            "vouching",
+            support::SUBJECT,
+        )
+        .await
+        .expect("the link table");
+        assert_eq!(linked, None, "the arrival was linked");
+        let bound =
+            store::providers::federation::brokering::links_of(&transaction, &registered.user_id)
                 .await
                 .expect("the link table");
-        assert_eq!(linked, None, "the arrival was linked");
-        let bound = store::providers::brokering::links_of(&transaction, &registered.user_id)
-            .await
-            .expect("the link table");
         assert!(
             bound.is_empty(),
             "the unproven account was bound: {bound:?}"
@@ -1309,10 +1323,13 @@ async fn a_registration_on_an_unproven_address_is_not_handed_an_arrival_vouching
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    let linked =
-        store::providers::brokering::linked_user(&transaction, "vouching", support::SUBJECT)
-            .await
-            .expect("the link table");
+    let linked = store::providers::federation::brokering::linked_user(
+        &transaction,
+        "vouching",
+        support::SUBJECT,
+    )
+    .await
+    .expect("the link table");
     assert_eq!(linked, Some(registered.user_id));
 }
 
@@ -1351,11 +1368,14 @@ async fn an_arrival_gets_an_account_of_its_own_where_accounts_may_share_an_addre
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    let linked =
-        store::providers::brokering::linked_user(&transaction, "vouching", support::SUBJECT)
-            .await
-            .expect("the link table")
-            .expect("the arrival was linked");
+    let linked = store::providers::federation::brokering::linked_user(
+        &transaction,
+        "vouching",
+        support::SUBJECT,
+    )
+    .await
+    .expect("the link table")
+    .expect("the arrival was linked");
     assert_ne!(
         linked, registered.user_id,
         "the unproven account received the arrival"
@@ -1368,9 +1388,10 @@ async fn an_arrival_gets_an_account_of_its_own_where_accounts_may_share_an_addre
         (own.email.as_str(), own.email_verified),
         (VOUCHED, Some(true))
     );
-    let bound = store::providers::brokering::links_of(&transaction, &registered.user_id)
-        .await
-        .expect("the link table");
+    let bound =
+        store::providers::federation::brokering::links_of(&transaction, &registered.user_id)
+            .await
+            .expect("the link table");
     assert!(
         bound.is_empty(),
         "the unproven account was bound: {bound:?}"
@@ -1980,16 +2001,17 @@ async fn a_saml_answer_admits_the_login_that_left_for_it() {
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     assert!(
-        store::providers::brokering::linked_user(&transaction, "corp", "AAdzZWNyZXQx")
+        store::providers::federation::brokering::linked_user(&transaction, "corp", "AAdzZWNyZXQx")
             .await
             .expect("a read")
             .is_some(),
         "the persistent name was not linked"
     );
-    let named = store::providers::saml_brokering::read_broker_session(&transaction, &session)
-        .await
-        .expect("a read")
-        .expect("what the provider named the login by");
+    let named =
+        store::providers::federation::saml_brokering::read_broker_session(&transaction, &session)
+            .await
+            .expect("a read")
+            .expect("what the provider named the login by");
     assert_eq!(
         (
             named.provider_alias.as_str(),
@@ -2093,7 +2115,7 @@ async fn read_mapped_person(
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    let user_id = store::providers::brokering::linked_user(&transaction, alias, name)
+    let user_id = store::providers::federation::brokering::linked_user(&transaction, alias, name)
         .await
         .expect("a read")
         .expect("a linked person");
@@ -2303,9 +2325,14 @@ async fn read_standing_logins(plane: &Plane, alias: &str, name: &str) -> Vec<Str
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    store::providers::saml_brokering::find_named_sessions(&transaction, alias, name, &[])
-        .await
-        .expect("a read")
+    store::providers::federation::saml_brokering::find_named_sessions(
+        &transaction,
+        alias,
+        name,
+        &[],
+    )
+    .await
+    .expect("a read")
 }
 
 /// A SAML provider's logout request ends the logins it names and is answered where

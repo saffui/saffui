@@ -509,7 +509,7 @@ async fn drawn_subject_bundle(
             })
         })
         .collect::<Vec<_>>();
-    let identities = store::providers::brokering::identities_of(transaction, user_id)
+    let identities = store::providers::federation::brokering::identities_of(transaction, user_id)
         .await
         .map_err(|_| Unactionable::Backend)?
         .into_iter()

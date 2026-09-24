@@ -78,7 +78,7 @@ async fn negotiating(plane: &Plane, realm: &str) {
             .await
             .unwrap();
     }
-    store::providers::brokering::keep_spnego(
+    store::providers::federation::brokering::keep_spnego(
         &transaction,
         &models::entities::brokering::RealmSpnegoModel {
             realm_id: REALM.into(),

@@ -279,7 +279,7 @@ async fn a_provider_is_kept_whole_and_its_secret_is_kept_dark() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::brokering::link(
+        store::providers::federation::brokering::link(
             &transaction,
             &FederatedIdentityModel {
                 realm_id: REALM.into(),

@@ -583,7 +583,7 @@ async fn a_provider_linked_to_an_existing_account_is_told() {
                 "root".to_owned(),
             ),
         };
-        store::providers::brokering::create_provider(&transaction, &provider)
+        store::providers::federation::brokering::create_provider(&transaction, &provider)
             .await
             .expect("a provider");
         for (upstream, email) in [

@@ -6,7 +6,8 @@ use models::entities::attributes::{AttributeValue, AttributesMap};
 use models::entities::authz::IdentityProviderModel;
 use models::entities::brokering::{BrokerLoginState, FederatedIdentityModel, IdpMapperModel};
 use serde_json::{Map, Value};
-use store::providers::{brokering, users};
+use store::providers::federation::brokering;
+use store::providers::users;
 use store::tenancy::UnitOfWork;
 
 use crate::oidc::mappers::{MULTIVALUED, config_bool};

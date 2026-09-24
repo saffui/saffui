@@ -3,7 +3,8 @@ mod support;
 use chrono::{DateTime, Duration, Utc};
 use models::entities::brokering::{SamlBrokerSession, SamlLoginRequest, SamlLogoutRequest};
 use models::sessions::records::{UserSessionModel, UserSessionState};
-use store::providers::{saml_brokering, sessions};
+use store::providers::federation::saml_brokering;
+use store::providers::sessions;
 use store::tenancy::TenantContext;
 use support::Fixture;
 

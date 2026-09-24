@@ -88,7 +88,7 @@ pub async fn get(
     // The single read carries what the listing keeps to itself: the whole
     // attribute bag, and which identity providers this account is bound to.
     let attributes = found.attributes.clone();
-    let links = store::providers::federation::brokering::links_of(&transaction, &found.user_id)
+    let links = people::linked_providers(&transaction, &found.user_id)
         .await
         .map_err(|_| internal())?;
     let mut answer = serde_json::to_value(UserBrief::from(found)).map_err(|_| internal())?;
@@ -242,14 +242,9 @@ pub async fn read_password_history(
         .await
         .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
-    let mut held = store::providers::directory::credentials::load_for_user_of_type(
-        &transaction,
-        &user_id,
-        models::entities::credentials::CredentialType::PasswordHistory,
-    )
-    .await
-    .map_err(|_| internal())?;
-    held.sort_by_key(|row| std::cmp::Reverse(row.metadata.created_at));
+    let held = people::password_history(&transaction, &user_id)
+        .await
+        .map_err(|_| internal())?;
     let shown: Vec<_> = held
         .into_iter()
         .map(|row| {
@@ -393,7 +388,7 @@ pub async fn messages(
         .await
         .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
-    let held = store::providers::events::deliveries::of_user(&transaction, &user_id, 50)
+    let held = people::deliveries_of(&transaction, &user_id, 50)
         .await
         .map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(serde_json::json!({ "deliveries": held })))
@@ -411,7 +406,7 @@ pub async fn consents(
         .await
         .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
-    let held = store::providers::directory::consents::of_user(&transaction, &user_id)
+    let held = people::consents_of(&transaction, &user_id)
         .await
         .map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(serde_json::json!({
@@ -441,12 +436,12 @@ pub async fn withdraw_consent(
         .await
         .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
-    if !store::providers::directory::consents::withdraw(&transaction, &user_id, &client_id)
+    people::withdraw_consent(&transaction, &user_id, &client_id)
         .await
-        .map_err(|_| internal())?
-    {
-        return Err(ApiError::new(ErrorCode::UserNotFound));
-    }
+        .map_err(|why| match why {
+            Uncreatable::NotFound => ApiError::new(ErrorCode::UserNotFound),
+            _ => internal(),
+        })?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }
@@ -464,7 +459,7 @@ pub async fn effective_roles(
         .await
         .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
-    let held = store::providers::directory::roles::effective_roles(&transaction, &user_id)
+    let held = people::effective_roles_of(&transaction, &user_id)
         .await
         .map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(serde_json::json!({
@@ -496,7 +491,7 @@ pub async fn member_groups(
     let mut groups = Vec::new();
     // Joined memberships only: each row here backs a remove control, and a
     // group reached through a parent has no membership row to remove.
-    for group_id in store::providers::directory::users::groups_of(&transaction, &user_id)
+    for group_id in people::groups_joined(&transaction, &user_id)
         .await
         .map_err(|_| internal())?
     {
@@ -525,7 +520,7 @@ pub async fn member_organizations(
         .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
     let mut organizations = Vec::new();
-    for org_id in store::providers::directory::organizations::of_member(&transaction, &user_id)
+    for org_id in people::organizations_of(&transaction, &user_id)
         .await
         .map_err(|_| internal())?
     {

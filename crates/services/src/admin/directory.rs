@@ -746,3 +746,30 @@ pub async fn organization_members(
         .await
         .map_err(|_| Unwritable::Backend)
 }
+
+/// The organization's own theme, or nothing when it wears the realm's look.
+pub async fn organization_theme(
+    transaction: &UnitOfWork,
+    org_id: &str,
+) -> Result<Option<serde_json::Value>, Unwritable> {
+    organizations::load(transaction, org_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .ok_or(Unwritable::NotFound)?;
+    organizations::theme_of(transaction, org_id)
+        .await
+        .map_err(|_| Unwritable::Backend)
+}
+
+/// Dress the organization over the realm's look, or undress it.
+pub async fn write_organization_theme(
+    transaction: &UnitOfWork,
+    org_id: &str,
+    theme: Option<&serde_json::Value>,
+) -> Result<(), Unwritable> {
+    organizations::set_theme(transaction, org_id, theme)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .then_some(())
+        .ok_or(Unwritable::NotFound)
+}

@@ -440,3 +440,140 @@ pub async fn lift_lockout(transaction: &UnitOfWork, user_id: &str) -> Result<boo
         .await
         .map_err(|_| Uncreatable::Unwritable)
 }
+
+/// The identity providers this account is bound to, by alias.
+pub async fn linked_providers(
+    transaction: &UnitOfWork,
+    user_id: &str,
+) -> Result<Vec<String>, Uncreatable> {
+    store::providers::federation::brokering::links_of(transaction, user_id)
+        .await
+        .map_err(|_| Uncreatable::Unwritable)
+}
+
+/// The passwords this person has replaced, the most recent first: what the
+/// reuse rule compares against, never a way in.
+pub async fn password_history(
+    transaction: &UnitOfWork,
+    user_id: &str,
+) -> Result<Vec<models::entities::credentials::CredentialModel>, Uncreatable> {
+    let mut held = store::providers::directory::credentials::load_for_user_of_type(
+        transaction,
+        user_id,
+        models::entities::credentials::CredentialType::PasswordHistory,
+    )
+    .await
+    .map_err(|_| Uncreatable::Unwritable)?;
+    held.sort_by_key(|row| std::cmp::Reverse(row.metadata.created_at));
+    Ok(held)
+}
+
+/// Every way this person signs in, with how many recovery codes are left
+/// unspent. A count that cannot be read is none left, which only ever
+/// understates the sheet.
+pub async fn credentials_of(
+    transaction: &UnitOfWork,
+    user_id: &str,
+) -> Result<(Vec<models::entities::credentials::CredentialModel>, i64), Uncreatable> {
+    let held = store::providers::directory::credentials::load_for_user(transaction, user_id)
+        .await
+        .map_err(|_| Uncreatable::Unwritable)?;
+    let unused =
+        store::providers::directory::credentials::count_recovery_codes(transaction, user_id)
+            .await
+            .unwrap_or(0);
+    Ok((held, unused))
+}
+
+/// Take away one second factor of this person's. A password is replaced
+/// through its own door rather than taken away, so it is refused here.
+pub async fn revoke_second_factor(
+    transaction: &UnitOfWork,
+    user_id: &str,
+    credential_id: &str,
+) -> Result<(), Uncreatable> {
+    use models::entities::credentials::CredentialType;
+    let held = store::providers::directory::credentials::load(transaction, credential_id)
+        .await
+        .map_err(|_| Uncreatable::Unwritable)?
+        .filter(|row| row.user_id == user_id)
+        .ok_or(Uncreatable::NotFound)?;
+    if !matches!(
+        held.credential_type,
+        CredentialType::Totp | CredentialType::Hotp | CredentialType::RecoveryCode
+    ) {
+        return Err(Uncreatable::Invalid(
+            "a password is replaced rather than taken away",
+        ));
+    }
+    store::providers::directory::credentials::revoke(transaction, credential_id)
+        .await
+        .map_err(|_| Uncreatable::Unwritable)?;
+    Ok(())
+}
+
+/// What was attempted for this person, most recent first, at most `limit`.
+pub async fn deliveries_of(
+    transaction: &UnitOfWork,
+    user_id: &str,
+    limit: i64,
+) -> Result<Vec<models::messaging::Delivery>, Uncreatable> {
+    store::providers::events::deliveries::of_user(transaction, user_id, limit)
+        .await
+        .map_err(|_| Uncreatable::Unwritable)
+}
+
+/// What this person has agreed to give, client by client.
+pub async fn consents_of(
+    transaction: &UnitOfWork,
+    user_id: &str,
+) -> Result<Vec<store::providers::directory::consents::Consent>, Uncreatable> {
+    store::providers::directory::consents::of_user(transaction, user_id)
+        .await
+        .map_err(|_| Uncreatable::Unwritable)
+}
+
+/// Withdraw what this person agreed to give one client. Nothing agreed is
+/// nothing to withdraw.
+pub async fn withdraw_consent(
+    transaction: &UnitOfWork,
+    user_id: &str,
+    client_id: &str,
+) -> Result<(), Uncreatable> {
+    store::providers::directory::consents::withdraw(transaction, user_id, client_id)
+        .await
+        .map_err(|_| Uncreatable::Unwritable)?
+        .then_some(())
+        .ok_or(Uncreatable::NotFound)
+}
+
+/// Every role this person holds, directly, through groups and composites.
+pub async fn effective_roles_of(
+    transaction: &UnitOfWork,
+    user_id: &str,
+) -> Result<Vec<models::entities::authz::RoleModel>, Uncreatable> {
+    store::providers::directory::roles::effective_roles(transaction, user_id)
+        .await
+        .map_err(|_| Uncreatable::Unwritable)
+}
+
+/// The groups this person joined, each with a membership row to remove: a
+/// group reached through a parent is not among them.
+pub async fn groups_joined(
+    transaction: &UnitOfWork,
+    user_id: &str,
+) -> Result<Vec<String>, Uncreatable> {
+    users::groups_of(transaction, user_id)
+        .await
+        .map_err(|_| Uncreatable::Unwritable)
+}
+
+/// The organizations this person is a member of.
+pub async fn organizations_of(
+    transaction: &UnitOfWork,
+    user_id: &str,
+) -> Result<Vec<String>, Uncreatable> {
+    store::providers::directory::organizations::of_member(transaction, user_id)
+        .await
+        .map_err(|_| Uncreatable::Unwritable)
+}

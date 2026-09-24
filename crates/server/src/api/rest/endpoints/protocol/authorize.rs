@@ -161,7 +161,7 @@ async fn start(
     // anybody could have written.
     if let Some(raw) = asked.request.clone()
         && let Some(client_id) = asked.client_id.as_deref()
-        && let Ok(Some(client)) = store::providers::clients::load(&transaction, client_id).await
+        && let Ok(Some(client)) = services::client::read_client(&transaction, client_id).await
         && client.request_object_encryption.is_some()
     {
         let Ok(ring) = store::keyring::load(

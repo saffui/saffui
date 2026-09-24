@@ -2,6 +2,7 @@
 //! webhooks and security events.
 
 pub mod caep;
+pub mod delivery;
 pub mod notices;
 pub mod webhook;
 pub mod wording;

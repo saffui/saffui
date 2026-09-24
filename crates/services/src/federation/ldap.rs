@@ -1,5 +1,7 @@
 use models::entities::attributes::{AttributeValue, AttributesMap};
 use models::entities::brokering::UserFederationModel;
+use store::providers::federation::brokering;
+use store::tenancy::UnitOfWork;
 
 /// Where the sealed bind secret lives in the bag; the clear key never lands.
 pub const SEALED_BIND: &str = "bind_password_sealed";
@@ -118,6 +120,32 @@ fn escaped(value: &str) -> String {
         }
     }
     out
+}
+
+/// The realm's directories a login asks, first-asked first, each with how it
+/// is spoken to. A switched-off row is left out, and a row that stopped reading
+/// is skipped with a line for the operator: the plane refuses to write one, so
+/// a broken row is a migration of trouble, and bricking every login over it
+/// helps nobody.
+pub async fn read_directories_to_ask(
+    transaction: &UnitOfWork,
+) -> Result<Vec<(UserFederationModel, LdapSettings)>, crate::realm::Unreadable> {
+    let rows = brokering::federations(transaction)
+        .await
+        .map_err(|_| crate::realm::Unreadable)?;
+    let mut asked = Vec::with_capacity(rows.len());
+    for held in rows {
+        if held.enabled == Some(false) {
+            continue;
+        }
+        match LdapSettings::parse(&held) {
+            Ok(settings) => asked.push((held, settings)),
+            Err(why) => {
+                tracing::warn!(%why, alias = held.alias, "a directory row no longer reads");
+            }
+        }
+    }
+    Ok(asked)
 }
 
 /// Strip what an answer never carries: even sealed, the bytes are the

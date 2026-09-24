@@ -183,6 +183,16 @@ pub const SECRET_SCOPE: &str = "client-secret";
 /// it was read for. Not zero, because that is one fetch per request.
 pub const KEYS_KEPT: chrono::Duration = chrono::Duration::seconds(30);
 
+/// One client of this realm, by identifier, whatever its state.
+pub async fn read_client(
+    transaction: &UnitOfWork,
+    client_id: &str,
+) -> Result<Option<ClientModel>, crate::realm::Unreadable> {
+    clients::load(transaction, client_id)
+        .await
+        .map_err(|_| crate::realm::Unreadable)
+}
+
 /// Where this client publishes its keys, when they are due to be read again.
 ///
 /// Nothing when the client hands its keys over rather than publishing them,

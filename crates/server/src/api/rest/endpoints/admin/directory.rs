@@ -436,13 +436,15 @@ pub async fn get_organization_theme(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    store::providers::directory::organizations::load(&transaction, &org_id)
+    let held = directory::organization_theme(&transaction, &org_id)
         .await
-        .map_err(|_| internal())?
-        .ok_or_else(|| ApiError::new(ErrorCode::OrganizationNotFound))?;
-    let held = store::providers::directory::organizations::theme_of(&transaction, &org_id)
-        .await
-        .map_err(|_| internal())?;
+        .map_err(|why| {
+            refused(
+                why,
+                ErrorCode::OrganizationAlreadyExists,
+                ErrorCode::OrganizationNotFound,
+            )
+        })?;
     Ok(HttpResponse::Ok().json(held.unwrap_or(serde_json::Value::Null)))
 }
 
@@ -467,13 +469,15 @@ pub async fn set_organization_theme(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let worn =
-        store::providers::directory::organizations::set_theme(&transaction, &org_id, Some(&asked))
-            .await
-            .map_err(|_| internal())?;
-    if !worn {
-        return Err(ApiError::new(ErrorCode::OrganizationNotFound));
-    }
+    directory::write_organization_theme(&transaction, &org_id, Some(&asked))
+        .await
+        .map_err(|why| {
+            refused(
+                why,
+                ErrorCode::OrganizationAlreadyExists,
+                ErrorCode::OrganizationNotFound,
+            )
+        })?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }
@@ -489,13 +493,15 @@ pub async fn clear_organization_theme(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let undressed =
-        store::providers::directory::organizations::set_theme(&transaction, &org_id, None)
-            .await
-            .map_err(|_| internal())?;
-    if !undressed {
-        return Err(ApiError::new(ErrorCode::OrganizationNotFound));
-    }
+    directory::write_organization_theme(&transaction, &org_id, None)
+        .await
+        .map_err(|why| {
+            refused(
+                why,
+                ErrorCode::OrganizationAlreadyExists,
+                ErrorCode::OrganizationNotFound,
+            )
+        })?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }

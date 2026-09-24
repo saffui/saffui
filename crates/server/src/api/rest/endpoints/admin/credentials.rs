@@ -31,13 +31,9 @@ pub async fn list(
         .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
 
-    let held = store::providers::directory::credentials::load_for_user(&transaction, &user_id)
+    let (held, unused) = services::admin::users::credentials_of(&transaction, &user_id)
         .await
         .map_err(|_| internal())?;
-    let unused =
-        store::providers::directory::credentials::count_recovery_codes(&transaction, &user_id)
-            .await
-            .unwrap_or(0);
 
     let shown: Vec<_> = held
         .iter()
@@ -135,23 +131,17 @@ pub async fn revoke(
         .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
 
-    let held = store::providers::directory::credentials::load(&transaction, &credential_id)
+    services::admin::users::revoke_second_factor(&transaction, &user_id, &credential_id)
         .await
-        .map_err(|_| internal())?
-        .filter(|row| row.user_id == user_id)
-        .ok_or_else(|| ApiError::new(ErrorCode::CredentialNotFound))?;
-    if !matches!(
-        held.credential_type,
-        CredentialType::Totp | CredentialType::Hotp | CredentialType::RecoveryCode
-    ) {
-        return Err(ApiError::with_detail(
-            ErrorCode::ValidationError,
-            "a password is replaced rather than taken away",
-        ));
-    }
-    store::providers::directory::credentials::revoke(&transaction, &credential_id)
-        .await
-        .map_err(|_| internal())?;
+        .map_err(|why| match why {
+            services::admin::users::Uncreatable::NotFound => {
+                ApiError::new(ErrorCode::CredentialNotFound)
+            }
+            services::admin::users::Uncreatable::Invalid(said) => {
+                ApiError::with_detail(ErrorCode::ValidationError, said)
+            }
+            _ => internal(),
+        })?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }

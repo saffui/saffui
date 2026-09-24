@@ -437,18 +437,12 @@ pub async fn decisions(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let limit = window.limit.clamp(1, 1000);
-    let found = match window.trace_id.as_deref().filter(|named| !named.is_empty()) {
-        Some(trace) => {
-            store::providers::authorization::authz_policies::decisions_of_trace(
-                &transaction,
-                trace,
-                limit,
-            )
-            .await
-        }
-        None => store::providers::authorization::authz_policies::recent(&transaction, limit).await,
-    }
+    let found = authz::decisions(
+        &transaction,
+        window.trace_id.as_deref().filter(|named| !named.is_empty()),
+        window.limit.clamp(1, 1000),
+    )
+    .await
     .map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(found))
 }
@@ -466,12 +460,9 @@ pub async fn disagreements(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let found = store::providers::authorization::authz_policies::disagreements(
-        &transaction,
-        window.limit.clamp(1, 1000),
-    )
-    .await
-    .map_err(|_| internal())?;
+    let found = authz::disagreements(&transaction, window.limit.clamp(1, 1000))
+        .await
+        .map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(found))
 }
 
@@ -559,31 +550,16 @@ pub async fn evaluate(
         .await
         .map_err(refuse_unopened_work)?;
 
-    let person = store::providers::directory::users::load_by_id_or_name(&transaction, &subject)
-        .await
-        .map_err(|_| internal())?
-        .ok_or_else(|| ApiError::new(ErrorCode::UserNotFound))?;
-    let acting = match &asked.organization {
-        None => services::context::Acting::RealmWide,
-        Some(org) => {
-            let member = store::providers::directory::organizations::of_member(
-                &transaction,
-                &person.user_id,
-            )
+    let (person, acting) =
+        authz::subject_to_evaluate(&transaction, &subject, asked.organization.as_deref())
             .await
-            .map_err(|_| internal())?
-            .contains(org);
-            if !member {
-                return Err(ApiError::with_detail(
-                    ErrorCode::ValidationError,
-                    "the subject is not a member of that organization".to_owned(),
-                ));
-            }
-            services::context::Acting::In {
-                org_id: org.clone(),
-            }
-        }
-    };
+            .map_err(|why| match why {
+                authz::Unevaluable::NoSuchUser => ApiError::new(ErrorCode::UserNotFound),
+                authz::Unevaluable::NotAMember => {
+                    ApiError::with_detail(ErrorCode::ValidationError, why.to_string())
+                }
+                authz::Unevaluable::Backend => internal(),
+            })?;
     let context = services::context::Context {
         tenant: TenantContext::new(&admin.context.tenant.tenant, &realm_id),
         session_id: String::new(),
@@ -717,9 +693,7 @@ pub async fn routes(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let held = store::providers::authorization::authz_routes::routes(&transaction)
-        .await
-        .map_err(|_| internal())?;
+    let held = authz::routes(&transaction).await.map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(
         held.iter()
             .map(|route| {
@@ -768,7 +742,7 @@ pub async fn put_route(
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, route_id) = path.into_inner();
     let asked = body.into_inner();
-    let refused =
+    let invalid =
         |detail: &str| ApiError::with_detail(ErrorCode::ValidationError, detail.to_owned());
 
     let named = |held: Option<String>, what: &str| -> Result<String, ApiError> {
@@ -776,7 +750,7 @@ pub async fn put_route(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_owned)
-            .ok_or_else(|| refused(&format!("{what} says what it is")))
+            .ok_or_else(|| invalid(&format!("{what} says what it is")))
     };
     let method = named(asked.method, "method")?.to_uppercase();
     let route_path = named(asked.path, "path")?;
@@ -795,7 +769,7 @@ pub async fn put_route(
     // about why, so it is refused here where there is somebody to tell.
     for (pattern, what) in [(&method, "method"), (&route_path, "path")] {
         if !services::authorization::routes::pattern_reads(pattern) {
-            return Err(refused(&format!(
+            return Err(invalid(&format!(
                 "{what} is an exact value or a prefix ending in *"
             )));
         }
@@ -805,17 +779,7 @@ pub async fn put_route(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    // The resource server has to be one this realm protects: a route naming
-    // a server that does not exist is a route whose decisions could only ever
-    // be refusals, written as if they were rules.
-    if store::providers::authorization::authz_surface::load_server(&transaction, &server_id)
-        .await
-        .map_err(|_| internal())?
-        .is_none()
-    {
-        return Err(refused("no protected application answers to that name"));
-    }
-    let route = store::providers::authorization::authz_routes::AuthzRoute {
+    let route = authz::AuthzRoute {
         route_id: route_id.clone(),
         method,
         path: route_path,
@@ -826,13 +790,9 @@ pub async fn put_route(
         priority: asked.priority,
         enabled: asked.enabled.unwrap_or(true),
     };
-    store::providers::authorization::authz_routes::keep(
-        &transaction,
-        &route,
-        admin.context.principal.id(),
-    )
-    .await
-    .map_err(|_| internal())?;
+    authz::keep_route(&transaction, &route, admin.context.principal.id())
+        .await
+        .map_err(|why| refused(why, ErrorCode::ValidationError, ErrorCode::ResourceNotFound))?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(serde_json::json!({ "route_id": route_id })))
 }
@@ -847,13 +807,9 @@ pub async fn delete_route(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let removed =
-        store::providers::authorization::authz_routes::drop_route(&transaction, &route_id)
-            .await
-            .map_err(|_| internal())?;
-    if !removed {
-        return Err(ApiError::new(ErrorCode::ResourceNotFound));
-    }
+    authz::drop_route(&transaction, &route_id)
+        .await
+        .map_err(|why| refused(why, ErrorCode::ValidationError, ErrorCode::ResourceNotFound))?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }

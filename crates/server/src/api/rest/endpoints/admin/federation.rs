@@ -107,19 +107,17 @@ pub async fn import(
         .begin(&context)
         .await
         .map_err(refuse_unopened_work)?;
-    let held = match store::providers::federation::brokering::federation(&transaction, &alias)
+    let held = services::admin::federation::directory_to_import(&transaction, &alias)
         .await
-        .map_err(|_| internal())?
-    {
-        Some(held) if held.enabled != Some(false) => held,
-        Some(_) => {
-            return Err(ApiError::with_detail(
-                ErrorCode::ValidationError,
-                "the directory is disabled".to_owned(),
-            ));
-        }
-        None => return Err(ApiError::new(ErrorCode::IdentityProviderNotFound)),
-    };
+        .map_err(|why| match why {
+            services::admin::federation::Unwritable::NotFound => {
+                ApiError::new(ErrorCode::IdentityProviderNotFound)
+            }
+            services::admin::federation::Unwritable::Invalid(said) => {
+                ApiError::with_detail(ErrorCode::ValidationError, said)
+            }
+            services::admin::federation::Unwritable::Backend => internal(),
+        })?;
     let settings = services::federation::ldap::LdapSettings::parse(&held)
         .map_err(|why| ApiError::with_detail(ErrorCode::ValidationError, why.to_string()))?;
     let directory =

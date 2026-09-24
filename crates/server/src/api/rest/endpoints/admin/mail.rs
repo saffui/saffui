@@ -269,7 +269,7 @@ pub async fn list_refusals(
         .map_err(refuse_unopened_work)?;
 
     let since = chrono::Utc::now() - chrono::Duration::hours(24);
-    let held = store::providers::events::deliveries::read_refusals_since(&transaction, since, 50)
+    let held = services::admin::mail::read_refusals_since(&transaction, since, 50)
         .await
         .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
     let items: Vec<_> = held

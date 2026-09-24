@@ -73,3 +73,30 @@ pub async fn forget(transaction: &UnitOfWork) -> Result<(), Unsettable> {
         .then_some(())
         .ok_or(Unsettable::NotFound)
 }
+
+/// What today cost and what the brakes held back, read off what the sending
+/// path already writes, beside the cap the realm names when it names one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SmsToday {
+    pub sent: i32,
+    pub cap: Option<i32>,
+    /// Each brake that tripped today, with how many texts it held back.
+    pub held_back: Vec<(String, i64)>,
+}
+
+pub async fn read_today(transaction: &UnitOfWork, now: i64) -> Result<SmsToday, Unsettable> {
+    let sent = sms::spent_today(transaction, now)
+        .await
+        .map_err(|_| Unsettable::Unwritable)?;
+    let held_back = sms::held_back_today(transaction, now)
+        .await
+        .map_err(|_| Unsettable::Unwritable)?;
+    let realm = store::providers::realms::of_context(transaction)
+        .await
+        .map_err(|_| Unsettable::Unwritable)?;
+    Ok(SmsToday {
+        sent,
+        cap: realm.and_then(|held| held.sms_daily_cap),
+        held_back,
+    })
+}

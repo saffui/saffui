@@ -22,7 +22,7 @@ pub async fn schema(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let stored = store::providers::authorization::rebac::load_schema(&transaction)
+    let stored = services::admin::authorization::rebac_schema(&transaction)
         .await
         .map_err(|_| internal())?
         .ok_or_else(|| ApiError::new(ErrorCode::RebacSchemaNotFound))?;
@@ -176,7 +176,7 @@ pub async fn subjects(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let held = store::providers::authorization::rebac::subjects(
+    let held = services::admin::authorization::rebac_subjects(
         &transaction,
         &asked.object_type,
         &asked.object_id,
@@ -229,9 +229,9 @@ pub async fn list_tuples(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let held = store::providers::authorization::rebac::tuples(
+    let held = services::admin::authorization::rebac_tuples(
         &transaction,
-        store::providers::authorization::rebac::TupleFilter {
+        services::admin::authorization::TupleFilter {
             object_type: named(&asked.object_type),
             relation: named(&asked.relation),
             subject_type: named(&asked.subject_type),

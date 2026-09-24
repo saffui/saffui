@@ -224,27 +224,22 @@ pub async fn spent_today(
         .await
         .map_err(refuse_unopened_work)?;
 
-    let now = chrono::Utc::now().timestamp();
-    let sent = store::providers::realms::sms::spent_today(&transaction, now)
-        .await
-        .map_err(|_| internal())?;
-    let held = store::providers::realms::sms::held_back_today(&transaction, now)
-        .await
-        .map_err(|_| internal())?;
-    let realm = store::providers::realms::of_context(&transaction)
+    let today = services::admin::sms::read_today(&transaction, chrono::Utc::now().timestamp())
         .await
         .map_err(|_| internal())?;
 
     let counted = |named: &str| -> i64 {
-        held.iter()
+        today
+            .held_back
+            .iter()
             .find(|(brake, _)| brake == named)
             .map_or(0, |(_, count)| *count)
     };
     Ok(HttpResponse::Ok().json(serde_json::json!({
-        "sent": sent,
+        "sent": today.sent,
         // Absent where the realm names no cap: the engine has its own, and
         // printing that one here would read as this realm's setting.
-        "cap": realm.as_ref().and_then(|held| held.sms_daily_cap),
+        "cap": today.cap,
         "blocked_prefix": counted("blocked-prefix"),
         "number_velocity": counted("number-velocity"),
         "day_budget": counted("day-budget"),

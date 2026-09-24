@@ -42,12 +42,10 @@ pub async fn read(
         .await
         .map_err(refuse_unopened_work)?;
 
-    let decisions = store::providers::events::metrics::decisions(&transaction, since, P95_SAMPLE)
-        .await
-        .map_err(|_| internal())?;
-    let logins = store::providers::events::metrics::logins(&transaction, since.timestamp())
-        .await
-        .map_err(|_| internal())?;
+    let (decisions, logins) =
+        services::admin::metrics::read_metrics(&transaction, since, P95_SAMPLE)
+            .await
+            .map_err(|_| internal())?;
 
     Ok(HttpResponse::Ok().json(serde_json::json!({
         "window_seconds": seconds,

@@ -1,13 +1,20 @@
 use crypto::provider::CryptoProvider;
 use models::auditable::AuditableModel;
+use models::entities::authz::AuthzDecisionRecord;
 use models::entities::authz::{
     DecisionStrategy, PolicyEnforcementMode, PolicyModel, PolicyTerms, ResourceModel,
     ResourceMutationModel, ResourceServerModel, ScopeModel, ScopeMutationModel, StoredPolicy,
 };
+use models::entities::user::UserModel;
 use store::error::StoreError;
-use store::providers::authorization::{authz_policies, authz_surface};
+use store::providers::authorization::rebac::{self, StoredSchema, Subject, Tuple};
+use store::providers::authorization::{authz_policies, authz_routes, authz_surface};
 use store::providers::clients;
+use store::providers::directory::{organizations, users};
 use store::tenancy::UnitOfWork;
+
+pub use store::providers::authorization::authz_routes::AuthzRoute;
+pub use store::providers::authorization::rebac::TupleFilter;
 
 /// Why the authorization surface could not be written.
 ///
@@ -550,4 +557,138 @@ pub async fn unshare_resource(
     .await
     .map(|_| ())
     .map_err(|_| Unshareable::Backend)
+}
+
+/// Why an evaluation could not be set up for the subject it names.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum Unevaluable {
+    #[error("no such user")]
+    NoSuchUser,
+    #[error("the subject is not a member of that organization")]
+    NotAMember,
+    #[error("the store could not be read")]
+    Backend,
+}
+
+/// What the engine decided lately, newest first, or what one trace carried.
+pub async fn decisions(
+    transaction: &UnitOfWork,
+    trace: Option<&str>,
+    limit: i64,
+) -> Result<Vec<AuthzDecisionRecord>, Unwritable> {
+    match trace {
+        Some(trace) => authz_policies::decisions_of_trace(transaction, trace, limit).await,
+        None => authz_policies::recent(transaction, limit).await,
+    }
+    .map_err(|_| Unwritable::Backend)
+}
+
+/// Where what was reported disagreed with what was computed.
+pub async fn disagreements(
+    transaction: &UnitOfWork,
+    limit: i64,
+) -> Result<Vec<AuthzDecisionRecord>, Unwritable> {
+    authz_policies::disagreements(transaction, limit)
+        .await
+        .map_err(|_| Unwritable::Backend)
+}
+
+/// The person an evaluation asks about, by identifier or name, and where they
+/// act: realm wide, or within an organization they belong to.
+pub async fn subject_to_evaluate(
+    transaction: &UnitOfWork,
+    subject: &str,
+    organization: Option<&str>,
+) -> Result<(UserModel, crate::context::Acting), Unevaluable> {
+    let person = users::load_by_id_or_name(transaction, subject)
+        .await
+        .map_err(|_| Unevaluable::Backend)?
+        .ok_or(Unevaluable::NoSuchUser)?;
+    let acting = match organization {
+        None => crate::context::Acting::RealmWide,
+        Some(org) => {
+            let member = organizations::of_member(transaction, &person.user_id)
+                .await
+                .map_err(|_| Unevaluable::Backend)?
+                .iter()
+                .any(|held| held == org);
+            if !member {
+                return Err(Unevaluable::NotAMember);
+            }
+            crate::context::Acting::In {
+                org_id: org.to_owned(),
+            }
+        }
+    };
+    Ok((person, acting))
+}
+
+/// The realm's route map, in the order it is read.
+pub async fn routes(transaction: &UnitOfWork) -> Result<Vec<AuthzRoute>, Unwritable> {
+    authz_routes::routes(transaction)
+        .await
+        .map_err(|_| Unwritable::Backend)
+}
+
+/// Keep a route to a resource server this realm protects: one naming a server
+/// that does not exist could only ever decide refusals, written as if they
+/// were rules.
+pub async fn keep_route(
+    transaction: &UnitOfWork,
+    route: &AuthzRoute,
+    by: &str,
+) -> Result<(), Unwritable> {
+    if authz_surface::load_server(transaction, &route.server_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .is_none()
+    {
+        return Err(Unwritable::Refused(
+            "no protected application answers to that name".to_owned(),
+        ));
+    }
+    authz_routes::keep(transaction, route, by)
+        .await
+        .map_err(|_| Unwritable::Backend)
+}
+
+pub async fn drop_route(transaction: &UnitOfWork, route_id: &str) -> Result<(), Unwritable> {
+    authz_routes::drop_route(transaction, route_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .then_some(())
+        .ok_or(Unwritable::NotFound)
+}
+
+/// The relationship schema as it was published, when one was.
+pub async fn rebac_schema(transaction: &UnitOfWork) -> Result<Option<StoredSchema>, Unwritable> {
+    rebac::load_schema(transaction)
+        .await
+        .map_err(|_| Unwritable::Backend)
+}
+
+/// Who stands in one relation on one object, as written, at most `limit` of
+/// them.
+pub async fn rebac_subjects(
+    transaction: &UnitOfWork,
+    object_type: &str,
+    object_id: &str,
+    relation: &str,
+    limit: i64,
+) -> Result<Vec<Subject>, Unwritable> {
+    rebac::subjects(transaction, object_type, object_id, relation, limit)
+        .await
+        .map_err(|_| Unwritable::Backend)
+}
+
+/// One page of the edges written in the realm, narrowed by the filter.
+pub async fn rebac_tuples(
+    transaction: &UnitOfWork,
+    filter: TupleFilter<'_>,
+    first: i64,
+    max: i64,
+) -> Result<Vec<Tuple>, Unwritable> {
+    rebac::tuples(transaction, filter, first, max)
+        .await
+        .map_err(|_| Unwritable::Backend)
 }

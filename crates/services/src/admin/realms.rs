@@ -84,19 +84,7 @@ pub async fn bear_realm(
     {
         return Err(Unrealmed::AlreadyExists);
     }
-    tenants::hold_realms(transaction, tenant)
-        .await
-        .map_err(backend)?;
-    let named = tenants::load(transaction)
-        .await
-        .map_err(backend)?
-        .and_then(|held| held.limits)
-        .and_then(|limits| limits.max_realms);
-    if let Some(ceiling) = ceiling.against(named)
-        && tenants::count_realms(transaction).await.map_err(backend)? >= ceiling
-    {
-        return Err(Unrealmed::AtCeiling(ceiling));
-    }
+    hold_below_ceiling(transaction, tenant, ceiling).await?;
     let realm = birth.asked.into_model(
         realm_id.clone(),
         AuditableModel::from_creator(tenant.to_owned(), witness.actor.to_owned()),
@@ -144,6 +132,32 @@ pub async fn bear_realm(
     .map_err(|_| Unrealmed::Backend)?;
     record_realm_event(transaction, witness, &realm_id, "realm.created", now).await?;
     Ok((realm, password))
+}
+
+/// Hold the tenant's realms still and refuse one more past its ceiling, where
+/// it or the deployment sets one. The lock is taken before the count and kept
+/// until the transaction ends, so two births or imports one below the
+/// ceiling cannot both read a count that passes and both write.
+pub async fn hold_below_ceiling(
+    transaction: &UnitOfWork,
+    tenant: &str,
+    ceiling: RealmCeiling,
+) -> Result<(), Unrealmed> {
+    let backend = |_| Unrealmed::Backend;
+    tenants::hold_realms(transaction, tenant)
+        .await
+        .map_err(backend)?;
+    let named = tenants::load(transaction)
+        .await
+        .map_err(backend)?
+        .and_then(|held| held.limits)
+        .and_then(|limits| limits.max_realms);
+    if let Some(ceiling) = ceiling.against(named)
+        && tenants::count_realms(transaction).await.map_err(backend)? >= ceiling
+    {
+        return Err(Unrealmed::AtCeiling(ceiling));
+    }
+    Ok(())
 }
 
 /// Take the realm away. The schema cascades, so everything keyed under it

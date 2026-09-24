@@ -85,25 +85,14 @@ pub async fn import(
         .begin(&TenantContext::new(&tenant, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    store::providers::realms::tenants::hold_realms(&transaction, &tenant)
+    services::admin::realms::hold_below_ceiling(&transaction, &tenant, **ceiling)
         .await
-        .map_err(|_| internal())?;
-    let named = store::providers::realms::tenants::load(&transaction)
-        .await
-        .map_err(|_| internal())?
-        .and_then(|held| held.limits)
-        .and_then(|limits| limits.max_realms);
-    if let Some(ceiling) = ceiling.against(named)
-        && store::providers::realms::tenants::count_realms(&transaction)
-            .await
-            .map_err(|_| internal())?
-            >= ceiling
-    {
-        return Err(ApiError::with_detail(
-            ErrorCode::ValidationError,
-            format!("this tenant holds the {ceiling} realms it is allowed"),
-        ));
-    }
+        .map_err(|why| match why {
+            services::admin::realms::Unrealmed::AtCeiling(_) => {
+                ApiError::with_detail(ErrorCode::ValidationError, why.to_string())
+            }
+            _ => internal(),
+        })?;
     portability::import_realm(
         &transaction,
         &admin.context.tenant.tenant,
@@ -183,7 +172,7 @@ pub async fn partial_preview(
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    if store::providers::realms::load(&transaction, &realm_id)
+    if services::realm::named(&transaction, &realm_id)
         .await
         .map_err(|_| internal())?
         .is_none()
@@ -214,7 +203,7 @@ pub async fn partial_import(
         .begin(&TenantContext::new(&tenant, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    if store::providers::realms::load(&transaction, &realm_id)
+    if services::realm::named(&transaction, &realm_id)
         .await
         .map_err(|_| internal())?
         .is_none()

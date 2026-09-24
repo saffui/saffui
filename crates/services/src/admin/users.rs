@@ -577,3 +577,13 @@ pub async fn organizations_of(
         .await
         .map_err(|_| Uncreatable::Unwritable)
 }
+
+/// Who this person is at the providers this realm brokers.
+pub async fn identities_of(
+    transaction: &UnitOfWork,
+    user_id: &str,
+) -> Result<Vec<models::entities::brokering::FederatedIdentityModel>, Uncreatable> {
+    store::providers::federation::brokering::identities_of(transaction, user_id)
+        .await
+        .map_err(|_| Uncreatable::Unwritable)
+}

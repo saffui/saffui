@@ -205,3 +205,19 @@ mod tests {
         assert!(!moved.configs.unwrap().contains_key(SEALED_BIND));
     }
 }
+
+/// The directory an operator asked to mirror now: it must exist here and be
+/// switched on.
+pub async fn directory_to_import(
+    transaction: &UnitOfWork,
+    alias: &str,
+) -> Result<UserFederationModel, Unwritable> {
+    match brokering::federation(transaction, alias)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+    {
+        Some(held) if held.enabled != Some(false) => Ok(held),
+        Some(_) => Err(Unwritable::Invalid("the directory is disabled".to_owned())),
+        None => Err(Unwritable::NotFound),
+    }
+}

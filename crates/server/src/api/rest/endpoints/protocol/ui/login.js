@@ -420,10 +420,12 @@
       offer(told);
       return;
     }
-    if (told.status === "locked-out") {
+    // Paused for the person or for where they sign in from: either way the
+    // password goes, and the page says which.
+    if (told.status === "locked-out" || told.status === "throttled") {
       forget();
       only("credentials");
-      say(spoken("locked-out"));
+      say(spoken(told.status));
       return;
     }
     if (told.status !== "challenge") {

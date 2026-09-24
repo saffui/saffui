@@ -1058,6 +1058,21 @@ impl Plane {
         transaction.commit().await.unwrap();
     }
 
+    /// Weigh every address this realm hears from under this policy.
+    #[allow(dead_code, reason = "only the suites that sign in by password ask")]
+    pub async fn throttle_sources(&self, policy: models::entities::realm::SourceThrottle) {
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
+        let mut realm = store::providers::realms::load(&transaction, REALM)
+            .await
+            .expect("the realms table")
+            .expect("a planted realm");
+        realm.source_throttle = policy;
+        store::providers::realms::update(&transaction, &realm)
+            .await
+            .expect("the realms table");
+        transaction.commit().await.unwrap();
+    }
+
     /// How many codes are left on the subject's sheet.
     #[allow(dead_code, reason = "only the protocol suite asks")]
     pub async fn recovery_codes_left(&self) -> i64 {

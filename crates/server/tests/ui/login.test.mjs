@@ -178,6 +178,25 @@ test("a locked out sign-in is named, and the password is forgotten", async () =>
   assert.equal(page.sent[1].body.password, undefined, "the password outlived the lockout");
 });
 
+test("a throttled sign-in is named apart from a locked one, and the password is forgotten", async () => {
+  const page = opened({
+    rounds: [
+      { told: { status: "throttled", until: 1790000000 } },
+      { told: { status: "challenge" } },
+    ],
+  });
+  await page.signIn();
+
+  assert.match(page.element("notice").textContent, /from your network/i);
+  assert.equal(page.element("notice").hidden, false);
+  assert.equal(page.element("credentials").hidden, false, "there was nothing to try again with");
+
+  page.form.password.value = "";
+  page.form.fire("submit");
+  await page.settle();
+  assert.equal(page.sent[1].body.password, undefined, "the password outlived the pause");
+});
+
 test("a refused sign-in is named, and the password is forgotten", async () => {
   const page = opened({ rounds: [{ told: { status: "refused" } }] });
   await page.signIn();

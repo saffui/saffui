@@ -9,7 +9,7 @@ use store::tenancy::{TenantContext, UnitOfWork};
 
 use crate::login::authenticator::Answer;
 use crate::login::enrolment::{self, Enrolment};
-use crate::login::{Progress, run_flow};
+use crate::login::{Progress, run_flow, throttle};
 use models::claims_request::ClaimsRequest;
 
 /// How long the login it opens lasts, and a login a grant opens with no
@@ -69,6 +69,8 @@ pub enum Step {
     Refused,
     /// Too many wrong ones, until this instant.
     LockedOut { until: i64 },
+    /// Too many wrong ones from where this came from, until this instant.
+    Throttled { until: i64 },
 }
 
 /// What a finished login established, for the protocol to act on.
@@ -150,6 +152,17 @@ pub async fn answer_step(
         .await
         .map_err(|_| Unanswerable::Unreadable)?
         .ok_or(Unanswerable::Unreadable)?;
+
+    // Weighed before the name is looked up or any answer verified, so an
+    // address turned away costs one read: no directory asked, no hash run.
+    let knock = throttle::Knock::new(provider, seen.address.as_deref(), username)
+        .map_err(|_| Unanswerable::Unreadable)?;
+    if let Some(until) = throttle::until(transaction, &realm, &knock, now)
+        .await
+        .map_err(|_| Unanswerable::Unreadable)?
+    {
+        return Ok(Step::Throttled { until });
+    }
 
     // Resolved here rather than inside the flow: an authenticator says whether
     // an answer is right, not who is answering. A name nobody holds is passed
@@ -247,8 +260,20 @@ pub async fn answer_step(
                 sending,
             })
         }
-        Progress::Refused => Ok(Step::Refused),
-        Progress::LockedOut { until } => Ok(Step::LockedOut { until }),
+        Progress::Refused => {
+            throttle::count(transaction, &realm, &knock, now)
+                .await
+                .map_err(|_| Unanswerable::Unreadable)?;
+            Ok(Step::Refused)
+        }
+        // Counted where the address is concerned though the answer was never
+        // looked at: a lock the count skipped would say that the name is held.
+        Progress::LockedOut { until } => {
+            throttle::count(transaction, &realm, &knock, now)
+                .await
+                .map_err(|_| Unanswerable::Unreadable)?;
+            Ok(Step::LockedOut { until })
+        }
         Progress::Admitted { by } => {
             let subject = subject.ok_or(Unanswerable::Unrunnable)?;
             // Admitted is not yet in: what the realm required of this user

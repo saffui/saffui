@@ -100,7 +100,7 @@ fn listening() -> (String, Arc<Mutex<Vec<Heard>>>) {
 }
 
 async fn one_pass(plane: &Plane) {
-    server::jobs::deliver_every_realm(
+    scheduler::jobs::deliver_every_realm(
         &plane.tenancy(),
         &support::sealing(),
         &support::origin(),

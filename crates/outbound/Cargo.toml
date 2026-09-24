@@ -9,7 +9,8 @@ authors.workspace = true
 
 # What this deployment says to the outside: calls under the egress policy, the
 # directories it asks, the messages it sends and the tellings it pushes. No web
-# framework: nothing here answers a request.
+# framework: nothing here answers a request, and the server and the scheduler
+# both call it.
 
 [dependencies]
 auth = { workspace = true }

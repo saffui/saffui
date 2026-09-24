@@ -248,7 +248,7 @@ async fn a_sweep_leaves_a_login_an_offline_grant_still_needs() {
         transaction.commit().await.expect("the ageing kept");
     }
 
-    let swept = server::jobs::sweep_every_realm(&plane.tenancy())
+    let swept = scheduler::jobs::sweep_every_realm(&plane.tenancy())
         .await
         .expect("the realms were listed");
     assert_eq!(
@@ -294,7 +294,7 @@ async fn a_sweep_takes_the_login_once_the_offline_grant_is_over() {
         transaction.commit().await.expect("the ageing kept");
     }
 
-    let swept = server::jobs::sweep_every_realm(&plane.tenancy())
+    let swept = scheduler::jobs::sweep_every_realm(&plane.tenancy())
         .await
         .expect("the realms were listed");
     assert_eq!(swept.sessions, 1, "an ended grant kept its login alive");

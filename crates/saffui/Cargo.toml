@@ -38,6 +38,7 @@ secrecy = { workspace = true }
 pgcore = { workspace = true }
 server = { workspace = true, default-features = false }
 outbound = { workspace = true }
+scheduler = { workspace = true }
 # Provisioning: what a deployment needs before anybody can log in.
 services = { workspace = true }
 store = { workspace = true }

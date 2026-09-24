@@ -89,6 +89,8 @@ otel = [
 ]
 
 [dev-dependencies]
+# The scheduled passes, run by the suites that watch what they deliver.
+scheduler = { workspace = true }
 deadpool-postgres = { workspace = true }
 # The in-memory half of the export pipeline, so a test can read back the
 # spans a request produced and the trace they claim to belong to.

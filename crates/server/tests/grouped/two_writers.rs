@@ -223,8 +223,8 @@ async fn two_sweepers_take_exactly_what_expired() {
 
     let tenancy = plane.tenancy();
     let (one, other) = tokio::join!(
-        server::jobs::sweep_every_realm(&tenancy),
-        server::jobs::sweep_every_realm(&tenancy),
+        scheduler::jobs::sweep_every_realm(&tenancy),
+        scheduler::jobs::sweep_every_realm(&tenancy),
     );
     let taken = one.map_or(0, |swept| swept.one_time_tokens)
         + other.map_or(0, |swept| swept.one_time_tokens);

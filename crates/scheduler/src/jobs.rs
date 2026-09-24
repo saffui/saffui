@@ -172,7 +172,7 @@ pub async fn deliver_every_realm_with_egress(
         if !matches!(held, Ok(true)) {
             continue;
         }
-        match crate::federation::deliver_outbox(
+        match crate::outbox::deliver_outbox(
             &transaction,
             sealing,
             origin,

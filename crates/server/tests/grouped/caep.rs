@@ -56,8 +56,13 @@ async fn asked(
 }
 
 async fn walked(plane: &Plane) {
-    server::jobs::deliver_every_realm(&plane.tenancy(), &support::sealing(), &support::origin(), 1)
-        .await;
+    scheduler::jobs::deliver_every_realm(
+        &plane.tenancy(),
+        &support::sealing(),
+        &support::origin(),
+        1,
+    )
+    .await;
 }
 
 /// The header of a compact JWS, read without trusting it: what the test wants

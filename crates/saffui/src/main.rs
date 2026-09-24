@@ -507,16 +507,16 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
 
     // After the ports, so a deployment that cannot listen fails before it has
     // deleted anything.
-    let sweeping = server::jobs::sweep_expired_rows(
+    let sweeping = scheduler::jobs::sweep_expired_rows(
         swept_tenancy,
         config::jobs::sweep_every().map_err(|reason| reason.to_string())?,
     );
-    let syncing = server::jobs::sync_federated_shadows(
+    let syncing = scheduler::jobs::sync_federated_shadows(
         synced_tenancy,
         synced_sealing.clone(),
         config::jobs::federation_sync_every().map_err(|reason| reason.to_string())?,
     );
-    let delivering = server::jobs::deliver_outbox_events(
+    let delivering = scheduler::jobs::deliver_outbox_events(
         tenancy_for_outbox,
         synced_sealing,
         origin_for_outbox,

@@ -39,7 +39,7 @@ pub async fn ask(
     // realm has said nothing: an unmapped path is not an open one.
     let resolved = match &asked.about {
         Asked::Route { method, path } => {
-            let routes = store::providers::authorization::authz_routes::routes(&transaction)
+            let routes = services::authorization::routes::read_routes(&transaction)
                 .await
                 .map_err(|_| internal())?;
             let Some(route) = services::authorization::routes::matched(&routes, method, path)

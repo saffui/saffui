@@ -58,12 +58,11 @@ async fn turn_away_arriving_in_the_clear(request: &ServiceRequest) -> Option<Htt
         Err(StoreError::Unavailable | StoreError::Backend) => return Some(answer_unavailable()),
         Err(_) => return None,
     };
-    let held =
-        match store::providers::realms::load(&transaction, &transaction.context().realm_id).await {
-            Ok(Some(held)) => held,
-            Ok(None) => return None,
-            Err(_) => return Some(answer_unavailable()),
-        };
+    let held = match services::realm::named(&transaction, &transaction.context().realm_id).await {
+        Ok(Some(held)) => held,
+        Ok(None) => return None,
+        Err(_) => return Some(answer_unavailable()),
+    };
     let in_the_clear_refused = match held.ssl_enforcement {
         None | Some(SslEnforcement::NotRequired) => false,
         Some(SslEnforcement::Always) => true,

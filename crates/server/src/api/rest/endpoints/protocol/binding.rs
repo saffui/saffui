@@ -26,6 +26,26 @@ pub const LANDING: &str = "saffui_landing";
 /// here, which is what the mechanism is for.
 pub const BROWSER_STATE: &str = "saffui_op_state";
 
+/// What a browser admitted under a name carries back to its next sign-in, so
+/// that it is counted on its own rather than with its address.
+///
+/// Strict where the others are Lax: its one reader is the sign-in post, which
+/// the page sends to its own origin, so it never needs to ride a navigation
+/// from another site.
+pub const DEVICE: &str = "saffui_device";
+
+/// Set it for as long as the token inside it stands.
+pub fn set_device(response: &mut HttpResponseBuilder, value: &str, realm_id: &str) {
+    let cookie = Cookie::build(DEVICE, value.to_owned())
+        .path(format!("/realms/{realm_id}"))
+        .http_only(true)
+        .secure(true)
+        .same_site(SameSite::Strict)
+        .max_age(Duration::seconds(auth::login::device::LIFETIME))
+        .finish();
+    response.cookie(cookie);
+}
+
 /// Set the value the iframe reads, on the terms it has to be readable on.
 pub fn set_browser_state(response: &mut HttpResponseBuilder, value: &str, realm_id: &str) {
     let cookie = Cookie::build(BROWSER_STATE, value.to_owned())

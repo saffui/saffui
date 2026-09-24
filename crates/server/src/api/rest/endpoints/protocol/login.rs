@@ -290,6 +290,7 @@ pub async fn answer(
         })
         .collect();
 
+    let device_token = binding::read(&request, binding::DEVICE);
     let step = browser::answer_step(
         &transaction,
         sealing.provider.as_ref(),
@@ -325,6 +326,7 @@ pub async fn answer(
             ring,
             envelope: &sealing.envelope,
         }),
+        device_token.as_deref(),
         signing.as_ref(),
         // Anything other than the two words is no answer at all, so the
         // screen is shown again rather than read as one of them.
@@ -488,6 +490,9 @@ pub async fn answer(
                     if let Some(state) = &browser_state {
                         binding::set_browser_state(&mut response, state, &context.realm_id);
                     }
+                    if let Some(token) = &admitted.device {
+                        binding::set_device(&mut response, token, &context.realm_id);
+                    }
                     hand_over(&mut response, &context.realm_id, ticket.as_deref());
                     // An admission whose answer is a refusal, such as an
                     // organization the user does not hold, is said as what it
@@ -552,11 +557,12 @@ pub async fn answer(
                         Spoken::Form => shown(&page, "locked-out"),
                     }
                 }
-                // The address is what is turned away, so saying so tells the
-                // caller nothing about any account, and when to come back is
-                // the header every client already knows how to wait on.
+                // The address is what is turned away, or a device that already
+                // proved the name, so saying so tells the caller nothing about
+                // any account it had not proved, and when to come back is the
+                // header every client already knows how to wait on.
                 Step::Throttled { until } => {
-                    tracing::warn!(until, "login throttled for its address");
+                    tracing::warn!(until, "login throttled for where it came from");
                     match spoken {
                         Spoken::Json => {
                             uncached(&mut HttpResponseBuilder::new(StatusCode::TOO_MANY_REQUESTS))

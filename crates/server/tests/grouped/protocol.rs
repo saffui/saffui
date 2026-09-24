@@ -6047,7 +6047,7 @@ async fn a_passkey_alone_signs_in_where_the_realm_allows_it() {
     );
 
     // The key answers; no name ever typed; the person is established.
-    let (status, admitted, _) = login_step(
+    let (status, admitted, set) = login_step(
         &plane,
         Some(&auth_session),
         serde_json::json!({
@@ -6058,6 +6058,11 @@ async fn a_passkey_alone_signs_in_where_the_realm_allows_it() {
     .await;
     assert_eq!(status, StatusCode::OK, "{admitted}");
     assert_eq!(admitted["status"], "admitted", "{admitted}");
+    assert_eq!(
+        cookie_value(&set, support::DEVICE_COOKIE),
+        None,
+        "a key alone left a device token, which no typed name binds"
+    );
 }
 
 /// A credential nobody enrolled names nobody: the answer fails like a wrong

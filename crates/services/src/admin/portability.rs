@@ -18,6 +18,8 @@ use store::providers::{clients, realms};
 use store::query::list_query::ListQuery;
 use store::tenancy::UnitOfWork;
 
+use crate::admin::realms::Witness;
+
 /// Why a realm could not be carried out or written back.
 #[derive(Debug, thiserror::Error)]
 pub enum Unportable {
@@ -1609,6 +1611,58 @@ fn refuse_people_not_carried(doc: &ExportedRealm) -> Result<(), Unportable> {
         }
     }
     Ok(())
+}
+
+/// Write a whole import into the tenant's chain, in the import's own
+/// transaction, beside the realms born and taken away.
+pub async fn record_import(
+    transaction: &UnitOfWork,
+    witness: &Witness<'_>,
+    realm_id: &str,
+    now: i64,
+) -> Result<(), Unportable> {
+    store::tenant_chain::append(
+        transaction,
+        &serde_json::json!({
+            "kind": "realm.imported",
+            "occurred_at": now as f64,
+            "realm": realm_id,
+            "actor": witness.actor,
+            "actor_realm": witness.actor_realm,
+            "party": witness.party,
+        }),
+    )
+    .await
+    .map(|_| ())
+    .map_err(|_| Unportable::Backend)
+}
+
+/// The same for a partial import, with the policy it ran under and what it
+/// did.
+pub async fn record_partial_import(
+    transaction: &UnitOfWork,
+    witness: &Witness<'_>,
+    realm_id: &str,
+    collision: ImportCollisionPolicy,
+    report: &PartialImportReport,
+    now: i64,
+) -> Result<(), Unportable> {
+    store::tenant_chain::append(
+        transaction,
+        &serde_json::json!({
+            "kind": "realm.partially_imported",
+            "occurred_at": now as f64,
+            "realm": realm_id,
+            "actor": witness.actor,
+            "actor_realm": witness.actor_realm,
+            "party": witness.party,
+            "collision": collision,
+            "report": report,
+        }),
+    )
+    .await
+    .map(|_| ())
+    .map_err(|_| Unportable::Backend)
 }
 
 /// Write the document back as rows, in dependency order, inside the one

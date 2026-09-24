@@ -107,7 +107,7 @@ fn refuse(why: Unrealmed) -> ApiError {
 }
 
 /// Who is changing the realm, as the tenant's chain records it.
-fn witness(admin: &Admin) -> Witness<'_> {
+pub(super) fn witness(admin: &Admin) -> Witness<'_> {
     Witness {
         actor: admin.context.principal.id(),
         actor_realm: &admin.context.tenant.realm_id,

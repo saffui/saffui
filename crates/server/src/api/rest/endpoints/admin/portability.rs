@@ -129,19 +129,14 @@ pub async fn import(
         )),
         _ => None,
     };
-    store::tenant_chain::append(
+    portability::record_import(
         &transaction,
-        &serde_json::json!({
-            "kind": "realm.imported",
-            "occurred_at": chrono::Utc::now().timestamp() as f64,
-            "realm": realm_id,
-            "actor": admin.context.principal.id(),
-            "actor_realm": admin.context.tenant.realm_id,
-            "party": admin.context.presenter,
-        }),
+        &super::realms::witness(&admin),
+        &realm_id,
+        Utc::now().timestamp(),
     )
     .await
-    .map_err(|_| internal())?;
+    .map_err(refused)?;
     transaction.commit().await.map_err(|_| internal())?;
 
     let mut answer = serde_json::json!({ "realm_id": realm_id });
@@ -221,21 +216,16 @@ pub async fn partial_import(
     )
     .await
     .map_err(refused)?;
-    store::tenant_chain::append(
+    portability::record_partial_import(
         &transaction,
-        &serde_json::json!({
-            "kind": "realm.partially_imported",
-            "occurred_at": chrono::Utc::now().timestamp() as f64,
-            "realm": realm_id,
-            "actor": admin.context.principal.id(),
-            "actor_realm": admin.context.tenant.realm_id,
-            "party": admin.context.presenter,
-            "collision": policy,
-            "report": report,
-        }),
+        &super::realms::witness(&admin),
+        &realm_id,
+        policy,
+        &report,
+        Utc::now().timestamp(),
     )
     .await
-    .map_err(|_| internal())?;
+    .map_err(refused)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(report))
 }

@@ -1509,7 +1509,10 @@ async function saveSmsTemplate() {
               {{ say("settings-throttle-enabled") }}
               <AppHint name="settings-throttle-enabled-help" />
             </AppToggle>
-            <div v-if="draft.source_throttled" class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div
+              v-if="draft.source_throttled"
+              class="grid grid-cols-1 items-end gap-3 sm:grid-cols-3"
+            >
               <label class="block text-[11px] font-medium text-muted">
                 {{ say("settings-throttle-address") }}
                 <AppHint name="settings-throttle-address-help" />

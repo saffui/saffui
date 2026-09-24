@@ -402,7 +402,7 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
         .enabled;
 
     let database = database()?;
-    let plane = plane(&database)?;
+    let plane = served_plane(&database).await?;
 
     // What this build reads. A pod whose database has migrated past it cannot
     // read what its peers now write, so it takes itself out of service.
@@ -611,7 +611,7 @@ fn ldap_acceptor(paths: &config::ldap::TlsPaths) -> Result<openssl::ssl::SslCont
 /// select here on purpose, so a command that read as `saffui_app` would find
 /// nothing and say the deployment had no history.
 async fn read_chronicle(tenant: &str, max: i64, verify: bool) -> Result<(), String> {
-    let tenancy = Tenancy::unpinned(database()?.pool().map_err(|e| e.to_string())?);
+    let tenancy = Tenancy::unpinned(database()?.direct_pool().map_err(|e| e.to_string())?);
     let transaction = tenancy
         .begin(&TenantContext::tenant_wide(tenant))
         .await
@@ -727,7 +727,7 @@ struct Wanted {
 
 /// Create what is missing, and say what was created.
 async fn provision(wanted: &Wanted) -> Result<(), String> {
-    let plane = plane(&database()?)?;
+    let plane = served_plane(&database()?).await?;
     let now = chrono::Utc::now().timestamp();
     let console = plane
         .policy
@@ -962,7 +962,21 @@ fn database() -> Result<pgcore::database::Database, String> {
     use pgcore::database::{Bounds, Database, DatabaseError};
 
     let read = config::database::Database::from_env().map_err(|e| e.to_string())?;
-    Database::new(
+    let told = |variable: &'static str| {
+        move |why: DatabaseError| match why {
+            DatabaseError::Unreadable => format!("{variable}: {why}"),
+            DatabaseError::Unstated { .. } => format!(
+                "{why}: set SAFFUI_DATABASE_TLS to verify-full with SAFFUI_DATABASE_TLS_CA, \
+                 to require, or to disabled to accept the clear"
+            ),
+            DatabaseError::Contradicted { .. } => {
+                format!("{why}: say it in SAFFUI_DATABASE_TLS alone, or make the two agree")
+            }
+            DatabaseError::Tls(_) => format!("SAFFUI_DATABASE_TLS: {why}"),
+            DatabaseError::Pool => why.to_string(),
+        }
+    };
+    let database = Database::new(
         &read.address,
         read.tls.as_deref(),
         read.tls_ca.as_deref(),
@@ -973,18 +987,48 @@ fn database() -> Result<pgcore::database::Database, String> {
             connect: read.connect,
         },
     )
-    .map_err(|why| match why {
-        DatabaseError::Unreadable => format!("SAFFUI_DATABASE_URL: {why}"),
-        DatabaseError::Unstated { .. } => format!(
-            "{why}: set SAFFUI_DATABASE_TLS to verify-full with SAFFUI_DATABASE_TLS_CA, \
-             to require, or to disabled to accept the clear"
-        ),
-        DatabaseError::Contradicted { .. } => {
-            format!("{why}: say it in SAFFUI_DATABASE_TLS alone, or make the two agree")
-        }
-        DatabaseError::Tls(_) => format!("SAFFUI_DATABASE_TLS: {why}"),
-        DatabaseError::Pool => why.to_string(),
-    })
+    .map_err(told("SAFFUI_DATABASE_URL"))?;
+    match read.pooler.as_deref() {
+        Some(pooler) => database
+            .with_pooler(pooler, read.tls.as_deref(), read.tls_ca.as_deref())
+            .map_err(told("SAFFUI_DATABASE_POOLER_URL")),
+        None => Ok(database),
+    }
+}
+
+/// The plane, with the role it serves as checked first: a superuser or a role
+/// holding BYPASSRLS reads every realm's rows whatever the policies say, and
+/// would hand each realm every other's. Through a pooler that role is the one
+/// the pooler's own configuration logs in with, which only the database can say.
+async fn served_plane(database: &pgcore::database::Database) -> Result<Plane, String> {
+    let plane = plane(database)?;
+    let served = plane.tenancy.read_served_role().await.map_err(|reason| {
+        format!("the database could not say who this server serves as: {reason:?}")
+    })?;
+    if served.above_the_rules {
+        return Err(if database.has_pooler() {
+            format!(
+                "SAFFUI_DATABASE_POOLER_URL: the pooler logs in as {}, which bypasses row \
+                 security, so every realm would read every other realm's rows; have it log \
+                 in as saffui_app",
+                served.name
+            )
+        } else {
+            format!(
+                "SAFFUI_DATABASE_URL: this server would serve as {}, which bypasses row \
+                 security, so every realm would read every other realm's rows; serve as \
+                 saffui_app, and keep the owner for migrate",
+                served.name
+            )
+        });
+    }
+    if database.has_pooler() {
+        tracing::info!(
+            role = served.name,
+            "serving through a pooler in transaction mode; the live feed keeps the direct address"
+        );
+    }
+    Ok(plane)
 }
 
 /// Everything the plane needs, read once at startup.
@@ -1039,12 +1083,17 @@ fn plane(database: &pgcore::database::Database) -> Result<Plane, String> {
     let region = config::optional("REGION");
 
     let pool = database.pool().map_err(|e| e.to_string())?;
+    let tenancy = match region {
+        Some(region) => Tenancy::in_region(pool, region),
+        None => Tenancy::unpinned(pool),
+    };
 
     let egress = config::serving::Egress::from_env().map_err(|e| e.to_string())?;
     Ok(Plane {
-        tenancy: match region {
-            Some(region) => Tenancy::in_region(pool, region),
-            None => Tenancy::unpinned(pool),
+        tenancy: if database.has_pooler() {
+            tenancy.behind_a_pooler(database.bounds().idle_in_transaction)
+        } else {
+            tenancy
         },
         policy: AdminPolicy {
             audiences,

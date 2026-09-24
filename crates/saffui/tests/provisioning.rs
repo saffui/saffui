@@ -15,12 +15,16 @@ fn provider() -> OpenSslProvider {
 }
 
 fn provision(base_url: &str, database: &str, extra: &[String]) -> Output {
+    provision_as(
+        &format!("{base_url} user=saffui_app password=saffui_app_test dbname={database}"),
+        extra,
+    )
+}
+
+fn provision_as(address: &str, extra: &[String]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_saffui"));
     command.args(["provision", "--tenant=cli-atomic", "--realm=cli-atomic"]);
-    command.args(extra).env(
-        "SAFFUI_DATABASE_URL",
-        format!("{base_url} user=saffui_app password=saffui_app_test dbname={database}"),
-    );
+    command.args(extra).env("SAFFUI_DATABASE_URL", address);
     command
         .env("SAFFUI_PUBLIC_ORIGIN", "https://saffui.test")
         .env("SAFFUI_ADMIN_AUDIENCES", "saffui-console")
@@ -147,4 +151,23 @@ async fn cli_provision_is_atomic_and_idempotent() {
         .unwrap()
         .get(0);
     assert_eq!(attached, 1);
+}
+
+/// The role a command would serve as is asked of the database before anything
+/// runs: a superuser reads every realm's rows whatever the policies say, and
+/// the command refuses to go on as one, naming the setting to change.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_role_above_the_rules_is_refused_before_anything_runs() {
+    let owner = std::env::var("SAFFUI_TEST_PG").expect("SAFFUI_TEST_PG");
+    let outcome = provision_as(&owner, &[]);
+    let said = String::from_utf8_lossy(&outcome.stderr);
+    assert!(
+        !outcome.status.success(),
+        "a superuser was served as: {said}"
+    );
+    assert!(
+        said.contains("SAFFUI_DATABASE_URL") && said.contains("bypasses row security"),
+        "the refusal does not say what to change: {said}"
+    );
 }

@@ -42,14 +42,18 @@ pub async fn begin(
     let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
         Ok(context) => context,
         Err(StoreError::Unavailable) => {
-            return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+            return told(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
         }
         Err(_) => {
             return told(StatusCode::NOT_FOUND, "no-such-login");
         }
     };
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => {
+            return told(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+        }
+        Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
     };
 
     let Ok(Some(provider)) =
@@ -199,14 +203,18 @@ pub async fn conclude(
     let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
         Ok(context) => context,
         Err(StoreError::Unavailable) => {
-            return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+            return told(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
         }
         Err(_) => {
             return told(StatusCode::NOT_FOUND, "no-such-login");
         }
     };
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => {
+            return told(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+        }
+        Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
     };
 
     let Ok(Some(provider)) =
@@ -682,14 +690,18 @@ pub async fn dismiss(
     let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
         Ok(context) => context,
         Err(StoreError::Unavailable) => {
-            return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+            return told(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
         }
         Err(_) => {
             return refused();
         }
     };
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => {
+            return told(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+        }
+        Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
     };
     let Ok(Some(provider)) =
         store::providers::brokering::provider_by_alias(&transaction, &alias).await

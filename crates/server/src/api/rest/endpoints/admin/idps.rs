@@ -8,6 +8,7 @@ use services::admin::idps::{self, Unwritable};
 use store::tenancy::Tenancy;
 
 use crate::api::config::Sealing;
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 pub async fn list(
@@ -19,7 +20,7 @@ pub async fn list(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let listed = idps::providers(&transaction).await.map_err(refused)?;
     Ok(HttpResponse::Ok().json(listed))
 }
@@ -33,7 +34,7 @@ pub async fn get(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let found = idps::get_provider(&transaction, &alias)
         .await
         .map_err(refused)?;
@@ -51,7 +52,7 @@ pub async fn create(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     // Provisioned on demand: sealing an upstream secret is the first thing
     // some realms ever seal.
     store::keyring::provision(
@@ -97,7 +98,7 @@ pub async fn update(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     // Provisioned on demand: sealing an upstream secret is the first thing
     // some realms ever seal.
     store::keyring::provision(
@@ -139,7 +140,7 @@ pub async fn delete(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     idps::delete_provider(&transaction, &alias)
         .await
         .map_err(refused)?;
@@ -158,7 +159,7 @@ pub async fn identities_of_user(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     if store::providers::users::load(&transaction, &user_id)
         .await
         .map_err(|_| internal())?
@@ -186,7 +187,10 @@ pub async fn prove(
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, alias) = path.into_inner();
     let context = within(&admin, &realm_id);
-    let transaction = tenancy.begin(&context).await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .begin(&context)
+        .await
+        .map_err(refuse_unopened_work)?;
     let proof = crate::federation::prove_delivery(
         &transaction,
         &sealing,
@@ -243,7 +247,7 @@ pub async fn list_mappers(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let listed = idps::mappers_of(&transaction, &alias)
         .await
         .map_err(refused)?;
@@ -261,7 +265,7 @@ pub async fn add_mapper(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let made = idps::add_mapper(
         &transaction,
         sealing.provider.as_ref(),
@@ -286,7 +290,7 @@ pub async fn get_mapper(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let found = idps::get_mapper(&transaction, &alias, &mapper_id)
         .await
         .map_err(refused)?;
@@ -303,7 +307,7 @@ pub async fn rework_mapper(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let rewritten = idps::rework_mapper(
         &transaction,
         &alias,
@@ -326,7 +330,7 @@ pub async fn remove_mapper(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     idps::remove_mapper(&transaction, &alias, &mapper_id)
         .await
         .map_err(refused)?;

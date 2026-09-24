@@ -13,12 +13,14 @@
 //!
 //! An unresolvable realm passes through untouched and the endpoint answers as
 //! it would have, so a disabled realm and an absent one stay the same answer
-//! here as everywhere else.
+//! here as everywhere else. A rule the database fails to hand over is answered
+//! 503, not taken as leave to serve in the clear.
 
 use std::future::{Future, Ready, ready};
 use std::net::IpAddr;
 use std::pin::Pin;
 use std::rc::Rc;
+use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
 use actix_web::body::EitherBody;
@@ -28,11 +30,11 @@ use actix_web::{Error, HttpResponse, web};
 use config::proxying::Proxying;
 use models::entities::realm::SslEnforcement;
 
-/// Whether this request must be turned away for arriving in the clear.
-async fn refused_for_arriving_in_the_clear(request: &ServiceRequest) -> bool {
-    let Some(proxying) = request.app_data::<web::Data<Proxying>>() else {
-        return false;
-    };
+use crate::api::rest::endpoints::protocol::dto::answer_unavailable;
+
+/// The answer this request gets instead of being served, when it must not be.
+async fn turn_away_arriving_in_the_clear(request: &ServiceRequest) -> Option<HttpResponse> {
+    let proxying = request.app_data::<web::Data<Proxying>>()?;
     let peer = request.peer_addr().map(|address| address.ip().to_string());
 
     // The scheme the terminating proxy wrote, believed only from a named peer.
@@ -45,23 +47,24 @@ async fn refused_for_arriving_in_the_clear(request: &ServiceRequest) -> bool {
         vouched.as_ref().and_then(|value| value.to_str().ok()),
     );
     if spoken.is_some_and(|scheme| scheme.eq_ignore_ascii_case("https")) {
-        return false;
+        return None;
     }
 
     // Plain, or nobody trustworthy said otherwise: the realm decides.
     let realm = request.match_info().get("realm").unwrap_or_default();
-    let Some(tenancy) = request.app_data::<web::Data<Tenancy>>() else {
-        return false;
+    let tenancy = request.app_data::<web::Data<Tenancy>>()?;
+    let transaction = match tenancy.begin_in(RealmNamed::ByName(realm)).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable | StoreError::Backend) => return Some(answer_unavailable()),
+        Err(_) => return None,
     };
-    let Ok(transaction) = tenancy.begin_in(RealmNamed::ByName(realm)).await else {
-        return false;
-    };
-    let Ok(Some(held)) =
-        store::providers::realms::load(&transaction, &transaction.context().realm_id).await
-    else {
-        return false;
-    };
-    match held.ssl_enforcement {
+    let held =
+        match store::providers::realms::load(&transaction, &transaction.context().realm_id).await {
+            Ok(Some(held)) => held,
+            Ok(None) => return None,
+            Err(_) => return Some(answer_unavailable()),
+        };
+    let in_the_clear_refused = match held.ssl_enforcement {
         None | Some(SslEnforcement::NotRequired) => false,
         Some(SslEnforcement::Always) => true,
         // For requests that did not come from a private address. The address
@@ -80,7 +83,8 @@ async fn refused_for_arriving_in_the_clear(request: &ServiceRequest) -> bool {
                 .and_then(|address| address.parse::<IpAddr>().ok());
             !believed.is_some_and(from_a_private_address)
         }
-    }
+    };
+    in_the_clear_refused.then(turned_away)
 }
 
 /// Loopback, RFC 1918, link-local, and their v6 kin.
@@ -146,12 +150,9 @@ where
     fn call(&self, request: ServiceRequest) -> Self::Future {
         let service = Rc::clone(&self.service);
         Box::pin(async move {
-            if refused_for_arriving_in_the_clear(&request).await {
+            if let Some(answer) = turn_away_arriving_in_the_clear(&request).await {
                 let (request, _) = request.into_parts();
-                return Ok(ServiceResponse::new(
-                    request,
-                    turned_away().map_into_right_body(),
-                ));
+                return Ok(ServiceResponse::new(request, answer.map_into_right_body()));
             }
             service
                 .call(request)

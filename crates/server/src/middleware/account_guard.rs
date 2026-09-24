@@ -30,7 +30,18 @@ pub enum AccountRefusal {
     StepUp(StepUp),
     /// A request the account refuses for a reason of its own, in the catalogue's words.
     Refused(ApiError),
+    /// No connection to the database could be had, which trying again may mend.
     Unavailable,
+    Failed,
+}
+
+impl AccountRefusal {
+    pub fn for_unopened_work(why: StoreError) -> Self {
+        match why {
+            StoreError::Unavailable => Self::Unavailable,
+            _ => Self::Failed,
+        }
+    }
 }
 
 impl std::fmt::Display for AccountRefusal {
@@ -42,7 +53,10 @@ impl std::fmt::Display for AccountRefusal {
             }
             Self::StepUp(_) => formatter.write_str("the login has to be proven again first"),
             Self::Refused(error) => write!(formatter, "{error}"),
-            Self::Unavailable => formatter.write_str("the account API could not answer"),
+            Self::Unavailable => {
+                formatter.write_str("the account API cannot answer for the moment")
+            }
+            Self::Failed => formatter.write_str("the account API could not answer"),
         }
     }
 }
@@ -53,7 +67,8 @@ impl ResponseError for AccountRefusal {
             Self::InvalidToken | Self::StepUp(_) => StatusCode::UNAUTHORIZED,
             Self::InsufficientScope => StatusCode::FORBIDDEN,
             Self::Refused(error) => error.status_code(),
-            Self::Unavailable => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Failed => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
@@ -76,7 +91,8 @@ impl ResponseError for AccountRefusal {
                 Some(write_step_up_challenge(step_up)),
             ),
             Self::Refused(error) => (error.body(), None),
-            Self::Unavailable => (ApiError::new(ErrorCode::InternalError).body(), None),
+            Self::Unavailable => (ApiError::new(ErrorCode::ServiceUnavailable).body(), None),
+            Self::Failed => (ApiError::new(ErrorCode::InternalError).body(), None),
         };
         let mut response = HttpResponseBuilder::new(self.status_code());
         if let Some(challenge) = challenge {
@@ -197,10 +213,10 @@ async fn establish(
         .tenancy
         .begin(&context)
         .await
-        .map_err(|_| AccountRefusal::Unavailable)?;
+        .map_err(AccountRefusal::for_unopened_work)?;
     let keys = services::realm::published_keys(&transaction)
         .await
-        .map_err(|_| AccountRefusal::Unavailable)?;
+        .map_err(|_| AccountRefusal::Failed)?;
     // A token bound to a key or a certificate is refused, as on the admin plane:
     // the console proves neither.
     let verified = services::token::verify_presented(
@@ -211,7 +227,13 @@ async fn establish(
         now,
     )
     .await
-    .map_err(|_| AccountRefusal::InvalidToken)?;
+    .map_err(|why| match why {
+        services::token::Refused::Unestablished => {
+            tracing::warn!(reason = %why, "an account API caller could not be established");
+            AccountRefusal::Failed
+        }
+        _ => AccountRefusal::InvalidToken,
+    })?;
 
     establish_account_caller(&transaction, context, &verified, now)
         .await
@@ -219,10 +241,27 @@ async fn establish(
             tracing::warn!(reason = %why, "an account API request was refused");
             match why {
                 NotAdmitted::MissingScope => AccountRefusal::InsufficientScope,
-                NotAdmitted::Backend => AccountRefusal::Unavailable,
+                NotAdmitted::Backend => AccountRefusal::Failed,
                 NotAdmitted::NotForAccountConsole
                 | NotAdmitted::LoggedOut
                 | NotAdmitted::Withdrawn => AccountRefusal::InvalidToken,
             }
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_missing_connection_is_worth_retrying() {
+        assert_eq!(
+            AccountRefusal::for_unopened_work(StoreError::Unavailable).status_code(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            AccountRefusal::for_unopened_work(StoreError::Backend).status_code(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
 }

@@ -11,7 +11,7 @@ use store::providers::{roles, users};
 use store::query::list_query::ListQuery;
 use store::tenancy::{Tenancy, UnitOfWork};
 
-use super::{answered, base_of, filter_of, refused, unavailable, window};
+use super::{answered, base_of, filter_of, internal, refuse_unopened_work, refused, window};
 use crate::middleware::admin_guard::Admin;
 
 async fn members_of(transaction: &UnitOfWork, group: &GroupModel) -> Result<Vec<UserModel>, ()> {
@@ -41,8 +41,9 @@ pub async fn list(
 ) -> HttpResponse {
     let realm_id = path.into_inner();
     let base = base_of(&request, &origin, &realm_id);
-    let Ok(transaction) = tenancy.begin(&within(&admin, &realm_id)).await else {
-        return unavailable();
+    let transaction = match tenancy.begin(&within(&admin, &realm_id)).await {
+        Ok(transaction) => transaction,
+        Err(why) => return refuse_unopened_work(why),
     };
 
     let query = request.query_string();
@@ -52,7 +53,7 @@ pub async fn list(
             Ok(scim::Matched::GroupName(name)) => {
                 match roles::load_group_by_name(&transaction, &name).await {
                     Ok(held) => held.into_iter().collect(),
-                    Err(_) => return unavailable(),
+                    Err(_) => return internal(),
                 }
             }
             Ok(_) => return refused(&Refusal::invalid_filter("groups filter by displayName")),
@@ -60,7 +61,7 @@ pub async fn list(
         },
         None => match roles::list_groups(&transaction, &ListQuery::new(page), false).await {
             Ok(held) => held.items,
-            Err(_) => return unavailable(),
+            Err(_) => return internal(),
         },
     };
 
@@ -69,7 +70,7 @@ pub async fn list(
     for group in &found {
         match shown(&transaction, &base, group).await {
             Ok(body) => resources.push(body),
-            Err(()) => return unavailable(),
+            Err(()) => return internal(),
         }
     }
     answered(StatusCode::OK, list_response(start_index, total, resources))
@@ -84,16 +85,17 @@ pub async fn get(
 ) -> HttpResponse {
     let (realm_id, group_id) = path.into_inner();
     let base = base_of(&request, &origin, &realm_id);
-    let Ok(transaction) = tenancy.begin(&within(&admin, &realm_id)).await else {
-        return unavailable();
+    let transaction = match tenancy.begin(&within(&admin, &realm_id)).await {
+        Ok(transaction) => transaction,
+        Err(why) => return refuse_unopened_work(why),
     };
     match roles::load_group(&transaction, &group_id).await {
         Ok(Some(group)) => match shown(&transaction, &base, &group).await {
             Ok(body) => answered(StatusCode::OK, body),
-            Err(()) => unavailable(),
+            Err(()) => internal(),
         },
         Ok(None) => refused(&Refusal::not_found()),
-        Err(_) => unavailable(),
+        Err(_) => internal(),
     }
 }
 
@@ -116,8 +118,9 @@ pub async fn create(
     };
 
     let context = within(&admin, &realm_id);
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return unavailable();
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(why) => return refuse_unopened_work(why),
     };
     let mut metadata = models::auditable::AuditableModel::from_creator(
         context.tenant.clone(),
@@ -141,7 +144,7 @@ pub async fn create(
                 "a group already answers to {name}"
             )));
         }
-        Err(_) => return unavailable(),
+        Err(_) => return internal(),
     }
     for member in body["members"].as_array().unwrap_or(&Vec::new()) {
         let Some(user_id) = member["value"].as_str().filter(|it| !it.is_empty()) else {
@@ -151,16 +154,16 @@ pub async fn create(
             .await
             .is_err()
         {
-            return unavailable();
+            return internal();
         }
     }
 
     let body = match shown(&transaction, &base, &group).await {
         Ok(body) => body,
-        Err(()) => return unavailable(),
+        Err(()) => return internal(),
     };
     if transaction.commit().await.is_err() {
-        return unavailable();
+        return internal();
     }
     answered(StatusCode::CREATED, body)
 }
@@ -180,13 +183,14 @@ pub async fn patch(
         Err(refusal) => return refused(&refusal),
     };
 
-    let Ok(transaction) = tenancy.begin(&within(&admin, &realm_id)).await else {
-        return unavailable();
+    let transaction = match tenancy.begin(&within(&admin, &realm_id)).await {
+        Ok(transaction) => transaction,
+        Err(why) => return refuse_unopened_work(why),
     };
     let mut group = match roles::load_group(&transaction, &group_id).await {
         Ok(Some(group)) => group,
         Ok(None) => return refused(&Refusal::not_found()),
-        Err(_) => return unavailable(),
+        Err(_) => return internal(),
     };
     let seats = folded.iter().any(|change| {
         matches!(
@@ -199,11 +203,11 @@ pub async fn patch(
             .await
             .is_err()
         {
-            return unavailable();
+            return internal();
         }
         match roles::group_membership(&transaction, &group_id).await {
             Ok((standing, _)) => standing,
-            Err(_) => return unavailable(),
+            Err(_) => return internal(),
         }
     } else {
         Vec::new()
@@ -283,7 +287,7 @@ pub async fn patch(
                     group.name
                 )));
             }
-            Err(_) => return unavailable(),
+            Err(_) => return internal(),
         }
     }
     if let Err(answer) = weigh_seated(&transaction, &group_id, &standing_before, seated).await {
@@ -293,12 +297,12 @@ pub async fn patch(
     let shown = match roles::load_group(&transaction, &group_id).await {
         Ok(Some(fresh)) => match shown(&transaction, &base, &fresh).await {
             Ok(body) => body,
-            Err(()) => return unavailable(),
+            Err(()) => return internal(),
         },
-        _ => return unavailable(),
+        _ => return internal(),
     };
     if transaction.commit().await.is_err() {
-        return unavailable();
+        return internal();
     }
     answered(StatusCode::OK, shown)
 }
@@ -313,13 +317,14 @@ pub async fn replace(
 ) -> HttpResponse {
     let (realm_id, group_id) = path.into_inner();
     let base = base_of(&request, &origin, &realm_id);
-    let Ok(transaction) = tenancy.begin(&within(&admin, &realm_id)).await else {
-        return unavailable();
+    let transaction = match tenancy.begin(&within(&admin, &realm_id)).await {
+        Ok(transaction) => transaction,
+        Err(why) => return refuse_unopened_work(why),
     };
     let mut group = match roles::load_group(&transaction, &group_id).await {
         Ok(Some(group)) => group,
         Ok(None) => return refused(&Refusal::not_found()),
-        Err(_) => return unavailable(),
+        Err(_) => return internal(),
     };
     if let Some(name) = body["displayName"].as_str().filter(|it| !it.is_empty()) {
         group.name = name.to_owned();
@@ -331,7 +336,7 @@ pub async fn replace(
                     "a group already answers to {name}"
                 )));
             }
-            Err(_) => return unavailable(),
+            Err(_) => return internal(),
         }
     }
     if let Some(members) = body.get("members") {
@@ -357,17 +362,17 @@ pub async fn replace(
             .await
             .is_err()
         {
-            return unavailable();
+            return internal();
         }
         let Ok((standing, _)) = roles::group_membership(&transaction, &group_id).await else {
-            return unavailable();
+            return internal();
         };
         for user_id in &standing {
             if roles::remove_from_group(&transaction, user_id, &group_id)
                 .await
                 .is_err()
             {
-                return unavailable();
+                return internal();
             }
         }
         for user_id in &wanted {
@@ -375,7 +380,7 @@ pub async fn replace(
                 .await
                 .is_err()
             {
-                return unavailable();
+                return internal();
             }
         }
         if let Err(answer) = weigh_seated(&transaction, &group_id, &standing, wanted).await {
@@ -386,12 +391,12 @@ pub async fn replace(
     let shown = match roles::load_group(&transaction, &group_id).await {
         Ok(Some(fresh)) => match shown(&transaction, &base, &fresh).await {
             Ok(body) => body,
-            Err(()) => return unavailable(),
+            Err(()) => return internal(),
         },
-        _ => return unavailable(),
+        _ => return internal(),
     };
     if transaction.commit().await.is_err() {
-        return unavailable();
+        return internal();
     }
     answered(StatusCode::OK, shown)
 }
@@ -417,14 +422,14 @@ async fn weigh_seated(
     }
     let carried = roles::roles_carried_at_or_above(transaction, group_id)
         .await
-        .map_err(|_| unavailable())?;
+        .map_err(|_| internal())?;
     let arriving = roles::roles_reached_from(transaction, &carried)
         .await
-        .map_err(|_| unavailable())?;
+        .map_err(|_| internal())?;
     match services::sod::weigh_everyone(transaction, &newcomers, &arriving).await {
         Ok(()) => Ok(()),
         Err(services::sod::Toxic::Refused(said)) => Err(refused(&Refusal::invalid(said))),
-        Err(services::sod::Toxic::Backend) => Err(unavailable()),
+        Err(services::sod::Toxic::Backend) => Err(internal()),
     }
 }
 
@@ -434,17 +439,18 @@ pub async fn delete(
     path: web::Path<(String, String)>,
 ) -> HttpResponse {
     let (realm_id, group_id) = path.into_inner();
-    let Ok(transaction) = tenancy.begin(&within(&admin, &realm_id)).await else {
-        return unavailable();
+    let transaction = match tenancy.begin(&within(&admin, &realm_id)).await {
+        Ok(transaction) => transaction,
+        Err(why) => return refuse_unopened_work(why),
     };
     match roles::delete_group(&transaction, &group_id).await {
         Ok(true) => {
             if transaction.commit().await.is_err() {
-                return unavailable();
+                return internal();
             }
             HttpResponse::NoContent().finish()
         }
         Ok(false) => refused(&Refusal::not_found()),
-        Err(_) => unavailable(),
+        Err(_) => internal(),
     }
 }

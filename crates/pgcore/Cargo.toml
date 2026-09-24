@@ -14,6 +14,7 @@ authors.workspace = true
 [dependencies]
 openssl = { workspace = true }
 tokio-postgres = { workspace = true }
+postgres-protocol = { workspace = true }
 postgres-openssl = { workspace = true }
 deadpool-postgres = { workspace = true }
 thiserror = { workspace = true }

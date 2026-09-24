@@ -7,6 +7,7 @@ use models::paging::PagingParams;
 use serde::Deserialize;
 use store::tenancy::Tenancy;
 
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 /// The one trace a listing is narrowed to, when one is named.
@@ -33,7 +34,7 @@ pub async fn list_entries(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let (entries, total) = store::audit::list_entries(
         &transaction,
         window.first,
@@ -70,7 +71,7 @@ pub async fn verify_chain(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let verified = match store::audit::verify(&transaction, sealing.provider.digest()).await {
         Ok(verified) => verified,
         Err(store::error::StoreError::NoChain) => {
@@ -118,7 +119,7 @@ pub async fn anchor_head(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let anchored = match store::audit::anchor(&transaction, &witness, &receipt).await {
         Ok(anchored) => anchored,
         Err(store::error::StoreError::NoChain) => {
@@ -146,7 +147,7 @@ pub async fn list_anchors(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = store::audit::list_anchors(&transaction)
         .await
         .map_err(|_| internal())?;

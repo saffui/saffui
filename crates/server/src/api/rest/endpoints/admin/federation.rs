@@ -7,6 +7,7 @@ use services::admin::federation::{self, Unwritable};
 use store::tenancy::Tenancy;
 
 use crate::api::config::Sealing;
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 pub async fn list(
@@ -18,7 +19,7 @@ pub async fn list(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = federation::list(&transaction).await.map_err(refused)?;
     Ok(HttpResponse::Ok().json(held))
 }
@@ -32,7 +33,7 @@ pub async fn get(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = federation::get(&transaction, &alias)
         .await
         .map_err(refused)?;
@@ -50,7 +51,7 @@ pub async fn put(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let ring = store::keyring::load(
         &transaction,
         &sealing.envelope,
@@ -84,7 +85,7 @@ pub async fn delete(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     federation::delete(&transaction, &alias)
         .await
         .map_err(refused)?;
@@ -102,7 +103,10 @@ pub async fn import(
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, alias) = path.into_inner();
     let context = within(&admin, &realm_id);
-    let transaction = tenancy.begin(&context).await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .begin(&context)
+        .await
+        .map_err(refuse_unopened_work)?;
     let held = match store::providers::brokering::federation(&transaction, &alias)
         .await
         .map_err(|_| internal())?

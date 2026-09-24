@@ -1189,6 +1189,7 @@ action-copy = Copier
 toast-refused = Refusé ({ $status })
 toast-hint-forbidden = Le plan a reconnu qui tu es et refusé ce que tu demandes : ton rôle ne porte pas cette capacité. Rejouer provision rafraîchit un rôle administrateur jamais retouché ; sinon accorde la capacité à un rôle que tu tiens.
 toast-hint-unauthorized = La session ne tient plus ; reconnecte-toi.
+toast-hint-service-unavailable = Le serveur n'a pas pu joindre sa base. Réessaie dans un instant ; si cela dure, sa sonde de disponibilité dit pourquoi.
 toast-realm-deleted = Realm { $realm } supprimé.
 toast-saved = Enregistré
 toast-kept = Enregistré : { $subject }

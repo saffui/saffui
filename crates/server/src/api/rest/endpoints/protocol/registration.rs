@@ -35,6 +35,7 @@ fn refused(why: &Refused) -> HttpResponse {
         Refused::Unauthorized => (StatusCode::UNAUTHORIZED, "invalid_token"),
         Refused::Invalid(_) => (StatusCode::BAD_REQUEST, "invalid_client_metadata"),
         Refused::Unwritable => (StatusCode::INTERNAL_SERVER_ERROR, "invalid_request"),
+        Refused::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable"),
     };
     let mut building = HttpResponse::build(status);
     let answer = uncached(&mut building);
@@ -76,14 +77,16 @@ pub async fn create(
     let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
         Ok(context) => context,
         Err(StoreError::Unavailable) => {
-            return refused(&Refused::Unwritable);
+            return refused(&Refused::Unavailable);
         }
         Err(_) => {
             return refused(&Refused::Closed);
         }
     };
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return refused(&Refused::Unwritable);
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => return refused(&Refused::Unavailable),
+        Err(_) => return refused(&Refused::Unwritable),
     };
     let Ok(Some(held)) = realms::load(&transaction, &context.realm_id).await else {
         return refused(&Refused::Closed);
@@ -196,11 +199,13 @@ pub async fn replace(
     };
     let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
         Ok(context) => context,
-        Err(StoreError::Unavailable) => return refused(&Refused::Unwritable),
+        Err(StoreError::Unavailable) => return refused(&Refused::Unavailable),
         Err(_) => return refused(&Refused::Closed),
     };
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return refused(&Refused::Unwritable);
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => return refused(&Refused::Unavailable),
+        Err(_) => return refused(&Refused::Unwritable),
     };
     let held = match registration::holder_of(
         &transaction,
@@ -249,11 +254,13 @@ pub async fn withdraw(
     let (realm, client_id) = path.into_inner();
     let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
         Ok(context) => context,
-        Err(StoreError::Unavailable) => return refused(&Refused::Unwritable),
+        Err(StoreError::Unavailable) => return refused(&Refused::Unavailable),
         Err(_) => return refused(&Refused::Closed),
     };
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return refused(&Refused::Unwritable);
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => return refused(&Refused::Unavailable),
+        Err(_) => return refused(&Refused::Unwritable),
     };
     if let Err(why) = registration::holder_of(
         &transaction,
@@ -284,13 +291,13 @@ async fn held_client(
 ) -> Result<ClientModel, Refused> {
     let context = match tenancy.resolve(RealmNamed::ByName(realm)).await {
         Ok(context) => context,
-        Err(StoreError::Unavailable) => return Err(Refused::Unwritable),
+        Err(StoreError::Unavailable) => return Err(Refused::Unavailable),
         Err(_) => return Err(Refused::Closed),
     };
-    let transaction = tenancy
-        .begin(&context)
-        .await
-        .map_err(|_| Refused::Unwritable)?;
+    let transaction = tenancy.begin(&context).await.map_err(|why| match why {
+        StoreError::Unavailable => Refused::Unavailable,
+        _ => Refused::Unwritable,
+    })?;
     registration::holder_of(
         &transaction,
         sealing.provider.as_ref(),

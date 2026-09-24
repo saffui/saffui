@@ -6,24 +6,22 @@
 name: saffui-obs
 
 services:
+  # Encrypted as ../local is: the same certificate drawn on first start.
   postgres:
-    image: postgres:16
-    environment:
-      POSTGRES_DB: saffui
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d saffui"]
-      interval: 2s
-      timeout: 2s
-      retries: 30
+    extends:
+      file: ../local/compose.yaml
+      service: postgres
 
   migrate:
     image: saffui:local
     pull_policy: never
+    volumes:
+      - postgres-certs:/certs:ro
     command: ["migrate"]
     environment:
       SAFFUI_DATABASE_URL: host=postgres user=postgres password=postgres dbname=saffui
+      SAFFUI_DATABASE_TLS: verify-full
+      SAFFUI_DATABASE_TLS_CA: /certs/server.crt
       SAFFUI_APP_ROLE_PASSWORD: saffui_app
       SAFFUI_PUBLIC_ORIGIN: http://localhost:38080
       SAFFUI_ADMIN_AUDIENCES: saffui-console
@@ -36,6 +34,8 @@ services:
   provision:
     image: saffui:local
     pull_policy: never
+    volumes:
+      - postgres-certs:/certs:ro
     command:
       - provision
       - --tenant=local
@@ -46,6 +46,8 @@ services:
       - --email=ada@example.test
     environment:
       SAFFUI_DATABASE_URL: host=postgres user=saffui_app password=saffui_app dbname=saffui
+      SAFFUI_DATABASE_TLS: verify-full
+      SAFFUI_DATABASE_TLS_CA: /certs/server.crt
       SAFFUI_PUBLIC_ORIGIN: http://localhost:38080
       SAFFUI_ADMIN_AUDIENCES: saffui-console
       SAFFUI_ADMIN_PARTIES: saffui-console
@@ -58,11 +60,15 @@ services:
   saffui:
     image: saffui:local
     pull_policy: never
+    volumes:
+      - postgres-certs:/certs:ro
     ports:
       - "38080:8080"
       - "38081:8081"
     environment:
       SAFFUI_DATABASE_URL: host=postgres user=saffui_app password=saffui_app dbname=saffui
+      SAFFUI_DATABASE_TLS: verify-full
+      SAFFUI_DATABASE_TLS_CA: /certs/server.crt
       SAFFUI_PUBLIC_ORIGIN: http://localhost:38080
       SAFFUI_ADMIN_AUDIENCES: saffui-console
       SAFFUI_ADMIN_PARTIES: saffui-console
@@ -100,3 +106,6 @@ services:
     depends_on:
       saffui:
         condition: service_healthy
+
+volumes:
+  postgres-certs:

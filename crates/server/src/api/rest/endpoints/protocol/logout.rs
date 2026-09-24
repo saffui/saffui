@@ -7,6 +7,7 @@ use serde_json::json;
 use services::grant::Signing;
 use services::logout::{self, EndedAt, Frame, Requested};
 use services::saml_brokering;
+use store::error::StoreError;
 use store::keyring;
 use store::tenancy::{RealmNamed, Tenancy};
 
@@ -87,14 +88,24 @@ async fn run(
 
     // An unknown realm ends nothing and says so the same way. Which realms exist
     // is not a question this endpoint answers, and everyone links to it.
-    let Ok(context) = tenancy.resolve(RealmNamed::ByName(realm)).await else {
-        return told(realm, EndedAt::Nowhere, &[]);
+    let context = match tenancy.resolve(RealmNamed::ByName(realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => return page::answer_unavailable_to(request),
+        Err(_) => return told(realm, EndedAt::Nowhere, &[]),
     };
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return told(&context.realm_id, EndedAt::Nowhere, &[]);
+    // Past here the realm is known, and a failure is said rather than dressed
+    // as a sign-out: the cookies stay, so the person can try again.
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => return page::answer_unavailable_to(request),
+        // A realm pinned elsewhere is not one this node holds, and answers as one.
+        Err(StoreError::Residency { .. }) => {
+            return told(&context.realm_id, EndedAt::Nowhere, &[]);
+        }
+        Err(_) => return unended(request),
     };
     let Ok(keys) = services::realm::published_keys(&transaction).await else {
-        return told(&context.realm_id, EndedAt::Nowhere, &[]);
+        return unended(request);
     };
 
     let signed_in = binding::read(request, binding::SSO_SESSION);
@@ -173,13 +184,31 @@ async fn run(
     }
 
     if transaction.commit().await.is_err() {
-        return told(&context.realm_id, EndedAt::Nowhere, &[]);
+        return unended(request);
     }
     backchannel::deliver(notices, egress).await;
     if let Some(location) = departure {
         return leave_for_provider(&context.realm_id, &location, &frames);
     }
     told(&context.realm_id, ended, &frames)
+}
+
+/// A sign-out that could not be written, told as such.
+fn unended(request: &HttpRequest) -> HttpResponse {
+    if page::wants_page(request) {
+        return page::notice(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Sign-out did not finish",
+            "<p class=\"told\">Nothing was signed out. Try again in a moment.</p>",
+        );
+    }
+    uncached(&mut HttpResponseBuilder::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+    ))
+    .json(json!({
+        "error": "server_error",
+        "error_description": "the sign-out could not be written",
+    }))
 }
 
 /// The browser sent on to the SAML provider its login came through, its cookies

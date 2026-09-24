@@ -40,6 +40,19 @@ fn refused(id: Value, code: i64, message: &str) -> HttpResponse {
     }))
 }
 
+/// No connection to the database was had: said in the transport's status,
+/// which a host retries on.
+fn unavailable(id: Value) -> HttpResponse {
+    HttpResponse::ServiceUnavailable().json(json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": -32000,
+            "message": commons::error::ErrorCode::ServiceUnavailable.message(),
+        },
+    }))
+}
+
 /// A tool that ran and has something to say, or a tool that refused: both
 /// are results, MCP-shaped, so a host renders them instead of crashing.
 fn told(id: Value, text: String, is_error: bool) -> HttpResponse {
@@ -70,15 +83,17 @@ pub async fn serve(
     let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
         Ok(context) => context,
         Err(StoreError::Unavailable) => {
-            return refused(id, -32000, "the realm could not be read");
+            return unavailable(id);
         }
         Err(_) => {
             // The same face a missing realm wears everywhere else.
             return HttpResponse::NotFound().finish();
         }
     };
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return refused(id, -32000, "the realm could not be read");
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => return unavailable(id),
+        Err(_) => return refused(id, -32000, "the realm could not be read"),
     };
     let Ok(held) = store::providers::realms::load(&transaction, &context.realm_id).await else {
         return refused(id, -32000, "the realm could not be read");

@@ -8,7 +8,7 @@ use store::tenancy::{RealmNamed, Tenancy};
 use config::serving::LoginUi;
 
 use crate::api::config::Sealing;
-use crate::api::rest::endpoints::protocol::dto::{Denied, uncached};
+use crate::api::rest::endpoints::protocol::dto::{Denied, answer_unavailable, uncached};
 use crate::api::rest::endpoints::protocol::{binding, caller, i18n, page};
 
 /// How long the login a typed code opens may sit half finished; the cookie
@@ -47,7 +47,7 @@ pub async fn open(
     let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
         Ok(context) => context,
         Err(StoreError::Unavailable) => {
-            return Denied::InvalidRequest.answer("the realm could not be read");
+            return answer_unavailable();
         }
         Err(_) => {
             return Denied::InvalidClient.answer("the client could not be authenticated");
@@ -171,11 +171,15 @@ pub async fn verify(
         "/realms/{}/protocol/openid-connect/device#no-such-code",
         realm.as_str()
     );
-    let Ok(context) = tenancy.resolve(RealmNamed::ByName(&realm)).await else {
-        return sent_back(&back);
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => return page::notice_unavailable(),
+        Err(_) => return sent_back(&back),
     };
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return sent_back(&back);
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => return page::notice_unavailable(),
+        Err(_) => return sent_back(&back),
     };
     let auth_session_id = match services::device::begin_verification(
         &transaction,

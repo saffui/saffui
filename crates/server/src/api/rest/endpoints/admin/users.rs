@@ -10,6 +10,7 @@ use store::tenancy::{Tenancy, UnitOfWork};
 
 use crate::api::config::Sealing;
 use crate::api::rest::endpoints::admin::dto::{PasswordSpec, UserBrief, UserSpec};
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 /// What a caller may narrow the listing by: an equality, and a prefix an
@@ -37,7 +38,7 @@ pub async fn list(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     // The trailing `%` is added here and the rest is bound, so nothing a
     // caller wrote reaches the statement as text.
     let typed = narrowing
@@ -80,7 +81,7 @@ pub async fn get(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let found = services::admin::users::identified(&transaction, &user_id)
         .await
         .map_err(refused)?;
@@ -126,7 +127,7 @@ pub async fn create(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let tenant = admin.context.tenant.tenant.clone();
     let by = admin.context.principal.id().to_owned();
     let user = people::create(
@@ -168,7 +169,7 @@ pub async fn update(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
     let user = people::update(&transaction, &user_id, &spec)
         .await
@@ -196,7 +197,7 @@ pub async fn set_password(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
     people::set_password(
         &transaction,
@@ -239,7 +240,7 @@ pub async fn read_password_history(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
     let mut held = store::providers::credentials::load_for_user_of_type(
         &transaction,
@@ -270,7 +271,7 @@ pub async fn remove(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
     if !people::remove(&transaction, &user_id)
         .await
@@ -325,7 +326,7 @@ pub async fn lockout(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
     let held = people::lockout(&transaction, &user_id)
         .await
@@ -353,7 +354,7 @@ pub async fn recovery_codes(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
     let left = people::recovery_codes_left(&transaction, &user_id)
         .await
@@ -371,7 +372,7 @@ pub async fn lift_lockout(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
     people::lift_lockout(&transaction, &user_id)
         .await
@@ -390,7 +391,7 @@ pub async fn messages(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
     let held = store::providers::deliveries::of_user(&transaction, &user_id, 50)
         .await
@@ -408,7 +409,7 @@ pub async fn consents(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
     let held = store::providers::consents::of_user(&transaction, &user_id)
         .await
@@ -438,7 +439,7 @@ pub async fn withdraw_consent(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
     if !store::providers::consents::withdraw(&transaction, &user_id, &client_id)
         .await
@@ -461,7 +462,7 @@ pub async fn effective_roles(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
     let held = store::providers::roles::effective_roles(&transaction, &user_id)
         .await
@@ -490,7 +491,7 @@ pub async fn member_groups(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
     let mut groups = Vec::new();
     // Joined memberships only: each row here backs a remove control, and a
@@ -521,7 +522,7 @@ pub async fn member_organizations(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
     let mut organizations = Vec::new();
     for org_id in store::providers::organizations::of_member(&transaction, &user_id)

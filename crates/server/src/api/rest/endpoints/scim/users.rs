@@ -16,7 +16,7 @@ use store::providers::{credentials, roles, users};
 use store::query::list_query::ListQuery;
 use store::tenancy::{Tenancy, UnitOfWork};
 
-use super::{answered, base_of, filter_of, refused, unavailable, window};
+use super::{answered, base_of, filter_of, internal, refuse_unopened_work, refused, window};
 use crate::api::config::Sealing;
 use crate::middleware::admin_guard::Admin;
 
@@ -50,8 +50,9 @@ pub async fn list(
 ) -> HttpResponse {
     let realm_id = path.into_inner();
     let base = base_of(&request, &origin, &realm_id);
-    let Ok(transaction) = tenancy.begin(&within(&admin, &realm_id)).await else {
-        return unavailable();
+    let transaction = match tenancy.begin(&within(&admin, &realm_id)).await {
+        Ok(transaction) => transaction,
+        Err(why) => return refuse_unopened_work(why),
     };
 
     let query = request.query_string();
@@ -77,12 +78,12 @@ pub async fn list(
             };
             match one {
                 Ok(held) => held.into_iter().collect(),
-                Err(_) => return unavailable(),
+                Err(_) => return internal(),
             }
         }
         None => match users::list(&transaction, &ListQuery::new(page), true).await {
             Ok(held) => held.items,
-            Err(_) => return unavailable(),
+            Err(_) => return internal(),
         },
     };
 
@@ -91,7 +92,7 @@ pub async fn list(
     for person in &found {
         match shown(&transaction, &base, person).await {
             Ok(body) => resources.push(body),
-            Err(()) => return unavailable(),
+            Err(()) => return internal(),
         }
     }
     answered(StatusCode::OK, list_response(start_index, total, resources))
@@ -106,16 +107,17 @@ pub async fn get(
 ) -> HttpResponse {
     let (realm_id, user_id) = path.into_inner();
     let base = base_of(&request, &origin, &realm_id);
-    let Ok(transaction) = tenancy.begin(&within(&admin, &realm_id)).await else {
-        return unavailable();
+    let transaction = match tenancy.begin(&within(&admin, &realm_id)).await {
+        Ok(transaction) => transaction,
+        Err(why) => return refuse_unopened_work(why),
     };
     match users::load(&transaction, &user_id).await {
         Ok(Some(person)) => match shown(&transaction, &base, &person).await {
             Ok(body) => answered(StatusCode::OK, body),
-            Err(()) => unavailable(),
+            Err(()) => internal(),
         },
         Ok(None) => refused(&Refusal::not_found()),
-        Err(_) => unavailable(),
+        Err(_) => internal(),
     }
 }
 
@@ -143,8 +145,9 @@ pub async fn create(
     };
 
     let context = within(&admin, &realm_id);
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return unavailable();
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(why) => return refuse_unopened_work(why),
     };
 
     if let Some(external) = &asserted.external_id {
@@ -155,7 +158,7 @@ pub async fn create(
                 )));
             }
             Ok(None) => {}
-            Err(_) => return unavailable(),
+            Err(_) => return internal(),
         }
     }
 
@@ -166,7 +169,7 @@ pub async fn create(
     metadata.created_at = Some(chrono::Utc::now());
     let mut drawn = [0_u8; 16];
     if sealing.provider.rand().fill(&mut drawn).is_err() {
-        return unavailable();
+        return internal();
     }
     let mut person = UserModel {
         // Drawn like every other birth; SCIM addresses the row by this id,
@@ -197,12 +200,12 @@ pub async fn create(
         .await
         .is_err()
     {
-        return unavailable();
+        return internal();
     }
     match services::sod::weigh_newcomer(&transaction).await {
         Ok(()) => {}
         Err(services::sod::Toxic::Refused(said)) => return refused(&Refusal::invalid(said)),
-        Err(services::sod::Toxic::Backend) => return unavailable(),
+        Err(services::sod::Toxic::Backend) => return internal(),
     }
     match users::create(&transaction, &person).await {
         Ok(()) => {}
@@ -212,13 +215,13 @@ pub async fn create(
                 person.user_name
             )));
         }
-        Err(_) => return unavailable(),
+        Err(_) => return internal(),
     }
     if store::providers::roles::join_default_groups(&transaction, &person.user_id)
         .await
         .is_err()
     {
-        return unavailable();
+        return internal();
     }
     if let Some(password) = &asserted.password {
         match planted_password(
@@ -240,10 +243,10 @@ pub async fn create(
 
     let body = match shown(&transaction, &base, &person).await {
         Ok(body) => body,
-        Err(()) => return unavailable(),
+        Err(()) => return internal(),
     };
     if transaction.commit().await.is_err() {
-        return unavailable();
+        return internal();
     }
     answered(StatusCode::CREATED, body)
 }
@@ -268,13 +271,14 @@ pub async fn replace(
         Err(refusal) => return refused(&refusal),
     };
 
-    let Ok(transaction) = tenancy.begin(&within(&admin, &realm_id)).await else {
-        return unavailable();
+    let transaction = match tenancy.begin(&within(&admin, &realm_id)).await {
+        Ok(transaction) => transaction,
+        Err(why) => return refuse_unopened_work(why),
     };
     let mut person = match users::load(&transaction, &user_id).await {
         Ok(Some(person)) => person,
         Ok(None) => return refused(&Refusal::not_found()),
-        Err(_) => return unavailable(),
+        Err(_) => return internal(),
     };
     if let Some(renamed) = &asserted.user_name
         && renamed != &person.user_name
@@ -288,7 +292,7 @@ pub async fn replace(
 
     asserted.apply(&mut person);
     if users::update(&transaction, &person).await.is_err() {
-        return unavailable();
+        return internal();
     }
     if let Some(password) = &asserted.password {
         match planted_password(
@@ -310,12 +314,12 @@ pub async fn replace(
     let shown = match users::load(&transaction, &user_id).await {
         Ok(Some(fresh)) => match shown(&transaction, &base, &fresh).await {
             Ok(body) => body,
-            Err(()) => return unavailable(),
+            Err(()) => return internal(),
         },
-        _ => return unavailable(),
+        _ => return internal(),
     };
     if transaction.commit().await.is_err() {
-        return unavailable();
+        return internal();
     }
     answered(StatusCode::OK, shown)
 }
@@ -340,13 +344,14 @@ pub async fn patch(
         Err(refusal) => return refused(&refusal),
     };
 
-    let Ok(transaction) = tenancy.begin(&within(&admin, &realm_id)).await else {
-        return unavailable();
+    let transaction = match tenancy.begin(&within(&admin, &realm_id)).await {
+        Ok(transaction) => transaction,
+        Err(why) => return refuse_unopened_work(why),
     };
     let mut person = match users::load(&transaction, &user_id).await {
         Ok(Some(person)) => person,
         Ok(None) => return refused(&Refusal::not_found()),
-        Err(_) => return unavailable(),
+        Err(_) => return internal(),
     };
 
     let mut password = None;
@@ -388,7 +393,7 @@ pub async fn patch(
     }
 
     if users::update(&transaction, &person).await.is_err() {
-        return unavailable();
+        return internal();
     }
     if let Some(password) = &password {
         match planted_password(
@@ -410,12 +415,12 @@ pub async fn patch(
     let shown = match users::load(&transaction, &user_id).await {
         Ok(Some(fresh)) => match shown(&transaction, &base, &fresh).await {
             Ok(body) => body,
-            Err(()) => return unavailable(),
+            Err(()) => return internal(),
         },
-        _ => return unavailable(),
+        _ => return internal(),
     };
     if transaction.commit().await.is_err() {
-        return unavailable();
+        return internal();
     }
     answered(StatusCode::OK, shown)
 }
@@ -426,18 +431,19 @@ pub async fn delete(
     path: web::Path<(String, String)>,
 ) -> HttpResponse {
     let (realm_id, user_id) = path.into_inner();
-    let Ok(transaction) = tenancy.begin(&within(&admin, &realm_id)).await else {
-        return unavailable();
+    let transaction = match tenancy.begin(&within(&admin, &realm_id)).await {
+        Ok(transaction) => transaction,
+        Err(why) => return refuse_unopened_work(why),
     };
     match users::delete(&transaction, &user_id).await {
         Ok(true) => {
             if transaction.commit().await.is_err() {
-                return unavailable();
+                return internal();
             }
             HttpResponse::NoContent().finish()
         }
         Ok(false) => refused(&Refusal::not_found()),
-        Err(_) => unavailable(),
+        Err(_) => internal(),
     }
 }
 

@@ -15,6 +15,7 @@ use services::admin::flows::{self, Unwritable};
 use store::tenancy::Tenancy;
 
 use crate::api::config::Sealing;
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 pub async fn list(
@@ -26,7 +27,7 @@ pub async fn list(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let listed = flows::flows(&transaction).await.map_err(refused)?;
     Ok(HttpResponse::Ok().json(listed))
 }
@@ -42,7 +43,7 @@ pub async fn create(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let made = flows::create_flow(
         &transaction,
         sealing.provider.as_ref(),
@@ -67,7 +68,7 @@ pub async fn get(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let (flow, executions) = flows::get_flow(&transaction, &flow_id)
         .await
         .map_err(refused)?;
@@ -83,7 +84,7 @@ pub async fn delete(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     flows::delete_flow(&transaction, &flow_id)
         .await
         .map_err(refused)?;
@@ -102,7 +103,7 @@ pub async fn add_execution(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let made = flows::add_execution(
         &transaction,
         sealing.provider.as_ref(),
@@ -134,7 +135,7 @@ pub async fn set_requirement(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     flows::set_requirement(&transaction, &execution_id, body.requirement)
         .await
         .map_err(refused)?;
@@ -151,7 +152,7 @@ pub async fn remove_execution(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     flows::remove_execution(&transaction, &execution_id)
         .await
         .map_err(refused)?;
@@ -181,7 +182,7 @@ pub async fn reorder(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let moves: Vec<(String, i32)> = body
         .into_inner()
         .order
@@ -204,7 +205,7 @@ pub async fn list_actions(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let listed = flows::actions(&transaction).await.map_err(refused)?;
     Ok(HttpResponse::Ok().json(listed))
 }
@@ -220,7 +221,7 @@ pub async fn register_action(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let made = flows::register_action(
         &transaction,
         sealing.provider.as_ref(),
@@ -250,7 +251,7 @@ pub async fn rework_action(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let rewritten = flows::rework_action(
         &transaction,
         action,
@@ -273,7 +274,7 @@ pub async fn unregister_action(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     flows::unregister_action(&transaction, action)
         .await
         .map_err(refused)?;
@@ -291,7 +292,7 @@ pub async fn require_of_user(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let user_id = super::users::named_user(&transaction, &user_id).await?;
     flows::require_of_user(&transaction, &user_id, action)
         .await
@@ -310,7 +311,7 @@ pub async fn release_user(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let user_id = super::users::named_user(&transaction, &user_id).await?;
     flows::release_user(&transaction, &user_id, action)
         .await

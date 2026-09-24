@@ -9,7 +9,7 @@ use store::tenancy::{RealmNamed, Tenancy};
 
 use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::caller;
-use crate::api::rest::endpoints::protocol::dto::{Denied, uncached};
+use crate::api::rest::endpoints::protocol::dto::{Denied, answer_unavailable, uncached};
 
 #[derive(Debug, Deserialize)]
 pub struct Asked {
@@ -49,7 +49,7 @@ pub async fn tell(
     let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
         Ok(context) => context,
         Err(StoreError::Unavailable) => {
-            return Denied::InvalidRequest.answer("the realm could not be read");
+            return answer_unavailable();
         }
         Err(_) => {
             return Denied::InvalidClient.answer("the client could not be authenticated");

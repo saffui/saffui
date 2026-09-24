@@ -6,6 +6,7 @@ use models::entities::brokering::RealmSpnegoMutationModel;
 use services::admin::negotiation::{self, Unwritable};
 use store::tenancy::Tenancy;
 
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 pub async fn get(
@@ -17,7 +18,7 @@ pub async fn get(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = negotiation::get(&transaction).await.map_err(refused)?;
     Ok(HttpResponse::Ok().json(held))
 }
@@ -32,7 +33,7 @@ pub async fn put(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let kept = negotiation::put(
         &transaction,
         &admin.context.tenant.tenant,
@@ -55,7 +56,7 @@ pub async fn delete(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     negotiation::delete(&transaction).await.map_err(refused)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())

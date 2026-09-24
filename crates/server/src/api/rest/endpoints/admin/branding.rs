@@ -7,6 +7,7 @@ use services::theme::{Unusable, weigh_logo};
 use store::tenancy::Tenancy;
 
 use crate::api::rest::endpoints::within;
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 /// Keep this realm's mark, weighed on its own bytes.
@@ -26,7 +27,7 @@ pub async fn keep(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = store::providers::realms::set_logo(&transaction, &realm_id, Some((&body, kind)))
         .await
         .map_err(|_| internal())?;
@@ -47,7 +48,7 @@ pub async fn forget(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = store::providers::realms::set_logo(&transaction, &realm_id, None)
         .await
         .map_err(|_| internal())?;
@@ -69,7 +70,7 @@ pub async fn describe(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = store::providers::realms::logo_of(&transaction, &realm_id)
         .await
         .map_err(|_| internal())?;

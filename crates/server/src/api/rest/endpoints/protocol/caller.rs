@@ -3,13 +3,14 @@ use chrono::{DateTime, Utc};
 use models::entities::client::ClientModel;
 use secrecy::SecretBox;
 use services::client;
+use store::error::StoreError;
 use store::tenancy::{Tenancy, TenantContext, UnitOfWork};
 
 use config::serving::{Egress, PublicOrigin};
 
 use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::basic;
-use crate::api::rest::endpoints::protocol::dto::Denied;
+use crate::api::rest::endpoints::protocol::dto::{Denied, answer_unavailable};
 use crate::api::rest::endpoints::protocol::token::refused;
 
 /// The client, authenticated, and the transaction it was read in.
@@ -86,10 +87,10 @@ pub async fn establish(
 }
 
 async fn scoped(tenancy: &Tenancy, context: &TenantContext) -> Result<UnitOfWork, HttpResponse> {
-    tenancy
-        .begin(context)
-        .await
-        .map_err(|_| Denied::InvalidRequest.answer("the realm could not be read"))
+    tenancy.begin(context).await.map_err(|why| match why {
+        StoreError::Unavailable => answer_unavailable(),
+        _ => Denied::InvalidRequest.answer("the realm could not be read"),
+    })
 }
 
 async fn checked(

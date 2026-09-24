@@ -10,6 +10,7 @@ use store::keyring;
 use store::tenancy::Tenancy;
 
 use crate::api::config::Sealing;
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 /// Every key the realm holds, disabled ones included. The public JWKS shows
@@ -23,7 +24,7 @@ pub async fn list(
     let transaction = tenancy
         .begin(&within(&admin, realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
 
     let held = services::admin::realm_keys::held(&transaction)
         .await
@@ -61,7 +62,7 @@ pub async fn rotate(
     let transaction = tenancy
         .begin(&within(&admin, realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let ring = keyring::load(&transaction, &sealing.envelope, &tenant, realm_id)
         .await
         .map_err(|_| internal())?;
@@ -93,7 +94,7 @@ pub async fn disable(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
 
     services::admin::realm_keys::disable(&transaction, &kid)
         .await

@@ -8,6 +8,7 @@ use store::tenancy::Tenancy;
 
 use super::users::named_user;
 use crate::api::config::Sealing;
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 pub async fn list(
@@ -19,7 +20,7 @@ pub async fn list(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
     let held = claim_sources::sources_of(&transaction, &user_id)
         .await
@@ -38,7 +39,7 @@ pub async fn add(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
     let made = claim_sources::add(
         &transaction,
@@ -65,7 +66,7 @@ pub async fn remove(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     claim_sources::remove(&transaction, &user_id, &source_id)
         .await
         .map_err(refused)?;

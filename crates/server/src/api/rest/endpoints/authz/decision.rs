@@ -1,4 +1,5 @@
 use crate::api::rest::endpoints::authz::dto::{Ask, Asked, Told};
+use crate::error::refuse_unopened_work;
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
@@ -30,7 +31,7 @@ pub async fn ask(
     let transaction = tenancy
         .begin(&established.context.tenant)
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
 
     // The route map is the realm's own statement of what a path means. A
     // caller naming the permission it faces would name the one it can pass,

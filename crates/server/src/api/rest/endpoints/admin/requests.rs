@@ -8,6 +8,7 @@ use services::admin::requests::{self, Unaskable};
 use store::tenancy::Tenancy;
 
 use crate::api::config::Sealing;
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 fn internal() -> ApiError {
@@ -47,7 +48,7 @@ pub async fn list(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = requests::list(&transaction).await.map_err(refused)?;
     Ok(HttpResponse::Ok().json(held.iter().map(shaped).collect::<Vec<_>>()))
 }
@@ -96,7 +97,7 @@ pub async fn lodge(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let lodged = requests::lodge(
         &transaction,
         sealing.provider.as_ref(),
@@ -121,7 +122,7 @@ pub async fn approve(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let granted = requests::approve(&transaction, &request_id, admin.context.principal.id())
         .await
         .map_err(refused)?;
@@ -144,7 +145,7 @@ pub async fn deny(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     requests::deny(
         &transaction,
         &request_id,
@@ -166,7 +167,7 @@ pub async fn withdraw(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     requests::withdraw(&transaction, &request_id, admin.context.principal.id())
         .await
         .map_err(refused)?;

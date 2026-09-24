@@ -11,7 +11,7 @@ use crate::api::config::Sealing;
 use crate::api::provenance::read_client_certificate;
 use crate::api::provenance::read_provenance;
 use crate::api::rest::endpoints::protocol::caller;
-use crate::api::rest::endpoints::protocol::dto::{Asked, Denied, uncached};
+use crate::api::rest::endpoints::protocol::dto::{Asked, Denied, answer_unavailable, uncached};
 
 /// Ask for a token. The realm is resolved before the body is read, since parsing
 /// against a realm nobody has is work done for a request that cannot be
@@ -35,7 +35,7 @@ pub async fn ask(
     let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
         Ok(context) => context,
         Err(StoreError::Unavailable) => {
-            return Denied::InvalidRequest.answer("the realm could not be read");
+            return answer_unavailable();
         }
         Err(_) => {
             return Denied::InvalidClient.answer("the client could not be authenticated");
@@ -581,8 +581,10 @@ async fn workload_exchange(
     let Some(issuer) = services::workload::peeked_issuer(assertion) else {
         return Denied::InvalidGrant.answer("the grant presented was not honoured");
     };
-    let Ok(transaction) = tenancy.begin(context).await else {
-        return Denied::InvalidRequest.answer("the realm could not be read");
+    let transaction = match tenancy.begin(context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => return answer_unavailable(),
+        Err(_) => return Denied::InvalidRequest.answer("the realm could not be read"),
     };
     let Ok(Some(realm)) = services::realm::named(&transaction, &context.realm_id).await else {
         return Denied::InvalidRequest.answer("the realm could not be read");
@@ -704,8 +706,10 @@ async fn x509_exchange(
         return refused();
     }
 
-    let Ok(transaction) = tenancy.begin(context).await else {
-        return Some(Denied::InvalidRequest.answer("the realm could not be read"));
+    let transaction = match tenancy.begin(context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => return Some(answer_unavailable()),
+        Err(_) => return Some(Denied::InvalidRequest.answer("the realm could not be read")),
     };
     let Ok(Some(realm)) = services::realm::named(&transaction, &context.realm_id).await else {
         return Some(Denied::InvalidRequest.answer("the realm could not be read"));

@@ -1,11 +1,13 @@
 use std::fmt;
 use std::time::Duration;
 
-use deadpool_postgres::{Object, Pool};
+use deadpool_postgres::{Object, Pool, Timeouts};
 use tokio_postgres::types::ToSql;
 use tokio_postgres::{Error, Row};
 
 use crate::error::{StoreError, StoreResult};
+
+pub use pgcore::database::Unreached;
 
 /// Both settings in one statement, so a unit of work opens in one round trip:
 /// sent in text they would each be prepared, then executed.
@@ -73,7 +75,7 @@ pub enum RealmNamed<'a> {
 /// What a readiness probe learned about the database.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reached {
-    NoConnection,
+    NoConnection(Unreached),
     NotAnswering,
     /// It answered, and this is the highest migration it has applied.
     Schema(Option<i32>),
@@ -187,9 +189,18 @@ impl Tenancy {
 
     /// Whether the database can be reached and answers inside `within`, and
     /// which schema it holds.
+    ///
+    /// Each phase of taking a connection is bounded on its own, so one that
+    /// runs out says which: every connection in use, or none opening in time.
     pub async fn reach(&self, within: Duration) -> Reached {
-        let Ok(Ok(connection)) = tokio::time::timeout(within, self.pool.get()).await else {
-            return Reached::NoConnection;
+        let phases = Timeouts {
+            wait: Some(within),
+            create: Some(within),
+            recycle: Some(within),
+        };
+        let connection = match self.pool.timeout_get(&phases).await {
+            Ok(connection) => connection,
+            Err(why) => return Reached::NoConnection(Unreached::of(&why)),
         };
         if tokio::time::timeout(within, connection.simple_query("SELECT 1"))
             .await
@@ -327,12 +338,17 @@ impl UnitOfWork {
     }
 
     /// Make everything written visible together, and give the connection back.
+    ///
+    /// COMMIT on a transaction a failed statement aborted rolls back without an
+    /// error, so a probe rides in the same round trip: refused, nothing was written.
     pub async fn commit(mut self) -> StoreResult<()> {
         let connection = self.connection.take().expect("a unit of work ends once");
-        connection
-            .batch_execute("COMMIT")
-            .await
-            .map_err(|_| StoreError::Backend)
+        let (probed, committed) = tokio::join!(
+            connection.batch_execute("SELECT 1"),
+            connection.batch_execute("COMMIT"),
+        );
+        committed.map_err(|_| StoreError::Backend)?;
+        probed.map_err(|_| StoreError::Backend)
     }
 
     /// Discard the work and wait for the discarding to have happened.

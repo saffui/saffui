@@ -52,14 +52,16 @@ pub async fn ask_for_link(
     let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
         Ok(context) => context,
         Err(StoreError::Unavailable) => {
-            return told(StatusCode::INTERNAL_SERVER_ERROR);
+            return told(StatusCode::SERVICE_UNAVAILABLE);
         }
         Err(_) => {
             return told(StatusCode::NOT_FOUND);
         }
     };
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return told(StatusCode::INTERNAL_SERVER_ERROR);
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => return told(StatusCode::SERVICE_UNAVAILABLE),
+        Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR),
     };
     let Ok(Some(held)) = services::realm::named(&transaction, &context.realm_id).await else {
         return told(StatusCode::INTERNAL_SERVER_ERROR);
@@ -137,14 +139,16 @@ pub async fn set_password(
     let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
         Ok(context) => context,
         Err(StoreError::Unavailable) => {
-            return told(StatusCode::INTERNAL_SERVER_ERROR);
+            return told(StatusCode::SERVICE_UNAVAILABLE);
         }
         Err(_) => {
             return told(StatusCode::NOT_FOUND);
         }
     };
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return told(StatusCode::INTERNAL_SERVER_ERROR);
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => return told(StatusCode::SERVICE_UNAVAILABLE),
+        Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR),
     };
     let Ok(Some(held)) = services::realm::named(&transaction, &context.realm_id).await else {
         return told(StatusCode::INTERNAL_SERVER_ERROR);

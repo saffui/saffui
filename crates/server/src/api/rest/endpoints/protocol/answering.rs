@@ -2,6 +2,7 @@ use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use services::form_post;
 use services::landing::{Landing, ResponseMode};
+use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
 use crate::api::config::Sealing;
@@ -142,11 +143,15 @@ pub async fn deliver_response(
     let Some(ticket) = binding::read(&request, binding::LANDING) else {
         return missing();
     };
-    let Ok(context) = tenancy.resolve(RealmNamed::ByName(&realm)).await else {
-        return missing();
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => return page::notice_unavailable(),
+        Err(_) => return missing(),
     };
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return missing();
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => return page::notice_unavailable(),
+        Err(_) => return missing(),
     };
     let taken = form_post::take(&transaction, sealing.provider.as_ref(), &ticket).await;
     // Committed whatever came back: the row is spent by being read, and a

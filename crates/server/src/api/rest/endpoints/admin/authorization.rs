@@ -11,6 +11,7 @@ use services::admin::authorization::{self as authz, Unwritable};
 use store::tenancy::{Tenancy, TenantContext, UnitOfWork};
 
 use crate::api::config::Sealing;
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 /// The store speaks in whole sentences about what it refused, and the answer
@@ -56,7 +57,7 @@ pub async fn protect(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let made = authz::protect(
         &transaction,
         &admin.context.tenant.tenant,
@@ -88,7 +89,7 @@ pub async fn server(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = authz::server(&transaction, &client_id)
         .await
         .map_err(|why| {
@@ -112,7 +113,7 @@ pub async fn set_protection(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = authz::set_protection(
         &transaction,
         &client_id,
@@ -142,7 +143,7 @@ pub async fn unprotect(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     authz::unprotect(&transaction, &client_id)
         .await
         .map_err(|why| {
@@ -173,7 +174,7 @@ macro_rules! surface {
             let transaction = tenancy
                 .begin(&within(&admin, &realm_id))
                 .await
-                .map_err(|_| internal())?;
+                .map_err(refuse_unopened_work)?;
             let made = authz::$create_call(
                 &transaction,
                 sealing.provider.as_ref(),
@@ -198,7 +199,7 @@ macro_rules! surface {
             let transaction = tenancy
                 .begin(&within(&admin, &realm_id))
                 .await
-                .map_err(|_| internal())?;
+                .map_err(refuse_unopened_work)?;
             let found = authz::$list_call(&transaction, &server_id)
                 .await
                 .map_err(|why| {
@@ -217,7 +218,7 @@ macro_rules! surface {
             let transaction = tenancy
                 .begin(&within(&admin, &realm_id))
                 .await
-                .map_err(|_| internal())?;
+                .map_err(refuse_unopened_work)?;
             let made = authz::$rework_call(
                 &transaction,
                 &server_id,
@@ -240,7 +241,7 @@ macro_rules! surface {
             let transaction = tenancy
                 .begin(&within(&admin, &realm_id))
                 .await
-                .map_err(|_| internal())?;
+                .map_err(refuse_unopened_work)?;
             authz::$delete_call(&transaction, &server_id, &id)
                 .await
                 .map_err(|why| refused(why, ErrorCode::$exists, ErrorCode::$missing))?;
@@ -298,7 +299,7 @@ pub async fn add_policy(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let made = authz::add_policy(
         &transaction,
         sealing.provider.as_ref(),
@@ -342,7 +343,7 @@ pub async fn policies(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let found = authz::policies(&transaction, &server_id)
         .await
         .map_err(|why| {
@@ -369,7 +370,7 @@ pub async fn rework_policy(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = authz::rework_policy(
         &transaction,
         &server_id,
@@ -398,7 +399,7 @@ pub async fn remove_policy(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     authz::remove_policy(&transaction, &policy_id)
         .await
         .map_err(|why| {
@@ -435,7 +436,7 @@ pub async fn decisions(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let limit = window.limit.clamp(1, 1000);
     let found = match window.trace_id.as_deref().filter(|named| !named.is_empty()) {
         Some(trace) => {
@@ -459,7 +460,7 @@ pub async fn disagreements(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let found =
         store::providers::authz_policies::disagreements(&transaction, window.limit.clamp(1, 1000))
             .await
@@ -487,7 +488,7 @@ pub async fn prune_decisions(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let removed = services::admin::authorization::prune_decisions(&transaction, asked.before)
         .await
         .map_err(|_| internal())?;
@@ -549,7 +550,7 @@ pub async fn evaluate(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
 
     let person = store::providers::users::load_by_id_or_name(&transaction, &subject)
         .await
@@ -703,7 +704,7 @@ pub async fn routes(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = store::providers::authz_routes::routes(&transaction)
         .await
         .map_err(|_| internal())?;
@@ -791,7 +792,7 @@ pub async fn put_route(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     // The resource server has to be one this realm protects: a route naming
     // a server that does not exist is a route whose decisions could only ever
     // be refusals, written as if they were rules.
@@ -829,7 +830,7 @@ pub async fn delete_route(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let removed = store::providers::authz_routes::drop_route(&transaction, &route_id)
         .await
         .map_err(|_| internal())?;
@@ -884,7 +885,7 @@ pub async fn share(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
 
     services::admin::authorization::share_resource(
         &transaction,
@@ -916,7 +917,7 @@ pub async fn unshare(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
 
     services::admin::authorization::unshare_resource(
         &transaction,

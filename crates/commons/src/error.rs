@@ -51,6 +51,7 @@ catalogue! {
     TooManyRequests = 4029, 429, "too_many_requests", "too many requests; retry later";
     InternalError = 5000, 500, "internal_error", "an internal error occurred";
     NotImplemented = 5010, 501, "not_implemented", "this feature is not implemented";
+    ServiceUnavailable = 5030, 503, "service_unavailable", "the service cannot answer for the moment; retry later";
     RealmNotFound = 100, 404, "realm.not_found", "unknown realm";
     MailSettingsNotFound = 102, 404, "realm.mail.not_found", "this realm has no mail settings";
     SmsSettingsNotFound = 103, 404, "realm.sms.not_found", "this realm has no SMS settings";
@@ -187,7 +188,32 @@ mod tests {
     /// whoever still sends it.
     #[test]
     fn the_catalogue_has_not_shrunk() {
-        assert_eq!(ErrorCode::ALL.len(), 67);
+        assert_eq!(ErrorCode::ALL.len(), 68);
+    }
+
+    /// The admin console keys its hints by slug, so a hint under a slug this
+    /// catalogue does not hold is one no refusal ever shows.
+    #[test]
+    fn every_console_hint_names_a_slug_the_catalogue_holds() {
+        let console = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../admin/src/services/http.ts");
+        let source = std::fs::read_to_string(&console).expect("the console's HTTP layer");
+        let table = source
+            .split_once("const HINTS")
+            .and_then(|(_, rest)| rest.split_once("};"))
+            .map(|(held, _)| held)
+            .expect("the console's table of hints");
+        let slugs: HashSet<&str> = ErrorCode::ALL.iter().map(|code| code.slug()).collect();
+        let unheld: Vec<&str> = table
+            .lines()
+            .filter_map(|line| line.trim().split_once(": \""))
+            .map(|(slug, _)| slug.trim_matches('"'))
+            .filter(|slug| !slugs.contains(slug))
+            .collect();
+        assert!(
+            unheld.is_empty(),
+            "hints under slugs nothing answers: {unheld:?}"
+        );
     }
 
     /// A message never restates the slug, and never carries a value.

@@ -1,6 +1,7 @@
 use std::time::Duration;
 
-use tokio_postgres::{AsyncMessage, Config, NoTls};
+use pgcore::tls::PgConnector;
+use tokio_postgres::{AsyncMessage, Config};
 
 /// One committed happening, as the notify spoke it: the summary and never
 /// the payload, which stays in the store for whoever is entitled to ask.
@@ -17,12 +18,13 @@ pub struct Told {
 /// Hold LISTEN open on its own connection and hand every committed emission
 /// to in-process subscribers. A lagging watcher may miss broadcast frames;
 /// the admin stream repairs that gap from the outbox on reconnect.
-pub fn listen(config: Config) -> tokio::sync::broadcast::Sender<Told> {
+pub fn listen(config: Config, tls: PgConnector) -> tokio::sync::broadcast::Sender<Told> {
     let (feed, _) = tokio::sync::broadcast::channel(256);
     let out = feed.clone();
     tokio::spawn(async move {
         loop {
-            if let Err(why) = pump(&config, &out).await {
+            if let Err(failure) = pump(&config, &tls, &out).await {
+                let why = pgcore::database::describe_connection_failure(&failure);
                 tracing::warn!(%why, "the live feed lost its ear; listening again shortly");
             }
             tokio::time::sleep(Duration::from_secs(5)).await;
@@ -33,9 +35,10 @@ pub fn listen(config: Config) -> tokio::sync::broadcast::Sender<Told> {
 
 async fn pump(
     config: &Config,
+    tls: &PgConnector,
     out: &tokio::sync::broadcast::Sender<Told>,
 ) -> Result<(), tokio_postgres::Error> {
-    let (client, mut held) = config.connect(NoTls).await?;
+    let (client, mut held) = config.connect(tls.maker()).await?;
     let feed = out.clone();
     let speaking = tokio::spawn(async move {
         loop {

@@ -8,7 +8,7 @@ use crypto::jose::jwt::{self, JwtPayload};
 use crypto::password::storage::StoredPassword;
 use crypto::provider::openssl::OpenSslProvider;
 use crypto::provider::{Argon2Params, CryptoConfig, CryptoProvider, SignAlg};
-use deadpool_postgres::{Manager, Pool};
+use deadpool_postgres::{Manager, Pool, Runtime};
 use models::auditable::AuditableModel;
 use models::entities::authz::{AdminAction, RoleMutationModel};
 use models::entities::client::ClientCreateModel;
@@ -1655,8 +1655,11 @@ impl Plane {
 
         let mut app = owner_config();
         app.user("saffui_app").password("saffui_app_test");
+        // Carried by the served pool too: without it no phase of taking a
+        // connection can be bounded, and the readiness probe bounds each.
         let pool = Pool::builder(Manager::new(app, NoTls))
             .max_size(4)
+            .runtime(Runtime::Tokio1)
             .build()
             .expect("a pool");
 
@@ -1685,6 +1688,21 @@ impl Plane {
     )]
     pub fn tenancy(&self) -> Tenancy {
         self.tenancy.clone()
+    }
+
+    /// This plane's database behind a pool of `size` connections that waits
+    /// `wait` for a free one, for a test that has to fill it.
+    #[allow(dead_code, reason = "only the suites that fill a pool ask")]
+    pub fn build_tenancy_of(&self, size: usize, wait: Duration) -> Tenancy {
+        let mut app = owner_config();
+        app.user("saffui_app").password("saffui_app_test");
+        let pool = Pool::builder(Manager::new(app, NoTls))
+            .max_size(size)
+            .wait_timeout(Some(wait))
+            .runtime(Runtime::Tokio1)
+            .build()
+            .expect("a narrow pool");
+        Tenancy::unpinned(pool)
     }
 
     /// A second realm of the same tenant, for work that has to visit more than

@@ -7,6 +7,7 @@ use store::tenancy::{Tenancy, TenantContext};
 
 use super::users::named_user;
 use crate::api::rest::endpoints::admin::dto::KeyBrief;
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 /// The keys this user may present.
@@ -20,7 +21,7 @@ pub async fn list(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
 
     let user_id = named_user(&transaction, &user_id).await?;
     let held = services::admin::keys::of_user(&transaction, &user_id)
@@ -54,7 +55,7 @@ pub async fn revoke(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
 
     // Scoped to the user in the path: a caller must not reach past the user it
     // named, however it learned the identifier.

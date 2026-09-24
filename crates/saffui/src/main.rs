@@ -7,7 +7,6 @@ use clap::{Parser, Subcommand};
 use crypto::envelope::Envelope;
 use crypto::provider::CryptoProvider;
 use crypto::provider::openssl::OpenSslProvider;
-use deadpool_postgres::{Manager, Pool};
 use models::entities::realm::RegistrationBounds;
 use secrecy::ExposeSecret;
 use server::api::config::{Plane, Sealing, observed_with, register, register_ops};
@@ -16,7 +15,6 @@ use server::middleware::admin_policy::AdminPolicy;
 use services::provisioning;
 use store::tenancy::{Tenancy, TenantContext};
 use tokio::signal;
-use tokio_postgres::NoTls;
 
 #[derive(Parser)]
 #[command(
@@ -403,7 +401,8 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
         .status(commons::feature::Feature::Metrics)
         .enabled;
 
-    let plane = plane()?;
+    let database = database()?;
+    let plane = plane(&database)?;
 
     // What this build reads. A pod whose database has migrated past it cannot
     // read what its peers now write, so it takes itself out of service.
@@ -483,12 +482,7 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
 
     // The live feed's own ear on the database, one per process, handed to
     // every worker: the SSE door subscribes here, the store speaks at commit.
-    let live_feed = store::live::listen(
-        config::required("DATABASE_URL")
-            .map_err(|e| e.to_string())?
-            .parse()
-            .map_err(|e| format!("SAFFUI_DATABASE_URL does not parse: {e}"))?,
-    );
+    let live_feed = store::live::listen(database.direct(), database.connector().clone());
 
     // Bound before anything is announced, so a port already taken fails here
     // rather than after the log line says it is serving.
@@ -606,21 +600,13 @@ fn ldap_acceptor(paths: &config::ldap::TlsPaths) -> Result<openssl::ssl::SslCont
     Ok(acceptor.build().into_context())
 }
 
-/// Apply the schema, and give the application role its login when asked.
 /// Read the tenant's chain, or check that it holds.
 ///
 /// Its own connection rather than the plane's: the served role is granted no
 /// select here on purpose, so a command that read as `saffui_app` would find
 /// nothing and say the deployment had no history.
 async fn read_chronicle(tenant: &str, max: i64, verify: bool) -> Result<(), String> {
-    let connection = config::required("DATABASE_URL").map_err(|e| e.to_string())?;
-    let pg: tokio_postgres::Config = connection
-        .parse()
-        .map_err(|_| "DATABASE_URL is not a connection string".to_owned())?;
-    let pool = Pool::builder(Manager::new(pg, NoTls))
-        .build()
-        .map_err(|reason| format!("cannot build a pool: {reason}"))?;
-    let tenancy = Tenancy::unpinned(pool);
+    let tenancy = Tenancy::unpinned(database()?.pool().map_err(|e| e.to_string())?);
     let transaction = tenancy
         .begin(&TenantContext::tenant_wide(tenant))
         .await
@@ -665,21 +651,15 @@ async fn read_chronicle(tenant: &str, max: i64, verify: bool) -> Result<(), Stri
     Ok(())
 }
 
+/// Apply the schema, and give the application role its login when asked.
 async fn migrate() -> Result<(), String> {
-    let connection = config::required("DATABASE_URL").map_err(|e| e.to_string())?;
-    let pg: tokio_postgres::Config = connection
-        .parse()
-        .map_err(|_| "DATABASE_URL is not a connection string".to_owned())?;
+    let database = database()?;
     let crypto = config::crypto::from_env().map_err(|e| e.to_string())?;
     let provider =
         OpenSslProvider::new(&crypto).map_err(|reason| format!("cannot build crypto: {reason}"))?;
 
     let report = pgcore::migrations::MigrationRunner::new(store::schema::migrations())
-        .run(
-            &pg,
-            &pgcore::tls::PgConnector::disabled(),
-            provider.digest(),
-        )
+        .run(&database.direct(), database.connector(), provider.digest())
         .await
         .map_err(|reason| format!("the schema could not be applied: {reason:?}"))?;
     if report.is_up_to_date() {
@@ -693,16 +673,19 @@ async fn migrate() -> Result<(), String> {
     if let Some(password) =
         config::optional_secret("APP_ROLE_PASSWORD").map_err(|e| e.to_string())?
     {
-        let (owner, link) = pg
-            .connect(NoTls)
+        let (owner, link) = database
+            .direct()
+            .connect(database.connector().maker())
             .await
             .map_err(|reason| format!("cannot connect as the owner: {reason}"))?;
         tokio::spawn(async move {
             let _ = link.await;
         });
-        let quoted = password.expose_secret().replace('\'', "''");
+        let verifier = pgcore::password::verifier(password.expose_secret());
         owner
-            .batch_execute(&format!("ALTER ROLE saffui_app LOGIN PASSWORD '{quoted}'"))
+            .batch_execute(&format!(
+                "ALTER ROLE saffui_app LOGIN PASSWORD '{verifier}'"
+            ))
             .await
             .map_err(|reason| format!("cannot give the application role its login: {reason}"))?;
         println!("application role may log in");
@@ -739,7 +722,7 @@ struct Wanted {
 
 /// Create what is missing, and say what was created.
 async fn provision(wanted: &Wanted) -> Result<(), String> {
-    let plane = plane()?;
+    let plane = plane(&database()?)?;
     let now = chrono::Utc::now().timestamp();
     let console = plane
         .policy
@@ -967,6 +950,38 @@ async fn provision(wanted: &Wanted) -> Result<(), String> {
 /// process is killed rather than asked.
 const DRAIN: Duration = Duration::from_secs(5);
 
+/// The database this process reaches, settled from the environment.
+///
+/// Each refusal names the variable to change.
+fn database() -> Result<pgcore::database::Database, String> {
+    use pgcore::database::{Bounds, Database, DatabaseError};
+
+    let read = config::database::Database::from_env().map_err(|e| e.to_string())?;
+    Database::new(
+        &read.address,
+        read.tls.as_deref(),
+        read.tls_ca.as_deref(),
+        Bounds {
+            size: read.pool_size,
+            wait: read.pool_wait,
+            idle_in_transaction: read.idle_in_transaction,
+            connect: read.connect,
+        },
+    )
+    .map_err(|why| match why {
+        DatabaseError::Unreadable => format!("SAFFUI_DATABASE_URL: {why}"),
+        DatabaseError::Unstated { .. } => format!(
+            "{why}: set SAFFUI_DATABASE_TLS to verify-full with SAFFUI_DATABASE_TLS_CA, \
+             to require, or to disabled to accept the clear"
+        ),
+        DatabaseError::Contradicted { .. } => {
+            format!("{why}: say it in SAFFUI_DATABASE_TLS alone, or make the two agree")
+        }
+        DatabaseError::Tls(_) => format!("SAFFUI_DATABASE_TLS: {why}"),
+        DatabaseError::Pool => why.to_string(),
+    })
+}
+
 /// Everything the plane needs, read once at startup.
 ///
 /// Neither the accepted audiences nor the accepted clients have a default. A
@@ -974,8 +989,7 @@ const DRAIN: Duration = Duration::from_secs(5);
 /// which is the one moment nobody is looking. The two are asked separately
 /// because they are different questions: who a token is for, and which client
 /// obtained it.
-fn plane() -> Result<Plane, String> {
-    let connection = config::required("DATABASE_URL").map_err(|e| e.to_string())?;
+fn plane(database: &pgcore::database::Database) -> Result<Plane, String> {
     let audiences: Vec<String> = config::required("ADMIN_AUDIENCES")
         .map_err(|e| e.to_string())?
         .split(',')
@@ -1019,12 +1033,7 @@ fn plane() -> Result<Plane, String> {
         .map_err(|reason| format!("cannot build the envelope: {reason}"))?;
     let region = config::optional("REGION");
 
-    let pg: tokio_postgres::Config = connection
-        .parse()
-        .map_err(|_| "DATABASE_URL is not a connection string".to_owned())?;
-    let pool = Pool::builder(Manager::new(pg, NoTls))
-        .build()
-        .map_err(|reason| format!("cannot build a pool: {reason}"))?;
+    let pool = database.pool().map_err(|e| e.to_string())?;
 
     let egress = config::serving::Egress::from_env().map_err(|e| e.to_string())?;
     Ok(Plane {

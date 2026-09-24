@@ -51,6 +51,7 @@ serde_json = { workspace = true }
 # The CLI half of this binary talks to the plane it also serves; blocking on
 # purpose, since a command is one call and an answer.
 ureq = { version = "3", default-features = false, features = ["native-tls", "json"] }
-deadpool-postgres = { workspace = true }
-tokio-postgres = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time", "net"] }
+
+[dev-dependencies]
+tokio-postgres = { workspace = true }

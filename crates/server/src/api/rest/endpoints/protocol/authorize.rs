@@ -115,14 +115,16 @@ async fn start(
     let context = match tenancy.resolve(RealmNamed::ByName(realm)).await {
         Ok(context) => context,
         Err(StoreError::Unavailable) => {
-            return shown("server_error", "the realm could not be read");
+            return page::answer_unavailable_to(&request);
         }
         Err(_) => {
             return shown("unauthorized_client", "no login can start here");
         }
     };
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return shown("server_error", "the realm could not be read");
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => return page::answer_unavailable_to(&request),
+        Err(_) => return shown("server_error", "the realm could not be read"),
     };
     let Some(mut asked) = asked else {
         return shown("invalid_request", "the request could not be read");

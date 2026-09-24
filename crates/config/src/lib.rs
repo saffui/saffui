@@ -3,6 +3,7 @@ use std::str::FromStr;
 use secrecy::SecretBox;
 
 pub mod crypto;
+pub mod database;
 pub mod jobs;
 pub mod ldap;
 pub mod mesh;

@@ -38,6 +38,8 @@ mod carte;
 mod cli;
 #[path = "grouped/console_contract.rs"]
 mod console_contract;
+#[path = "grouped/failing_reads.rs"]
+mod failing_reads;
 #[path = "grouped/health.rs"]
 mod health;
 #[path = "grouped/housekeeping.rs"]
@@ -52,6 +54,8 @@ mod iga_ttl;
 mod mesh_door;
 #[path = "grouped/mesh_routes.rs"]
 mod mesh_routes;
+#[path = "grouped/no_connection.rs"]
+mod no_connection;
 #[path = "grouped/observability.rs"]
 mod observability;
 #[path = "grouped/own_account.rs"]

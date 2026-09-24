@@ -6,8 +6,9 @@ import { wroteSomething } from "@/services/writes";
 /// Console-side hints for refusals whose server message states what happened
 /// but not what to do about it. Keyed by the catalogue's error_code slug.
 const HINTS: Record<string, string> = {
-  forbidden: "toast-hint-forbidden",
+  access_denied: "toast-hint-forbidden",
   unauthorized: "toast-hint-unauthorized",
+  service_unavailable: "toast-hint-service-unavailable",
   "user.password.current_mismatch": "toast-hint-current-password",
   "user.locked_out": "toast-hint-locked-out",
   "user.password.not_held_here": "toast-hint-password-not-held",

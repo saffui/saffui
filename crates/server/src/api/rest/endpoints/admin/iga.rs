@@ -6,6 +6,7 @@ use serde::Deserialize;
 use store::providers::birthright::{self, BirthrightRule};
 use store::tenancy::Tenancy;
 
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 fn internal() -> ApiError {
@@ -21,7 +22,7 @@ pub async fn rules(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = birthright::rules(&transaction)
         .await
         .map_err(|_| internal())?;
@@ -121,7 +122,7 @@ pub async fn put_rule(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     for role in &roles {
         let held = store::providers::roles::load(&transaction, role)
             .await
@@ -191,7 +192,7 @@ pub async fn put_grant(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let user_id = &services::admin::users::identified(&transaction, user_id)
         .await
         .map(|held| held.user_id)
@@ -243,7 +244,7 @@ pub async fn grants_of(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let user_id = super::users::named_user(&transaction, &user_id).await?;
     let held = birthright::ledger_of(&transaction, &user_id)
         .await
@@ -271,7 +272,7 @@ pub async fn delete_grant(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let user_id = super::users::named_user(&transaction, &user_id).await?;
     store::providers::roles::revoke_from_user(&transaction, &user_id, &role_id)
         .await
@@ -292,7 +293,7 @@ pub async fn delete_rule(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let removed = birthright::drop_rule(&transaction, &rule_id)
         .await
         .map_err(|_| internal())?;
@@ -314,7 +315,7 @@ pub async fn converge(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let (walked, told) = crate::lifecycle::converge_realm(&transaction)
         .await
         .map_err(|_| internal())?;
@@ -336,7 +337,7 @@ pub async fn sod_rules(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = store::providers::sod::rules(&transaction)
         .await
         .map_err(|_| internal())?;
@@ -400,7 +401,7 @@ pub async fn put_sod_rule(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     for role in &roles {
         if store::providers::roles::load(&transaction, role)
             .await
@@ -437,7 +438,7 @@ pub async fn delete_sod_rule(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let removed = store::providers::sod::drop_rule(&transaction, &rule_id)
         .await
         .map_err(|_| internal())?;
@@ -461,7 +462,7 @@ pub async fn sod_violations(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let rules = store::providers::sod::rules(&transaction)
         .await
         .map_err(|_| internal())?;
@@ -521,7 +522,7 @@ pub async fn sod_exceptions(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = store::providers::sod::exceptions(&transaction)
         .await
         .map_err(|_| internal())?;
@@ -578,7 +579,7 @@ pub async fn put_sod_exception(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let rule = store::providers::sod::rules(&transaction)
         .await
         .map_err(|_| internal())?
@@ -635,7 +636,7 @@ pub async fn delete_sod_exception(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let user_id = super::users::named_user(&transaction, &user_id).await?;
     let removed = store::providers::sod::drop_exception(&transaction, &rule_id, &user_id)
         .await

@@ -180,6 +180,45 @@ async fn dropping_a_unit_rolls_it_back() {
     assert_eq!(seen, 0, "a dropped unit left a row behind");
 }
 
+/// A statement that failed leaves nothing to commit, and the commit says so
+/// instead of reporting writes the database already threw away.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_commit_after_a_failed_statement_is_refused() {
+    let _turn = DATABASE.lock().await;
+    let pool = one_connection_pool().await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+
+    let transaction = tenancy
+        .begin(&TenantContext::tenant_wide("acme"))
+        .await
+        .unwrap();
+    transaction
+        .execute(
+            "INSERT INTO tenants (tenant_id, display_name) VALUES ($1, $1)",
+            &[&"acme"],
+        )
+        .await
+        .unwrap();
+    assert!(transaction.batch_execute("SELECT 1 / 0").await.is_err());
+    assert!(
+        matches!(transaction.commit().await, Err(StoreError::Backend)),
+        "a rolled back transaction was reported as committed"
+    );
+
+    // The one connection comes back idle, and nothing was kept.
+    let transaction = tenancy
+        .begin(&TenantContext::tenant_wide("acme"))
+        .await
+        .unwrap();
+    let seen: i64 = transaction
+        .query_one("SELECT count(*) FROM tenants", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(seen, 0);
+}
+
 /// A unit whose rollback never gets to run leaves the pool instead of going
 /// back into it half way through a transaction.
 ///

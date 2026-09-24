@@ -10,8 +10,12 @@ name: saffui-ha
 x-saffui: &saffui
   image: saffui:local
   pull_policy: never
+  volumes:
+    - postgres-certs:/certs:ro
   environment: &saffui-env
     SAFFUI_DATABASE_URL: host=postgres user=saffui_app password=saffui_app dbname=saffui
+    SAFFUI_DATABASE_TLS: verify-full
+    SAFFUI_DATABASE_TLS_CA: /certs/server.crt
     SAFFUI_PUBLIC_ORIGIN: http://localhost:18080
     SAFFUI_ADMIN_AUDIENCES: saffui-console
     SAFFUI_ADMIN_PARTIES: saffui-console
@@ -23,17 +27,11 @@ x-saffui: &saffui
     SAFFUI_OUTBOX_SECONDS: "2"
 
 services:
+  # Encrypted as ../local is: the same certificate drawn on first start.
   postgres:
-    image: postgres:16
-    environment:
-      POSTGRES_DB: saffui
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d saffui"]
-      interval: 2s
-      timeout: 2s
-      retries: 30
+    extends:
+      file: ../local/compose.yaml
+      service: postgres
 
   migrate:
     <<: *saffui
@@ -128,3 +126,6 @@ services:
       interval: 2s
       timeout: 2s
       retries: 30
+
+volumes:
+  postgres-certs:

@@ -79,6 +79,56 @@ async fn a_schema_ahead_of_this_build_takes_the_pod_out_of_service() {
     );
 }
 
+/// With no database to reach, readiness says which way the connection failed.
+#[tokio::test]
+async fn not_ready_says_why_no_connection_was_had() {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let pool = pgcore::database::Database::new(
+        &format!("host=127.0.0.1 port={port} user=saffui"),
+        None,
+        None,
+        pgcore::database::Bounds::default(),
+    )
+    .unwrap()
+    .pool()
+    .unwrap();
+    let vitals = Vitals::new(store::tenancy::Tenancy::unpinned(pool), 999);
+    vitals.started();
+
+    let (status, why) = ask(&vitals, "/readyz").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(
+        why.contains("nothing answers at the database's address"),
+        "{why}"
+    );
+}
+
+/// Every connection taken is a pool too small or a query too slow, not a
+/// database gone, and the probe tells the two apart.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_pool_with_every_connection_taken_is_not_ready() {
+    let plane = Plane::with_actions(&[]).await;
+    let tenancy = plane.build_tenancy_of(1, std::time::Duration::from_millis(100));
+    let _taken = tenancy
+        .begin(&store::tenancy::TenantContext::new(
+            support::TENANT,
+            support::REALM,
+        ))
+        .await
+        .expect("the one connection");
+    let vitals = Vitals::new(tenancy, 999);
+    vitals.started();
+
+    let (status, why) = ask(&vitals, "/readyz").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(why.contains("every one is in use"), "{why}");
+}
+
 /// Draining takes the pod out of the rotation while it finishes what it has.
 /// Alive stays true, because the process is meant to keep running until it is
 /// done, not to be killed.

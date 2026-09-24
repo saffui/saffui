@@ -5,6 +5,7 @@ pub mod client_scopes;
 pub mod clients;
 pub mod compliance;
 pub mod directory;
+pub mod events;
 pub mod federation;
 pub mod flows;
 pub mod idps;

@@ -7,6 +7,7 @@ use actix_web::{HttpRequest, HttpResponse, ResponseError, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use models::paging::PagingParams;
+use services::admin::events::{self, Unevented};
 use store::tenancy::{Tenancy, TenantContext};
 
 use crate::error::refuse_unopened_work;
@@ -14,6 +15,16 @@ use crate::middleware::admin_guard::Admin;
 
 fn internal() -> ApiError {
     ApiError::new(ErrorCode::InternalError)
+}
+
+fn refuse(why: Unevented) -> ApiError {
+    match why {
+        Unevented::NoSuchConnector => ApiError::new(ErrorCode::IdentityProviderNotFound),
+        Unevented::Invalid(said) => {
+            ApiError::with_detail(ErrorCode::ValidationError, said.to_owned())
+        }
+        Unevented::Backend => internal(),
+    }
 }
 
 const LIVE_EVENTS_REPLAY_LIMIT: i64 = 500;
@@ -61,7 +72,7 @@ pub async fn list_sign_ins(
         .await
         .map_err(refuse_unopened_work)?;
 
-    let (events, total) = store::providers::events::login_events::list(
+    let (events, total) = events::list_sign_ins(
         &transaction,
         window.first,
         window.max,
@@ -113,13 +124,9 @@ pub async fn replay_live_events(
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let stored_events = store::providers::events::outbox::list_events_after_id(
-        &transaction,
-        last_event_id,
-        limit + 1,
-    )
-    .await
-    .map_err(|_| internal())?;
+    let stored_events = events::events_after(&transaction, last_event_id, limit + 1)
+        .await
+        .map_err(|_| internal())?;
     let more = stored_events.len() as i64 > limit;
     let items: Vec<_> = stored_events
         .into_iter()
@@ -165,12 +172,8 @@ pub async fn stream(
             Ok(transaction) => transaction,
             Err(why) => return refuse_unopened_work(why).error_response(),
         };
-        let Ok(stored_events) = store::providers::events::outbox::list_events_after_id(
-            &transaction,
-            last_event_id,
-            LIVE_EVENTS_REPLAY_LIMIT + 1,
-        )
-        .await
+        let Ok(stored_events) =
+            events::events_after(&transaction, last_event_id, LIVE_EVENTS_REPLAY_LIMIT + 1).await
         else {
             return HttpResponse::InternalServerError().finish();
         };
@@ -277,7 +280,7 @@ pub async fn dead_letters(
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let held = store::providers::events::outbox::dead_list(&transaction, 200)
+    let held = events::dead_letters(&transaction, 200)
         .await
         .map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(
@@ -306,15 +309,9 @@ pub async fn requeue(
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let requeued = store::providers::events::outbox::requeue(&transaction, event_id)
+    events::requeue_dead_letter(&transaction, event_id)
         .await
-        .map_err(|_| internal())?;
-    if !requeued {
-        return Err(ApiError::with_detail(
-            ErrorCode::ValidationError,
-            "no dead telling answers to this id".to_owned(),
-        ));
-    }
+        .map_err(refuse)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }
@@ -358,38 +355,22 @@ pub async fn redeliver_to_connector(
         .await
         .map_err(refuse_unopened_work)?;
 
-    let row = store::providers::federation::brokering::provider_by_alias(&transaction, &alias)
+    let (row, hook) = events::webhook_to_replay(&transaction, &alias)
         .await
-        .map_err(|_| internal())?
-        .ok_or_else(|| ApiError::new(ErrorCode::IdentityProviderNotFound))?;
-    if row.enabled == Some(false) {
-        return Err(ApiError::with_detail(
-            ErrorCode::ValidationError,
-            "the connector is disabled".to_owned(),
-        ));
-    }
-    let hook = services::messaging::webhook::Webhook::parse(&row).map_err(|_| {
-        ApiError::with_detail(
-            ErrorCode::ValidationError,
-            "only a webhook takes a replay".to_owned(),
-        )
-    })?;
-
-    let held = store::providers::events::outbox::retained(
+        .map_err(refuse)?;
+    let events::Replay {
+        events: held,
+        stopped_at,
+        more,
+    } = events::plan_replay(
         &transaction,
+        &hook,
         asked.from_event_id,
         asked.to_event_id,
-        REPLAY_CEILING + 1,
+        REPLAY_CEILING,
     )
     .await
-    .map_err(|_| internal())?;
-    let more = held.len() as i64 > REPLAY_CEILING;
-    let held: Vec<_> = held
-        .into_iter()
-        .take(REPLAY_CEILING as usize)
-        .filter(|event| hook.wants(&event.kind))
-        .collect();
-    let stopped_at = held.last().map(|event| event.event_id);
+    .map_err(refuse)?;
 
     if asked.dry_run {
         return Ok(HttpResponse::Ok().json(serde_json::json!({

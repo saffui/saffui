@@ -94,7 +94,7 @@ async fn a_collector_takes_its_events_and_acknowledges_them() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::sessions::open(
+        store::providers::protocol::sessions::open(
             &transaction,
             &models::sessions::records::UserSessionModel {
                 browser_state: None,

@@ -362,7 +362,7 @@ async fn an_offline_poll_outlives_its_login() {
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         assert!(
-            store::providers::sessions::set_state(
+            store::providers::protocol::sessions::set_state(
                 &transaction,
                 sid,
                 models::sessions::records::UserSessionState::LoggedOut,
@@ -475,7 +475,7 @@ async fn an_online_poll_renews_past_its_first_window() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::sessions::load_for_user(&transaction, support::SUBJECT)
+        store::providers::protocol::sessions::load_for_user(&transaction, support::SUBJECT)
             .await
             .expect("the session table")
             .into_iter()
@@ -884,7 +884,7 @@ async fn a_person_with_a_code_rings_only_for_who_knows_it() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        let mut person = store::providers::users::load(&transaction, support::SUBJECT)
+        let mut person = store::providers::directory::users::load(&transaction, support::SUBJECT)
             .await
             .unwrap()
             .expect("ada");
@@ -895,7 +895,7 @@ async fn a_person_with_a_code_rings_only_for_who_knows_it() {
                 "ciba.user_code_digest".to_owned(),
                 AttributeValue::Str(code_digest),
             );
-        store::providers::users::update(&transaction, &person)
+        store::providers::directory::users::update(&transaction, &person)
             .await
             .unwrap();
         transaction.commit().await.unwrap();
@@ -1044,7 +1044,7 @@ async fn texting_arranged(plane: &Plane, phone_verified: bool) {
     let ring = store::keyring::load(&transaction, &sealing.envelope, support::TENANT, REALM)
         .await
         .expect("a keyring");
-    store::providers::sms::keep(
+    store::providers::realms::sms::keep(
         &transaction,
         &ring,
         &sealing.envelope,
@@ -1056,7 +1056,7 @@ async fn texting_arranged(plane: &Plane, phone_verified: bool) {
     )
     .await
     .expect("the settings kept");
-    store::providers::users::set_phone(
+    store::providers::directory::users::set_phone(
         &transaction,
         support::SUBJECT,
         Some("+22890123456"),
@@ -1158,7 +1158,7 @@ async fn a_silent_phone_never_costs_the_request() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::users::set_phone(
+        store::providers::directory::users::set_phone(
             &transaction,
             support::SUBJECT,
             Some("+22890123456"),

@@ -7,7 +7,8 @@ use models::entities::authz::{IdentityProviderModel, IdentityProviderMutationMod
 use models::entities::brokering::{IdpMapperModel, IdpMapperMutationModel};
 use store::error::StoreError;
 use store::keyring::RealmKeyring;
-use store::providers::{brokering, roles};
+use store::providers::directory::roles;
+use store::providers::federation::brokering;
 use store::tenancy::UnitOfWork;
 
 use crate::federation::brokering::{

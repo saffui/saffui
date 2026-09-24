@@ -178,16 +178,16 @@ pub async fn create(
     // The tenant's own ceiling, where it set one. The lock is taken before
     // the count, so two creates one below the ceiling cannot both read a
     // count that passes and both write.
-    store::providers::tenants::hold_realms(&transaction, &tenant)
+    store::providers::realms::tenants::hold_realms(&transaction, &tenant)
         .await
         .map_err(|_| internal())?;
-    let named = store::providers::tenants::load(&transaction)
+    let named = store::providers::realms::tenants::load(&transaction)
         .await
         .map_err(|_| internal())?
         .and_then(|held| held.limits)
         .and_then(|limits| limits.max_realms);
     if let Some(ceiling) = ceiling.against(named)
-        && store::providers::tenants::count_realms(&transaction)
+        && store::providers::realms::tenants::count_realms(&transaction)
             .await
             .map_err(|_| internal())?
             >= ceiling
@@ -768,7 +768,7 @@ pub async fn update(
         .as_deref()
         .filter(|held| !held.is_empty())
     {
-        let usable = store::providers::auth_flows::flow_by_alias(&transaction, alias)
+        let usable = store::providers::realms::auth_flows::flow_by_alias(&transaction, alias)
             .await
             .map_err(|_| internal())?
             .is_some_and(|flow| flow.top_level == Some(true));

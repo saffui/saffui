@@ -8,7 +8,8 @@ use models::entities::client::{ClientCreateModel, ClientModel, JweRegistration, 
 use models::paging::Page;
 use secrecy::{ExposeSecret, SecretBox};
 use store::error::StoreError;
-use store::providers::{client_scopes, clients};
+use store::providers::clients;
+use store::providers::clients::client_scopes;
 use store::query::list_query::ListQuery;
 use store::tenancy::UnitOfWork;
 use url::Url;
@@ -403,11 +404,11 @@ pub async fn update(
             .is_some_and(|bag| bag.contains_key(crate::oidc::grant::AGENT_CAPABILITIES));
         if is_agent {
             let kind = if at != 0 {
-                store::providers::outbox::AGENT_REVOKED
+                store::providers::events::outbox::AGENT_REVOKED
             } else {
-                store::providers::outbox::AGENT_LIFTED
+                store::providers::events::outbox::AGENT_LIFTED
             };
-            store::providers::outbox::emit(
+            store::providers::events::outbox::emit(
                 transaction,
                 kind,
                 client_id,
@@ -595,11 +596,12 @@ pub async fn rotate_secret(
 pub async fn remove(transaction: &UnitOfWork, client_id: &str) -> Result<bool, Unregistrable> {
     // Its service account leaves with it, rather than keep grants nobody answers
     // for and a name the next client under this identifier could not take.
-    if let Some(account) = store::providers::users::load_service_account(transaction, client_id)
-        .await
-        .map_err(|_| Unregistrable::Unwritable)?
+    if let Some(account) =
+        store::providers::directory::users::load_service_account(transaction, client_id)
+            .await
+            .map_err(|_| Unregistrable::Unwritable)?
     {
-        store::providers::users::delete(transaction, &account.user_id)
+        store::providers::directory::users::delete(transaction, &account.user_id)
             .await
             .map_err(|_| Unregistrable::Unwritable)?;
     }

@@ -12,7 +12,7 @@ use crypto::provider::CryptoProvider;
 use models::entities::auth::ExecutionStep;
 use models::entities::realm::RealmModel;
 use models::entities::user::UserModel;
-use store::providers::auth_flows;
+use store::providers::realms::auth_flows;
 use store::tenancy::UnitOfWork;
 
 use crate::login::authenticator::{Answer, Authenticator, Posting};

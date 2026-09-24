@@ -1,4 +1,4 @@
-use store::providers::{organizations, users};
+use store::providers::directory::{organizations, users};
 use store::tenancy::UnitOfWork;
 
 /// The organization a login acts within, once resolved: its id and the name

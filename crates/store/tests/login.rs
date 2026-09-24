@@ -1,8 +1,8 @@
 mod support;
 
 use models::entities::credentials::AuthenticatorAttachment;
-use store::providers::login::{self, AuthSession};
-use store::providers::webauthn::{self, EnrolledCredential};
+use store::providers::directory::webauthn::{self, EnrolledCredential};
+use store::providers::protocol::login::{self, AuthSession};
 use store::tenancy::{TenantContext, UnitOfWork};
 use support::Fixture;
 
@@ -410,7 +410,10 @@ async fn announced_credential_changes(
         .query(
             "SELECT payload FROM event_outbox WHERE kind = $1 AND user_id = $2 \
              ORDER BY event_id",
-            &[&store::providers::outbox::CREDENTIAL_CHANGED, &user_id],
+            &[
+                &store::providers::events::outbox::CREDENTIAL_CHANGED,
+                &user_id,
+            ],
         )
         .await
         .unwrap()

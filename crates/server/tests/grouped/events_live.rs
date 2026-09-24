@@ -58,9 +58,9 @@ async fn the_feed_speaks_at_commit_and_never_before() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::outbox::emit(
+        store::providers::events::outbox::emit(
             &transaction,
-            store::providers::outbox::SESSION_REVOKED,
+            store::providers::events::outbox::SESSION_REVOKED,
             "ada",
             &json!({ "session": "s-1", "held_back": "the payload stays home" }),
         )
@@ -97,9 +97,9 @@ async fn the_feed_speaks_at_commit_and_never_before() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::outbox::emit(
+        store::providers::events::outbox::emit(
             &transaction,
-            store::providers::outbox::USER_UPDATED,
+            store::providers::events::outbox::USER_UPDATED,
             "ada",
             &json!({}),
         )
@@ -136,17 +136,17 @@ async fn the_live_replay_answers_after_a_cursor_without_payloads() {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    store::providers::outbox::emit(
+    store::providers::events::outbox::emit(
         &transaction,
-        store::providers::outbox::USER_UPDATED,
+        store::providers::events::outbox::USER_UPDATED,
         "ada",
         &json!({ "private": true }),
     )
     .await
     .unwrap();
-    store::providers::outbox::emit(
+    store::providers::events::outbox::emit(
         &transaction,
-        store::providers::outbox::SESSION_REVOKED,
+        store::providers::events::outbox::SESSION_REVOKED,
         "ada",
         &json!({ "private": true }),
     )
@@ -201,10 +201,10 @@ async fn a_reconnect_hears_each_missed_event_once() {
         .unwrap()
         .get(0);
     for kind in [
-        store::providers::outbox::USER_UPDATED,
-        store::providers::outbox::SESSION_REVOKED,
+        store::providers::events::outbox::USER_UPDATED,
+        store::providers::events::outbox::SESSION_REVOKED,
     ] {
-        store::providers::outbox::emit(&transaction, kind, "ada", &json!({}))
+        store::providers::events::outbox::emit(&transaction, kind, "ada", &json!({}))
             .await
             .unwrap();
     }

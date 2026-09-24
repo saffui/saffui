@@ -10,10 +10,11 @@ use models::entities::export::{
 use models::paging::Window;
 use std::collections::HashSet;
 use store::error::StoreError;
-use store::providers::{
-    auth_flows, authz_policies, authz_surface, client_scopes, clients, organizations, realms,
-    roles, users,
-};
+use store::providers::authorization::{authz_policies, authz_surface};
+use store::providers::clients::client_scopes;
+use store::providers::directory::{organizations, roles, users};
+use store::providers::realms::auth_flows;
+use store::providers::{clients, realms};
 use store::query::list_query::ListQuery;
 use store::tenancy::UnitOfWork;
 
@@ -732,7 +733,7 @@ pub async fn import_partial_realm(
     roles::lock_role_composites(transaction)
         .await
         .map_err(|_| Unportable::Backend)?;
-    store::providers::sod::hold_realm(transaction)
+    store::providers::governance::sod::hold_realm(transaction)
         .await
         .map_err(|_| Unportable::Backend)?;
     let mut reached_groups: Vec<String> = Vec::new();

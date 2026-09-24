@@ -49,7 +49,8 @@ pub async fn poll(
         Err(StoreError::Unavailable) => return answer_unavailable(),
         Err(_) => return refused(),
     };
-    let Ok(rows) = store::providers::brokering::list_providers(&transaction).await else {
+    let Ok(rows) = store::providers::federation::brokering::list_providers(&transaction).await
+    else {
         return refused();
     };
     // The collector is whichever collecting row's sealed bearer matches what
@@ -78,7 +79,7 @@ pub async fn poll(
     };
 
     if let Some(done) = asked.ack.as_ref().filter(|held| !held.is_empty())
-        && store::providers::caep_queue::ack(&transaction, &row.internal_id, done)
+        && store::providers::events::caep_queue::ack(&transaction, &row.internal_id, done)
             .await
             .is_err()
     {
@@ -87,7 +88,8 @@ pub async fn poll(
 
     let ceiling = asked.max_events.unwrap_or(10).clamp(0, 100);
     let Ok((waiting, more)) =
-        store::providers::caep_queue::pending(&transaction, &row.internal_id, ceiling).await
+        store::providers::events::caep_queue::pending(&transaction, &row.internal_id, ceiling)
+            .await
     else {
         return refused();
     };

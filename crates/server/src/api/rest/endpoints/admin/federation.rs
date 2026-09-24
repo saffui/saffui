@@ -107,7 +107,7 @@ pub async fn import(
         .begin(&context)
         .await
         .map_err(refuse_unopened_work)?;
-    let held = match store::providers::brokering::federation(&transaction, &alias)
+    let held = match store::providers::federation::brokering::federation(&transaction, &alias)
         .await
         .map_err(|_| internal())?
     {

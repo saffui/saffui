@@ -1,5 +1,7 @@
 use models::entities::user::UserModel;
-use store::providers::{birthright, roles, sessions, users};
+use store::providers::directory::{roles, users};
+use store::providers::governance::birthright;
+use store::providers::protocol::sessions;
 use store::tenancy::UnitOfWork;
 
 pub struct Converged {
@@ -84,9 +86,11 @@ pub async fn converge_person(
 /// of ours: the ledger and the roles go with the person by cascade.
 pub async fn converge_event(
     transaction: &UnitOfWork,
-    event: &store::providers::outbox::OutboxEvent,
+    event: &store::providers::events::outbox::OutboxEvent,
 ) -> Result<(), ()> {
-    if !event.kind.starts_with("user.") || event.kind == store::providers::outbox::USER_DELETED {
+    if !event.kind.starts_with("user.")
+        || event.kind == store::providers::events::outbox::USER_DELETED
+    {
         return Ok(());
     }
     let Some(person) = users::load(transaction, &event.user_id)

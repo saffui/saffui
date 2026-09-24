@@ -1,9 +1,11 @@
 use chrono::{DateTime, Utc};
-use store::providers::{
-    backchannel, brokering, caep_queue, deliveries, devices, dpop, form_post, login, notices, oidc,
-    one_time_tokens, outbox, page_previews, pushed, replay, saml_brokering, sessions, sms,
-    source_failures, ussd,
+use store::providers::directory::one_time_tokens;
+use store::providers::events::{caep_queue, deliveries, notices, outbox};
+use store::providers::federation::{brokering, saml_brokering};
+use store::providers::protocol::{
+    backchannel, devices, dpop, form_post, login, oidc, pushed, replay, sessions, source_failures,
 };
+use store::providers::realms::{page_previews, sms, ussd};
 use store::tenancy::UnitOfWork;
 
 /// How long the sign-in log looks back. A window, not an archive: long
@@ -192,7 +194,7 @@ pub async fn drop_expired_rows(
         )
         .await
         .map_err(failed)?,
-        login_events: store::providers::login_events::drop_older_than(
+        login_events: store::providers::events::login_events::drop_older_than(
             transaction,
             (now - chrono::Duration::days(LOGIN_EVENTS_KEPT_DAYS)).timestamp(),
         )

@@ -65,7 +65,7 @@ async fn planted_role(plane: &Plane, role: &str) {
         REALM.into(),
         AuditableModel::from_creator(support::TENANT.into(), "root".into()),
     );
-    store::providers::roles::create(&transaction, &model)
+    store::providers::directory::roles::create(&transaction, &model)
         .await
         .unwrap();
     transaction.commit().await.unwrap();
@@ -88,10 +88,10 @@ async fn planted_group_holding(plane: &Plane, group: &str, role: &str) {
         parent_id: None,
         metadata: AuditableModel::from_creator(support::TENANT.into(), "root".into()),
     };
-    store::providers::roles::create_group(&transaction, &model)
+    store::providers::directory::roles::create_group(&transaction, &model)
         .await
         .unwrap();
-    store::providers::roles::grant_to_group(&transaction, group, role)
+    store::providers::directory::roles::grant_to_group(&transaction, group, role)
         .await
         .unwrap();
     transaction.commit().await.unwrap();
@@ -101,7 +101,7 @@ async fn roles_of(plane: &Plane, user: &str) -> Vec<String> {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    store::providers::roles::effective_roles(&transaction, user)
+    store::providers::directory::roles::effective_roles(&transaction, user)
         .await
         .unwrap()
         .into_iter()
@@ -475,7 +475,7 @@ async fn planted_group_under(plane: &Plane, group: &str, parent: Option<&str>) {
         parent_id: parent.map(str::to_owned),
         metadata: AuditableModel::from_creator(support::TENANT.into(), "root".into()),
     };
-    store::providers::roles::create_group(&transaction, &model)
+    store::providers::directory::roles::create_group(&transaction, &model)
         .await
         .unwrap();
     transaction.commit().await.unwrap();
@@ -485,7 +485,7 @@ async fn parent_of(plane: &Plane, group: &str) -> Option<String> {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    store::providers::roles::load_group(&transaction, group)
+    store::providers::directory::roles::load_group(&transaction, group)
         .await
         .unwrap()
         .expect("the group")
@@ -691,11 +691,11 @@ async fn planted_default_group(plane: &Plane, group: &str, carried: &[&str]) {
         parent_id: None,
         metadata: AuditableModel::from_creator(support::TENANT.into(), "root".into()),
     };
-    store::providers::roles::create_group(&transaction, &model)
+    store::providers::directory::roles::create_group(&transaction, &model)
         .await
         .unwrap();
     for role in carried {
-        store::providers::roles::grant_to_group(&transaction, group, role)
+        store::providers::directory::roles::grant_to_group(&transaction, group, role)
             .await
             .unwrap();
     }
@@ -706,7 +706,7 @@ async fn somebody_named(plane: &Plane, name: &str) -> bool {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    store::providers::users::load_by_name(&transaction, name)
+    store::providers::directory::users::load_by_name(&transaction, name)
         .await
         .unwrap()
         .is_some()
@@ -744,7 +744,7 @@ async fn a_newcomer_is_refused_when_the_default_groups_break_a_separation() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::roles::add_composite(&transaction, "desk", "approver")
+        store::providers::directory::roles::add_composite(&transaction, "desk", "approver")
             .await
             .unwrap();
         transaction.commit().await.unwrap();
@@ -816,7 +816,7 @@ async fn identifier_of(plane: &Plane, name: &str) -> String {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    store::providers::users::load_by_name(&transaction, name)
+    store::providers::directory::users::load_by_name(&transaction, name)
         .await
         .unwrap()
         .expect("somebody by that name")

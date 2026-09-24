@@ -70,7 +70,7 @@ fn change(current: &str, replacement: &str) -> Value {
 /// A login of the same person on another device.
 async fn open_login_elsewhere(plane: &Plane) {
     let transaction = plane.scoped(&within()).await;
-    store::providers::sessions::open(
+    store::providers::protocol::sessions::open(
         &transaction,
         &UserSessionModel {
             browser_state: None,
@@ -102,7 +102,7 @@ async fn open_login_elsewhere(plane: &Plane) {
 
 async fn login_stands(plane: &Plane, session_id: &str) -> bool {
     let transaction = plane.scoped(&within()).await;
-    store::providers::sessions::load(&transaction, session_id)
+    store::providers::protocol::sessions::load(&transaction, session_id)
         .await
         .expect("the sessions table")
         .is_some()
@@ -123,7 +123,7 @@ async fn held_password_is(plane: &Plane, offered: &str) -> bool {
 
 async fn pending_actions(plane: &Plane) -> Vec<RequiredAction> {
     let transaction = plane.scoped(&within()).await;
-    store::providers::users::load(&transaction, support::SUBJECT)
+    store::providers::directory::users::load(&transaction, support::SUBJECT)
         .await
         .expect("the users table")
         .expect("the planted person")
@@ -141,7 +141,7 @@ async fn a_password_changed_with_the_current_one_ends_every_other_login() {
     open_login_elsewhere(&plane).await;
     {
         let transaction = plane.scoped(&within()).await;
-        store::providers::users::require_action(
+        store::providers::directory::users::require_action(
             &transaction,
             support::SUBJECT,
             RequiredAction::UpdatePassword,
@@ -404,7 +404,7 @@ async fn a_password_kept_elsewhere_is_not_changed_here() {
             )
             .await
             .expect("the users table");
-        store::providers::credentials::delete_quietly(&transaction, "cred-1")
+        store::providers::directory::credentials::delete_quietly(&transaction, "cred-1")
             .await
             .expect("the credentials table");
         transaction.commit().await.expect("the password gone");
@@ -451,7 +451,7 @@ async fn prove_sign_in_at(plane: &Plane, at: i64) {
 
 async fn prove_sign_in_reaching(plane: &Plane, at: i64, level: i32) {
     let transaction = plane.scoped(&within()).await;
-    store::providers::sessions::record_authentication(
+    store::providers::protocol::sessions::record_authentication(
         &transaction,
         support::SESSION,
         at,
@@ -467,7 +467,7 @@ async fn plant_app(plane: &Plane, credential_id: &str) {
         CredentialModel, CredentialSecret, OtpAlgorithm, OtpParameters,
     };
     let transaction = plane.scoped(&within()).await;
-    store::providers::credentials::create(
+    store::providers::directory::credentials::create(
         &transaction,
         &CredentialModel::otp(
             credential_id.to_owned(),
@@ -489,9 +489,9 @@ async fn plant_app(plane: &Plane, credential_id: &str) {
 
 async fn plant_key(plane: &Plane, credential_id: &[u8]) {
     let transaction = plane.scoped(&within()).await;
-    store::providers::webauthn::enrol(
+    store::providers::directory::webauthn::enrol(
         &transaction,
-        &store::providers::webauthn::EnrolledCredential {
+        &store::providers::directory::webauthn::EnrolledCredential {
             credential_id: credential_id.to_vec(),
             user_id: support::SUBJECT.into(),
             label: "laptop".into(),
@@ -512,7 +512,7 @@ async fn plant_key(plane: &Plane, credential_id: &[u8]) {
 async fn plant_recovery_codes(plane: &Plane) {
     use crypto::provider::CryptoProvider as _;
     let transaction = plane.scoped(&within()).await;
-    store::providers::credentials::replace_recovery_codes(
+    store::providers::directory::credentials::replace_recovery_codes(
         &transaction,
         support::provider().digest(),
         support::REALM,
@@ -535,7 +535,7 @@ async fn credential_changes_told(plane: &Plane) -> i64 {
         .query_one(
             "SELECT count(*) FROM event_outbox WHERE kind = $1 AND user_id = $2",
             &[
-                &store::providers::outbox::CREDENTIAL_CHANGED,
+                &store::providers::events::outbox::CREDENTIAL_CHANGED,
                 &support::SUBJECT,
             ],
         )
@@ -759,7 +759,7 @@ async fn an_account_without_a_password_keeps_its_last_key() {
     prove_sign_in_at(&plane, chrono::Utc::now().timestamp()).await;
     {
         let transaction = plane.scoped(&within()).await;
-        store::providers::credentials::delete_quietly(&transaction, "cred-1")
+        store::providers::directory::credentials::delete_quietly(&transaction, "cred-1")
             .await
             .expect("the credentials table");
         transaction.commit().await.expect("the password gone");

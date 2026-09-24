@@ -64,7 +64,7 @@ async fn person(plane: &Plane, user_name: &str) -> Option<models::entities::user
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
-    store::providers::users::load_by_name(&transaction, user_name)
+    store::providers::directory::users::load_by_name(&transaction, user_name)
         .await
         .expect("the users table")
 }

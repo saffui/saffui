@@ -31,12 +31,13 @@ pub async fn list(
         .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
 
-    let held = store::providers::credentials::load_for_user(&transaction, &user_id)
+    let held = store::providers::directory::credentials::load_for_user(&transaction, &user_id)
         .await
         .map_err(|_| internal())?;
-    let unused = store::providers::credentials::count_recovery_codes(&transaction, &user_id)
-        .await
-        .unwrap_or(0);
+    let unused =
+        store::providers::directory::credentials::count_recovery_codes(&transaction, &user_id)
+            .await
+            .unwrap_or(0);
 
     let shown: Vec<_> = held
         .iter()
@@ -134,7 +135,7 @@ pub async fn revoke(
         .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
 
-    let held = store::providers::credentials::load(&transaction, &credential_id)
+    let held = store::providers::directory::credentials::load(&transaction, &credential_id)
         .await
         .map_err(|_| internal())?
         .filter(|row| row.user_id == user_id)
@@ -148,7 +149,7 @@ pub async fn revoke(
             "a password is replaced rather than taken away",
         ));
     }
-    store::providers::credentials::revoke(&transaction, &credential_id)
+    store::providers::directory::credentials::revoke(&transaction, &credential_id)
         .await
         .map_err(|_| internal())?;
     transaction.commit().await.map_err(|_| internal())?;

@@ -209,9 +209,9 @@ pub async fn open(
     let named = match &asked.hint {
         Hint::Named(hint) => {
             let found = if hint.contains('@') {
-                store::providers::users::load_by_email(&transaction, hint).await
+                store::providers::directory::users::load_by_email(&transaction, hint).await
             } else {
-                store::providers::users::load_by_name(&transaction, hint).await
+                store::providers::directory::users::load_by_name(&transaction, hint).await
             };
             match found {
                 Ok(person) => person.filter(|held| held.enabled),
@@ -243,10 +243,10 @@ pub async fn open(
             };
             let found = match &hinted {
                 ciba::Hinted::Subject(subject) => {
-                    store::providers::users::load(&transaction, subject).await
+                    store::providers::directory::users::load(&transaction, subject).await
                 }
                 ciba::Hinted::Email(address) => {
-                    store::providers::users::load_by_email(&transaction, address).await
+                    store::providers::directory::users::load_by_email(&transaction, address).await
                 }
             };
             match found {
@@ -286,11 +286,13 @@ pub async fn open(
                     .await
                     .ok();
                     match account {
-                        Some(account) => store::providers::users::load(&transaction, &account)
-                            .await
-                            .ok()
-                            .flatten()
-                            .filter(|held| held.enabled),
+                        Some(account) => {
+                            store::providers::directory::users::load(&transaction, &account)
+                                .await
+                                .ok()
+                                .flatten()
+                                .filter(|held| held.enabled)
+                        }
                         None => None,
                     }
                 }
@@ -387,7 +389,7 @@ pub async fn open(
     )
     .await;
 
-    let opened = store::providers::backchannel::open(
+    let opened = store::providers::protocol::backchannel::open(
         &transaction,
         sealing.provider.digest(),
         &auth_req_id,
@@ -484,7 +486,7 @@ async fn bearer_person(
         services::oidc::pairwise::account_for(transaction, presenting.as_ref(), &verified.subject)
             .await
             .map_err(|_| refused())?;
-    store::providers::users::load(transaction, &account)
+    store::providers::directory::users::load(transaction, &account)
         .await
         .map_err(|_| refused())?
         .filter(|held| held.enabled)
@@ -513,13 +515,13 @@ async fn asking_person(
     };
     let session_id =
         super::binding::read(request, super::binding::SSO_SESSION).ok_or_else(refused)?;
-    let login = store::providers::sessions::load(transaction, &session_id)
+    let login = store::providers::protocol::sessions::load(transaction, &session_id)
         .await
         .map_err(|_| refused())?
         .filter(|held| held.state == models::sessions::records::UserSessionState::LoggedIn)
         .filter(|held| held.expiration.is_none_or(|until| now.timestamp() < until))
         .ok_or_else(refused)?;
-    store::providers::users::load(transaction, &login.user_id)
+    store::providers::directory::users::load(transaction, &login.user_id)
         .await
         .map_err(|_| refused())?
         .filter(|held| held.enabled)
@@ -561,7 +563,8 @@ pub async fn pending(
         Err(response) => return response,
     };
     let Ok(standing) =
-        store::providers::backchannel::pending_for(&transaction, &person.user_id, now).await
+        store::providers::protocol::backchannel::pending_for(&transaction, &person.user_id, now)
+            .await
     else {
         return told(
             StatusCode::BAD_REQUEST,
@@ -650,7 +653,7 @@ pub async fn decide(
         Ok(person) => person,
         Err(response) => return response,
     };
-    let landed = store::providers::backchannel::decide(
+    let landed = store::providers::protocol::backchannel::decide(
         &transaction,
         &digest,
         &person.user_id,
@@ -831,7 +834,7 @@ async fn doorbell_text(
     )
     .await
     .ok()?;
-    let settings = store::providers::sms::load(transaction, &ring, &sealing.envelope)
+    let settings = store::providers::realms::sms::load(transaction, &ring, &sealing.envelope)
         .await
         .ok()
         .flatten()?;

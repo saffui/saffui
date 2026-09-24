@@ -156,9 +156,9 @@ pub async fn link(
         )
         .await
         .map_err(|_| StoreError::Backend)?;
-    super::outbox::emit(
+    crate::providers::events::outbox::emit(
         transaction,
-        super::outbox::IDENTITY_LINKED,
+        crate::providers::events::outbox::IDENTITY_LINKED,
         &identity.user_id,
         &serde_json::json!({
             "provider": identity.provider_alias,

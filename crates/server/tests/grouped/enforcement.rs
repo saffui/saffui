@@ -63,7 +63,7 @@ async fn plant_relationship(plane: &Plane) {
         "document",
         "doc",
         "owner",
-        &store::providers::rebac::Subject {
+        &store::providers::authorization::rebac::Subject {
             subject_type: "user".into(),
             subject_id: support::SUBJECT.into(),
             subject_relation: String::new(),
@@ -104,7 +104,7 @@ async fn a_question_over_the_wire_reaches_an_engine_and_is_recorded() {
 
     // And the record survived the request, which is what committing is for.
     let transaction = plane.scoped(&TenantContext::new("acme", REALM)).await;
-    let written = store::providers::authz_policies::recent(&transaction, 10)
+    let written = store::providers::authorization::authz_policies::recent(&transaction, 10)
         .await
         .unwrap();
     assert_eq!(

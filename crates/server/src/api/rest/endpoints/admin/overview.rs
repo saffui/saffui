@@ -32,20 +32,20 @@ pub async fn read(
         .await
         .map_err(refuse_unopened_work)?;
 
-    let users = store::providers::users::count(&transaction)
+    let users = store::providers::directory::users::count(&transaction)
         .await
         .map_err(|_| internal())?;
     let clients = store::providers::clients::count(&transaction)
         .await
         .map_err(|_| internal())?;
-    let sessions = store::providers::sessions::count_standing(&transaction)
+    let sessions = store::providers::protocol::sessions::count_standing(&transaction)
         .await
         .map_err(|_| internal())?;
-    let requests = store::providers::requests::count_pending(&transaction)
+    let requests = store::providers::governance::requests::count_pending(&transaction)
         .await
         .map_err(|_| internal())?;
 
-    let waiting = store::providers::outbox::count_waiting(&transaction)
+    let waiting = store::providers::events::outbox::count_waiting(&transaction)
         .await
         .map_err(|_| internal())?;
 

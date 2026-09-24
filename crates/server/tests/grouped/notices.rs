@@ -72,7 +72,7 @@ async fn arrange_mail(plane: &Plane) {
     )
     .await
     .expect("a keyring");
-    store::providers::mail::keep(
+    store::providers::realms::mail::keep(
         &transaction,
         &ring,
         &sealing.envelope,
@@ -122,9 +122,13 @@ async fn notice_states(plane: &Plane) -> Vec<String> {
 
 async fn mark_email_verified(plane: &Plane, verified: bool) {
     let transaction = plane.scoped(&within()).await;
-    store::providers::users::set_email_verified(&transaction, support::SUBJECT, verified)
-        .await
-        .expect("the users table");
+    store::providers::directory::users::set_email_verified(
+        &transaction,
+        support::SUBJECT,
+        verified,
+    )
+    .await
+    .expect("the users table");
     transaction.commit().await.expect("the address kept");
 }
 
@@ -143,7 +147,7 @@ async fn switch_notices(plane: &Plane, switched: Option<bool>) {
 
 async fn plant_recovery_codes(plane: &Plane) {
     let transaction = plane.scoped(&within()).await;
-    store::providers::credentials::replace_recovery_codes(
+    store::providers::directory::credentials::replace_recovery_codes(
         &transaction,
         support::provider().digest(),
         support::REALM,
@@ -239,7 +243,7 @@ async fn a_notice_is_mailed_once_while_a_webhook_keeps_failing() {
         .query_one(
             "SELECT state::text, attempts FROM event_outbox WHERE kind = $1 \
              ORDER BY event_id DESC LIMIT 1",
-            &[&store::providers::outbox::CREDENTIAL_CHANGED],
+            &[&store::providers::events::outbox::CREDENTIAL_CHANGED],
         )
         .await
         .expect("the outbox");
@@ -260,7 +264,7 @@ async fn a_recovery_code_used_to_sign_in_is_mailed_with_the_codes_left() {
 
     {
         let transaction = plane.scoped(&within()).await;
-        let spent = store::providers::credentials::spend_recovery_code(
+        let spent = store::providers::directory::credentials::spend_recovery_code(
             &transaction,
             support::provider().digest(),
             support::SUBJECT,
@@ -337,9 +341,9 @@ async fn a_sheet_revoked_at_once_is_one_notice() {
     {
         let transaction = plane.scoped(&within()).await;
         for _ in 0..2 {
-            store::providers::outbox::emit(
+            store::providers::events::outbox::emit(
                 &transaction,
-                store::providers::outbox::CREDENTIAL_CHANGED,
+                store::providers::events::outbox::CREDENTIAL_CHANGED,
                 support::SUBJECT,
                 &json!({ "credential_type": "recovery-code", "change_type": "revoke" }),
             )
@@ -388,7 +392,7 @@ async fn a_notice_refused_every_time_is_given_up_on_the_record() {
 
     let transaction = plane.scoped(&within()).await;
     let receipts: Vec<_> =
-        store::providers::deliveries::of_user(&transaction, support::SUBJECT, 50)
+        store::providers::events::deliveries::of_user(&transaction, support::SUBJECT, 50)
             .await
             .expect("the deliveries table")
             .into_iter()
@@ -417,9 +421,9 @@ async fn a_happening_about_nobody_held_does_not_stop_the_walk() {
 
     {
         let transaction = plane.scoped(&within()).await;
-        store::providers::outbox::emit(
+        store::providers::events::outbox::emit(
             &transaction,
-            store::providers::outbox::CREDENTIAL_CHANGED,
+            store::providers::events::outbox::CREDENTIAL_CHANGED,
             "somebody-gone",
             &json!({ "credential_type": "password", "change_type": "update" }),
         )
@@ -482,7 +486,7 @@ async fn change_address(plane: &Plane, email: &str, declared_verified: Option<bo
 
 async fn subject_address_verified(plane: &Plane) -> Option<bool> {
     let transaction = plane.scoped(&within()).await;
-    store::providers::users::load(&transaction, support::SUBJECT)
+    store::providers::directory::users::load(&transaction, support::SUBJECT)
         .await
         .expect("the users table")
         .expect("ada stands")
@@ -583,7 +587,7 @@ async fn a_provider_linked_to_an_existing_account_is_told() {
                 "root".to_owned(),
             ),
         };
-        store::providers::brokering::create_provider(&transaction, &provider)
+        store::providers::federation::brokering::create_provider(&transaction, &provider)
             .await
             .expect("a provider");
         for (upstream, email) in [

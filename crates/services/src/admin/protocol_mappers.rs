@@ -1,7 +1,8 @@
 use crypto::provider::CryptoProvider;
 use models::auditable::AuditableModel;
 use models::entities::client::{ProtocolMapperModel, ProtocolMapperMutationModel};
-use store::providers::{client_scopes, clients};
+use store::providers::clients;
+use store::providers::clients::client_scopes;
 use store::tenancy::UnitOfWork;
 
 use crate::oidc::mappers::KNOWN_TYPES;

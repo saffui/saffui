@@ -127,7 +127,7 @@ async fn two_outbox_claims_are_disjoint_and_a_crash_frees_its_claim() {
             .await
             .expect("a clean outbox");
         for n in 0..30 {
-            store::providers::outbox::emit(
+            store::providers::events::outbox::emit(
                 &transaction,
                 "two-writers-test",
                 support::SUBJECT,
@@ -144,10 +144,10 @@ async fn two_outbox_claims_are_disjoint_and_a_crash_frees_its_claim() {
     let first = plane.scoped(&within()).await;
     let second = plane.scoped(&within()).await;
 
-    let first_claim = store::providers::outbox::due(&first, 20, 60)
+    let first_claim = store::providers::events::outbox::due(&first, 20, 60)
         .await
         .expect("the first claim");
-    let second_claim = store::providers::outbox::due(&second, 20, 60)
+    let second_claim = store::providers::events::outbox::due(&second, 20, 60)
         .await
         .expect("the second claim");
     assert_eq!(first_claim.len(), 20, "the first pump was short-changed");
@@ -168,7 +168,7 @@ async fn two_outbox_claims_are_disjoint_and_a_crash_frees_its_claim() {
     // The first pump crashes mid-work: its transaction rolls back, and its
     // claim frees with it. The second delivers what it holds.
     for event in &second_claim {
-        store::providers::outbox::delivered(&second, event.event_id)
+        store::providers::events::outbox::delivered(&second, event.event_id)
             .await
             .expect("a delivery mark");
     }
@@ -176,7 +176,7 @@ async fn two_outbox_claims_are_disjoint_and_a_crash_frees_its_claim() {
     second.commit().await.expect("the deliveries kept");
 
     let transaction = plane.scoped(&within()).await;
-    let refreed = store::providers::outbox::due(&transaction, 30, 60)
+    let refreed = store::providers::events::outbox::due(&transaction, 30, 60)
         .await
         .expect("the after-crash claim");
     assert_eq!(

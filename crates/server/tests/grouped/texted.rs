@@ -62,7 +62,7 @@ async fn held_settings(plane: &Plane) -> Option<models::entities::sms::SmsSettin
     )
     .await
     .expect("a keyring");
-    store::providers::sms::load(&transaction, &ring, &sealing.envelope)
+    store::providers::realms::sms::load(&transaction, &ring, &sealing.envelope)
         .await
         .expect("the settings read")
 }

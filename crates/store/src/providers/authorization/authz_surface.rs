@@ -107,7 +107,7 @@ pub async fn delete_server(transaction: &UnitOfWork, server_id: &str) -> StoreRe
     // The aggregation edges first. A policy something is conditioned on cannot
     // be deleted from under it, and the cascade below reaches the two ends of an
     // edge in whichever order it finds them.
-    crate::providers::authz_policies::unbind_server(transaction, server_id).await?;
+    crate::providers::authorization::authz_policies::unbind_server(transaction, server_id).await?;
 
     let removed = transaction
         .execute(

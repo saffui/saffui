@@ -971,9 +971,13 @@ async fn an_exchange_decision_records_the_trace_it_ran_in() {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    let decided = store::providers::authz_policies::decisions_of_trace(&transaction, TRACE, 10)
-        .await
-        .unwrap();
+    let decided = store::providers::authorization::authz_policies::decisions_of_trace(
+        &transaction,
+        TRACE,
+        10,
+    )
+    .await
+    .unwrap();
     let actions: Vec<&str> = decided.iter().map(|held| held.action.as_str()).collect();
     assert_eq!(
         actions,

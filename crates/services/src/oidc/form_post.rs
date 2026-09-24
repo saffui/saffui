@@ -2,7 +2,7 @@ use chrono::{DateTime, Duration, Utc};
 use crypto::provider::{CryptoProvider, HashAlg};
 use data_encoding::BASE64URL_NOPAD;
 use serde_json::Value;
-use store::providers::form_post;
+use store::providers::protocol::form_post;
 use store::tenancy::UnitOfWork;
 
 use crate::oidc::landing::Landing;

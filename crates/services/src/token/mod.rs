@@ -11,7 +11,8 @@ use crypto::provider::SignAlg;
 use models::entities::keys::RealmSigningKeyView;
 use models::sessions::records::UserSessionState;
 use serde_json::Value;
-use store::providers::{clients, oidc, realms, sessions};
+use store::providers::protocol::{oidc, sessions};
+use store::providers::{clients, realms};
 use store::tenancy::UnitOfWork;
 
 /// What a token established, once it was accepted.

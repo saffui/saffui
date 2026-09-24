@@ -12,7 +12,8 @@ use data_encoding::HEXLOWER;
 use models::entities::credentials::{CredentialModel, CredentialSecret, CredentialType};
 use models::entities::realm::{About, PasswordPolicy, PasswordRefused};
 use secrecy::SecretBox;
-use store::providers::{credentials, realms, users};
+use store::providers::directory::{credentials, users};
+use store::providers::realms;
 use store::tenancy::UnitOfWork;
 
 /// Why a password was not kept.

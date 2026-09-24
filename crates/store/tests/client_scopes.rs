@@ -6,7 +6,8 @@ use models::entities::client::{
     ClientScopeModel, ClientScopeMutationModel, Protocol, ProtocolMapperModel,
     ProtocolMapperMutationModel,
 };
-use store::providers::{client_scopes, roles};
+use store::providers::clients::client_scopes;
+use store::providers::directory::roles;
 use store::tenancy::TenantContext;
 use support::Fixture;
 

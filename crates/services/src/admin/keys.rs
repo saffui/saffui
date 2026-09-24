@@ -1,4 +1,4 @@
-use store::providers::webauthn::{self, EnrolledCredential};
+use store::providers::directory::webauthn::{self, EnrolledCredential};
 use store::tenancy::UnitOfWork;
 
 use crate::admin::users;

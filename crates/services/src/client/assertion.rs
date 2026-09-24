@@ -7,7 +7,7 @@ use data_encoding::BASE64URL_NOPAD;
 use models::entities::client::ClientModel;
 use secrecy::{ExposeSecret, SecretBox};
 use serde_json::Value;
-use store::providers::oidc;
+use store::providers::protocol::oidc;
 use store::tenancy::UnitOfWork;
 
 use crate::token::verifier_for;

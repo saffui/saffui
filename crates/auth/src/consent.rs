@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use models::entities::client::ClientModel;
-use store::providers::consents;
+use store::providers::directory::consents;
 use store::tenancy::UnitOfWork;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

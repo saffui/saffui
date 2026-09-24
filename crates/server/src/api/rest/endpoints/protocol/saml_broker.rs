@@ -46,7 +46,7 @@ pub async fn metadata(
     };
 
     let Ok(Some(provider)) =
-        store::providers::brokering::provider_by_alias(&transaction, &alias).await
+        store::providers::federation::brokering::provider_by_alias(&transaction, &alias).await
     else {
         return told(StatusCode::NOT_FOUND, "no-such-provider");
     };
@@ -152,7 +152,7 @@ pub async fn consume_assertion(
         Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
     };
     let Ok(Some(provider)) =
-        store::providers::brokering::provider_by_alias(&transaction, &alias).await
+        store::providers::federation::brokering::provider_by_alias(&transaction, &alias).await
     else {
         return refused();
     };
@@ -376,7 +376,7 @@ async fn answer_logout_message(
         Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
     };
     let Ok(Some(provider)) =
-        store::providers::brokering::provider_by_alias(&transaction, alias).await
+        store::providers::federation::brokering::provider_by_alias(&transaction, alias).await
     else {
         return refused();
     };

@@ -12,7 +12,7 @@ use models::entities::user::{RequiredAction, UserModel};
 use secrecy::SecretBox;
 use serde_json::{Value, json};
 use std::str::FromStr;
-use store::providers::{credentials, one_time_tokens, users, webauthn};
+use store::providers::directory::{credentials, one_time_tokens, users, webauthn};
 use store::tenancy::{TenantContext, UnitOfWork};
 use uuid::Uuid;
 use webauthn_rs::prelude::{

@@ -1,7 +1,8 @@
 mod support;
 
 use chrono::Utc;
-use store::providers::{login_events, realms};
+use store::providers::events::login_events;
+use store::providers::realms;
 use store::tenancy::TenantContext;
 use support::Fixture;
 

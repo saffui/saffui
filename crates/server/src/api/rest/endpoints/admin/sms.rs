@@ -225,10 +225,10 @@ pub async fn spent_today(
         .map_err(refuse_unopened_work)?;
 
     let now = chrono::Utc::now().timestamp();
-    let sent = store::providers::sms::spent_today(&transaction, now)
+    let sent = store::providers::realms::sms::spent_today(&transaction, now)
         .await
         .map_err(|_| internal())?;
-    let held = store::providers::sms::held_back_today(&transaction, now)
+    let held = store::providers::realms::sms::held_back_today(&transaction, now)
         .await
         .map_err(|_| internal())?;
     let realm = store::providers::realms::of_context(&transaction)

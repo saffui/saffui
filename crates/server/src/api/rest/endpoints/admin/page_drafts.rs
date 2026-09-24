@@ -56,9 +56,14 @@ pub async fn keep(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    store::providers::page_previews::keep(&transaction, &preview_id, &asked.overrides, expires_at)
-        .await
-        .map_err(|_| internal())?;
+    store::providers::realms::page_previews::keep(
+        &transaction,
+        &preview_id,
+        &asked.overrides,
+        expires_at,
+    )
+    .await
+    .map_err(|_| internal())?;
     transaction.commit().await.map_err(|_| internal())?;
 
     Ok(HttpResponse::Created().json(serde_json::json!({

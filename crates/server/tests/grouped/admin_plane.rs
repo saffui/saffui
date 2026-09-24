@@ -302,13 +302,13 @@ async fn a_subject_the_realm_switched_off_is_refused() {
     );
 
     let transaction = plane.scoped(&TenantContext::new("acme", REALM)).await;
-    let mut user = store::providers::users::load(&transaction, SUBJECT)
+    let mut user = store::providers::directory::users::load(&transaction, SUBJECT)
         .await
         .unwrap()
         .unwrap();
     user.enabled = false;
     user.metadata = models::auditable::AuditableModel::from_updater("acme".into(), "root".into());
-    store::providers::users::update(&transaction, &user)
+    store::providers::directory::users::update(&transaction, &user)
         .await
         .unwrap();
     transaction.commit().await.unwrap();
@@ -329,7 +329,7 @@ async fn an_organization_grant_is_spent_where_it_was_made() {
     let plane = Plane::with_actions(&[]).await;
 
     let transaction = plane.scoped(&TenantContext::new("acme", REALM)).await;
-    store::providers::organizations::create(
+    store::providers::directory::organizations::create(
         &transaction,
         &models::entities::organization::OrganizationModel {
             org_id: "north".into(),
@@ -346,7 +346,7 @@ async fn an_organization_grant_is_spent_where_it_was_made() {
     )
     .await
     .unwrap();
-    store::providers::organizations::add_member(
+    store::providers::directory::organizations::add_member(
         &transaction,
         &models::entities::organization::OrganizationMemberModel {
             realm_id: REALM.into(),
@@ -372,12 +372,17 @@ async fn an_organization_grant_is_spent_where_it_was_made() {
         REALM.into(),
         models::auditable::AuditableModel::from_creator("acme".into(), "root".into()),
     );
-    store::providers::roles::create(&transaction, &lister)
+    store::providers::directory::roles::create(&transaction, &lister)
         .await
         .unwrap();
-    store::providers::organizations::grant_role(&transaction, "north", SUBJECT, "org-lister")
-        .await
-        .unwrap();
+    store::providers::directory::organizations::grant_role(
+        &transaction,
+        "north",
+        SUBJECT,
+        "org-lister",
+    )
+    .await
+    .unwrap();
     transaction.commit().await.unwrap();
 
     // Acting across the realm, the organization's grant is not held.
@@ -432,7 +437,7 @@ async fn a_token_whose_identifier_was_revoked_is_refused() {
     );
 
     let transaction = plane.scoped(&TenantContext::new("acme", REALM)).await;
-    store::providers::oidc::revoke(
+    store::providers::protocol::oidc::revoke(
         &transaction,
         "jti-1",
         Utc::now() + chrono::Duration::hours(1),
@@ -2211,7 +2216,7 @@ async fn an_erasure_erases_and_tells_the_world_on_its_way_out() {
                 "root".to_owned(),
             ),
         );
-        store::providers::users::create(&transaction, &grace)
+        store::providers::directory::users::create(&transaction, &grace)
             .await
             .unwrap();
         transaction
@@ -2236,9 +2241,9 @@ async fn an_erasure_erases_and_tells_the_world_on_its_way_out() {
             )
             .await
             .unwrap();
-        store::providers::outbox::emit(
+        store::providers::events::outbox::emit(
             &transaction,
-            store::providers::outbox::USER_UPDATED,
+            store::providers::events::outbox::USER_UPDATED,
             "grace",
             &serde_json::json!({ "email": "grace@example.test" }),
         )
@@ -2279,7 +2284,7 @@ async fn an_erasure_erases_and_tells_the_world_on_its_way_out() {
                 object_type,
                 object_id,
                 relation,
-                &store::providers::rebac::Subject {
+                &store::providers::authorization::rebac::Subject {
                     subject_type: "user".into(),
                     subject_id: subject_id.into(),
                     subject_relation: String::new(),
@@ -2387,7 +2392,7 @@ async fn an_erasure_erases_and_tells_the_world_on_its_way_out() {
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         assert!(
-            store::providers::users::load(&transaction, "grace")
+            store::providers::directory::users::load(&transaction, "grace")
                 .await
                 .unwrap()
                 .is_none(),
@@ -2443,7 +2448,7 @@ async fn an_erasure_erases_and_tells_the_world_on_its_way_out() {
         let kinds: Vec<String> = outgoing.iter().map(|row| row.get(0)).collect();
         assert_eq!(
             kinds,
-            vec![store::providers::outbox::USER_DELETED.to_owned()],
+            vec![store::providers::events::outbox::USER_DELETED.to_owned()],
             "the outbox holds more than the parting word"
         );
     }
@@ -2479,7 +2484,7 @@ async fn an_access_copy_holds_everything_and_no_secret_rides_it() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::consents::keep(
+        store::providers::directory::consents::keep(
             &transaction,
             support::SUBJECT,
             support::CONFIDENTIAL,
@@ -2615,7 +2620,7 @@ async fn a_rectification_moves_named_fields_and_an_objection_withdraws_consents(
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::consents::keep(
+        store::providers::directory::consents::keep(
             &transaction,
             support::SUBJECT,
             support::CONFIDENTIAL,
@@ -2703,7 +2708,7 @@ async fn a_rectification_moves_named_fields_and_an_objection_withdraws_consents(
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        let person = store::providers::users::load(&transaction, support::SUBJECT)
+        let person = store::providers::directory::users::load(&transaction, support::SUBJECT)
             .await
             .unwrap()
             .expect("ada stands");
@@ -2738,9 +2743,10 @@ async fn a_rectification_moves_named_fields_and_an_objection_withdraws_consents(
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        let standing = store::providers::consents::of_user(&transaction, support::SUBJECT)
-            .await
-            .unwrap();
+        let standing =
+            store::providers::directory::consents::of_user(&transaction, support::SUBJECT)
+                .await
+                .unwrap();
         assert!(standing.is_empty(), "the consent survived the objection");
     }
     let again = opened("objection").await;
@@ -3125,7 +3131,7 @@ async fn an_evidence_pack_accounts_for_its_period_with_the_chain_leading() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::consents::keep(
+        store::providers::directory::consents::keep(
             &transaction,
             support::SUBJECT,
             support::CONFIDENTIAL,
@@ -3443,15 +3449,15 @@ async fn the_days_texting_counters_are_the_ones_the_brakes_read() {
         .await;
     let now = Utc::now();
     for _ in 0..2 {
-        store::providers::sms::record_send(&transaction, now.timestamp())
+        store::providers::realms::sms::record_send(&transaction, now.timestamp())
             .await
             .expect("a send counted");
     }
     for brake in ["blocked-prefix", "blocked-prefix", "number-velocity"] {
-        store::providers::login_events::record(
+        store::providers::events::login_events::record(
             &transaction,
             now.timestamp(),
-            &store::providers::login_events::LoginEventWrite {
+            &store::providers::events::login_events::LoginEventWrite {
                 kind: "sms_throttled",
                 user_id: Some(support::SUBJECT),
                 detail: Some(serde_json::json!({ "brake": brake, "to": "+22890000000" })),

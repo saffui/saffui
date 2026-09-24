@@ -5,7 +5,9 @@ use crypto::provider::CryptoProvider;
 use models::sessions::records::{ClientSessionModel, UserSessionModel, UserSessionState};
 use secrecy::SecretBox;
 use serde_json::{Map, Value};
-use store::providers::{clients, consents, realms, sessions, users};
+use store::providers::directory::{consents, users};
+use store::providers::protocol::sessions;
+use store::providers::{clients, realms};
 use store::tenancy::{TenantContext, UnitOfWork};
 
 use crate::account::{

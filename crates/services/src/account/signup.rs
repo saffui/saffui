@@ -11,7 +11,8 @@ use crypto::provider::CryptoProvider;
 use models::entities::realm::{About, RealmModel};
 use models::entities::user::RequiredAction;
 use secrecy::SecretBox;
-use store::providers::{auth_flows, users};
+use store::providers::directory::users;
+use store::providers::realms::auth_flows;
 use store::tenancy::UnitOfWork;
 
 /// What the form posted.
@@ -186,10 +187,10 @@ pub async fn register_person(
                 .fill(&mut drawn)
                 .map_err(|_| Unregistrable::Unwritable)?;
             let token = data_encoding::BASE64URL_NOPAD.encode(&drawn);
-            store::providers::one_time_tokens::mint(
+            store::providers::directory::one_time_tokens::mint(
                 transaction,
                 provider.digest(),
-                store::providers::one_time_tokens::Owner {
+                store::providers::directory::one_time_tokens::Owner {
                     tenant: &realm.metadata.tenant,
                     realm_id: &realm.realm_id,
                     user_id: &born.user_id,

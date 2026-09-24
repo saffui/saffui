@@ -160,7 +160,7 @@ pub async fn identities_of_user(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    if store::providers::users::load(&transaction, &user_id)
+    if store::providers::directory::users::load(&transaction, &user_id)
         .await
         .map_err(|_| internal())?
         .is_none()
@@ -168,7 +168,7 @@ pub async fn identities_of_user(
         return Err(ApiError::new(ErrorCode::UserNotFound));
     }
     let user_id = super::users::named_user(&transaction, &user_id).await?;
-    let held = store::providers::brokering::identities_of(&transaction, &user_id)
+    let held = store::providers::federation::brokering::identities_of(&transaction, &user_id)
         .await
         .map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(held))

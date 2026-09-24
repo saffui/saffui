@@ -14,7 +14,7 @@ async fn the_realm_hold_and_a_person_hold_wait_for_each_other() {
     let within = TenantContext::new("acme", "main");
 
     let weighing = fixture.scoped(&within).await;
-    store::providers::sod::hold_person(&weighing, "ada")
+    store::providers::governance::sod::hold_person(&weighing, "ada")
         .await
         .expect("the person is held");
 
@@ -24,7 +24,7 @@ async fn the_realm_hold_and_a_person_hold_wait_for_each_other() {
             .batch_execute("SET LOCAL lock_timeout = '300ms'")
             .await
             .unwrap();
-        store::providers::sod::hold_person(&beside, "grace")
+        store::providers::governance::sod::hold_person(&beside, "grace")
             .await
             .expect("a second person waited for the first");
     }
@@ -35,14 +35,16 @@ async fn the_realm_hold_and_a_person_hold_wait_for_each_other() {
             .await
             .unwrap();
         assert!(
-            store::providers::sod::hold_realm(&reaching).await.is_err(),
+            store::providers::governance::sod::hold_realm(&reaching)
+                .await
+                .is_err(),
             "a change reaching many people went ahead while a person was being weighed"
         );
     }
     weighing.rollback().await.unwrap();
 
     let reaching = fixture.scoped(&within).await;
-    store::providers::sod::hold_realm(&reaching)
+    store::providers::governance::sod::hold_realm(&reaching)
         .await
         .expect("the realm is held");
     let weighing = fixture.scoped(&within).await;
@@ -51,7 +53,7 @@ async fn the_realm_hold_and_a_person_hold_wait_for_each_other() {
         .await
         .unwrap();
     assert!(
-        store::providers::sod::hold_person(&weighing, "ada")
+        store::providers::governance::sod::hold_person(&weighing, "ada")
             .await
             .is_err(),
         "a person was weighed while a change reaching many people was"

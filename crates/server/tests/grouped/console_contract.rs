@@ -41,7 +41,7 @@ async fn plant_what_the_console_lists(plane: &Plane) {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
-    store::providers::consents::keep(
+    store::providers::directory::consents::keep(
         &transaction,
         support::SUBJECT,
         support::CONFIDENTIAL,
@@ -50,7 +50,7 @@ async fn plant_what_the_console_lists(plane: &Plane) {
     )
     .await
     .expect("a consent");
-    store::providers::sessions::open(
+    store::providers::protocol::sessions::open(
         &transaction,
         &UserSessionModel {
             browser_state: None,
@@ -77,7 +77,7 @@ async fn plant_what_the_console_lists(plane: &Plane) {
     )
     .await
     .expect("a spare login");
-    store::providers::sessions::open_client_session(
+    store::providers::protocol::sessions::open_client_session(
         &transaction,
         &ClientSessionModel {
             tenant: support::TENANT.into(),

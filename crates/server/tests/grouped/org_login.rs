@@ -410,7 +410,7 @@ async fn with_nothing_pinned_the_memberships_decide() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::organizations::claim_domain(
+        store::providers::directory::organizations::claim_domain(
             &transaction,
             &acme,
             "example.test",
@@ -418,7 +418,7 @@ async fn with_nothing_pinned_the_memberships_decide() {
         )
         .await
         .expect("the domain claimed");
-        store::providers::organizations::verify_domain(&transaction, "example.test")
+        store::providers::directory::organizations::verify_domain(&transaction, "example.test")
             .await
             .expect("the domain proven");
         transaction.commit().await.expect("the domain kept");

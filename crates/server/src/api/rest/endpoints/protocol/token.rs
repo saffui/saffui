@@ -592,7 +592,8 @@ async fn workload_exchange(
 
     // The one trusted platform with this issuer, still enabled, still
     // reading as one. The issuer only picks the row; the row is the trust.
-    let Ok(rows) = store::providers::brokering::list_providers(&transaction).await else {
+    let Ok(rows) = store::providers::federation::brokering::list_providers(&transaction).await
+    else {
         return Denied::InvalidRequest.answer("the realm could not be read");
     };
     let trusted = rows
@@ -721,7 +722,8 @@ async fn x509_exchange(
     let Ok(Some(realm)) = services::realm::named(&transaction, &context.realm_id).await else {
         return Some(Denied::InvalidRequest.answer("the realm could not be read"));
     };
-    let Ok(rows) = store::providers::brokering::list_providers(&transaction).await else {
+    let Ok(rows) = store::providers::federation::brokering::list_providers(&transaction).await
+    else {
         return Some(Denied::InvalidRequest.answer("the realm could not be read"));
     };
     let admitted = rows

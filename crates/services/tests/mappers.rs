@@ -5,7 +5,8 @@ use models::entities::authz::GroupModel;
 use models::entities::client::{Protocol, ProtocolMapperModel};
 use models::entities::organization::{OrganizationMemberModel, OrganizationModel};
 use services::oidc::mappers::{GROUP_MAPPER, ORGANIZATION_MAPPER, PROPERTY_MAPPER, resolve};
-use store::providers::{client_scopes, organizations, roles};
+use store::providers::clients::client_scopes;
+use store::providers::directory::{organizations, roles};
 use store::tenancy::TenantContext;
 use support::Fixture;
 

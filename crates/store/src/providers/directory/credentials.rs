@@ -438,9 +438,9 @@ async fn announce_credential_change(
     credential_type: CredentialType,
     change: CredentialChange,
 ) -> StoreResult<()> {
-    super::outbox::emit(
+    crate::providers::events::outbox::emit(
         transaction,
-        super::outbox::CREDENTIAL_CHANGED,
+        crate::providers::events::outbox::CREDENTIAL_CHANGED,
         user_id,
         &serde_json::json!({ "credential_type": credential_type, "change_type": change }),
     )
@@ -450,9 +450,9 @@ async fn announce_credential_change(
 /// Tell whoever listens that a person signed in with one of their recovery codes:
 /// a deletion, marked apart from a sheet given up.
 async fn announce_recovery_code_spent(transaction: &UnitOfWork, user_id: &str) -> StoreResult<()> {
-    super::outbox::emit(
+    crate::providers::events::outbox::emit(
         transaction,
-        super::outbox::CREDENTIAL_CHANGED,
+        crate::providers::events::outbox::CREDENTIAL_CHANGED,
         user_id,
         &serde_json::json!({
             "credential_type": CredentialType::RecoveryCode,

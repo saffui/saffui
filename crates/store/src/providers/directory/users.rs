@@ -20,9 +20,9 @@ const COLUMNS: &str = "tenant, realm_id, user_id, user_name, email, email_verifi
 /// pair is refused by the rules rather than written where nobody will look.
 pub async fn create(transaction: &UnitOfWork, user: &UserModel) -> StoreResult<()> {
     let attributes = attributes_json(user)?;
-    super::outbox::emit(
+    crate::providers::events::outbox::emit(
         transaction,
-        super::outbox::USER_CREATED,
+        crate::providers::events::outbox::USER_CREATED,
         &user.user_id,
         &event_payload(user),
     )
@@ -207,9 +207,9 @@ pub async fn update(transaction: &UnitOfWork, user: &UserModel) -> StoreResult<b
         payload["previous_email_verified"] =
             serde_json::json!(previous.get::<_, Option<bool>>("email_verified") == Some(true));
     }
-    super::outbox::emit(
+    crate::providers::events::outbox::emit(
         transaction,
-        super::outbox::USER_UPDATED,
+        crate::providers::events::outbox::USER_UPDATED,
         &user.user_id,
         &payload,
     )
@@ -323,9 +323,9 @@ pub async fn clear_required_action(
 }
 
 pub async fn delete(transaction: &UnitOfWork, user_id: &str) -> StoreResult<bool> {
-    super::outbox::emit(
+    crate::providers::events::outbox::emit(
         transaction,
-        super::outbox::USER_DELETED,
+        crate::providers::events::outbox::USER_DELETED,
         user_id,
         &serde_json::json!({}),
     )

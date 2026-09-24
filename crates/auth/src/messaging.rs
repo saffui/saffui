@@ -783,10 +783,10 @@ pub async fn text_brakes(
     let held = brakes_say(transaction, realm, recipient, now).await?;
     if let Some(held) = held {
         tracing::warn!(brake = held.as_str(), "a text was held back");
-        let _ = store::providers::login_events::record(
+        let _ = store::providers::events::login_events::record(
             transaction,
             now.timestamp(),
-            &store::providers::login_events::LoginEventWrite {
+            &store::providers::events::login_events::LoginEventWrite {
                 kind: "sms_throttled",
                 user_id: Some(user_id),
                 detail: Some(serde_json::json!({
@@ -815,10 +815,13 @@ async fn brakes_say(
     {
         return Ok(Some(Held::BlockedPrefix));
     }
-    let to_number =
-        store::providers::sms::sent_to_number_this_hour(transaction, recipient, now.timestamp())
-            .await
-            .map_err(|_| ())?;
+    let to_number = store::providers::realms::sms::sent_to_number_this_hour(
+        transaction,
+        recipient,
+        now.timestamp(),
+    )
+    .await
+    .map_err(|_| ())?;
     if to_number
         >= realm
             .sms_per_number_cap
@@ -826,7 +829,7 @@ async fn brakes_say(
     {
         return Ok(Some(Held::NumberVelocity));
     }
-    let today = store::providers::sms::spent_today(transaction, now.timestamp())
+    let today = store::providers::realms::sms::spent_today(transaction, now.timestamp())
         .await
         .map_err(|_| ())?;
     if today >= realm.sms_daily_cap.unwrap_or(TEXTS_PER_REALM_PER_DAY) {
@@ -842,10 +845,10 @@ pub async fn record_text(
     recipient: &str,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<(), ()> {
-    store::providers::sms::record_send(transaction, now.timestamp())
+    store::providers::realms::sms::record_send(transaction, now.timestamp())
         .await
         .map_err(|_| ())?;
-    store::providers::sms::record_send_to_number(transaction, recipient, now.timestamp())
+    store::providers::realms::sms::record_send_to_number(transaction, recipient, now.timestamp())
         .await
         .map_err(|_| ())
 }

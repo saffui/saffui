@@ -84,7 +84,7 @@ async fn the_plane_is_operated_from_a_terminal() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::roles::grant_to_user(
+        store::providers::directory::roles::grant_to_user(
             &transaction,
             &format!("service-account-{}", support::CONFIDENTIAL),
             "admins",
@@ -94,14 +94,14 @@ async fn the_plane_is_operated_from_a_terminal() {
         // The plane's scope, attached as always-carried: what lets a machine
         // grant that never asks at a login still arrive entitled. The world
         // may already hold the row; the attachment is what this test adds.
-        if store::providers::client_scopes::load_scope(&transaction, support::SCOPE)
+        if store::providers::clients::client_scopes::load_scope(&transaction, support::SCOPE)
             .await
             .unwrap()
             .is_none()
         {
             plant_admin_scope(&transaction).await;
         }
-        store::providers::client_scopes::attach_scope(
+        store::providers::clients::client_scopes::attach_scope(
             &transaction,
             support::CONFIDENTIAL,
             support::SCOPE,
@@ -114,7 +114,7 @@ async fn the_plane_is_operated_from_a_terminal() {
 
     #[allow(dead_code)]
     async fn plant_admin_scope(transaction: &UnitOfWork) {
-        store::providers::client_scopes::create_scope(
+        store::providers::clients::client_scopes::create_scope(
             transaction,
             &models::entities::client::ClientScopeModel {
                 client_scope_id: support::SCOPE.to_owned(),

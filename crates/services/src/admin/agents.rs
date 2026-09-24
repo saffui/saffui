@@ -11,7 +11,8 @@ use models::entities::attributes::AttributeValue;
 use models::entities::client::{ClientCreateModel, ClientModel, Protocol};
 use models::entities::user::UserCreateModel;
 use store::error::StoreError;
-use store::providers::{clients, users};
+use store::providers::clients;
+use store::providers::directory::users;
 use store::tenancy::UnitOfWork;
 
 use crate::authorization::capability;
@@ -228,9 +229,9 @@ pub async fn register(
             _ => Refused::Unwritable,
         })?;
 
-    store::providers::outbox::emit(
+    store::providers::events::outbox::emit(
         transaction,
-        store::providers::outbox::AGENT_REGISTERED,
+        store::providers::events::outbox::AGENT_REGISTERED,
         client_id,
         &serde_json::json!({ "capabilities": root }),
     )
@@ -318,9 +319,9 @@ pub async fn reshape(
     clients::update(transaction, &client)
         .await
         .map_err(|_| Refused::Unwritable)?;
-    store::providers::outbox::emit(
+    store::providers::events::outbox::emit(
         transaction,
-        store::providers::outbox::AGENT_RESHAPED,
+        store::providers::events::outbox::AGENT_RESHAPED,
         client_id,
         &serde_json::json!({ "capabilities": root }),
     )

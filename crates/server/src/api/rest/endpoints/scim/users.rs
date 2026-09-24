@@ -12,7 +12,7 @@ use models::entities::user::{UserModel, profile};
 use serde_json::Value;
 use services::scim::{self, AssertedUser, Matched, Refusal, UserPatch, list_response, shown_user};
 use store::error::StoreError;
-use store::providers::{credentials, roles, users};
+use store::providers::directory::{credentials, roles, users};
 use store::query::list_query::ListQuery;
 use store::tenancy::{Tenancy, UnitOfWork};
 
@@ -196,7 +196,7 @@ pub async fn create(
 
     // The same seat every newcomer takes: default groups that break a
     // separation refuse the person, and the provisioner hears why.
-    if store::providers::sod::hold_person(&transaction, &person.user_id)
+    if store::providers::governance::sod::hold_person(&transaction, &person.user_id)
         .await
         .is_err()
     {
@@ -219,7 +219,7 @@ pub async fn create(
         }
         Err(_) => return internal(),
     }
-    if store::providers::roles::join_default_groups(&transaction, &person.user_id)
+    if store::providers::directory::roles::join_default_groups(&transaction, &person.user_id)
         .await
         .is_err()
     {

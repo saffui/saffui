@@ -8,10 +8,12 @@ use models::entities::oidc::AuthorizationCode;
 use models::entities::realm::RealmModel;
 use models::sessions::records::{ClientSessionModel, UserSessionModel, UserSessionState};
 use serde_json::{Map, Value};
-use store::providers::backchannel;
-use store::providers::oidc::Redemption;
-use store::providers::sessions::Refreshed;
-use store::providers::{oidc, realm_keys, sessions, users};
+use store::providers::directory::users;
+use store::providers::protocol::backchannel;
+use store::providers::protocol::oidc::Redemption;
+use store::providers::protocol::sessions::Refreshed;
+use store::providers::protocol::{oidc, sessions};
+use store::providers::realms::realm_keys;
 use store::tenancy::{TenantContext, UnitOfWork};
 
 use crate::oidc::userinfo;
@@ -769,10 +771,10 @@ async fn open_login(
     if let Ok(Some(realm)) = store::providers::realms::of_context(transaction).await
         && realm.events_enabled == Some(true)
     {
-        let _ = store::providers::login_events::record(
+        let _ = store::providers::events::login_events::record(
             transaction,
             now.timestamp(),
-            &store::providers::login_events::LoginEventWrite {
+            &store::providers::events::login_events::LoginEventWrite {
                 kind: "signed_in",
                 user_id: Some(user_id),
                 client_id: Some(&client.client_id),
@@ -1073,11 +1075,12 @@ pub async fn device_code(
     }
 
     let digest = signing.provider.digest();
-    let previous = store::providers::devices::touch_poll(transaction, digest, device_code, now)
-        .await
-        .map_err(|_| Unpolled::Backend)?
-        .flatten();
-    let waiting = store::providers::devices::load(transaction, digest, device_code)
+    let previous =
+        store::providers::protocol::devices::touch_poll(transaction, digest, device_code, now)
+            .await
+            .map_err(|_| Unpolled::Backend)?
+            .flatten();
+    let waiting = store::providers::protocol::devices::load(transaction, digest, device_code)
         .await
         .map_err(|_| Unpolled::Backend)?;
 
@@ -1112,7 +1115,7 @@ pub async fn device_code(
         models::entities::device::DeviceCodeState::Approved => {}
     }
 
-    let approved = store::providers::devices::spend(transaction, digest, device_code)
+    let approved = store::providers::protocol::devices::spend(transaction, digest, device_code)
         .await
         .map_err(|_| Unpolled::Backend)?
         .ok_or(Unpolled::Words("invalid_grant", "no such device sign-in"))?;

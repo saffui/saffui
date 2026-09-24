@@ -10,7 +10,8 @@ use crypto::provider::SignAlg;
 use models::entities::keys::{KeyStatus, KeyUse, RealmSigningKeyView};
 use models::entities::realm::RealmModel;
 use models::paging::Page;
-use store::providers::{realm_keys, realms};
+use store::providers::realms;
+use store::providers::realms::realm_keys;
 use store::query::list_query::ListQuery;
 use store::tenancy::UnitOfWork;
 

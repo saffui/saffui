@@ -56,7 +56,7 @@ pub async fn list_for_realm(
         .await
         .map_err(refuse_unopened_work)?;
 
-    let held = store::providers::realm_features::read_wishes(&transaction)
+    let held = store::providers::realms::realm_features::read_wishes(&transaction)
         .await
         .map_err(|_| internal())?;
 
@@ -139,7 +139,7 @@ pub async fn set_wish(
 
     match asked.enabled {
         Some(enabled) => {
-            store::providers::realm_features::keep_wish(
+            store::providers::realms::realm_features::keep_wish(
                 &transaction,
                 feature.slug(),
                 enabled,
@@ -149,7 +149,7 @@ pub async fn set_wish(
             .map_err(|_| internal())?;
         }
         None => {
-            store::providers::realm_features::forget_wish(&transaction, feature.slug())
+            store::providers::realms::realm_features::forget_wish(&transaction, feature.slug())
                 .await
                 .map_err(|_| internal())?;
         }

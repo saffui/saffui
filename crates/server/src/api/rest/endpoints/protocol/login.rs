@@ -178,7 +178,7 @@ pub async fn answer(
     // becomes an answer that fails the step, rather than silence that would
     // re-challenge the same doomed exchange forever.
     let mut negotiated: Option<String> = None;
-    if let Ok(Some(door)) = store::providers::brokering::spnego(&transaction).await
+    if let Ok(Some(door)) = store::providers::federation::brokering::spnego(&transaction).await
         && door.enabled != Some(false)
     {
         match services::federation::negotiation::SpnegoSettings::parse(&door) {
@@ -262,7 +262,7 @@ pub async fn answer(
     // reading is skipped with a line for the operator: the plane refuses to
     // write one, so a broken row is a migration of trouble, and bricking
     // every login over it helps nobody.
-    let rows = match store::providers::brokering::federations(&transaction).await {
+    let rows = match store::providers::federation::brokering::federations(&transaction).await {
         Ok(rows) => rows,
         Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
     };

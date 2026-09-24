@@ -7,7 +7,7 @@ pub mod rebac;
 pub mod routes;
 
 use models::entities::authz::AdminAction;
-use store::providers::{organizations, roles};
+use store::providers::directory::{organizations, roles};
 use store::tenancy::UnitOfWork;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

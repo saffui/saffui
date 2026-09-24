@@ -10,7 +10,9 @@ use models::entities::auth::{
 };
 use models::entities::credentials::{CredentialModel, CredentialSecret, CredentialType};
 use secrecy::SecretBox;
-use store::providers::{auth_flows, credentials, realms};
+use store::providers::directory::credentials;
+use store::providers::realms;
+use store::providers::realms::auth_flows;
 use store::tenancy::{TenantContext, UnitOfWork};
 use support::{Fixture, provider};
 
@@ -94,7 +96,7 @@ async fn a_password_flow_admits_refuses_and_asks() {
     plant_password(&transaction, "correct horse").await;
 
     let realm = realms::load(&transaction, "main").await.unwrap().unwrap();
-    let user = store::providers::users::load(&transaction, "ada")
+    let user = store::providers::directory::users::load(&transaction, "ada")
         .await
         .unwrap()
         .unwrap();
@@ -286,7 +288,7 @@ async fn a_flow_whose_only_step_is_disabled_admits_nobody() {
     let flow = plant_flow(&transaction, AuthenticatorRequirement::Disabled, "password").await;
     plant_password(&transaction, "correct horse").await;
     let realm = realms::load(&transaction, "main").await.unwrap().unwrap();
-    let user = store::providers::users::load(&transaction, "ada")
+    let user = store::providers::directory::users::load(&transaction, "ada")
         .await
         .unwrap()
         .unwrap();

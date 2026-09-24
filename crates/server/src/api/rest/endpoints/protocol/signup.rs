@@ -75,7 +75,7 @@ pub async fn register(
     )
     .await
     {
-        Ok(ring) => store::providers::mail::load(&transaction, &ring, &sealing.envelope)
+        Ok(ring) => store::providers::realms::mail::load(&transaction, &ring, &sealing.envelope)
             .await
             .ok()
             .flatten(),

@@ -89,7 +89,7 @@ async fn planted_attribute(plane: &Plane, name: &str, value: &str) {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    let mut person = store::providers::users::load(&transaction, support::SUBJECT)
+    let mut person = store::providers::directory::users::load(&transaction, support::SUBJECT)
         .await
         .unwrap()
         .expect("the planted person");
@@ -98,7 +98,7 @@ async fn planted_attribute(plane: &Plane, name: &str, value: &str) {
         .get_or_insert_with(Default::default)
         .insert(name.to_owned(), AttributeValue::Str(value.to_owned()));
     assert!(
-        store::providers::users::update(&transaction, &person)
+        store::providers::directory::users::update(&transaction, &person)
             .await
             .unwrap()
     );

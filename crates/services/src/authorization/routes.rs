@@ -1,4 +1,4 @@
-use store::providers::authz_routes::AuthzRoute;
+use store::providers::authorization::authz_routes::AuthzRoute;
 
 /// Which route answers for this request, or none.
 ///

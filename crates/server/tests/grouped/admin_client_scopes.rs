@@ -561,7 +561,7 @@ async fn a_scope_of_another_protocol_is_no_part_of_an_openid_grant() {
         let transaction = plane
             .scoped(&store::tenancy::TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::client_scopes::create_scope(
+        store::providers::clients::client_scopes::create_scope(
             &transaction,
             &models::entities::client::ClientScopeModel {
                 client_scope_id: "registry".to_owned(),
@@ -579,7 +579,7 @@ async fn a_scope_of_another_protocol_is_no_part_of_an_openid_grant() {
         )
         .await
         .expect("a docker scope");
-        store::providers::client_scopes::attach_scope(
+        store::providers::clients::client_scopes::attach_scope(
             &transaction,
             support::CONFIDENTIAL,
             "registry",

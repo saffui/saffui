@@ -14,7 +14,8 @@ use pgcore::tls::PgConnector;
 use std::collections::HashMap;
 
 use crypto::provider::SignAlg;
-use store::providers::{realms, tenants};
+use store::providers::realms;
+use store::providers::realms::tenants;
 use store::query::list_query::ListQuery;
 use store::schema::migrations;
 use store::tenancy::{Tenancy, TenantContext, UnitOfWork};
@@ -287,7 +288,8 @@ async fn a_state_change_bumps_the_stored_version() {
 
 use models::entities::client::{ClientCreateModel, ClientSecret, JweRegistration};
 use models::entities::user::{UserCreateModel, UserModel};
-use store::providers::{clients, users};
+use store::providers::clients;
+use store::providers::directory::users;
 
 fn user(tenant: &str, realm: &str, id: &str) -> UserModel {
     UserCreateModel {
@@ -559,7 +561,7 @@ use models::entities::credentials::{
     CredentialModel, CredentialSecret, CredentialType, OtpAlgorithm, OtpCredentialData,
     OtpParameters,
 };
-use store::providers::credentials;
+use store::providers::directory::credentials;
 
 fn otp_credential(tenant: &str, realm: &str, id: &str, priority: i64) -> CredentialModel {
     CredentialModel {
@@ -831,7 +833,10 @@ async fn announced_changes(transaction: &UnitOfWork, user_id: &str) -> Vec<Strin
         .query(
             "SELECT concat_ws(' ', payload->>'credential_type', payload->>'change_type') \
              FROM event_outbox WHERE kind = $1 AND user_id = $2 ORDER BY event_id",
-            &[&store::providers::outbox::CREDENTIAL_CHANGED, &user_id],
+            &[
+                &store::providers::events::outbox::CREDENTIAL_CHANGED,
+                &user_id,
+            ],
         )
         .await
         .unwrap()

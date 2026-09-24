@@ -240,7 +240,7 @@ async fn draft_of_realm(
     draft: &str,
 ) -> Option<serde_json::Value> {
     let transaction = tenancy.begin_in(RealmNamed::ByName(realm)).await.ok()?;
-    store::providers::page_previews::read(&transaction, draft)
+    store::providers::realms::page_previews::read(&transaction, draft)
         .await
         .ok()
         .flatten()
@@ -327,7 +327,7 @@ async fn doors_of_realm(
     if offers_recovery_codes(&transaction, held.browser_flow.as_deref()).await {
         doors.push("recovery-code");
     }
-    let idps = match store::providers::brokering::list_providers(&transaction).await {
+    let idps = match store::providers::federation::brokering::list_providers(&transaction).await {
         Ok(rows) => federated_doors(&rows),
         Err(_) => String::new(),
     };
@@ -397,7 +397,7 @@ fn federated_doors(rows: &[models::entities::authz::IdentityProviderModel]) -> S
 /// nothing this build provisions.
 async fn offers_recovery_codes(transaction: &UnitOfWork, bound: Option<&str>) -> bool {
     use models::entities::auth::ExecutionStep;
-    use store::providers::auth_flows;
+    use store::providers::realms::auth_flows;
 
     let Ok(Some(flow)) = auth_flows::flow_by_alias(transaction, bound.unwrap_or("browser")).await
     else {
@@ -457,7 +457,8 @@ async fn read_live_login(
     let Ok(transaction) = tenancy.begin(&context).await else {
         return LiveLogin::default();
     };
-    let Ok(Some(login)) = store::providers::login::resume(&transaction, &binding).await else {
+    let Ok(Some(login)) = store::providers::protocol::login::resume(&transaction, &binding).await
+    else {
         return LiveLogin::default();
     };
     let ui_locales = login
@@ -643,16 +644,18 @@ pub async fn style(
             dressed = Some(sheet.clone());
         }
         if let Some(binding) = super::binding::read(&request, super::binding::AUTH_SESSION)
-            && let Ok(Some(login)) = store::providers::login::resume(&transaction, &binding).await
+            && let Ok(Some(login)) =
+                store::providers::protocol::login::resume(&transaction, &binding).await
             && let Some(slug) = login
                 .notes
                 .get("organization")
                 .and_then(|held| held.as_str())
             && let Ok(Some(org)) =
-                store::providers::organizations::load_by_name(&transaction, slug).await
+                store::providers::directory::organizations::load_by_name(&transaction, slug).await
             && org.enabled
             && let Ok(Some(theme)) =
-                store::providers::organizations::theme_of(&transaction, &org.org_id).await
+                store::providers::directory::organizations::theme_of(&transaction, &org.org_id)
+                    .await
             && let Ok(overrides) = services::realm::theme::css_of(&theme)
         {
             sheet.push('\n');

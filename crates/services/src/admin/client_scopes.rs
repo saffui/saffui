@@ -2,7 +2,8 @@ use crypto::provider::CryptoProvider;
 use models::auditable::AuditableModel;
 use models::entities::client::{ClientScopeModel, ClientScopeMutationModel};
 use store::error::StoreError;
-use store::providers::{client_scopes, clients};
+use store::providers::clients;
+use store::providers::clients::client_scopes;
 use store::tenancy::UnitOfWork;
 
 /// Why a scope could not be written. The store underneath flattens every

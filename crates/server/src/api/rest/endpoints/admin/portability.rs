@@ -85,16 +85,16 @@ pub async fn import(
         .begin(&TenantContext::new(&tenant, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    store::providers::tenants::hold_realms(&transaction, &tenant)
+    store::providers::realms::tenants::hold_realms(&transaction, &tenant)
         .await
         .map_err(|_| internal())?;
-    let named = store::providers::tenants::load(&transaction)
+    let named = store::providers::realms::tenants::load(&transaction)
         .await
         .map_err(|_| internal())?
         .and_then(|held| held.limits)
         .and_then(|limits| limits.max_realms);
     if let Some(ceiling) = ceiling.against(named)
-        && store::providers::tenants::count_realms(&transaction)
+        && store::providers::realms::tenants::count_realms(&transaction)
             .await
             .map_err(|_| internal())?
             >= ceiling

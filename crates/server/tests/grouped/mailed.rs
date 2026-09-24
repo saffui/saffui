@@ -45,7 +45,7 @@ async fn arrange(plane: &Plane) {
     )
     .await
     .expect("a keyring");
-    store::providers::mail::keep(
+    store::providers::realms::mail::keep(
         &transaction,
         &ring,
         &sealing.envelope,
@@ -449,7 +449,7 @@ async fn writing_without_a_password_keeps_the_one_held() {
     )
     .await
     .expect("a keyring");
-    let held = store::providers::mail::load(&transaction, &ring, &sealing.envelope)
+    let held = store::providers::realms::mail::load(&transaction, &ring, &sealing.envelope)
         .await
         .expect("the settings")
         .expect("settings");
@@ -466,7 +466,7 @@ async fn receipts(plane: &Plane) -> Vec<models::messaging::Delivery> {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
-    store::providers::deliveries::of_user(&transaction, support::SUBJECT, 50)
+    store::providers::events::deliveries::of_user(&transaction, support::SUBJECT, 50)
         .await
         .expect("the deliveries table")
 }
@@ -530,13 +530,13 @@ async fn require_verify_email(plane: &Plane) {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
-    let mut person = store::providers::users::load(&transaction, support::SUBJECT)
+    let mut person = store::providers::directory::users::load(&transaction, support::SUBJECT)
         .await
         .expect("the users table")
         .expect("a planted person");
     person.email_verified = Some(false);
     person.required_actions = Some(vec![models::entities::user::RequiredAction::VerifyEmail]);
-    store::providers::users::update(&transaction, &person)
+    store::providers::directory::users::update(&transaction, &person)
         .await
         .expect("the users table");
     transaction.commit().await.expect("the instruction kept");
@@ -546,7 +546,7 @@ async fn address_is_verified(plane: &Plane) -> bool {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
-    store::providers::users::load(&transaction, support::SUBJECT)
+    store::providers::directory::users::load(&transaction, support::SUBJECT)
         .await
         .expect("the users table")
         .expect("a planted person")
@@ -913,7 +913,7 @@ async fn the_registration_mails_the_verification_its_page_promises() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, support::REALM))
             .await;
-        let person = store::providers::users::load_by_name(&transaction, "grace")
+        let person = store::providers::directory::users::load_by_name(&transaction, "grace")
             .await
             .expect("the users table")
             .expect("the newcomer");

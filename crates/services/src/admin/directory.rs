@@ -4,7 +4,7 @@ use models::entities::authz::{GroupModel, GroupMutationModel, RoleModel, RoleMut
 use models::entities::organization::{OrganizationModel, OrganizationMutationModel};
 use models::paging::Page;
 use store::error::StoreError;
-use store::providers::{organizations, roles};
+use store::providers::directory::{organizations, roles};
 use store::query::list_query::ListQuery;
 use store::tenancy::UnitOfWork;
 
@@ -187,7 +187,7 @@ pub async fn add_composite_role(
             "a composite role cannot contain itself or one of its ancestors",
         ));
     }
-    store::providers::sod::hold_realm(transaction)
+    store::providers::governance::sod::hold_realm(transaction)
         .await
         .map_err(|_| Unwritable::Backend)?;
     roles::add_composite(transaction, parent_role_id, child_role_id)
@@ -326,7 +326,7 @@ pub async fn update_group(
         .clone()
         .filter(|parent| group.parent_id.as_ref() != Some(parent));
     if new_parent.is_some() {
-        store::providers::sod::hold_realm(transaction)
+        store::providers::governance::sod::hold_realm(transaction)
             .await
             .map_err(|_| Unwritable::Backend)?;
     }
@@ -532,7 +532,7 @@ pub async fn grant_role_to_user(
 ) -> Result<(), Unwritable> {
     get_role(transaction, role_id).await?;
     let user_id = user_named(transaction, user_id).await?;
-    store::providers::sod::hold_person(transaction, &user_id)
+    store::providers::governance::sod::hold_person(transaction, &user_id)
         .await
         .map_err(|_| Unwritable::Backend)?;
     roles::grant_to_user(transaction, &user_id, role_id)
@@ -606,7 +606,7 @@ pub async fn add_user_to_group(
 ) -> Result<(), Unwritable> {
     get_group(transaction, group_id).await?;
     let user_id = &user_named(transaction, user_id).await?;
-    store::providers::sod::hold_person(transaction, user_id)
+    store::providers::governance::sod::hold_person(transaction, user_id)
         .await
         .map_err(|_| Unwritable::Backend)?;
     roles::add_to_group(transaction, user_id, group_id)
@@ -663,7 +663,7 @@ pub async fn grant_role_to_group(
 ) -> Result<(), Unwritable> {
     get_group(transaction, group_id).await?;
     get_role(transaction, role_id).await?;
-    store::providers::sod::hold_realm(transaction)
+    store::providers::governance::sod::hold_realm(transaction)
         .await
         .map_err(|_| Unwritable::Backend)?;
     roles::grant_to_group(transaction, group_id, role_id)

@@ -436,11 +436,11 @@ pub async fn get_organization_theme(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    store::providers::organizations::load(&transaction, &org_id)
+    store::providers::directory::organizations::load(&transaction, &org_id)
         .await
         .map_err(|_| internal())?
         .ok_or_else(|| ApiError::new(ErrorCode::OrganizationNotFound))?;
-    let held = store::providers::organizations::theme_of(&transaction, &org_id)
+    let held = store::providers::directory::organizations::theme_of(&transaction, &org_id)
         .await
         .map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(held.unwrap_or(serde_json::Value::Null)))
@@ -467,9 +467,10 @@ pub async fn set_organization_theme(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let worn = store::providers::organizations::set_theme(&transaction, &org_id, Some(&asked))
-        .await
-        .map_err(|_| internal())?;
+    let worn =
+        store::providers::directory::organizations::set_theme(&transaction, &org_id, Some(&asked))
+            .await
+            .map_err(|_| internal())?;
     if !worn {
         return Err(ApiError::new(ErrorCode::OrganizationNotFound));
     }
@@ -488,9 +489,10 @@ pub async fn clear_organization_theme(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let undressed = store::providers::organizations::set_theme(&transaction, &org_id, None)
-        .await
-        .map_err(|_| internal())?;
+    let undressed =
+        store::providers::directory::organizations::set_theme(&transaction, &org_id, None)
+            .await
+            .map_err(|_| internal())?;
     if !undressed {
         return Err(ApiError::new(ErrorCode::OrganizationNotFound));
     }

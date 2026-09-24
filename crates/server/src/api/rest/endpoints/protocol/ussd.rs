@@ -65,7 +65,7 @@ pub async fn callback(
     };
     // A realm that closed the bridge answers as one that never named a
     // gateway, which is the same door and the same silence.
-    if !store::providers::realm_features::runs_for_realm(
+    if !store::providers::realms::realm_features::runs_for_realm(
         &transaction,
         commons::feature::Feature::UssdBridge,
     )
@@ -74,7 +74,7 @@ pub async fn callback(
         return plain(StatusCode::NOT_FOUND, "");
     }
     let Ok(Some(secret)) =
-        store::providers::ussd::load_secret(&transaction, &ring, &sealing.envelope).await
+        store::providers::realms::ussd::load_secret(&transaction, &ring, &sealing.envelope).await
     else {
         // No gateway named is a door that does not exist.
         return plain(StatusCode::NOT_FOUND, "");
@@ -100,7 +100,12 @@ pub async fn callback(
     // The number identifies the way it does at the login: proven, and one
     // account's. Anyone else hears an empty doorbell, in those exact bytes.
     let compact: String = phone.chars().filter(|held| !held.is_whitespace()).collect();
-    let person = match store::providers::users::sole_by_proven_phone(&transaction, &compact).await {
+    let person = match store::providers::directory::users::sole_by_proven_phone(
+        &transaction,
+        &compact,
+    )
+    .await
+    {
         Ok(found) => found.filter(|held| held.enabled),
         Err(_) => return plain(StatusCode::INTERNAL_SERVER_ERROR, ""),
     };
@@ -121,7 +126,7 @@ pub async fn callback(
         (None, _) => end(nothing_waiting(tongue)),
         (Some(person), "1" | "2") => {
             let Ok(anchored) =
-                store::providers::ussd::take_anchor(&transaction, &session_id, now).await
+                store::providers::realms::ussd::take_anchor(&transaction, &session_id, now).await
             else {
                 return plain(StatusCode::INTERNAL_SERVER_ERROR, "");
             };
@@ -129,7 +134,7 @@ pub async fn callback(
                 None => end(screen_gone(tongue)),
                 Some((_, digest)) => {
                     let approved = answered == "1";
-                    let Ok(decided) = store::providers::backchannel::decide(
+                    let Ok(decided) = store::providers::protocol::backchannel::decide(
                         &transaction,
                         &digest,
                         &person.user_id,
@@ -163,16 +168,19 @@ pub async fn callback(
             // First visit, or an answer that was neither digit: show the
             // oldest waiting request and anchor it to this session, so the
             // digit that comes back decides the request that was shown.
-            let Ok(waiting) =
-                store::providers::backchannel::pending_for(&transaction, &person.user_id, now)
-                    .await
+            let Ok(waiting) = store::providers::protocol::backchannel::pending_for(
+                &transaction,
+                &person.user_id,
+                now,
+            )
+            .await
             else {
                 return plain(StatusCode::INTERNAL_SERVER_ERROR, "");
             };
             match waiting.first() {
                 None => end(nothing_waiting(tongue)),
                 Some((digest, request)) => {
-                    if store::providers::ussd::anchor(
+                    if store::providers::realms::ussd::anchor(
                         &transaction,
                         &session_id,
                         &person.user_id,

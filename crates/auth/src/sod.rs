@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use store::providers::sod::{SodException, SodRule};
+use store::providers::governance::sod::{SodException, SodRule};
 use store::tenancy::UnitOfWork;
 
 /// One toxic combination actually reached: the rule, and the members of
@@ -65,7 +65,7 @@ pub enum Toxic {
 /// take the per-person hold first, so two halves of a pair cannot each
 /// weigh a world without the other.
 pub async fn weigh(transaction: &UnitOfWork, user_id: &str) -> Result<(), Toxic> {
-    let rules = store::providers::sod::rules(transaction)
+    let rules = store::providers::governance::sod::rules(transaction)
         .await
         .map_err(|_| Toxic::Backend)?;
     weigh_against(transaction, &rules, user_id).await
@@ -83,7 +83,7 @@ pub async fn weigh_everyone(
     people: &[String],
     arriving: &[String],
 ) -> Result<(), Toxic> {
-    let rules = store::providers::sod::rules(transaction)
+    let rules = store::providers::governance::sod::rules(transaction)
         .await
         .map_err(|_| Toxic::Backend)?;
     let named = |role: &String| {
@@ -118,7 +118,7 @@ pub async fn weigh_grant(
     user_id: &str,
     role_id: &str,
 ) -> Result<(), Toxic> {
-    let rules = store::providers::sod::rules(transaction)
+    let rules = store::providers::governance::sod::rules(transaction)
         .await
         .map_err(|_| Toxic::Backend)?;
     let named = |role: &String| {
@@ -127,21 +127,23 @@ pub async fn weigh_grant(
             .filter(|rule| rule.enabled)
             .any(|rule| rule.roles.contains(role))
     };
-    let arriving = store::providers::roles::roles_reached_from(transaction, &[role_id.to_owned()])
-        .await
-        .map_err(|_| Toxic::Backend)?;
+    let arriving =
+        store::providers::directory::roles::roles_reached_from(transaction, &[role_id.to_owned()])
+            .await
+            .map_err(|_| Toxic::Backend)?;
     if !arriving.iter().any(named) {
         return Ok(());
     }
-    store::providers::sod::hold_person(transaction, user_id)
+    store::providers::governance::sod::hold_person(transaction, user_id)
         .await
         .map_err(|_| Toxic::Backend)?;
-    let held: Vec<String> = store::providers::roles::effective_roles(transaction, user_id)
-        .await
-        .map_err(|_| Toxic::Backend)?
-        .into_iter()
-        .map(|role| role.role_id)
-        .collect();
+    let held: Vec<String> =
+        store::providers::directory::roles::effective_roles(transaction, user_id)
+            .await
+            .map_err(|_| Toxic::Backend)?
+            .into_iter()
+            .map(|role| role.role_id)
+            .collect();
     let new: Vec<String> = arriving
         .into_iter()
         .filter(|role| !held.contains(role))
@@ -154,7 +156,7 @@ pub async fn weigh_grant(
     if brought.is_empty() {
         return Ok(());
     }
-    let standing = store::providers::sod::exceptions_of(transaction, user_id)
+    let standing = store::providers::governance::sod::exceptions_of(transaction, user_id)
         .await
         .map_err(|_| Toxic::Backend)?;
     let now = Utc::now();
@@ -172,16 +174,16 @@ pub async fn weigh_grant(
 /// reading answers for all of them, and a set that breaks a separation refuses
 /// the person instead of seating them in breach. The caller holds the realm.
 pub async fn weigh_newcomer(transaction: &UnitOfWork) -> Result<(), Toxic> {
-    let rules = store::providers::sod::rules(transaction)
+    let rules = store::providers::governance::sod::rules(transaction)
         .await
         .map_err(|_| Toxic::Backend)?;
     if !rules.iter().any(|rule| rule.enabled) {
         return Ok(());
     }
-    let carried = store::providers::roles::roles_of_default_groups(transaction)
+    let carried = store::providers::directory::roles::roles_of_default_groups(transaction)
         .await
         .map_err(|_| Toxic::Backend)?;
-    let reached = store::providers::roles::roles_reached_from(transaction, &carried)
+    let reached = store::providers::directory::roles::roles_reached_from(transaction, &carried)
         .await
         .map_err(|_| Toxic::Backend)?;
     match offences(&rules, &reached).first() {
@@ -198,17 +200,18 @@ async fn weigh_against(
     if !rules.iter().any(|rule| rule.enabled) {
         return Ok(());
     }
-    let effective: Vec<String> = store::providers::roles::effective_roles(transaction, user_id)
-        .await
-        .map_err(|_| Toxic::Backend)?
-        .into_iter()
-        .map(|role| role.role_id)
-        .collect();
+    let effective: Vec<String> =
+        store::providers::directory::roles::effective_roles(transaction, user_id)
+            .await
+            .map_err(|_| Toxic::Backend)?
+            .into_iter()
+            .map(|role| role.role_id)
+            .collect();
     let reached = offences(rules, &effective);
     if reached.is_empty() {
         return Ok(());
     }
-    let standing = store::providers::sod::exceptions_of(transaction, user_id)
+    let standing = store::providers::governance::sod::exceptions_of(transaction, user_id)
         .await
         .map_err(|_| Toxic::Backend)?;
     let now = Utc::now();

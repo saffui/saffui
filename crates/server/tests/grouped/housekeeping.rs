@@ -257,7 +257,7 @@ async fn a_delivered_event_leaves_when_its_replay_window_closes() {
         ("sweep-old-dead", "dead", kept + 1),
         ("sweep-old-pending", "pending", kept + 1),
     ] {
-        store::providers::outbox::emit(
+        store::providers::events::outbox::emit(
             &transaction,
             kind,
             support::SUBJECT,

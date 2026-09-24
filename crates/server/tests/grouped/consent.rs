@@ -101,10 +101,14 @@ fn with_consent(answer: &str) -> Value {
 
 async fn agreed_scopes(plane: &Plane) -> Option<Vec<String>> {
     let transaction = plane.scoped(&within()).await;
-    store::providers::consents::held(&transaction, support::SUBJECT, support::CONFIDENTIAL)
-        .await
-        .expect("the consents table")
-        .map(|held| held.scopes)
+    store::providers::directory::consents::held(
+        &transaction,
+        support::SUBJECT,
+        support::CONFIDENTIAL,
+    )
+    .await
+    .expect("the consents table")
+    .map(|held| held.scopes)
 }
 
 #[tokio::test]
@@ -350,9 +354,13 @@ async fn a_withdrawn_consent_is_asked_again_even_with_a_held_login() {
 
     {
         let transaction = plane.scoped(&within()).await;
-        store::providers::consents::withdraw(&transaction, support::SUBJECT, support::CONFIDENTIAL)
-            .await
-            .expect("the consents table");
+        store::providers::directory::consents::withdraw(
+            &transaction,
+            support::SUBJECT,
+            support::CONFIDENTIAL,
+        )
+        .await
+        .expect("the consents table");
         transaction.commit().await.expect("the withdrawal kept");
     }
     let (status, location, binding) = authorized(&plane, "openid profile", None, true).await;

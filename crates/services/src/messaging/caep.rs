@@ -156,12 +156,12 @@ impl Receiver {
 /// sessions and credentials map to their CAEP words.
 pub fn security_event(kind: &str, payload: &Value) -> Option<(&'static str, Value)> {
     match kind {
-        store::providers::outbox::SESSION_REVOKED => Some((SESSION_REVOKED, json!({}))),
-        store::providers::outbox::CREDENTIAL_CHANGED => {
+        store::providers::events::outbox::SESSION_REVOKED => Some((SESSION_REVOKED, json!({}))),
+        store::providers::events::outbox::CREDENTIAL_CHANGED => {
             Some((CREDENTIAL_CHANGE, credential_change_claims(payload)))
         }
-        store::providers::outbox::USER_DELETED => Some((ACCOUNT_PURGED, json!({}))),
-        store::providers::outbox::USER_UPDATED if payload["enabled"] == json!(false) => {
+        store::providers::events::outbox::USER_DELETED => Some((ACCOUNT_PURGED, json!({}))),
+        store::providers::events::outbox::USER_UPDATED if payload["enabled"] == json!(false) => {
             Some((ACCOUNT_DISABLED, json!({ "reason": "disabled" })))
         }
         _ => None,
@@ -192,7 +192,7 @@ fn credential_change_claims(payload: &Value) -> Value {
 /// keychain. With neither, it stays `webauthn`.
 fn translate_credential_type(payload: &Value) -> Value {
     let named = payload["credential_type"].as_str().unwrap_or_default();
-    if named == store::providers::webauthn::CREDENTIAL_TYPE {
+    if named == store::providers::directory::webauthn::CREDENTIAL_TYPE {
         let attachment = payload["attachment"]
             .as_str()
             .and_then(|reported| reported.parse::<AuthenticatorAttachment>().ok());
@@ -222,7 +222,7 @@ pub async fn minted_set(
     signing: &crate::oidc::grant::Signing<'_>,
     issuer: &str,
     receiver: &Receiver,
-    event: &store::providers::outbox::OutboxEvent,
+    event: &store::providers::events::outbox::OutboxEvent,
     uri: &str,
     body: Value,
     now: DateTime<Utc>,

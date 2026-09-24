@@ -3,8 +3,10 @@ use config::serving::PublicOrigin;
 use crypto::provider::CryptoProvider;
 use models::sessions::records::{UserSessionModel, UserSessionState};
 use serde_json::Value;
-use store::providers::login::AuthSession;
-use store::providers::{login, realms, sessions, users};
+use store::providers::directory::users;
+use store::providers::protocol::login::AuthSession;
+use store::providers::protocol::{login, sessions};
+use store::providers::realms;
 use store::tenancy::{TenantContext, UnitOfWork};
 
 use crate::login::authenticator::Answer;
@@ -195,10 +197,10 @@ pub async fn answer_step(
     let (mail, sms) = match sealing {
         None => (None, None),
         Some(sealing) => (
-            store::providers::mail::load(transaction, sealing.ring, sealing.envelope)
+            store::providers::realms::mail::load(transaction, sealing.ring, sealing.envelope)
                 .await
                 .map_err(|_| Unanswerable::Unreadable)?,
-            store::providers::sms::load(transaction, sealing.ring, sealing.envelope)
+            store::providers::realms::sms::load(transaction, sealing.ring, sealing.envelope)
                 .await
                 .map_err(|_| Unanswerable::Unreadable)?,
         ),
@@ -683,7 +685,8 @@ async fn named_subject(
             && let Ok(presented) =
                 serde_json::from_str::<webauthn_rs::prelude::PublicKeyCredential>(handed_back)
             && let Ok(Some(enrolled)) =
-                store::providers::webauthn::by_id(transaction, presented.raw_id.as_ref()).await
+                store::providers::directory::webauthn::by_id(transaction, presented.raw_id.as_ref())
+                    .await
         {
             return Ok(users::load(transaction, &enrolled.user_id)
                 .await
@@ -704,7 +707,7 @@ async fn named_subject(
     let compact: String = named.chars().filter(|held| !held.is_whitespace()).collect();
     if compact.starts_with('+')
         && compact[1..].chars().all(|held| held.is_ascii_digit())
-        && store::providers::realm_features::runs_for_realm(
+        && store::providers::realms::realm_features::runs_for_realm(
             transaction,
             commons::feature::Feature::PhoneFirstLogin,
         )
@@ -741,7 +744,7 @@ async fn named_subject(
         let shadow = shadow_row(provider, tenant, held.alias, &person, now)?;
         // Seated in the default groups like any newcomer: a set that breaks a
         // separation leaves the person unmirrored, refused as nobody known.
-        store::providers::sod::hold_person(transaction, &shadow.user_id)
+        store::providers::governance::sod::hold_person(transaction, &shadow.user_id)
             .await
             .map_err(|_| Unanswerable::Unreadable)?;
         match crate::sod::weigh_newcomer(transaction).await {
@@ -755,7 +758,7 @@ async fn named_subject(
         users::create(transaction, &shadow)
             .await
             .map_err(|_| Unanswerable::Unreadable)?;
-        store::providers::roles::join_default_groups(transaction, &shadow.user_id)
+        store::providers::directory::roles::join_default_groups(transaction, &shadow.user_id)
             .await
             .map_err(|_| Unanswerable::Unreadable)?;
         return Ok(Some(shadow));

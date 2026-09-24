@@ -6,7 +6,7 @@ use models::compliance::subject_request::{DsarKind, DsarRequest};
 use models::entities::mail::MailSettings;
 use models::entities::realm::RealmModel;
 use models::entities::user::UserModel;
-use store::providers::{one_time_tokens, users};
+use store::providers::directory::{one_time_tokens, users};
 use store::tenancy::UnitOfWork;
 
 use auth::messaging::{Message, Outgoing};

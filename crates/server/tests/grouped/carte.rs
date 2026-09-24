@@ -132,7 +132,7 @@ async fn protected_by_managers(plane: &Plane) {
         None,
         AuditableModel::from_creator(support::TENANT.into(), "root".into()),
     );
-    store::providers::authz_policies::create(&transaction, &managers)
+    store::providers::authorization::authz_policies::create(&transaction, &managers)
         .await
         .unwrap();
     let may_delegate = PolicyTerms {
@@ -155,7 +155,7 @@ async fn protected_by_managers(plane: &Plane) {
         None,
         AuditableModel::from_creator(support::TENANT.into(), "root".into()),
     );
-    store::providers::authz_policies::create(&transaction, &may_delegate)
+    store::providers::authorization::authz_policies::create(&transaction, &may_delegate)
         .await
         .unwrap();
     transaction.commit().await.unwrap();
@@ -166,7 +166,7 @@ async fn granted_role(plane: &Plane, user_id: &str, role_id: &str) {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    store::providers::roles::grant_to_user(&transaction, user_id, role_id)
+    store::providers::directory::roles::grant_to_user(&transaction, user_id, role_id)
         .await
         .unwrap();
     transaction.commit().await.unwrap();

@@ -6,7 +6,8 @@ use models::entities::mail::MailSettings;
 use models::entities::realm::{About, RealmModel};
 use models::entities::user::{RequiredAction, UserModel};
 use secrecy::SecretBox;
-use store::providers::{one_time_tokens, sessions, users};
+use store::providers::directory::{one_time_tokens, users};
+use store::providers::protocol::sessions;
 use store::tenancy::UnitOfWork;
 
 use auth::messaging::{Message, Outgoing};

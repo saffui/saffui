@@ -5,8 +5,8 @@ use models::auditable::AuditableModel;
 use models::entities::brokering::{
     ClaimSourceKind, UserClaimSourceModel, UserClaimSourceMutationModel,
 };
-use store::providers::brokering::{self, CONCEALED_TOKEN, TokenToSeal};
-use store::providers::users;
+use store::providers::directory::users;
+use store::providers::federation::brokering::{self, CONCEALED_TOKEN, TokenToSeal};
 use store::tenancy::UnitOfWork;
 
 /// Why a source could not be written. Verified before writing; the store

@@ -78,7 +78,7 @@ async fn planted_role(plane: &Plane, role: &str) {
         REALM.into(),
         AuditableModel::from_creator(support::TENANT.into(), "root".into()),
     );
-    store::providers::roles::create(&transaction, &model)
+    store::providers::directory::roles::create(&transaction, &model)
         .await
         .unwrap();
     transaction.commit().await.unwrap();
@@ -89,7 +89,7 @@ async fn planted_group(plane: &Plane, group: &str, confers: &str) {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    store::providers::roles::create_group(
+    store::providers::directory::roles::create_group(
         &transaction,
         &models::entities::authz::GroupModel {
             group_id: group.into(),
@@ -104,7 +104,7 @@ async fn planted_group(plane: &Plane, group: &str, confers: &str) {
     )
     .await
     .unwrap();
-    store::providers::roles::grant_to_group(&transaction, group, confers)
+    store::providers::directory::roles::grant_to_group(&transaction, group, confers)
         .await
         .unwrap();
     transaction.commit().await.unwrap();
@@ -115,7 +115,7 @@ async fn planted_person(plane: &Plane, named: &str, roles: &[&str], groups: &[&s
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    store::providers::users::create(
+    store::providers::directory::users::create(
         &transaction,
         &models::entities::user::UserModel {
             user_id: named.into(),
@@ -138,12 +138,12 @@ async fn planted_person(plane: &Plane, named: &str, roles: &[&str], groups: &[&s
     .await
     .unwrap();
     for role in roles {
-        store::providers::roles::grant_to_user(&transaction, named, role)
+        store::providers::directory::roles::grant_to_user(&transaction, named, role)
             .await
             .unwrap();
     }
     for group in groups {
-        store::providers::roles::add_to_group(&transaction, named, group)
+        store::providers::directory::roles::add_to_group(&transaction, named, group)
             .await
             .unwrap();
     }
@@ -157,7 +157,7 @@ async fn planted_admin_token(plane: &Plane, named: &str) -> String {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    store::providers::sessions::open(
+    store::providers::protocol::sessions::open(
         &transaction,
         &models::sessions::records::UserSessionModel {
             browser_state: None,
@@ -198,7 +198,7 @@ async fn roles_of(plane: &Plane, user: &str) -> Vec<String> {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    store::providers::roles::effective_roles(&transaction, user)
+    store::providers::directory::roles::effective_roles(&transaction, user)
         .await
         .unwrap()
         .into_iter()
@@ -212,7 +212,7 @@ async fn group_gains(plane: &Plane, group: &str, role: &str) {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    store::providers::roles::grant_to_group(&transaction, group, role)
+    store::providers::directory::roles::grant_to_group(&transaction, group, role)
         .await
         .unwrap();
     transaction.commit().await.unwrap();

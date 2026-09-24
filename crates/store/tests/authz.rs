@@ -2,7 +2,7 @@ mod support;
 
 use models::auditable::AuditableModel;
 use models::entities::authz::{AdminAction, GroupModel, GroupMutationModel, RoleMutationModel};
-use store::providers::roles;
+use store::providers::directory::roles;
 use store::tenancy::TenantContext;
 use support::Fixture;
 

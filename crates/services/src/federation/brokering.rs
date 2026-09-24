@@ -6,7 +6,8 @@ use models::entities::attributes::{AttributeValue, AttributesMap};
 use models::entities::authz::IdentityProviderModel;
 use models::entities::brokering::{BrokerLoginState, FederatedIdentityModel, IdpMapperModel};
 use serde_json::{Map, Value};
-use store::providers::{brokering, users};
+use store::providers::directory::users;
+use store::providers::federation::brokering;
 use store::tenancy::UnitOfWork;
 
 use crate::oidc::mappers::{MULTIVALUED, config_bool};
@@ -795,7 +796,7 @@ pub async fn apply_mappers(
                 grant_mapped_role(transaction, rule, user_id, role_id).await?;
             }
             Mapped::Withdraw { role_id } => {
-                store::providers::roles::revoke_from_user(transaction, user_id, role_id)
+                store::providers::directory::roles::revoke_from_user(transaction, user_id, role_id)
                     .await
                     .map_err(|_| Unbrokered::Backend)?;
             }
@@ -819,7 +820,7 @@ async fn grant_mapped_role(
     // The plane checked the role when the rule was written; one
     // deleted since is the operator's to mend, not a reason to
     // lock the person out.
-    if store::providers::roles::load(transaction, role_id)
+    if store::providers::directory::roles::load(transaction, role_id)
         .await
         .map_err(|_| Unbrokered::Backend)?
         .is_none()
@@ -838,7 +839,7 @@ async fn grant_mapped_role(
         }
         Err(crate::governance::sod::Toxic::Backend) => return Err(Unbrokered::Backend),
     }
-    store::providers::roles::grant_to_user(transaction, user_id, role_id)
+    store::providers::directory::roles::grant_to_user(transaction, user_id, role_id)
         .await
         .map_err(|_| Unbrokered::Backend)
 }

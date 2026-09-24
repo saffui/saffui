@@ -81,7 +81,7 @@ async fn recorded(plane: &Plane) -> (Option<String>, Option<String>) {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
-    let held = store::providers::sessions::load_for_user(&transaction, support::SUBJECT)
+    let held = store::providers::protocol::sessions::load_for_user(&transaction, support::SUBJECT)
         .await
         .expect("the logins")
         .into_iter()

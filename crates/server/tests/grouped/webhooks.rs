@@ -233,9 +233,9 @@ async fn a_happening_lands_signed_filtered_and_redeliverable() {
         let transaction = plane
             .scoped(&store::tenancy::TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::outbox::emit(
+        store::providers::events::outbox::emit(
             &transaction,
-            store::providers::outbox::CREDENTIAL_CHANGED,
+            store::providers::events::outbox::CREDENTIAL_CHANGED,
             &grace,
             &json!({ "credential": "password" }),
         )

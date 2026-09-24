@@ -3,9 +3,9 @@ mod support;
 use chrono::{Duration, Utc};
 use crypto::provider::CryptoProvider;
 use models::sessions::records::{ClientSessionModel, UserSessionModel, UserSessionState};
-use store::providers::one_time_tokens::Spent;
-use store::providers::one_time_tokens::{self, Owner};
-use store::providers::sessions::{self, Refreshed};
+use store::providers::directory::one_time_tokens::Spent;
+use store::providers::directory::one_time_tokens::{self, Owner};
+use store::providers::protocol::sessions::{self, Refreshed};
 use store::tenancy::TenantContext;
 use support::{Fixture, provider};
 
@@ -191,7 +191,7 @@ async fn ending_the_other_logins_keeps_the_one_named() {
     let told: i64 = transaction
         .query_one(
             "SELECT count(*) FROM event_outbox WHERE kind = $1 AND user_id = 'ada'",
-            &[&store::providers::outbox::SESSION_REVOKED],
+            &[&store::providers::events::outbox::SESSION_REVOKED],
         )
         .await
         .unwrap()

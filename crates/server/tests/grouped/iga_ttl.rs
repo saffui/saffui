@@ -70,7 +70,7 @@ async fn planted_role(plane: &Plane, role: &str) {
         REALM.into(),
         AuditableModel::from_creator(support::TENANT.into(), "root".into()),
     );
-    store::providers::roles::create(&transaction, &model)
+    store::providers::directory::roles::create(&transaction, &model)
         .await
         .unwrap();
     transaction.commit().await.unwrap();
@@ -80,7 +80,7 @@ async fn roles_of(plane: &Plane, user: &str) -> Vec<String> {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    store::providers::roles::effective_roles(&transaction, user)
+    store::providers::directory::roles::effective_roles(&transaction, user)
         .await
         .unwrap()
         .into_iter()

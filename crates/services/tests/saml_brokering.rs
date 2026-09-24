@@ -137,7 +137,7 @@ async fn provision_keyring(fixture: &Fixture, envelope: &Envelope) {
 /// Open a request for `corp` under `request_id`, for the browser that left.
 async fn open_request(fixture: &Fixture, request_id: &str) {
     let transaction = fixture.scoped(&tenant()).await;
-    store::providers::saml_brokering::open_login_request(
+    store::providers::federation::saml_brokering::open_login_request(
         &transaction,
         &SamlLoginRequest {
             request_id: request_id.to_owned(),

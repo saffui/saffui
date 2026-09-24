@@ -6,7 +6,7 @@
 use chrono::{DateTime, Utc};
 use models::entities::realm::RealmModel;
 use store::error::StoreResult;
-use store::providers::login as login_store;
+use store::providers::protocol::login as login_store;
 use store::tenancy::UnitOfWork;
 
 /// When this person's lockout ends, or nothing when they are not locked.
@@ -41,10 +41,10 @@ pub async fn count(
     // The sign-in log records the failure whether or not lockout is armed:
     // the switch is the realm's events_enabled, not the brute force policy.
     if realm.events_enabled == Some(true) {
-        let _ = store::providers::login_events::record(
+        let _ = store::providers::events::login_events::record(
             transaction,
             now.timestamp(),
-            &store::providers::login_events::LoginEventWrite {
+            &store::providers::events::login_events::LoginEventWrite {
                 kind: "sign_in_failed",
                 user_id: Some(user_id),
                 ip: from,

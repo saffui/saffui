@@ -22,7 +22,7 @@ pub async fn schema(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let stored = store::providers::rebac::load_schema(&transaction)
+    let stored = store::providers::authorization::rebac::load_schema(&transaction)
         .await
         .map_err(|_| internal())?
         .ok_or_else(|| ApiError::new(ErrorCode::RebacSchemaNotFound))?;
@@ -86,8 +86,8 @@ pub struct EdgeBody {
     pub subject_relation: String,
 }
 
-fn subject_of(edge: &EdgeBody) -> store::providers::rebac::Subject {
-    store::providers::rebac::Subject {
+fn subject_of(edge: &EdgeBody) -> store::providers::authorization::rebac::Subject {
+    store::providers::authorization::rebac::Subject {
         subject_type: edge.subject_type.clone(),
         subject_id: edge.subject_id.clone(),
         subject_relation: edge.subject_relation.clone(),
@@ -176,7 +176,7 @@ pub async fn subjects(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let held = store::providers::rebac::subjects(
+    let held = store::providers::authorization::rebac::subjects(
         &transaction,
         &asked.object_type,
         &asked.object_id,
@@ -229,9 +229,9 @@ pub async fn list_tuples(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let held = store::providers::rebac::tuples(
+    let held = store::providers::authorization::rebac::tuples(
         &transaction,
-        store::providers::rebac::TupleFilter {
+        store::providers::authorization::rebac::TupleFilter {
             object_type: named(&asked.object_type),
             relation: named(&asked.relation),
             subject_type: named(&asked.subject_type),

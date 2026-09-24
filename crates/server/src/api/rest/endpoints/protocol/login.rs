@@ -294,6 +294,7 @@ pub async fn answer(
     let step = browser::answer_step(
         &transaction,
         sealing.provider.as_ref(),
+        &sealing.names,
         &context,
         &origin,
         &auth_session,

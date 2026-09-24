@@ -63,6 +63,7 @@ pub async fn serve(
     tls: Option<openssl::ssl::SslContext>,
     tenancy: Tenancy,
     provider: std::sync::Arc<dyn CryptoProvider>,
+    names: std::sync::Arc<throttle::NameKey>,
     front: Front,
 ) {
     if let Ok(bind) = listener.local_addr() {
@@ -79,15 +80,16 @@ pub async fn serve(
         };
         let tenancy = tenancy.clone();
         let provider = provider.clone();
+        let names = names.clone();
         let front = front.clone();
         let tls = tls.clone();
         tokio::spawn(async move {
             let outcome = match tls {
                 Some(context) => match sealed(&context, socket).await {
-                    Ok(stream) => attended(stream, peer, tenancy, provider, front).await,
+                    Ok(stream) => attended(stream, peer, tenancy, provider, names, front).await,
                     Err(why) => Err(why),
                 },
-                None => attended(socket, peer, tenancy, provider, front).await,
+                None => attended(socket, peer, tenancy, provider, names, front).await,
             };
             if let Err(why) = outcome {
                 tracing::debug!(%peer, why, "an ldap conversation ended early");
@@ -117,6 +119,7 @@ async fn attended<S>(
     peer: std::net::SocketAddr,
     tenancy: Tenancy,
     provider: std::sync::Arc<dyn CryptoProvider>,
+    names: std::sync::Arc<throttle::NameKey>,
     front: Front,
 ) -> Result<(), &'static str>
 where
@@ -136,7 +139,7 @@ where
         };
         match op {
             ServerOps::SimpleBind(asked) => {
-                let answer = bind(&tenancy, provider.as_ref(), &front, &asked, peer).await;
+                let answer = bind(&tenancy, provider.as_ref(), &names, &front, &asked, peer).await;
                 match answer {
                     Ok(name) => {
                         bound = Some(name);
@@ -246,6 +249,7 @@ async fn opened(tenancy: &Tenancy, front: &Front) -> Option<UnitOfWork> {
 async fn bind(
     tenancy: &Tenancy,
     provider: &dyn CryptoProvider,
+    names: &throttle::NameKey,
     front: &Front,
     asked: &SimpleBindRequest,
     peer: std::net::SocketAddr,
@@ -274,7 +278,7 @@ async fn bind(
     // address turned away costs one read and no hash.
     let now = Utc::now();
     let from = peer.ip().to_string();
-    let Ok(knock) = throttle::Knock::new(provider, Some(&from), Some(&user_name)) else {
+    let Ok(knock) = throttle::Knock::new(provider, names, Some(&from), Some(&user_name)) else {
         return Err(refused());
     };
     match throttle::until(&transaction, &realm, &knock, now).await {

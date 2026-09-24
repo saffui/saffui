@@ -240,6 +240,7 @@ pub enum Unmade {
 pub async fn change_caller_password(
     transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
+    names: &auth::login::throttle::NameKey,
     caller: &AccountCaller,
     from: Option<&str>,
     current: &SecretBox<String>,
@@ -262,6 +263,7 @@ pub async fn change_caller_password(
     change_own_password(
         transaction,
         provider,
+        names,
         &Changing {
             realm: &realm,
             person: &person,

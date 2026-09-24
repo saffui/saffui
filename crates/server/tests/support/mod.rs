@@ -7,7 +7,7 @@ use crypto::jose::jws::{ES256, JwsHeader};
 use crypto::jose::jwt::{self, JwtPayload};
 use crypto::password::storage::StoredPassword;
 use crypto::provider::openssl::OpenSslProvider;
-use crypto::provider::{Argon2Params, CryptoConfig, CryptoProvider, SignAlg};
+use crypto::provider::{Argon2Params, CryptoConfig, CryptoProvider, HashAlg, HmacAlg, SignAlg};
 use deadpool_postgres::{Manager, Pool, Runtime};
 use models::auditable::AuditableModel;
 use models::entities::authz::{AdminAction, RoleMutationModel};
@@ -361,12 +361,27 @@ pub fn sealing_carrying(
     texter: Option<Arc<dyn auth::messaging::Texter>>,
 ) -> server::api::config::Sealing {
     let shared: Arc<dyn CryptoProvider> = Arc::new(provider());
-    server::api::config::Sealing {
-        sender,
-        texter,
-        envelope: Arc::new(Envelope::new(Arc::clone(&shared), KEK).expect("an envelope")),
-        provider: shared,
-    }
+    let envelope = Envelope::new(Arc::clone(&shared), KEK).expect("an envelope");
+    server::api::config::Sealing::new(sender, texter, shared, envelope).expect("a sealing")
+}
+
+/// What a count keeps of a typed name, worked out here rather than by the
+/// server: a MAC under the key this suite's KEK expands to for names, under
+/// the label spelled out, so a key derived for any other purpose shows.
+#[allow(dead_code, reason = "only the suites that count failures read it")]
+pub fn keyed_name(counted: &str) -> String {
+    let provider = provider();
+    let kek = SecretBox::new(Box::new(KEK.as_bytes().to_vec()));
+    let key = provider
+        .kdf()
+        .hkdf(HashAlg::Sha256, &kek, None, b"saffui/typed-names/v1", 32)
+        .expect("a key");
+    data_encoding::HEXLOWER.encode(
+        &provider
+            .hmac()
+            .hmac(HmacAlg::Hs256, &key, counted.as_bytes())
+            .expect("a digest"),
+    )
 }
 
 /// Keeps every message instead of sending it, so a test can read what a person
@@ -1079,6 +1094,23 @@ impl Plane {
             .await
             .expect("the realms table");
         transaction.commit().await.unwrap();
+    }
+
+    /// What is counted under each typed name, whichever door counted it.
+    #[allow(dead_code, reason = "only the suites that count failures read it")]
+    pub async fn named_failures(&self) -> Vec<(String, i64)> {
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
+        transaction
+            .query(
+                "SELECT named, SUM(failures)::bigint FROM source_failures \
+                 WHERE named <> '' GROUP BY named ORDER BY named",
+                &[],
+            )
+            .await
+            .expect("the counts")
+            .iter()
+            .map(|row| (row.get(0), row.get(1)))
+            .collect()
     }
 
     /// How many codes are left on the subject's sheet.

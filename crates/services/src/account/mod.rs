@@ -73,6 +73,7 @@ pub struct Changing<'a> {
 pub async fn change_own_password(
     transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
+    names: &throttle::NameKey,
     changing: &Changing<'_>,
     current: &SecretBox<String>,
     replacement: &SecretBox<String>,
@@ -81,7 +82,7 @@ pub async fn change_own_password(
     if person.user_storage == Some(UserStorage::Ldap) {
         return Err(Unchanged::NotHeldHere);
     }
-    let knock = throttle::Knock::new(provider, changing.from, Some(&person.user_name))
+    let knock = throttle::Knock::new(provider, names, changing.from, Some(&person.user_name))
         .map_err(|_| Unchanged::Backend)?;
     if let Some(until) = throttle::until(transaction, changing.realm, &knock, changing.now)
         .await

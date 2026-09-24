@@ -417,7 +417,11 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
         plane.tenancy.clone(),
         std::sync::Arc::new(plane.sealing.clone()),
     );
-    let (front_tenancy, front_provider) = (plane.tenancy.clone(), plane.sealing.provider.clone());
+    let (front_tenancy, front_provider, front_names) = (
+        plane.tenancy.clone(),
+        plane.sealing.provider.clone(),
+        plane.sealing.names.clone(),
+    );
     #[cfg(feature = "mesh")]
     let (mesh_tenancy, mesh_origin) = (plane.tenancy.clone(), plane.origin.clone());
     let (tenancy_for_outbox, origin_for_outbox) = (plane.tenancy.clone(), plane.origin.clone());
@@ -440,6 +444,7 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
                 tls,
                 front_tenancy,
                 front_provider,
+                front_names,
                 ldapfront::Front {
                     realm_id: door.realm_id,
                     base_dn: door.base_dn,
@@ -1051,8 +1056,8 @@ fn plane(database: &pgcore::database::Database) -> Result<Plane, String> {
         hops: config::proxying::Proxying::from_env().map_err(|e| e.to_string())?,
         egress,
         ceiling: config::serving::RealmCeiling::from_env().map_err(|e| e.to_string())?,
-        sealing: Sealing {
-            sender: match config::messaging::Sink::from_env().map_err(|e| e.to_string())? {
+        sealing: Sealing::new(
+            match config::messaging::Sink::from_env().map_err(|e| e.to_string())? {
                 config::messaging::Sink::None => None,
                 config::messaging::Sink::Smtp => Some(Arc::new(server::messaging::Smtp)),
                 config::messaging::Sink::Logged => Some(Arc::new(server::messaging::Logged)),
@@ -1064,7 +1069,7 @@ fn plane(database: &pgcore::database::Database) -> Result<Plane, String> {
                     )))
                 }
             },
-            texter: match config::messaging::TextSink::from_env().map_err(|e| e.to_string())? {
+            match config::messaging::TextSink::from_env().map_err(|e| e.to_string())? {
                 config::messaging::TextSink::None => None,
                 config::messaging::TextSink::Http => {
                     Some(Arc::new(server::messaging::HttpTexter::new(egress)))
@@ -1074,7 +1079,8 @@ fn plane(database: &pgcore::database::Database) -> Result<Plane, String> {
                 }
             },
             provider,
-            envelope: Arc::new(envelope),
-        },
+            envelope,
+        )
+        .map_err(|reason| format!("cannot derive the key names are counted under: {reason}"))?,
     })
 }

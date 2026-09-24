@@ -16,7 +16,9 @@
 use std::net::{IpAddr, Ipv6Addr};
 
 use chrono::{DateTime, Utc};
-use crypto::provider::{CryptoProvider, HashAlg};
+use crypto::envelope::{Envelope, MacPurpose};
+use crypto::provider::{CryptoError, CryptoProvider, HmacAlg};
+use crypto::secret::MacKey;
 use data_encoding::HEXLOWER;
 use models::entities::realm::{RealmModel, SourceThrottle};
 use store::providers::protocol::source_failures::{self, Counted, MINUTE};
@@ -38,6 +40,21 @@ const DEVICE: &str = "Device:";
 #[error("the failures from this address could not be weighed")]
 pub struct Unweighed;
 
+/// What a typed name is counted under.
+///
+/// A name box sometimes receives a password, so a name is kept as a MAC under
+/// a key derived from the deployment's KEK, which no table holds: the counts
+/// read without the KEK cannot test a guess. Derived once and handed to every
+/// door, so each counts a name where the others do.
+#[derive(Debug)]
+pub struct NameKey(MacKey);
+
+impl NameKey {
+    pub fn derive(envelope: &Envelope) -> Result<NameKey, CryptoError> {
+        envelope.derive_mac_key(MacPurpose::TypedNames).map(NameKey)
+    }
+}
+
 /// Where an attempt came from, and the name typed with it, as they are
 /// counted.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +72,7 @@ impl Knock {
     /// that typed no name.
     pub fn new(
         provider: &dyn CryptoProvider,
+        names: &NameKey,
         address: Option<&str>,
         typed: Option<&str>,
     ) -> Result<Knock, Unweighed> {
@@ -63,8 +81,8 @@ impl Knock {
             Some(kept) => Some(
                 HEXLOWER.encode(
                     &provider
-                        .digest()
-                        .hash(HashAlg::Sha256, kept.as_bytes())
+                        .hmac()
+                        .hmac(HmacAlg::Hs256, names.0.secret(), kept.as_bytes())
                         .map_err(|_| Unweighed)?,
                 ),
             ),
@@ -319,5 +337,40 @@ mod tests {
         assert_eq!(counted_name(" Ada.Lovelace "), "ada.lovelace");
         assert_eq!(counted_name("+228 90 00 00 00"), "+22890000000");
         assert_eq!(counted_name("ÉLODIE"), "élodie");
+    }
+
+    /// A name is kept under the deployment's key: not as the digest anybody
+    /// could work out from a guess, alike for one KEK, apart for two.
+    #[test]
+    fn a_name_is_kept_under_the_deployments_key() {
+        use crypto::provider::openssl::OpenSslProvider;
+        use crypto::provider::{CryptoConfig, HashAlg};
+        use std::sync::Arc;
+
+        let provider = Arc::new(OpenSslProvider::new(&CryptoConfig::default()).unwrap());
+        let derived =
+            |kek: &str| NameKey::derive(&Envelope::new(provider.clone(), kek).unwrap()).unwrap();
+        let kept = |names: &NameKey, typed: &str| {
+            Knock::new(provider.as_ref(), names, Some("203.0.113.7"), Some(typed))
+                .unwrap()
+                .named
+                .unwrap()
+        };
+        let ours = derived("a deployment key encryption key");
+
+        let named = kept(&ours, " Ada.Lovelace ");
+        let plain = provider
+            .digest()
+            .hash(HashAlg::Sha256, b"ada.lovelace")
+            .unwrap();
+        assert_ne!(named, HEXLOWER.encode(&plain), "kept as its plain digest");
+        assert_eq!(
+            named,
+            kept(&derived("a deployment key encryption key"), "ada.lovelace")
+        );
+        assert_ne!(
+            named,
+            kept(&derived("another deployment's key"), "ada.lovelace")
+        );
     }
 }

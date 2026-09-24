@@ -262,9 +262,10 @@ async fn a_wrong_current_password_counts_and_the_lock_holds() {
     );
 }
 
-/// The change keeps the counts per address every door keeps: a guess the
-/// person's lock refused still counts and is kept, and past the threshold the
-/// address is told to wait in the catalogue's words, the password untouched.
+/// The change keeps the counts per address every door keeps, the name under
+/// the key every door uses: a guess the person's lock refused still counts and
+/// is kept, and past the threshold the address is told to wait in the
+/// catalogue's words, the password untouched.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_current_password_guessed_from_one_address_is_turned_away() {
@@ -310,6 +311,11 @@ async fn a_current_password_guessed_from_one_address_is_turned_away() {
     .map(|(status, code)| (status, code.to_owned()));
     assert_eq!(heard, expected);
     assert!(held_password_is(&plane, support::PASSWORD).await);
+    assert_eq!(
+        plane.named_failures().await,
+        [(support::keyed_name(support::SUBJECT), 4)],
+        "the change counted the name under another key than the other doors"
+    );
 }
 
 /// The realm's policy speaks here as at every other door, and a refused

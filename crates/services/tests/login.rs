@@ -1,7 +1,7 @@
 mod support;
 
 use auth::login::authenticator::Answer;
-use auth::login::{Progress, Unrunnable, run_flow};
+use auth::login::{Lock, Progress, Unrunnable, run_flow};
 use chrono::Utc;
 use models::auditable::AuditableModel;
 use models::entities::auth::{
@@ -114,6 +114,7 @@ async fn a_password_flow_admits_refuses_and_asks() {
         None,
         &[],
         None,
+        Lock::Applies,
         Utc::now(),
     )
     .await
@@ -143,6 +144,7 @@ async fn a_password_flow_admits_refuses_and_asks() {
             None,
             &[],
             None,
+            Lock::Applies,
             Utc::now(),
         )
         .await
@@ -165,6 +167,7 @@ async fn a_password_flow_admits_refuses_and_asks() {
             None,
             &[],
             None,
+            Lock::Applies,
             Utc::now(),
         )
         .await
@@ -200,6 +203,7 @@ async fn an_unknown_subject_is_refused_like_a_wrong_password() {
             None,
             &[],
             None,
+            Lock::Applies,
             Utc::now(),
         )
         .await
@@ -239,6 +243,7 @@ async fn a_step_this_build_cannot_run_stops_the_flow() {
             None,
             &[],
             None,
+            Lock::Applies,
             Utc::now(),
         )
         .await
@@ -268,6 +273,7 @@ async fn a_flow_that_is_not_there_is_not_a_refusal() {
             None,
             &[],
             None,
+            Lock::Applies,
             Utc::now(),
         )
         .await
@@ -307,6 +313,7 @@ async fn a_flow_whose_only_step_is_disabled_admits_nobody() {
             None,
             &[],
             None,
+            Lock::Applies,
             Utc::now(),
         )
         .await

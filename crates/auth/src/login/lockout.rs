@@ -30,16 +30,15 @@ pub async fn until(
         .map(|record| record.failed_login_not_before))
 }
 
-/// Count one failure, and lock when the count says to.
-pub async fn count(
+/// Record one failure in the sign-in log, without counting it towards the
+/// lock. The switch is the realm's events_enabled, not the brute force policy.
+pub async fn log_failure(
     transaction: &UnitOfWork,
     realm: &RealmModel,
     user_id: &str,
     from: Option<&str>,
     now: DateTime<Utc>,
-) -> StoreResult<()> {
-    // The sign-in log records the failure whether or not lockout is armed:
-    // the switch is the realm's events_enabled, not the brute force policy.
+) {
     if realm.events_enabled == Some(true) {
         let _ = store::providers::events::login_events::record(
             transaction,
@@ -53,6 +52,18 @@ pub async fn count(
         )
         .await;
     }
+}
+
+/// Count one failure, and lock when the count says to.
+pub async fn count(
+    transaction: &UnitOfWork,
+    realm: &RealmModel,
+    user_id: &str,
+    from: Option<&str>,
+    now: DateTime<Utc>,
+) -> StoreResult<()> {
+    // Logged whether or not lockout is armed.
+    log_failure(transaction, realm, user_id, from, now).await;
     if !realm.brute_force.protected {
         return Ok(());
     }

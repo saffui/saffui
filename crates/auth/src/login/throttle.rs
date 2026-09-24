@@ -4,7 +4,9 @@
 //! that verifies a password, so a password tried once against many names from
 //! one place fills a count the lockout per person never sees. A count per
 //! address shuts out that address and nobody else, which is why it is on in a
-//! stock realm while the lockout per person is not.
+//! stock realm while the lockout per person is not. A browser that proves it
+//! signed in under the typed name before is counted in place of its address,
+//! so the people behind one address are not turned away together.
 //!
 //! Every refusal counts, whether or not the answer was looked at, and whether
 //! or not anybody holds the name: a count that moved only for names somebody
@@ -20,11 +22,17 @@ use models::entities::realm::{RealmModel, SourceThrottle};
 use store::providers::protocol::source_failures::{self, Counted, MINUTE};
 use store::tenancy::UnitOfWork;
 
+use crate::login::device::Device;
+
 /// The address's own count, as opposed to one of a name typed from it.
 const ADDRESS_ALONE: &str = "";
 
 /// How much of an address that is not one is kept as its key.
 const UNREAD_ADDRESS_LIMIT: usize = 64;
+
+/// What a device's count is kept under, before its identifier. Capitalised:
+/// every address is counted in lowercase, so none is ever counted as a device.
+const DEVICE: &str = "Device:";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the failures from this address could not be weighed")]
@@ -36,6 +44,9 @@ pub struct Unweighed;
 pub struct Knock {
     source: Option<String>,
     named: Option<String>,
+    /// Whether `source` is a browser that proved this name before, rather
+    /// than an address.
+    on_device: bool,
 }
 
 impl Knock {
@@ -61,7 +72,42 @@ impl Knock {
         Ok(Knock {
             source: address.map(counted_source).filter(|kept| !kept.is_empty()),
             named,
+            on_device: false,
         })
+    }
+
+    /// An attempt from `address` under a name an earlier round already
+    /// counted, as `counted_name` handed it out.
+    pub fn counted_as(address: Option<&str>, counted: &str) -> Knock {
+        Knock {
+            source: address.map(counted_source).filter(|kept| !kept.is_empty()),
+            named: Some(counted.to_owned()).filter(|held| !held.is_empty()),
+            on_device: false,
+        }
+    }
+
+    /// The digest the typed name is counted under, when a name was typed.
+    pub fn counted_name(&self) -> Option<&str> {
+        self.named.as_deref()
+    }
+
+    /// The same attempt, counted against the device that proved this name
+    /// rather than against the address it shares. A device is one browser for
+    /// one name, so an attempt naming nobody stays on its address.
+    pub fn on_device(self, device: &Device) -> Knock {
+        if self.named.is_none() {
+            return self;
+        }
+        Knock {
+            source: Some(format!("{DEVICE}{}", device.id())),
+            on_device: true,
+            ..self
+        }
+    }
+
+    /// Whether the attempt is counted against a device.
+    pub fn is_on_device(&self) -> bool {
+        self.on_device
     }
 
     fn keys(&self) -> Vec<&str> {
@@ -242,6 +288,30 @@ mod tests {
         assert_eq!(counted_source("::ffff:203.0.113.7"), "203.0.113.7");
         assert_eq!(counted_source(" 203.0.113.7 "), "203.0.113.7");
         assert_eq!(counted_source(&"X".repeat(100)).len(), UNREAD_ADDRESS_LIMIT);
+    }
+
+    /// Whatever an address claims to be, it is counted in lowercase, and so
+    /// never under a device's key.
+    #[test]
+    fn no_address_is_counted_as_a_device() {
+        for claimed in ["Device:00ff", "DEVICE:00FF", " Device:00ff", "device:00ff"] {
+            assert!(!counted_source(claimed).starts_with(DEVICE), "{claimed}");
+        }
+    }
+
+    #[test]
+    fn a_device_stands_in_for_the_address_only_under_a_name() {
+        let device = Device {
+            id: "00ff".to_owned(),
+        };
+        let named = Knock::counted_as(Some("203.0.113.7"), "n").on_device(&device);
+        assert!(named.is_on_device());
+        assert_eq!(named.source.as_deref(), Some("Device:00ff"));
+        assert_eq!(named.counted_name(), Some("n"));
+
+        let nameless = Knock::counted_as(Some("203.0.113.7"), "").on_device(&device);
+        assert!(!nameless.is_on_device());
+        assert_eq!(nameless.source.as_deref(), Some("203.0.113.7"));
     }
 
     #[test]

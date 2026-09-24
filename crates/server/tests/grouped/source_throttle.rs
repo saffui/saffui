@@ -314,9 +314,21 @@ async fn a_realm_that_does_not_throttle_counts_nothing() {
         let (status, body) = answered_from(&plane, Some(HERE), name, "Winter2026!").await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
     }
-    let (status, body) =
-        answered_from(&plane, Some(HERE), support::SUBJECT, support::PASSWORD).await;
-    assert_eq!(body["status"], "admitted", "{status}: {body}");
+    let response = posted(
+        &plane,
+        Some(HERE),
+        support::SUBJECT,
+        support::PASSWORD,
+        false,
+    )
+    .await;
+    assert_eq!(
+        device_left_by(&response),
+        None,
+        "a realm that weighs no device minted a token"
+    );
+    let body: Value = test::read_body_json(response).await;
+    assert_eq!(body["status"], "admitted", "{body}");
     assert_eq!(counted_for_the_address(&plane).await, (0, 0));
 }
 
@@ -388,5 +400,481 @@ async fn failures_older_than_the_window_do_not_count() {
 
     let (status, body) =
         answered_from(&plane, Some(HERE), support::SUBJECT, support::PASSWORD).await;
+    assert_eq!(body["status"], "admitted", "{status}: {body}");
+}
+
+/// One answer, as the script sends it, to the login `binding` names, from
+/// `peer`, carrying the device token when the browser kept one.
+async fn answered_on(
+    plane: &Plane,
+    binding: &str,
+    peer: &str,
+    device: Option<&str>,
+    body: Value,
+) -> actix_web::dev::ServiceResponse {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let mut cookies = format!("{}={binding}", support::AUTH_SESSION_COOKIE);
+    if let Some(device) = device {
+        cookies.push_str(&format!("; {}={device}", support::DEVICE_COOKIE));
+    }
+    let request = test::TestRequest::post()
+        .uri(&format!(
+            "/realms/{}/protocol/openid-connect/login",
+            support::REALM
+        ))
+        .insert_header(("cookie", cookies))
+        .peer_addr(peer.parse().expect("an address"))
+        .set_json(body);
+    test::call_service(&app, request.to_request()).await
+}
+
+/// A name and a password against a fresh login, from `peer`.
+async fn tried(
+    plane: &Plane,
+    peer: &str,
+    device: Option<&str>,
+    name: &str,
+    password: &str,
+) -> (StatusCode, Value) {
+    let binding = opened(plane).await;
+    let response = answered_on(
+        plane,
+        &binding,
+        peer,
+        device,
+        serde_json::json!({ "username": name, "password": password }),
+    )
+    .await;
+    let status = response.status();
+    (status, test::read_body_json(response).await)
+}
+
+/// The device token a response left in the browser, if it left one.
+fn device_left_by(response: &actix_web::dev::ServiceResponse) -> Option<String> {
+    let set: Vec<String> = response
+        .headers()
+        .get_all("set-cookie")
+        .filter_map(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .collect();
+    support::cookie_value(&set, support::DEVICE_COOKIE)
+}
+
+/// Sign the subject in from `peer`, and keep what the browser was left.
+async fn signed_in_from(plane: &Plane, peer: &str) -> String {
+    let binding = opened(plane).await;
+    let response = answered_on(
+        plane,
+        &binding,
+        peer,
+        None,
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    device_left_by(&response).expect("a device token")
+}
+
+/// A token for this name, sealed as the server seals one, at `at`.
+async fn minted_at(plane: &Plane, typed: &str, at: chrono::DateTime<chrono::Utc>) -> String {
+    let transaction = plane
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
+        .await;
+    let sealing = support::sealing();
+    let ring = store::keyring::load(
+        &transaction,
+        &sealing.envelope,
+        support::TENANT,
+        support::REALM,
+    )
+    .await
+    .expect("the realm's keyring");
+    let knock = auth::login::throttle::Knock::new(sealing.provider.as_ref(), None, Some(typed))
+        .expect("a digest");
+    auth::login::device::mint(
+        sealing.provider.as_ref(),
+        &ring,
+        &sealing.envelope,
+        knock.counted_name().expect("a name"),
+        at,
+    )
+    .await
+    .expect("a token")
+}
+
+/// What is counted against this source alone.
+async fn counted_for(plane: &Plane, source: &str) -> i64 {
+    let transaction = plane
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
+        .await;
+    transaction
+        .query_one(
+            "SELECT COALESCE(SUM(failures), 0)::bigint FROM source_failures \
+             WHERE named = '' AND source = $1",
+            &[&source],
+        )
+        .await
+        .expect("the counts")
+        .get(0)
+}
+
+/// The code the subject's authenticator app shows right now.
+fn current_code() -> String {
+    use crypto::provider::CryptoProvider as _;
+    let provider = support::provider();
+    let secret = data_encoding::BASE32_NOPAD
+        .decode(support::TOTP_SECRET.as_bytes())
+        .expect("a base32 secret");
+    let code = crypto::otp::totp::totp_now(
+        provider.hmac(),
+        &secrecy::SecretBox::new(Box::new(secret)),
+        crypto::otp::totp::TotpParams::new(crypto::provider::HashAlg::Sha1),
+    )
+    .expect("a code");
+    crypto::otp::totp::format_code(code, 6)
+}
+
+/// People behind one address share its count, unless their browser signed in
+/// before: past the threshold a stranger there is turned away, and the person
+/// whose browser kept a token is answered.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_browser_that_signed_in_before_is_answered_where_its_address_is_turned_away() {
+    let plane = Plane::with_actions(&[]).await;
+    plane.throttle_sources(policy(2, 10)).await;
+    let device = signed_in_from(&plane, HERE).await;
+
+    for name in ["nobody-1", "nobody-2"] {
+        let (status, body) = tried(&plane, HERE, None, name, "a-guess").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{name}: {body}");
+    }
+    let (status, body) = tried(&plane, HERE, None, support::SUBJECT, support::PASSWORD).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+
+    let (status, body) = tried(
+        &plane,
+        HERE,
+        Some(&device),
+        support::SUBJECT,
+        support::PASSWORD,
+    )
+    .await;
+    assert_eq!(body["status"], "admitted", "{status}: {body}");
+}
+
+/// A device's failures are its own: past the threshold for one name it is
+/// turned away the way an address is, while its address, which none of them
+/// were counted against, still answers.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_device_is_counted_and_turned_away_on_its_own() {
+    let plane = Plane::with_actions(&[]).await;
+    plane.throttle_sources(policy(3, 2)).await;
+    let device = signed_in_from(&plane, ELSEWHERE).await;
+
+    for _ in 0..2 {
+        let (status, body) = tried(
+            &plane,
+            HERE,
+            Some(&device),
+            support::SUBJECT,
+            "not-the-password",
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    }
+    let binding = opened(&plane).await;
+    let response = answered_on(
+        &plane,
+        &binding,
+        HERE,
+        Some(&device),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(response.headers().get("retry-after").is_some());
+    let body: Value = test::read_body_json(response).await;
+    assert_eq!(body["status"], "throttled", "{body}");
+
+    assert_eq!(
+        counted_for(&plane, "203.0.113.7").await,
+        0,
+        "a device's failures were counted against its address"
+    );
+    let (status, body) = tried(&plane, HERE, None, support::SUBJECT, support::PASSWORD).await;
+    assert_eq!(body["status"], "admitted", "{status}: {body}");
+}
+
+/// A token is read under the name typed with it, every spelling of it alike,
+/// and under no other: another name from the same browser is weighed on the
+/// address, like any attempt without one.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_token_is_read_under_the_name_typed_and_no_other() {
+    let plane = Plane::with_actions(&[]).await;
+    plane.throttle_sources(policy(1, 10)).await;
+    let device = signed_in_from(&plane, ELSEWHERE).await;
+    let (status, body) = tried(&plane, HERE, None, "nobody", "a-guess").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+
+    let (status, body) = tried(&plane, HERE, Some(&device), "grace", "a-guess").await;
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "a token minted for one name answered for another: {body}"
+    );
+
+    let respelled = format!(" {} ", support::SUBJECT.to_uppercase());
+    let (status, body) = tried(&plane, HERE, Some(&device), &respelled, "a-guess").await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "another spelling of the name was not the name: {body}"
+    );
+}
+
+/// The admission leaves the token on terms that keep it to the sign-in post of
+/// this realm, for as long as it stands; a refusal leaves none.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_admission_leaves_a_device_token_on_strict_terms() {
+    let plane = Plane::with_actions(&[]).await;
+
+    let binding = opened(&plane).await;
+    let response = answered_on(
+        &plane,
+        &binding,
+        HERE,
+        None,
+        serde_json::json!({ "username": support::SUBJECT, "password": "not-the-password" }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(device_left_by(&response), None, "a refusal left a token");
+
+    let binding = opened(&plane).await;
+    let response = answered_on(
+        &plane,
+        &binding,
+        HERE,
+        None,
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let set = response
+        .headers()
+        .get_all("set-cookie")
+        .filter_map(|value| value.to_str().ok())
+        .find(|held| held.starts_with(&format!("{}=", support::DEVICE_COOKIE)))
+        .expect("a device token")
+        .to_owned();
+    for term in [
+        "HttpOnly",
+        "Secure",
+        "SameSite=Strict",
+        &format!("Path=/realms/{}", support::REALM),
+        &format!("Max-Age={}", auth::login::device::LIFETIME),
+    ] {
+        assert!(
+            set.split("; ").any(|held| held == term),
+            "{term} missing from {set}"
+        );
+    }
+}
+
+/// The lock is for strangers. Once they have filled it, the person still signs
+/// in from the browser that signed in before, and getting in does not forget
+/// what the strangers counted.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_person_locked_by_strangers_still_signs_in_from_their_browser() {
+    let plane = Plane::with_actions(&[]).await;
+    plane.count_logins(2).await;
+    plane.throttle_sources(policy(100, 10)).await;
+    let device = signed_in_from(&plane, HERE).await;
+
+    for _ in 0..2 {
+        let (status, body) = tried(
+            &plane,
+            ELSEWHERE,
+            None,
+            support::SUBJECT,
+            "not-the-password",
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    }
+    let (_, body) = tried(&plane, ELSEWHERE, None, support::SUBJECT, support::PASSWORD).await;
+    assert_eq!(body["status"], "locked-out", "{body}");
+
+    let (status, body) = tried(
+        &plane,
+        HERE,
+        Some(&device),
+        support::SUBJECT,
+        support::PASSWORD,
+    )
+    .await;
+    assert_eq!(body["status"], "admitted", "{status}: {body}");
+
+    assert_eq!(counted_for_the_person(&plane).await, 2);
+    let (_, body) = tried(&plane, ELSEWHERE, None, support::SUBJECT, support::PASSWORD).await;
+    assert_eq!(
+        body["status"], "locked-out",
+        "the person getting in forgot what strangers counted: {body}"
+    );
+}
+
+/// What a device gets wrong is its own count's to answer: logged like any
+/// failure, it locks nobody out.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_browsers_own_failures_are_logged_and_lock_nobody() {
+    let plane = Plane::with_actions(&[]).await;
+    plane.count_logins(2).await;
+    plane.record_login_events().await;
+    plane.throttle_sources(policy(100, 5)).await;
+    let device = signed_in_from(&plane, HERE).await;
+
+    for _ in 0..3 {
+        let (status, body) = tried(
+            &plane,
+            HERE,
+            Some(&device),
+            support::SUBJECT,
+            "not-the-password",
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    }
+    assert_eq!(counted_for_the_person(&plane).await, 0);
+    let transaction = plane
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
+        .await;
+    let logged: i64 = transaction
+        .query_one(
+            "SELECT count(*) FROM login_events WHERE kind = 'sign_in_failed'",
+            &[],
+        )
+        .await
+        .expect("the sign-in log")
+        .get(0);
+    assert_eq!(logged, 3, "a device's failure went unlogged");
+
+    let (status, body) = tried(&plane, ELSEWHERE, None, support::SUBJECT, support::PASSWORD).await;
+    assert_eq!(body["status"], "admitted", "{status}: {body}");
+}
+
+/// A login is weighed under the name its first round typed. The second round
+/// of a flow asking for a code types none, and is still the device's.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_later_round_is_weighed_under_the_name_the_first_one_typed() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::STRONG_FLOW)
+        .await;
+    plane.throttle_sources(policy(1, 10)).await;
+    let named = serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD });
+    let device = minted_at(&plane, support::SUBJECT, chrono::Utc::now()).await;
+
+    let (status, body) = tried(&plane, HERE, None, "nobody", "a-guess").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+
+    let binding = opened(&plane).await;
+    let response = answered_on(&plane, &binding, HERE, Some(&device), named).await;
+    let status = response.status();
+    let body: Value = test::read_body_json(response).await;
+    assert_eq!(body["status"], "challenge", "{status}: {body}");
+    let response = answered_on(
+        &plane,
+        &binding,
+        HERE,
+        Some(&device),
+        serde_json::json!({ "password": support::PASSWORD, "totp": current_code() }),
+    )
+    .await;
+    let status = response.status();
+    let body: Value = test::read_body_json(response).await;
+    assert_eq!(
+        body["status"], "admitted",
+        "a round that typed no name was weighed on the address: {status}: {body}"
+    );
+}
+
+/// Where the realm counts nothing by where attempts come from, no device is
+/// weighed either, so a token spares nobody the person's lock.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_device_is_not_weighed_where_the_realm_does_not_throttle() {
+    let plane = Plane::with_actions(&[]).await;
+    plane.count_logins(2).await;
+    let device = signed_in_from(&plane, HERE).await;
+    plane
+        .throttle_sources(SourceThrottle {
+            throttled: false,
+            ..policy(100, 10)
+        })
+        .await;
+
+    for _ in 0..2 {
+        let (status, body) = tried(
+            &plane,
+            ELSEWHERE,
+            None,
+            support::SUBJECT,
+            "not-the-password",
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    }
+    let (_, body) = tried(
+        &plane,
+        HERE,
+        Some(&device),
+        support::SUBJECT,
+        support::PASSWORD,
+    )
+    .await;
+    assert_eq!(body["status"], "locked-out", "{body}");
+}
+
+/// A token past its lifetime is no token, whatever the cookie's own expiry
+/// said to the browser.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_token_past_its_lifetime_is_no_token() {
+    let plane = Plane::with_actions(&[]).await;
+    plane.throttle_sources(policy(1, 10)).await;
+    let now = chrono::Utc::now();
+    let aged = minted_at(
+        &plane,
+        support::SUBJECT,
+        now - chrono::Duration::seconds(auth::login::device::LIFETIME + 1),
+    )
+    .await;
+    let fresh = minted_at(&plane, support::SUBJECT, now).await;
+    let (status, body) = tried(&plane, HERE, None, "nobody", "a-guess").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+
+    let (status, body) = tried(
+        &plane,
+        HERE,
+        Some(&aged),
+        support::SUBJECT,
+        support::PASSWORD,
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    let (status, body) = tried(
+        &plane,
+        HERE,
+        Some(&fresh),
+        support::SUBJECT,
+        support::PASSWORD,
+    )
+    .await;
     assert_eq!(body["status"], "admitted", "{status}: {body}");
 }

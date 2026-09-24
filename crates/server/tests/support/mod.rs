@@ -109,6 +109,11 @@ pub const STRONG_ACR: &str = "mfa";
 pub const AUTH_SESSION_COOKIE: &str = "saffui_auth_session";
 #[allow(dead_code, reason = "only the protocol suite carries a browser")]
 pub const SSO_COOKIE: &str = "saffui_session";
+#[allow(
+    dead_code,
+    reason = "only the suites that sign in by password carry one"
+)]
+pub const DEVICE_COOKIE: &str = "saffui_device";
 #[allow(dead_code, reason = "not every suite mounts the admin plane")]
 pub const AUDIENCE: &str = "saffui-admin";
 #[allow(dead_code, reason = "not every suite mounts the admin plane")]

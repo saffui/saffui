@@ -11,7 +11,7 @@ use store::tenancy::{TenantContext, UnitOfWork};
 
 use crate::login::authenticator::Answer;
 use crate::login::enrolment::{self, Enrolment};
-use crate::login::{Progress, run_flow, throttle};
+use crate::login::{Lock, Progress, device, run_flow, throttle};
 use models::claims_request::ClaimsRequest;
 
 /// How long the login it opens lasts, and a login a grant opens with no
@@ -29,6 +29,11 @@ pub struct Sealing<'a> {
 /// The notes key holding a remember-me already asked for, so the choice
 /// made on the password round still stands when the code round answers.
 const REMEMBER_ME_NOTE: &str = "remember_me";
+
+/// The notes key holding the digest of the name a login is weighed under,
+/// written once a round gets past a step. Later rounds are weighed under it,
+/// whatever name they type, or none.
+const WEIGHED_NAME_NOTE: &str = "weighed_name";
 
 #[derive(Debug)]
 pub enum Step {
@@ -92,6 +97,9 @@ pub struct Admission {
     /// Whether the person asked to be remembered past the browser closing,
     /// and the realm allows it. The cookie's lifetime is the caller's call.
     pub remember_me: bool,
+    /// What this browser presents on its next sign-in under the same name, to
+    /// be counted on its own rather than with its address.
+    pub device: Option<String>,
 }
 
 /// Why the step could not be run.
@@ -129,9 +137,12 @@ pub async fn answer_step(
     sends: bool,
     // Whether anything at all carries a text out of this deployment.
     texts: bool,
-    // What it takes to open this realm's sealed values. Absent where a caller
-    // has no step that needs one, which is every flow but a mailed one.
+    // What it takes to open this realm's sealed values: a mailed step's
+    // settings, and a device token. Absent, the flow mails nothing and every
+    // browser is weighed on its address.
     sealing: Option<Sealing<'_>>,
+    // The token the browser kept from an earlier sign-in, when it kept one.
+    device_token: Option<&str>,
     // What it takes to sign, when the request wants something minted here.
     signing: Option<&store::keyring::Signing<'_>>,
     // What the person answered to the consent screen, when they answered.
@@ -157,8 +168,32 @@ pub async fn answer_step(
 
     // Weighed before the name is looked up or any answer verified, so an
     // address turned away costs one read: no directory asked, no hash run.
-    let knock = throttle::Knock::new(provider, seen.address.as_deref(), username)
-        .map_err(|_| Unanswerable::Unreadable)?;
+    let knock = match noted(&login.notes, WEIGHED_NAME_NOTE) {
+        Some(counted) => throttle::Knock::counted_as(seen.address.as_deref(), counted),
+        None => throttle::Knock::new(provider, seen.address.as_deref(), username)
+            .map_err(|_| Unanswerable::Unreadable)?,
+    };
+    // A browser that proves it was admitted under this name before is
+    // weighed on its own count. Read from the token alone, so it costs the
+    // same whether or not anybody holds the name.
+    let held = match sealing {
+        Some(sealing) => {
+            device::recognize(
+                &realm,
+                sealing.ring,
+                sealing.envelope,
+                knock.counted_name(),
+                device_token,
+                now,
+            )
+            .await
+        }
+        None => None,
+    };
+    let knock = match held {
+        Some(held) => knock.on_device(&held),
+        None => knock,
+    };
     if let Some(until) = throttle::until(transaction, &realm, &knock, now)
         .await
         .map_err(|_| Unanswerable::Unreadable)?
@@ -228,6 +263,11 @@ pub async fn answer_step(
         }),
         federations,
         seen.address.as_deref(),
+        if knock.is_on_device() {
+            Lock::Spared
+        } else {
+            Lock::Applies
+        },
         now,
     )
     .await
@@ -241,6 +281,9 @@ pub async fn answer_step(
         } => {
             if remembering {
                 remember.insert(REMEMBER_ME_NOTE.to_owned(), Value::Bool(true));
+            }
+            if let Some(counted) = knock.counted_name() {
+                remember.insert(WEIGHED_NAME_NOTE.to_owned(), Value::from(counted));
             }
             // Written before the answer is asked for, so a login resumed on
             // another connection knows which step it is on.
@@ -313,6 +356,9 @@ pub async fn answer_step(
                     remember.insert(named.to_owned(), challenge.remembered);
                     if remembering {
                         remember.insert(REMEMBER_ME_NOTE.to_owned(), Value::Bool(true));
+                    }
+                    if let Some(counted) = knock.counted_name() {
+                        remember.insert(WEIGHED_NAME_NOTE.to_owned(), Value::from(counted));
                     }
                     login::record_step(
                         transaction,
@@ -438,7 +484,7 @@ pub async fn answer_step(
                 .acr_loa_map
                 .as_ref()
                 .and_then(|map| by.iter().filter_map(|ran| map.loa_of(ran.context())).max());
-            admit(
+            let mut admitted = admit(
                 transaction,
                 provider,
                 tenant,
@@ -454,8 +500,16 @@ pub async fn answer_step(
                 Way::Browser,
                 remembering,
             )
-            .await
-            .map(|admitted| Step::Admitted(Box::new(admitted)))
+            .await?;
+            // Sealed for the name this login was weighed under, where devices
+            // are weighed at all.
+            if let (Some(sealing), Some(counted)) = (sealing, knock.counted_name())
+                && realm.source_throttle.throttled
+            {
+                admitted.device =
+                    device::mint(provider, sealing.ring, sealing.envelope, counted, now).await;
+            }
+            Ok(Step::Admitted(Box::new(admitted)))
         }
     }
 }
@@ -621,6 +675,7 @@ async fn admit(
         reached,
         auth_time: now.timestamp(),
         remember_me: remembering,
+        device: None,
     })
 }
 

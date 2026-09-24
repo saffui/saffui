@@ -1,5 +1,6 @@
 pub mod authenticator;
 pub mod browser;
+pub mod device;
 pub mod directory;
 pub mod enrolment;
 pub mod lockout;
@@ -41,6 +42,21 @@ pub enum Progress {
         asks: Option<serde_json::Value>,
         remember: serde_json::Map<String, serde_json::Value>,
     },
+}
+
+/// Whether the person's lock answers a pass.
+///
+/// The lock is for strangers. A browser that proved the name before has a
+/// count of its own that turns it away, so the person keeps signing in from it
+/// while somebody else fills the lock, and what that somebody counted is not
+/// forgotten because the person got in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lock {
+    /// Asked before anything is verified, counted on a refusal, and cleared
+    /// on an admission.
+    Applies,
+    /// Neither asked nor told: a refusal is only logged.
+    Spared,
 }
 
 /// Why a login could not be run at all.
@@ -89,6 +105,7 @@ pub async fn run_flow(
     federations: &[directory::Named<'_>],
     // Where this pass came from, recorded against a failure, and when it is.
     from: Option<&str>,
+    lock: Lock,
     now: DateTime<Utc>,
 ) -> Result<(Progress, Option<Box<Outbound>>), Unrunnable> {
     let executions = auth_flows::executions_of(transaction, flow_id)
@@ -101,7 +118,8 @@ pub async fn run_flow(
     // Before anything is verified, and without counting: an answer that is
     // never looked at cannot be wrong, and extending the lock on every attempt
     // would let anybody hold somebody else's account shut indefinitely.
-    if let Some(subject) = subject
+    if lock == Lock::Applies
+        && let Some(subject) = subject
         && let Some(until) = lockout::until(transaction, realm, &subject.user_id, now)
             .await
             .map_err(|_| Unrunnable::Unreadable)?
@@ -172,22 +190,25 @@ pub async fn run_flow(
     if realm.brute_force.protected
         && let Some(subject) = subject
     {
-        match decided {
+        match (decided, lock) {
             // Counted once per pass, not once per step: a flow of three
             // alternatives is one wrong answer, not three.
-            Decided::Refused => {
+            (Decided::Refused, Lock::Applies) => {
                 lockout::count(transaction, realm, &subject.user_id, from, now)
                     .await
                     .map_err(|_| Unrunnable::Unreadable)?;
             }
+            (Decided::Refused, Lock::Spared) => {
+                lockout::log_failure(transaction, realm, &subject.user_id, from, now).await;
+            }
             // A login that succeeded says the person is the person, so what was
             // counted against them was noise.
-            Decided::Admitted => {
+            (Decided::Admitted, Lock::Applies) => {
                 lockout::clear(transaction, &subject.user_id)
                     .await
                     .map_err(|_| Unrunnable::Unreadable)?;
             }
-            Decided::Waiting => {}
+            (Decided::Admitted, Lock::Spared) | (Decided::Waiting, _) => {}
         }
     }
 

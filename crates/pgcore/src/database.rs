@@ -59,7 +59,17 @@ pub enum DatabaseError {
 pub struct Database {
     config: Config,
     tls: PgConnector,
+    /// A pooler in transaction mode the served pool goes through instead,
+    /// settled by the same rules as the address itself.
+    pooler: Option<Reached>,
     bounds: Bounds,
+}
+
+/// One address, and how it is secured.
+#[derive(Clone)]
+struct Reached {
+    config: Config,
+    tls: PgConnector,
 }
 
 impl std::fmt::Debug for Database {
@@ -67,6 +77,7 @@ impl std::fmt::Debug for Database {
         formatter
             .debug_struct("Database")
             .field("tls", &self.tls)
+            .field("behind_a_pooler", &self.pooler.is_some())
             .field("bounds", &self.bounds)
             .finish_non_exhaustive()
     }
@@ -90,38 +101,40 @@ impl Database {
         ca_file: Option<&str>,
         bounds: Bounds,
     ) -> Result<Self, DatabaseError> {
-        let mut config: Config = address.parse().map_err(|_| DatabaseError::Unreadable)?;
-        let written = match config.get_ssl_mode() {
-            SslMode::Disable => Some(("disable", PgTlsMode::Disabled)),
-            SslMode::Require => Some(("require", PgTlsMode::Require)),
-            _ => None,
-        };
-        let mode = match (mode, written) {
-            (Some(stated), written) => {
-                let chosen = PgTlsMode::from_parts(stated, ca_file)?;
-                if let Some((spelled, implied)) = written
-                    && (implied == PgTlsMode::Disabled) != (chosen == PgTlsMode::Disabled)
-                {
-                    return Err(DatabaseError::Contradicted {
-                        stated: stated.trim().to_owned(),
-                        written: spelled,
-                    });
-                }
-                chosen
-            }
-            (None, Some((_, implied))) => implied,
-            (None, None) => match first_host_elsewhere(&config) {
-                None => PgTlsMode::Disabled,
-                Some(host) => return Err(DatabaseError::Unstated { host }),
-            },
-        };
-        let tls = PgConnector::build(&mode)?;
-        config.connect_timeout(bounds.connect);
+        let reached = settle(address, mode, ca_file, bounds.connect)?;
         Ok(Self {
-            config: tls.apply(&config),
-            tls,
+            config: reached.config,
+            tls: reached.tls,
+            pooler: None,
             bounds,
         })
+    }
+
+    /// Serve requests through a pooler in transaction mode in front of the
+    /// same database, its address settled by the same rules.
+    ///
+    /// Only the served pool goes through it. What needs a session of its own,
+    /// the listener, the migrations and the owner's work, keeps the direct
+    /// address: a pooler in transaction mode lends a server connection for one
+    /// transaction at a time, and a LISTEN or a session lock would be lent
+    /// along with it.
+    pub fn with_pooler(
+        mut self,
+        address: &str,
+        mode: Option<&str>,
+        ca_file: Option<&str>,
+    ) -> Result<Self, DatabaseError> {
+        self.pooler = Some(settle(address, mode, ca_file, self.bounds.connect)?);
+        Ok(self)
+    }
+
+    /// Whether the served pool goes through a pooler.
+    pub fn has_pooler(&self) -> bool {
+        self.pooler.is_some()
+    }
+
+    pub fn bounds(&self) -> Bounds {
+        self.bounds
     }
 
     /// For work that holds a connection as long as it needs to: the
@@ -134,9 +147,29 @@ impl Database {
         &self.tls
     }
 
-    /// The served pool.
+    /// The served pool: through the pooler when there is one.
     pub fn pool(&self) -> Result<Pool, DatabaseError> {
-        Pool::builder(Manager::new(self.pooled(), self.tls.maker()))
+        let (config, tls) = self.served();
+        self.bounded(config, tls)
+    }
+
+    /// What the served pool opens its connections with. Through a pooler
+    /// nothing rides at startup: it refuses the options it cannot keep track
+    /// of, and the bound on an idle transaction rides in each transaction.
+    fn served(&self) -> (Config, &PgConnector) {
+        match &self.pooler {
+            Some(pooler) => (pooler.config.clone(), &pooler.tls),
+            None => (self.pooled(), &self.tls),
+        }
+    }
+
+    /// A pool on the direct address, for a command working as the owner.
+    pub fn direct_pool(&self) -> Result<Pool, DatabaseError> {
+        self.bounded(self.pooled(), &self.tls)
+    }
+
+    fn bounded(&self, config: Config, tls: &PgConnector) -> Result<Pool, DatabaseError> {
+        Pool::builder(Manager::new(config, tls.maker()))
             .max_size(self.bounds.size)
             // Bounded, where the pool would otherwise wait forever: a full pool
             // then refuses where it would have stopped answering.
@@ -242,6 +275,46 @@ pub fn describe_connection_failure(failure: &tokio_postgres::Error) -> String {
         cause = held.source();
     }
     told
+}
+
+/// Read one address and settle how it is reached.
+fn settle(
+    address: &str,
+    mode: Option<&str>,
+    ca_file: Option<&str>,
+    connect: Duration,
+) -> Result<Reached, DatabaseError> {
+    let mut config: Config = address.parse().map_err(|_| DatabaseError::Unreadable)?;
+    let written = match config.get_ssl_mode() {
+        SslMode::Disable => Some(("disable", PgTlsMode::Disabled)),
+        SslMode::Require => Some(("require", PgTlsMode::Require)),
+        _ => None,
+    };
+    let mode = match (mode, written) {
+        (Some(stated), written) => {
+            let chosen = PgTlsMode::from_parts(stated, ca_file)?;
+            if let Some((spelled, implied)) = written
+                && (implied == PgTlsMode::Disabled) != (chosen == PgTlsMode::Disabled)
+            {
+                return Err(DatabaseError::Contradicted {
+                    stated: stated.trim().to_owned(),
+                    written: spelled,
+                });
+            }
+            chosen
+        }
+        (None, Some((_, implied))) => implied,
+        (None, None) => match first_host_elsewhere(&config) {
+            None => PgTlsMode::Disabled,
+            Some(host) => return Err(DatabaseError::Unstated { host }),
+        },
+    };
+    let tls = PgConnector::build(&mode)?;
+    config.connect_timeout(connect);
+    Ok(Reached {
+        config: tls.apply(&config),
+        tls,
+    })
 }
 
 /// The first host a connection could reach that is not this machine.
@@ -449,6 +522,61 @@ mod tests {
             held.contains("idle_in_transaction_session_timeout"),
             "{held}"
         );
+    }
+
+    /// A pooler's address is held to the rules the database's own is.
+    #[test]
+    fn a_pooler_is_settled_like_the_database() {
+        let direct = || settled("host=localhost user=saffui_app").unwrap();
+        assert!(!direct().has_pooler());
+        assert!(
+            direct()
+                .with_pooler("host=localhost port=6432 user=saffui_app", None, None)
+                .unwrap()
+                .has_pooler()
+        );
+        match direct().with_pooler("host=pooler.internal port=6432", None, None) {
+            Err(DatabaseError::Unstated { host }) => assert_eq!(host, "pooler.internal"),
+            other => panic!("a pooler elsewhere was settled as {other:?}"),
+        }
+        let required = direct()
+            .with_pooler("host=pooler.internal port=6432", Some("require"), None)
+            .unwrap();
+        assert!(required.served().1.is_encrypted());
+        assert!(matches!(
+            direct().with_pooler("host=pooler password=hunter2 port=notaport", None, None),
+            Err(DatabaseError::Unreadable)
+        ));
+    }
+
+    /// Through a pooler the served pool sends no startup options, which a
+    /// pooler in transaction mode refuses; the direct connections are as
+    /// they were, and without a pooler so is the served pool.
+    #[test]
+    fn nothing_rides_at_startup_through_a_pooler() {
+        let alone = settled("host=localhost user=saffui_app").unwrap();
+        let pooled = alone
+            .clone()
+            .with_pooler("host=localhost port=6432 user=saffui_app", None, None)
+            .unwrap();
+
+        let (through, _) = pooled.served();
+        assert_eq!(through.get_ports(), [6432]);
+        assert!(
+            through
+                .get_options()
+                .is_none_or(|held| !held.contains("idle_in_transaction_session_timeout")),
+            "the pooler would refuse every connection"
+        );
+        assert!(
+            alone
+                .served()
+                .0
+                .get_options()
+                .is_some_and(|held| held.contains("idle_in_transaction_session_timeout")),
+            "without a pooler the served pool lost its guard"
+        );
+        assert_eq!(pooled.direct().get_ports(), alone.direct().get_ports());
     }
 
     /// A pool timing out cannot say more than which phase ran out.

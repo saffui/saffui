@@ -3,6 +3,7 @@ use std::time::Duration;
 use crate::ConfigError;
 
 const ADDRESS: &str = "DATABASE_URL";
+const POOLER: &str = "DATABASE_POOLER_URL";
 const TLS: &str = "DATABASE_TLS";
 const TLS_CA: &str = "DATABASE_TLS_CA";
 const POOL_SIZE: &str = "DATABASE_POOL_SIZE";
@@ -17,6 +18,9 @@ const CONNECT: &str = "DATABASE_CONNECT_SECONDS";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Database {
     pub address: String,
+    /// A pooler in transaction mode in front of the same database, which the
+    /// served requests go through; the address above stays the direct one.
+    pub pooler: Option<String>,
     /// `disabled`, `require` or `verify-full`; absent is decided by the host.
     pub tls: Option<String>,
     /// The bundle `verify-full` checks the server's certificate against.
@@ -31,6 +35,7 @@ impl Database {
     pub fn from_env() -> Result<Self, ConfigError> {
         Ok(Self {
             address: crate::required(ADDRESS)?,
+            pooler: crate::optional(POOLER),
             tls: crate::optional(TLS),
             tls_ca: crate::optional(TLS_CA),
             pool_size: at_least_one(POOL_SIZE, 16)? as usize,
@@ -58,8 +63,9 @@ mod tests {
     use super::*;
     use crate::tests::{clear, env_guard, set};
 
-    const EVERY: [&str; 7] = [
+    const EVERY: [&str; 8] = [
         ADDRESS,
+        POOLER,
         TLS,
         TLS_CA,
         POOL_SIZE,
@@ -78,6 +84,7 @@ mod tests {
             Database::from_env().unwrap(),
             Database {
                 address: "host=localhost user=saffui".to_owned(),
+                pooler: None,
                 tls: None,
                 tls_ca: None,
                 pool_size: 16,
@@ -94,6 +101,7 @@ mod tests {
         let _guard = env_guard();
         clear(&EVERY);
         set(ADDRESS, "host=postgres");
+        set(POOLER, "host=pgbouncer port=6432");
         set(TLS, "verify-full");
         set(TLS_CA, "/certs/server.crt");
         set(POOL_SIZE, "4");
@@ -102,6 +110,7 @@ mod tests {
         set(CONNECT, "3");
 
         let read = Database::from_env().unwrap();
+        assert_eq!(read.pooler.as_deref(), Some("host=pgbouncer port=6432"));
         assert_eq!(read.tls.as_deref(), Some("verify-full"));
         assert_eq!(read.tls_ca.as_deref(), Some("/certs/server.crt"));
         assert_eq!(read.pool_size, 4);

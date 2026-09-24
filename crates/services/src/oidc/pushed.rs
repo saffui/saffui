@@ -48,7 +48,7 @@ pub async fn keep_request(
     }
     // FAPI 2.0: what would be refused at the authorization endpoint anyway is
     // refused here, where the client still gets a status code it can read.
-    if crate::fapi::is_fapi2(client) {
+    if crate::oidc::fapi::is_fapi2(client) {
         if parameters.get("response_type").and_then(Value::as_str) != Some("code") {
             return Err(Unpushable::AgainstTheProfile(
                 "the profile speaks the code flow alone",
@@ -112,8 +112,8 @@ impl PushedRequest {
 
     /// What was pushed, read as the request it stands for. Nothing from the
     /// browser's own query is read: what the client pushed is the request.
-    pub fn as_request(&self) -> crate::authorize::Requested<'_> {
-        crate::authorize::Requested {
+    pub fn as_request(&self) -> crate::oidc::authorize::Requested<'_> {
+        crate::oidc::authorize::Requested {
             response_type: self.text("response_type"),
             client_id: Some(&self.client_id),
             redirect_uri: self.text("redirect_uri"),

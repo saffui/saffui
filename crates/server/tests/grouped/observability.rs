@@ -573,7 +573,7 @@ async fn a_trace_finds_its_own_decisions_and_writes() {
                 support::REALM,
             ))
             .await;
-        services::rebac::publish(
+        services::authorization::rebac::publish(
             &transaction,
             "definition user {}
              definition document {
@@ -584,7 +584,7 @@ async fn a_trace_finds_its_own_decisions_and_writes() {
         )
         .await
         .unwrap();
-        services::rebac::relate(
+        services::authorization::rebac::relate(
             &transaction,
             "document",
             "doc",
@@ -733,7 +733,7 @@ async fn a_simulated_decision_records_the_trace_it_ran_in() {
                 support::REALM,
             ))
             .await;
-        services::rebac::publish(
+        services::authorization::rebac::publish(
             &transaction,
             "definition user {}
              definition document {

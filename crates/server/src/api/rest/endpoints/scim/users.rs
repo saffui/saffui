@@ -202,10 +202,12 @@ pub async fn create(
     {
         return internal();
     }
-    match services::sod::weigh_newcomer(&transaction).await {
+    match services::governance::sod::weigh_newcomer(&transaction).await {
         Ok(()) => {}
-        Err(services::sod::Toxic::Refused(said)) => return refused(&Refusal::invalid(said)),
-        Err(services::sod::Toxic::Backend) => return internal(),
+        Err(services::governance::sod::Toxic::Refused(said)) => {
+            return refused(&Refusal::invalid(said));
+        }
+        Err(services::governance::sod::Toxic::Backend) => return internal(),
     }
     match users::create(&transaction, &person).await {
         Ok(()) => {}

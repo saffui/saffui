@@ -242,7 +242,7 @@ async fn a_client_grant_that_ran_out_goes_before_its_login_does() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_delivered_event_leaves_when_its_replay_window_closes() {
     let plane = Plane::with_actions(&[]).await;
-    let kept = services::housekeeping::DELIVERED_EVENTS_KEPT_DAYS;
+    let kept = services::realm::housekeeping::DELIVERED_EVENTS_KEPT_DAYS;
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;

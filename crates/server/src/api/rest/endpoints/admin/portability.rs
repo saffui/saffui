@@ -119,7 +119,7 @@ pub async fn import(
     let opened = match landing.administrator.as_deref() {
         Some(user_name) if !user_name.trim().is_empty() => Some((
             user_name.to_owned(),
-            services::provisioning::provision_first_administrator(
+            services::realm::provisioning::provision_first_administrator(
                 &transaction,
                 sealing.provider.as_ref(),
                 &tenant,

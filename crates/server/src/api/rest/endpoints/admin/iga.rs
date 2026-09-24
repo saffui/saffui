@@ -71,7 +71,7 @@ pub async fn put_rule(
         .filter(|held| !held.is_empty())
         .map(str::to_owned);
     if let Some(expr) = when_expr.as_deref()
-        && !services::lifecycle::expr_parses(expr)
+        && !services::governance::lifecycle::expr_parses(expr)
     {
         return Err(ApiError::with_detail(
             ErrorCode::ValidationError,
@@ -210,12 +210,12 @@ pub async fn put_grant(
     store::providers::roles::grant_to_user(&transaction, user_id, role_id)
         .await
         .map_err(|_| internal())?;
-    match services::sod::weigh(&transaction, user_id).await {
+    match services::governance::sod::weigh(&transaction, user_id).await {
         Ok(()) => {}
-        Err(services::sod::Toxic::Refused(said)) => {
+        Err(services::governance::sod::Toxic::Refused(said)) => {
             return Err(ApiError::with_detail(ErrorCode::ValidationError, said));
         }
-        Err(services::sod::Toxic::Backend) => return Err(internal()),
+        Err(services::governance::sod::Toxic::Backend) => return Err(internal()),
     }
     birthright::record_timed_grant(
         &transaction,
@@ -491,7 +491,7 @@ pub async fn sod_violations(
                         .into_iter()
                         .map(|role| role.role_id)
                         .collect();
-                let reached = services::sod::offences(&rules, &effective);
+                let reached = services::governance::sod::offences(&rules, &effective);
                 if reached.is_empty() {
                     continue;
                 }
@@ -504,7 +504,7 @@ pub async fn sod_violations(
                         "user_name": person.user_name,
                         "rule_id": offence.rule_id,
                         "roles": offence.held,
-                        "excused": services::sod::excused(&offence, &standing, now),
+                        "excused": services::governance::sod::excused(&offence, &standing, now),
                     }));
                 }
             }

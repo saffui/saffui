@@ -209,7 +209,7 @@ pub async fn published(
             // there is advertised and one never added is not.
             "scopes_supported": std::iter::once("openid")
                 .chain(
-                    services::provisioning::STANDARD_SCOPES
+                    services::realm::provisioning::STANDARD_SCOPES
                         .iter()
                         .map(|(named, _, _)| *named),
                 )
@@ -245,7 +245,7 @@ pub async fn published(
             "userinfo_encryption_enc_values_supported": encryption_methods(),
             // RFC 9449 §5.1: advertised so a client knows the mechanism is
             // here at all, and at which algorithms a proof will be read.
-            "dpop_signing_alg_values_supported": services::dpop::SIGNING_ALGORITHMS,
+            "dpop_signing_alg_values_supported": services::client::dpop::SIGNING_ALGORITHMS,
             "request_object_encryption_alg_values_supported": encryption_algorithms(),
             "request_object_encryption_enc_values_supported": encryption_methods(),
             "request_object_signing_alg_values_supported": SignAlg::ALL

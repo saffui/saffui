@@ -533,7 +533,7 @@ pub struct Evaluation {
 pub async fn evaluate(
     admin: web::ReqData<Admin>,
     tenancy: web::Data<Tenancy>,
-    journal: web::Data<services::pdp::Journal>,
+    journal: web::Data<services::authorization::pdp::Journal>,
     sealing: web::Data<Sealing>,
     path: web::Path<String>,
     body: web::Json<Evaluation>,
@@ -595,7 +595,7 @@ pub async fn evaluate(
         EvaluationQuestion::Policy {
             server_id,
             policy_id,
-        } => services::pdp::Resource::Policy {
+        } => services::authorization::pdp::Resource::Policy {
             server_id,
             policy_id,
         },
@@ -603,7 +603,7 @@ pub async fn evaluate(
             server_id,
             resource,
             scope,
-        } => services::pdp::Resource::Permission {
+        } => services::authorization::pdp::Resource::Permission {
             server_id,
             resource,
             scope,
@@ -612,7 +612,7 @@ pub async fn evaluate(
             object_type,
             object_id,
             relation,
-        } => services::pdp::Resource::Relationship {
+        } => services::authorization::pdp::Resource::Relationship {
             object_type,
             object_id,
             relation,
@@ -620,11 +620,11 @@ pub async fn evaluate(
     };
 
     let trace = crate::otel::current_trace_id();
-    let answer = services::pdp::decide(
+    let answer = services::authorization::pdp::decide(
         &transaction,
         &journal,
         &context,
-        services::pdp::Question {
+        services::authorization::pdp::Question {
             resource,
             action: "simulated",
             decision_id: &decision_id,
@@ -670,20 +670,22 @@ async fn walk_of(
     relation: &str,
     context: &services::context::Context,
 ) -> Option<serde_json::Value> {
-    let schema = services::rebac::schema_of(transaction).await.ok()?;
-    let (answered, steps, cut) = services::rebac::explain(
+    let schema = services::authorization::rebac::schema_of(transaction)
+        .await
+        .ok()?;
+    let (answered, steps, cut) = services::authorization::rebac::explain(
         transaction,
         &schema,
-        services::rebac::Object {
+        services::authorization::rebac::Object {
             object_type,
             object_id,
         },
         relation,
-        services::rebac::Subject {
+        services::authorization::rebac::Subject {
             subject_type: context.principal.kind(),
             subject_id: context.principal.id(),
         },
-        services::rebac::CHECK,
+        services::authorization::rebac::CHECK,
     )
     .await;
     Some(serde_json::json!({
@@ -782,7 +784,7 @@ pub async fn put_route(
     // A pattern the matcher cannot read would match nothing and say nothing
     // about why, so it is refused here where there is somebody to tell.
     for (pattern, what) in [(&method, "method"), (&route_path, "path")] {
-        if !services::mesh::pattern_reads(pattern) {
+        if !services::authorization::routes::pattern_reads(pattern) {
             return Err(refused(&format!(
                 "{what} is an exact value or a prefix ending in *"
             )));

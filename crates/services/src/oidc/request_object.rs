@@ -4,7 +4,7 @@ use crypto::jose::jwt;
 use models::entities::client::ClientModel;
 use serde_json::Value;
 
-use crate::authorize::Requested;
+use crate::oidc::authorize::Requested;
 use crate::token::verifier_for;
 
 /// How far either side of now the object's own window may sit.

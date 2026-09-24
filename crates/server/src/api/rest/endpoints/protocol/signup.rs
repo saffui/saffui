@@ -4,7 +4,7 @@ use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, HttpResponseBuilder, web};
 use secrecy::SecretBox;
 use serde::Deserialize;
-use services::signup::{self, Unregistrable};
+use services::account::signup::{self, Unregistrable};
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 

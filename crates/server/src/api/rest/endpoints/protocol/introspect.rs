@@ -3,7 +3,7 @@ use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use services::introspection::{self, Told, Untellable};
+use services::oidc::introspection::{self, Told, Untellable};
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 

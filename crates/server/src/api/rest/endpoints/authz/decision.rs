@@ -3,8 +3,8 @@ use crate::error::refuse_unopened_work;
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
+use services::authorization::pdp::{Journal, Question, Resource, decide};
 use services::context::Established;
-use services::pdp::{Journal, Question, Resource, decide};
 use store::tenancy::Tenancy;
 
 /// Ask.
@@ -42,7 +42,8 @@ pub async fn ask(
             let routes = store::providers::authz_routes::routes(&transaction)
                 .await
                 .map_err(|_| internal())?;
-            let Some(route) = services::mesh::matched(&routes, method, path) else {
+            let Some(route) = services::authorization::routes::matched(&routes, method, path)
+            else {
                 return Ok(HttpResponse::Ok().json(Told { decision: "deny" }));
             };
             // The same confinement the named question carries: an

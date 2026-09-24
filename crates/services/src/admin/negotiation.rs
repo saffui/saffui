@@ -5,7 +5,7 @@ use models::entities::brokering::{RealmSpnegoModel, RealmSpnegoMutationModel};
 use store::providers::brokering;
 use store::tenancy::UnitOfWork;
 
-use crate::negotiation::{SpnegoSettings, check_bag};
+use crate::federation::negotiation::{SpnegoSettings, check_bag};
 
 /// Why the door could not be written.
 #[derive(Debug, thiserror::Error)]

@@ -64,9 +64,13 @@ async fn arrange(plane: &Plane) {
     )
     .await
     .expect("the settings kept");
-    services::provisioning::provision_mailed_login(&transaction, support::TENANT, support::REALM)
-        .await
-        .expect("a mailed login");
+    services::realm::provisioning::provision_mailed_login(
+        &transaction,
+        support::TENANT,
+        support::REALM,
+    )
+    .await
+    .expect("a mailed login");
     transaction.commit().await.expect("the arrangement kept");
 }
 

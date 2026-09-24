@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use store::providers::{authz_policies, authz_surface, organizations, roles};
 use store::tenancy::{Tenancy, TenantContext, UnitOfWork};
 
+use crate::authorization::rebac;
 use crate::context::{Acting, Context};
-use crate::rebac;
 
 /// What is being acted on.
 ///

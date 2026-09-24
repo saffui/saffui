@@ -457,7 +457,7 @@ pub async fn set_organization_theme(
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, org_id) = path.into_inner();
     let asked = body.into_inner();
-    if let Err(why) = services::theme::css_of(&asked) {
+    if let Err(why) = services::realm::theme::css_of(&asked) {
         return Err(ApiError::with_detail(
             ErrorCode::ValidationError,
             why.to_owned(),

@@ -192,15 +192,18 @@ async fn a_happening_lands_signed_filtered_and_redeliverable() {
         held[0].clone()
     };
     assert_eq!(first.kind, "user.created");
-    let expected =
-        services::webhook::signature(support::sealing().provider.as_ref(), SECRET, &first.body)
-            .expect("a signature");
+    let expected = services::messaging::webhook::signature(
+        support::sealing().provider.as_ref(),
+        SECRET,
+        &first.body,
+    )
+    .expect("a signature");
     assert_eq!(
         first.signature, expected,
         "the signature does not cover the bytes that travelled"
     );
     assert_ne!(
-        services::webhook::signature(
+        services::messaging::webhook::signature(
             support::sealing().provider.as_ref(),
             SECRET,
             format!("{}x", String::from_utf8_lossy(&first.body)).as_bytes(),
@@ -467,8 +470,12 @@ async fn a_dead_telling_is_seen_requeued_and_finally_put_away() {
     assert_eq!(probe.kind, "saffui.subscription.test");
     assert_eq!(
         probe.signature,
-        services::webhook::signature(support::sealing().provider.as_ref(), SECRET, &probe.body)
-            .unwrap(),
+        services::messaging::webhook::signature(
+            support::sealing().provider.as_ref(),
+            SECRET,
+            &probe.body
+        )
+        .unwrap(),
         "the probe's signature does not verify"
     );
 
@@ -620,7 +627,7 @@ async fn a_replay_feeds_one_listener_dry_by_default() {
             .expect("the original id was not among the replayed");
         assert_eq!(
             replayed.signature,
-            services::webhook::signature(
+            services::messaging::webhook::signature(
                 support::sealing().provider.as_ref(),
                 SECRET,
                 &replayed.body

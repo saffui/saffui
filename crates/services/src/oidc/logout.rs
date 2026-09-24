@@ -221,7 +221,7 @@ const NOTICE_LIFESPAN: i64 = 120;
 /// where to be told. Minted here, delivered by whoever can reach out.
 pub async fn notices_for(
     transaction: &UnitOfWork,
-    signing: &crate::grant::Signing<'_>,
+    signing: &crate::oidc::grant::Signing<'_>,
     issuer: &str,
     session_id: &str,
     now: DateTime<Utc>,
@@ -246,7 +246,7 @@ pub async fn notices_for(
 /// application whose grant alone is taken back while the login goes on.
 pub async fn notice_for_client(
     transaction: &UnitOfWork,
-    signing: &crate::grant::Signing<'_>,
+    signing: &crate::oidc::grant::Signing<'_>,
     issuer: &str,
     session_id: &str,
     client_id: &str,
@@ -261,7 +261,7 @@ pub async fn notice_for_client(
 
 async fn mint_notice(
     transaction: &UnitOfWork,
-    signing: &crate::grant::Signing<'_>,
+    signing: &crate::oidc::grant::Signing<'_>,
     issuer: &str,
     session: &models::sessions::records::UserSessionModel,
     client_id: &str,
@@ -279,7 +279,7 @@ async fn mint_notice(
         .filter(|uri| !uri.is_empty())?;
     // Signed as the client reads identity tokens, since that is the key it
     // verifies logout tokens with (§2.4).
-    let Ok(key) = crate::grant::identity_key_for(transaction, signing, &client).await else {
+    let Ok(key) = crate::oidc::grant::identity_key_for(transaction, signing, &client).await else {
         // Registered to be told and cannot be: on the record, since the
         // client will go on believing the login is live.
         tracing::warn!(%client_id, "no key to sign a logout token with");
@@ -292,9 +292,13 @@ async fn mint_notice(
     // the real identifier the moment anybody logged out. Refusing to tell it
     // at all is better than telling it that: the notice is dropped and said
     // out loud, the way an unreadable client or a missing key is.
-    let Ok(subject) =
-        crate::pairwise::subject_for(transaction, signing.provider, &client, &session.user_id)
-            .await
+    let Ok(subject) = crate::oidc::pairwise::subject_for(
+        transaction,
+        signing.provider,
+        &client,
+        &session.user_id,
+    )
+    .await
     else {
         tracing::warn!(%client_id, "no subject to name this client's person by");
         return None;
@@ -342,7 +346,7 @@ async fn mint_notice(
 /// realm's keys the logins still end, and their clients are not told.
 pub async fn end_brokered_sessions(
     transaction: &UnitOfWork,
-    signing: Option<&crate::grant::Signing<'_>>,
+    signing: Option<&crate::oidc::grant::Signing<'_>>,
     issuer: &str,
     session_ids: &[String],
     now: DateTime<Utc>,

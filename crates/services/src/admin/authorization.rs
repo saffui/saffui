@@ -494,7 +494,7 @@ pub async fn share_resource(
         return Err(Unshareable::ResourceHoldsIt);
     }
 
-    let schema = crate::rebac::schema_of(transaction)
+    let schema = crate::authorization::rebac::schema_of(transaction)
         .await
         .map_err(|why| Unshareable::NoSchema(why.to_string()))?;
     if !schema.has_type(&held.resource_type) {
@@ -507,7 +507,7 @@ pub async fn share_resource(
         });
     }
 
-    crate::rebac::relate(
+    crate::authorization::rebac::relate(
         transaction,
         &held.resource_type,
         &held.resource_id,
@@ -539,7 +539,7 @@ pub async fn unshare_resource(
     if held.server_id != server_id {
         return Err(Unshareable::NotFound);
     }
-    crate::rebac::unrelate(
+    crate::authorization::rebac::unrelate(
         transaction,
         &held.resource_type,
         &held.resource_id,

@@ -10,7 +10,7 @@ use store::keyring::RealmKeyring;
 use store::providers::{brokering, roles};
 use store::tenancy::UnitOfWork;
 
-use crate::brokering::{
+use crate::federation::brokering::{
     ATTRIBUTE_IDP_MAPPER, ATTRIBUTE_NAME, ATTRIBUTE_VALUE, CLAIM, KNOWN_IDP_MAPPERS, ROLE,
     ROLE_IDP_MAPPER, SAML_ATTRIBUTE_IDP_MAPPER, SAML_ROLE_IDP_MAPPER, SYNC_MODE, USER_ATTRIBUTE,
     Upstream, rule_fits_provider,
@@ -70,10 +70,13 @@ fn conceal(provider: &mut IdentityProviderModel) {
         for (clear_key, sealed_key) in [
             (CLEAR_SECRET, SEALED_SECRET),
             (
-                crate::outbound::CLEAR_BEARER,
-                crate::outbound::SEALED_BEARER,
+                crate::scim::outbound::CLEAR_BEARER,
+                crate::scim::outbound::SEALED_BEARER,
             ),
-            (crate::webhook::CLEAR_SECRET, crate::webhook::SEALED_SECRET),
+            (
+                crate::messaging::webhook::CLEAR_SECRET,
+                crate::messaging::webhook::SEALED_SECRET,
+            ),
         ] {
             bag.remove(clear_key);
             if bag.remove(sealed_key).is_some() {
@@ -98,10 +101,13 @@ async fn seal_secret(
     for (clear_key, sealed_key) in [
         (CLEAR_SECRET, SEALED_SECRET),
         (
-            crate::outbound::CLEAR_BEARER,
-            crate::outbound::SEALED_BEARER,
+            crate::scim::outbound::CLEAR_BEARER,
+            crate::scim::outbound::SEALED_BEARER,
         ),
-        (crate::webhook::CLEAR_SECRET, crate::webhook::SEALED_SECRET),
+        (
+            crate::messaging::webhook::CLEAR_SECRET,
+            crate::messaging::webhook::SEALED_SECRET,
+        ),
     ] {
         let Some(taken) = bag.remove(clear_key) else {
             continue;
@@ -193,10 +199,13 @@ pub async fn update_provider(
     for (clear_key, sealed_key) in [
         (CLEAR_SECRET, SEALED_SECRET),
         (
-            crate::outbound::CLEAR_BEARER,
-            crate::outbound::SEALED_BEARER,
+            crate::scim::outbound::CLEAR_BEARER,
+            crate::scim::outbound::SEALED_BEARER,
         ),
-        (crate::webhook::CLEAR_SECRET, crate::webhook::SEALED_SECRET),
+        (
+            crate::messaging::webhook::CLEAR_SECRET,
+            crate::messaging::webhook::SEALED_SECRET,
+        ),
     ] {
         let echoed_mask = rewritten.configs.as_ref().is_some_and(|bag| {
             bag.get(clear_key).and_then(AttributeValue::as_str) == Some("**********")
@@ -235,24 +244,24 @@ pub async fn update_provider(
 /// provider it is: a bag that cannot be used is refused here rather than at
 /// somebody's sign-in.
 fn check_configuration(provider: &IdentityProviderModel) -> Result<(), Unwritable> {
-    let refused = if crate::workload::is_workload(provider) {
-        crate::workload::Trusted::parse(provider)
+    let refused = if crate::federation::workload::is_workload(provider) {
+        crate::federation::workload::Trusted::parse(provider)
             .err()
             .map(|why| why.to_string())
-    } else if crate::outbound::is_outbound(provider) {
-        crate::outbound::Connector::parse(provider)
+    } else if crate::scim::outbound::is_outbound(provider) {
+        crate::scim::outbound::Connector::parse(provider)
             .err()
             .map(|why| why.to_string())
-    } else if crate::caep::is_receiver(provider) {
-        crate::caep::Receiver::parse(provider)
+    } else if crate::messaging::caep::is_receiver(provider) {
+        crate::messaging::caep::Receiver::parse(provider)
             .err()
             .map(|why| why.to_string())
-    } else if crate::webhook::is_webhook(provider) {
-        crate::webhook::Webhook::parse(provider)
+    } else if crate::messaging::webhook::is_webhook(provider) {
+        crate::messaging::webhook::Webhook::parse(provider)
             .err()
             .map(|why| why.to_string())
-    } else if crate::saml_brokering::is_saml(provider) {
-        crate::saml_brokering::SamlUpstream::parse(provider)
+    } else if crate::federation::saml_brokering::is_saml(provider) {
+        crate::federation::saml_brokering::SamlUpstream::parse(provider)
             .err()
             .map(|why| why.to_string())
     } else {
@@ -355,7 +364,7 @@ fn check_rule_shape(
     }
     if !rule_fits_provider(mapper_type, provider) {
         return Err(Unwritable::Invalid(
-            if crate::saml_brokering::is_saml(provider) {
+            if crate::federation::saml_brokering::is_saml(provider) {
                 format!(
                     "a SAML provider sends attributes, not claims; {SAML_ATTRIBUTE_IDP_MAPPER} reads them"
                 )

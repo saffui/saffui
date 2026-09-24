@@ -29,8 +29,8 @@ use serde_json::{Map, Value};
 use store::providers::{realm_keys, replay};
 use store::tenancy::UnitOfWork;
 
-use crate::brokering::{Arrival, STATE_LIFESPAN, Unbrokered, text};
-use crate::grant::Signing;
+use crate::federation::brokering::{Arrival, STATE_LIFESPAN, Unbrokered, text};
+use crate::oidc::grant::Signing;
 
 const PERSISTENT: &str = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent";
 const MINIMUM_RSA_BITS: u32 = 2048;
@@ -1621,7 +1621,7 @@ mod tests {
     #[test]
     fn an_assertion_names_the_person_only_by_a_name_that_stays_theirs() {
         use super::arrive;
-        use crate::brokering::Unbrokered;
+        use crate::federation::brokering::Unbrokered;
 
         let provider_key = rsa_key(2048);
         let metadata = secure_metadata(&certificate_for(&provider_key, &provider_key));
@@ -1883,7 +1883,7 @@ mod tests {
                 request_id: requested.id.clone(),
                 provider_alias: "corp".into(),
                 resume_to: Some("https://app.test/bye".into()),
-                expires_at: now + crate::brokering::STATE_LIFESPAN,
+                expires_at: now + crate::federation::brokering::STATE_LIFESPAN,
             }
         );
         assert!(requested.id.starts_with('_') && requested.id.len() == 65);

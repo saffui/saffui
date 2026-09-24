@@ -120,7 +120,7 @@ pub async fn import(
         }
         None => return Err(ApiError::new(ErrorCode::IdentityProviderNotFound)),
     };
-    let settings = services::federation::LdapSettings::parse(&held)
+    let settings = services::federation::ldap::LdapSettings::parse(&held)
         .map_err(|why| ApiError::with_detail(ErrorCode::ValidationError, why.to_string()))?;
     let directory =
         crate::federation::directory_for(&transaction, &sealing, &context, &held, settings).await;

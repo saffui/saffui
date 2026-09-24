@@ -5,7 +5,7 @@
 //! under `mail_templates`, and the door that weighs that field has to know both
 //! families. Split in two, the door would weigh one and wave the other through.
 
-use crate::notices::NoticeKind;
+use crate::messaging::notices::NoticeKind;
 
 /// What a message of this kind cannot do without.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

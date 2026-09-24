@@ -7,7 +7,7 @@ use serde_json::{Map, Value};
 use store::keyring::Signing;
 use store::tenancy::UnitOfWork;
 
-use crate::grant::{DEFAULT_ACCESS_LIFESPAN, identity_key_for, preferred_key};
+use crate::oidc::grant::{DEFAULT_ACCESS_LIFESPAN, identity_key_for, preferred_key};
 use crate::token::issuance::{Kind, Minting, token_body, token_header};
 
 /// One token as it would look: the header the key would write, and the body
@@ -70,14 +70,14 @@ pub async fn foresee(
     // unless it asked to be told a different one from every sector. A preview
     // that showed the raw identifier would show a subject this client never
     // sees.
-    let told = crate::pairwise::subject_for(transaction, signing.provider, &client, user_id)
+    let told = crate::oidc::pairwise::subject_for(transaction, signing.provider, &client, user_id)
         .await
         .map_err(|_| Unforeseeable::Unreadable)?;
 
-    let overlay = crate::mappers::overlay_for(transaction, client_id, user_id, scope)
+    let overlay = crate::oidc::mappers::overlay_for(transaction, client_id, user_id, scope)
         .await
         .map_err(|()| Unforeseeable::Unreadable)?;
-    let authors = crate::mappers::preview(transaction, client_id, user_id, scope)
+    let authors = crate::oidc::mappers::preview(transaction, client_id, user_id, scope)
         .await
         .map_err(|()| Unforeseeable::Unreadable)?
         .into_iter()
@@ -115,7 +115,7 @@ pub async fn foresee(
         .await
         .map_err(|_| Unforeseeable::NoKey)?;
     let mut access_audiences = vec![client.client_id.clone()];
-    crate::mappers::widen(&mut access_audiences, &overlay.access_audiences);
+    crate::oidc::mappers::widen(&mut access_audiences, &overlay.access_audiences);
     let access_body = token_body(
         minting_for(Kind::Access, access_audiences, overlay.access.clone()),
         "",
@@ -135,7 +135,7 @@ pub async fn foresee(
             .await
             .map_err(|_| Unforeseeable::NoKey)?;
         let mut audiences = vec![client.client_id.clone()];
-        crate::mappers::widen(&mut audiences, &overlay.identity_audiences);
+        crate::oidc::mappers::widen(&mut audiences, &overlay.identity_audiences);
         let body = token_body(
             minting_for(Kind::Identity, audiences, overlay.identity.clone()),
             "",

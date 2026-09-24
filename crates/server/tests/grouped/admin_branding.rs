@@ -169,7 +169,7 @@ async fn a_picture_past_the_cap_is_refused_for_its_size_and_not_its_format() {
     let bearer = plane.token(&support::claims());
 
     let mut huge = png();
-    huge.resize(services::theme::LARGEST_LOGO + 1, 0);
+    huge.resize(services::realm::theme::LARGEST_LOGO + 1, 0);
     let (status, told) = put_mark(&plane, &bearer, huge).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
     let said = told["message"].as_str().unwrap_or_default().to_owned();

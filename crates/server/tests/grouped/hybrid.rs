@@ -205,13 +205,14 @@ async fn what_came_back_together_says_so() {
     let provider = support::provider();
     assert_eq!(
         claims["at_hash"].as_str(),
-        services::detached::half_hash(&provider, crypto::provider::SignAlg::Es256, access)
+        services::oidc::detached::half_hash(&provider, crypto::provider::SignAlg::Es256, access)
             .as_deref(),
         "the access token's hash is not of the access token"
     );
     assert_eq!(
         claims["c_hash"].as_str(),
-        services::detached::half_hash(&provider, crypto::provider::SignAlg::Es256, code).as_deref(),
+        services::oidc::detached::half_hash(&provider, crypto::provider::SignAlg::Es256, code)
+            .as_deref(),
         "the code's hash is not of the code"
     );
     assert_eq!(claims["nonce"], "n-0S6");

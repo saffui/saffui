@@ -1,3 +1,11 @@
+//! The decision: what a caller may do, over which relations, and which
+//! route a request answers to.
+
+pub mod capability;
+pub mod pdp;
+pub mod rebac;
+pub mod routes;
+
 use models::entities::authz::AdminAction;
 use store::providers::{organizations, roles};
 use store::tenancy::UnitOfWork;

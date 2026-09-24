@@ -2,7 +2,7 @@ use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
 use serde_json::{Map, Value, json};
-use services::pushed::{self, Unpushable};
+use services::oidc::pushed::{self, Unpushable};
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
@@ -85,11 +85,11 @@ pub async fn keep(
         let Ok(proof) = proof.to_str() else {
             return Denied::InvalidDpopProof.answer("the proof could not be read");
         };
-        let proven = services::dpop::proven(
+        let proven = services::client::dpop::proven(
             &transaction,
             sealing.provider.as_ref(),
             proof,
-            services::dpop::Bound {
+            services::client::dpop::Bound {
                 method: "POST",
                 url: &format!(
                     "{}/realms/{}/protocol/openid-connect/par",

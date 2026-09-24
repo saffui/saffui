@@ -46,7 +46,7 @@ async fn ask(plane: &Plane, bearer: &str, body: serde_json::Value) -> (StatusCod
 async fn plant_relationship(plane: &Plane) {
     let transaction = plane.scoped(&TenantContext::new("acme", REALM)).await;
 
-    services::rebac::publish(
+    services::authorization::rebac::publish(
         &transaction,
         "definition user {}
          definition document {
@@ -58,7 +58,7 @@ async fn plant_relationship(plane: &Plane) {
     .await
     .unwrap();
 
-    services::rebac::relate(
+    services::authorization::rebac::relate(
         &transaction,
         "document",
         "doc",

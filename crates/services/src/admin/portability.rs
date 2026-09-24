@@ -1164,12 +1164,12 @@ async fn weigh_import(
     let arriving = roles::roles_reached_from(transaction, &arriving)
         .await
         .map_err(|_| Unportable::Backend)?;
-    match crate::sod::weigh_everyone(transaction, &people, &arriving).await {
+    match crate::governance::sod::weigh_everyone(transaction, &people, &arriving).await {
         Ok(()) => Ok(()),
-        Err(crate::sod::Toxic::Refused(said)) => Err(Unportable::Invalid(format!(
+        Err(crate::governance::sod::Toxic::Refused(said)) => Err(Unportable::Invalid(format!(
             "the import would break a separation of duties: {said}"
         ))),
-        Err(crate::sod::Toxic::Backend) => Err(Unportable::Backend),
+        Err(crate::governance::sod::Toxic::Backend) => Err(Unportable::Backend),
     }
 }
 
@@ -1472,12 +1472,12 @@ fn describe_store_refusal(why: StoreError, item: &str) -> Unportable {
 /// what carries it: an import does not write what the admin plane would refuse.
 fn refuse_unsound_themes(doc: &ExportedRealm) -> Result<(), Unportable> {
     if let Some(theme) = &doc.theme {
-        crate::theme::css_of(theme)
+        crate::realm::theme::css_of(theme)
             .map_err(|why| Unportable::Invalid(format!("the realm's theme: {why}")))?;
     }
     for exported in &doc.organizations {
         if let Some(theme) = &exported.theme {
-            crate::theme::css_of(theme).map_err(|why| {
+            crate::realm::theme::css_of(theme).map_err(|why| {
                 Unportable::Invalid(format!(
                     "the theme of organization {}: {why}",
                     exported.organization.name

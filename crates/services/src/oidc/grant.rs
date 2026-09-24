@@ -14,8 +14,8 @@ use store::providers::sessions::Refreshed;
 use store::providers::{oidc, realm_keys, sessions, users};
 use store::tenancy::{TenantContext, UnitOfWork};
 
+use crate::oidc::userinfo;
 use crate::token::issuance::{Kind, Minted, Minting, mint_token};
-use crate::userinfo;
 use models::claims_request::{self, ClaimsRequest};
 
 /// Short, because an unconfigured realm is not a reason to hand out a
@@ -106,7 +106,7 @@ fn bounded_end(
 fn holds_offline_access(scope: &str) -> bool {
     scope
         .split_whitespace()
-        .any(|held| held == crate::authorize::OFFLINE_ACCESS)
+        .any(|held| held == crate::oidc::authorize::OFFLINE_ACCESS)
 }
 
 /// Where the grant is happening.
@@ -231,10 +231,13 @@ pub async fn client_credentials(
     // attachments ride every grant, which is the recorded meaning of holding
     // one, and an asked optional scope rides when asked. A machine had no
     // login to ask at, so its registration is the whole request.
-    let scope =
-        crate::authorize::granted_scope(transaction, &client.client_id, requested.unwrap_or(""))
-            .await
-            .map_err(|_| Ungranted::Unreadable)?;
+    let scope = crate::oidc::authorize::granted_scope(
+        transaction,
+        &client.client_id,
+        requested.unwrap_or(""),
+    )
+    .await
+    .map_err(|_| Ungranted::Unreadable)?;
     let minted: Minted = mint_token(
         signing.provider,
         &key,
@@ -312,10 +315,13 @@ pub async fn workload(
     .await?;
 
     let key = preferred_key(transaction, signing, SignAlg::Es256).await?;
-    let scope =
-        crate::authorize::granted_scope(transaction, &client.client_id, requested.unwrap_or(""))
-            .await
-            .map_err(|_| Ungranted::Unreadable)?;
+    let scope = crate::oidc::authorize::granted_scope(
+        transaction,
+        &client.client_id,
+        requested.unwrap_or(""),
+    )
+    .await
+    .map_err(|_| Ungranted::Unreadable)?;
     // The platform's own words first, then the minting's: carried names
     // are refused the reserved set at the write door, so nothing here can
     // shadow what follows.
@@ -473,16 +479,21 @@ pub async fn authorization_code(
 
     // What the client's registered mappers add, resolved once for both
     // tokens this exchange mints.
-    let overlay =
-        crate::mappers::overlay_for(transaction, &client.client_id, &code.user_id, &code.scope)
-            .await
-            .map_err(|_| Ungranted::Unreadable)?;
+    let overlay = crate::oidc::mappers::overlay_for(
+        transaction,
+        &client.client_id,
+        &code.user_id,
+        &code.scope,
+    )
+    .await
+    .map_err(|_| Ungranted::Unreadable)?;
 
     // §8: what this client calls the account, which is its own identifier
     // unless the client asked to be told a different one from every sector.
-    let told = crate::pairwise::subject_for(transaction, signing.provider, client, &code.user_id)
-        .await
-        .map_err(|_| Ungranted::Unreadable)?;
+    let told =
+        crate::oidc::pairwise::subject_for(transaction, signing.provider, client, &code.user_id)
+            .await
+            .map_err(|_| Ungranted::Unreadable)?;
     let minting_for = |kind: Kind, life: Duration, audiences: Vec<String>| {
         // RFC 9449 §5 and RFC 8705 §3 bind a refresh token by who holds it: a
         // public client's is bound to the key it proved, having nothing else;
@@ -515,8 +526,8 @@ pub async fn authorization_code(
     let key = preferred_key(transaction, signing, SignAlg::Es256).await?;
     let identity_key = identity_key_for(transaction, signing, client).await?;
     let mut minting_access = minting_for(Kind::Access, lifespan, vec![client.client_id.clone()]);
-    crate::mappers::widen(&mut minting_access.audiences, &overlay.access_audiences);
-    crate::mappers::fill(&mut minting_access.extra, overlay.access.clone());
+    crate::oidc::mappers::widen(&mut minting_access.audiences, &overlay.access_audiences);
+    crate::oidc::mappers::fill(&mut minting_access.extra, overlay.access.clone());
     // The organization rides the access token too: it is what a resource or a
     // policy decision reads to know which confinement the caller acts within.
     for (named, value) in [("org_id", &code.org_id), ("org_name", &code.org_name)] {
@@ -556,7 +567,7 @@ pub async fn authorization_code(
         .any(|scope| scope == "openid")
         .then(|| {
             let mut minting = minting_for(Kind::Identity, lifespan, vec![client.client_id.clone()]);
-            crate::mappers::widen(&mut minting.audiences, &overlay.identity_audiences);
+            crate::oidc::mappers::widen(&mut minting.audiences, &overlay.identity_audiences);
             // `auth_time` is the login's instant, not this one: the question is
             // how recently the user authenticated.
             minting
@@ -580,7 +591,7 @@ pub async fn authorization_code(
                 }
             }
             minting.extra.extend(asked_of_person.clone());
-            crate::mappers::fill(&mut minting.extra, overlay.identity.clone());
+            crate::oidc::mappers::fill(&mut minting.extra, overlay.identity.clone());
             mint_token(signing.provider, &identity_key, minting)
         })
         .transpose()
@@ -631,7 +642,7 @@ pub async fn authorization_code(
         expires_in: lifespan.num_seconds(),
         scope: code.scope.clone(),
         id_token: id_token
-            .map(|minted| crate::encryption::identity_for(client, minted.token))
+            .map(|minted| crate::oidc::encryption::identity_for(client, minted.token))
             .transpose()
             .map_err(|_| Ungranted::Unmintable)?,
         refresh_token: Some(refresh.token),
@@ -866,7 +877,7 @@ pub async fn ciba(
     seen: &auth::provenance::Provenance,
     now: DateTime<Utc>,
 ) -> Result<Granted, Unpolled> {
-    if client.public_client == Some(true) || !crate::ciba::allows_ciba(client) {
+    if client.public_client == Some(true) || !crate::oidc::ciba::allows_ciba(client) {
         return Err(Unpolled::Words(
             "unauthorized_client",
             "this client does not sign people in over the backchannel",
@@ -881,8 +892,8 @@ pub async fn ciba(
     let request = backchannel::load(transaction, digest, auth_req_id)
         .await
         .map_err(|_| Unpolled::Backend)?;
-    match crate::ciba::polled(request.as_ref(), &client.client_id, previous, now) {
-        crate::ciba::Polled::Approved => {}
+    match crate::oidc::ciba::polled(request.as_ref(), &client.client_id, previous, now) {
+        crate::oidc::ciba::Polled::Approved => {}
         refused => {
             let (error, detail) = refused.error().expect("approved is the only pass");
             return Err(Unpolled::Words(error, detail));
@@ -901,9 +912,10 @@ pub async fn ciba(
         .filter(|held| held.enabled)
         .ok_or(Unpolled::Words("access_denied", "the person declined"))?;
 
-    let scope = crate::authorize::granted_scope(transaction, &client.client_id, &request.scope)
-        .await
-        .map_err(|_| Unpolled::Backend)?;
+    let scope =
+        crate::oidc::authorize::granted_scope(transaction, &client.client_id, &request.scope)
+            .await
+            .map_err(|_| Unpolled::Backend)?;
     let lifespan = Duration::seconds(
         within
             .realm
@@ -934,12 +946,13 @@ pub async fn ciba(
         .map_err(|_| Unpolled::Backend)?;
 
     let overlay =
-        crate::mappers::overlay_for(transaction, &client.client_id, &person.user_id, &scope)
+        crate::oidc::mappers::overlay_for(transaction, &client.client_id, &person.user_id, &scope)
             .await
             .map_err(|_| Unpolled::Backend)?;
-    let told = crate::pairwise::subject_for(transaction, signing.provider, client, &person.user_id)
-        .await
-        .map_err(|_| Unpolled::Backend)?;
+    let told =
+        crate::oidc::pairwise::subject_for(transaction, signing.provider, client, &person.user_id)
+            .await
+            .map_err(|_| Unpolled::Backend)?;
     let minting_for = |kind: Kind, life: Duration| {
         // The same split as the code exchange: only a public client's
         // renewal is bound to the proved key.
@@ -972,8 +985,8 @@ pub async fn ciba(
         .map_err(|_| Unpolled::Backend)?;
 
     let mut minting_access = minting_for(Kind::Access, lifespan);
-    crate::mappers::widen(&mut minting_access.audiences, &overlay.access_audiences);
-    crate::mappers::fill(&mut minting_access.extra, overlay.access.clone());
+    crate::oidc::mappers::widen(&mut minting_access.audiences, &overlay.access_audiences);
+    crate::oidc::mappers::fill(&mut minting_access.extra, overlay.access.clone());
     let access =
         mint_token(signing.provider, &key, minting_access).map_err(|_| Unpolled::Backend)?;
 
@@ -988,11 +1001,11 @@ pub async fn ciba(
         .any(|held| held == "openid")
         .then(|| {
             let mut minting = minting_for(Kind::Identity, lifespan);
-            crate::mappers::widen(&mut minting.audiences, &overlay.identity_audiences);
+            crate::oidc::mappers::widen(&mut minting.audiences, &overlay.identity_audiences);
             minting
                 .extra
                 .insert("auth_time".into(), Value::from(approved_at.timestamp()));
-            crate::mappers::fill(&mut minting.extra, overlay.identity.clone());
+            crate::oidc::mappers::fill(&mut minting.extra, overlay.identity.clone());
             mint_token(signing.provider, &identity_key, minting)
         })
         .transpose()
@@ -1052,7 +1065,7 @@ pub async fn device_code(
     seen: &auth::provenance::Provenance,
     now: DateTime<Utc>,
 ) -> Result<Granted, Unpolled> {
-    if !crate::device::allows_device(client) {
+    if !crate::oidc::device::allows_device(client) {
         return Err(Unpolled::Words(
             "unauthorized_client",
             "this client does not sign people in over a device",
@@ -1139,12 +1152,13 @@ pub async fn device_code(
         ))?;
 
     let overlay =
-        crate::mappers::overlay_for(transaction, &client.client_id, &person.user_id, &scope)
+        crate::oidc::mappers::overlay_for(transaction, &client.client_id, &person.user_id, &scope)
             .await
             .map_err(|_| Unpolled::Backend)?;
-    let told = crate::pairwise::subject_for(transaction, signing.provider, client, &person.user_id)
-        .await
-        .map_err(|_| Unpolled::Backend)?;
+    let told =
+        crate::oidc::pairwise::subject_for(transaction, signing.provider, client, &person.user_id)
+            .await
+            .map_err(|_| Unpolled::Backend)?;
     let flowed: Vec<(&str, Option<Value>)> = vec![
         ("auth_time", Some(Value::from(auth_time))),
         ("acr", approved.acr.as_deref().map(Value::from)),
@@ -1188,8 +1202,8 @@ pub async fn device_code(
         .map_err(|_| Unpolled::Backend)?;
 
     let mut minting_access = minting_for(Kind::Access, lifespan);
-    crate::mappers::widen(&mut minting_access.audiences, &overlay.access_audiences);
-    crate::mappers::fill(&mut minting_access.extra, overlay.access.clone());
+    crate::oidc::mappers::widen(&mut minting_access.audiences, &overlay.access_audiences);
+    crate::oidc::mappers::fill(&mut minting_access.extra, overlay.access.clone());
     for named in ["org_id", "org_name"] {
         if let Some((_, Some(value))) = flowed.iter().find(|(held, _)| *held == named) {
             minting_access.extra.insert(named.to_owned(), value.clone());
@@ -1207,9 +1221,9 @@ pub async fn device_code(
         .any(|held| held == "openid")
         .then(|| {
             let mut minting = minting_for(Kind::Identity, lifespan);
-            crate::mappers::widen(&mut minting.audiences, &overlay.identity_audiences);
+            crate::oidc::mappers::widen(&mut minting.audiences, &overlay.identity_audiences);
             carried(&mut minting);
-            crate::mappers::fill(&mut minting.extra, overlay.identity.clone());
+            crate::oidc::mappers::fill(&mut minting.extra, overlay.identity.clone());
             mint_token(signing.provider, &identity_key, minting)
         })
         .transpose()
@@ -1338,7 +1352,7 @@ pub async fn refresh_token(
     // The account can be switched off between two renewals, and that is how an
     // administrator shuts down a compromised one. Honouring it at login only
     // leaves it live for as long as its refresh token lasts.
-    let account = crate::pairwise::account_for(transaction, Some(client), &verified.subject)
+    let account = crate::oidc::pairwise::account_for(transaction, Some(client), &verified.subject)
         .await
         .map_err(|_| Ungranted::InvalidGrant)?;
     let subject = users::load(transaction, &account)
@@ -1403,12 +1417,12 @@ pub async fn refresh_token(
     let key = preferred_key(transaction, signing, SignAlg::Es256).await?;
     let identity_key = identity_key_for(transaction, signing, client).await?;
     let overlay =
-        crate::mappers::overlay_for(transaction, &client.client_id, &subject.user_id, &scope)
+        crate::oidc::mappers::overlay_for(transaction, &client.client_id, &subject.user_id, &scope)
             .await
             .map_err(|_| Ungranted::Unreadable)?;
 
     let told =
-        crate::pairwise::subject_for(transaction, signing.provider, client, &subject.user_id)
+        crate::oidc::pairwise::subject_for(transaction, signing.provider, client, &subject.user_id)
             .await
             .map_err(|_| Ungranted::Unreadable)?;
     // The organization rides the chain, but it is re-stamped only while the
@@ -1545,8 +1559,8 @@ pub async fn refresh_token(
     .map_err(|_| Ungranted::Unreadable)?;
 
     let mut minting_access = minting_for(Kind::Access, lifespan);
-    crate::mappers::widen(&mut minting_access.audiences, &overlay.access_audiences);
-    crate::mappers::fill(&mut minting_access.extra, overlay.access.clone());
+    crate::oidc::mappers::widen(&mut minting_access.audiences, &overlay.access_audiences);
+    crate::oidc::mappers::fill(&mut minting_access.extra, overlay.access.clone());
     for named in ["org_id", "org_name"].into_iter().filter(carries) {
         if let Some(value) = verified.claims.get(named) {
             minting_access.extra.insert(named.to_owned(), value.clone());
@@ -1558,7 +1572,7 @@ pub async fn refresh_token(
     let id_token = wants_openid(&scope)
         .then(|| {
             let mut minting = minting_for(Kind::Identity, lifespan);
-            crate::mappers::widen(&mut minting.audiences, &overlay.identity_audiences);
+            crate::oidc::mappers::widen(&mut minting.audiences, &overlay.identity_audiences);
             // Carried, not resolved again. A nonce belongs to the authentication
             // that asked for it and means nothing on a renewal, so it is the one
             // claim deliberately dropped.
@@ -1571,7 +1585,7 @@ pub async fn refresh_token(
                 }
             }
             minting.extra.extend(asked_of_person.clone());
-            crate::mappers::fill(&mut minting.extra, overlay.identity.clone());
+            crate::oidc::mappers::fill(&mut minting.extra, overlay.identity.clone());
             mint_token(signing.provider, &identity_key, minting)
         })
         .transpose()
@@ -1583,7 +1597,7 @@ pub async fn refresh_token(
         expires_in: lifespan.num_seconds(),
         scope,
         id_token: id_token
-            .map(|minted| crate::encryption::identity_for(client, minted.token))
+            .map(|minted| crate::oidc::encryption::identity_for(client, minted.token))
             .transpose()
             .map_err(|_| Ungranted::Unmintable)?,
         // Absent when the realm does not rotate, which RFC 6749 5.1 reads as
@@ -1656,7 +1670,7 @@ pub async fn token_exchange(
     within: &Within<'_>,
     client: &ClientModel,
     exchanging: &Exchanging<'_>,
-    journal: Option<&crate::pdp::Journal>,
+    journal: Option<&crate::authorization::pdp::Journal>,
     now: DateTime<Utc>,
 ) -> Result<Granted, Ungranted> {
     // A public client cannot exchange, and a confidential one may only when
@@ -1706,9 +1720,10 @@ pub async fn token_exchange(
             .map_err(|_| Ungranted::Unreadable)?,
         None => None,
     };
-    let account = crate::pairwise::account_for(transaction, presenting.as_ref(), &verified.subject)
-        .await
-        .map_err(|_| Ungranted::InvalidGrant)?;
+    let account =
+        crate::oidc::pairwise::account_for(transaction, presenting.as_ref(), &verified.subject)
+            .await
+            .map_err(|_| Ungranted::InvalidGrant)?;
     users::load(transaction, &account)
         .await
         .map_err(|_| Ungranted::Unreadable)?
@@ -1820,12 +1835,12 @@ pub async fn token_exchange(
             .fill(&mut decision_id)
             .map_err(|_| Ungranted::Unmintable)?;
         let decision_id = data_encoding::HEXLOWER.encode(&decision_id);
-        let answer = crate::pdp::decide(
+        let answer = crate::authorization::pdp::decide(
             transaction,
             journal,
             &asked,
-            crate::pdp::Question {
-                resource: crate::pdp::Resource::Permission {
+            crate::authorization::pdp::Question {
+                resource: crate::authorization::pdp::Resource::Permission {
                     server_id: &server,
                     resource: &resource,
                     scope: &scope,
@@ -1849,7 +1864,7 @@ pub async fn token_exchange(
     // Nothing asked, nothing carried: each link names what it needs, out
     // loud, where the journal sees it. Anything asked past the root refuses
     // the exchange whole, with the same face as not being allowed at all.
-    let inherited = crate::capability::carried(&verified.claims);
+    let inherited = crate::authorization::capability::carried(&verified.claims);
     let capability = match exchanging
         .capabilities
         .map(str::trim)
@@ -1873,7 +1888,10 @@ pub async fn token_exchange(
                     .map(|held| held.split_whitespace().map(str::to_owned).collect())
                     .ok_or(Ungranted::Unauthorized)?,
             };
-            Some(crate::capability::narrowed(&root, asked).map_err(|_| Ungranted::Unauthorized)?)
+            Some(
+                crate::authorization::capability::narrowed(&root, asked)
+                    .map_err(|_| Ungranted::Unauthorized)?,
+            )
         }
     };
 
@@ -1943,7 +1961,7 @@ pub async fn token_exchange(
     let consumer = store::providers::clients::load(transaction, &audience)
         .await
         .map_err(|_| Ungranted::Unreadable)?;
-    let spoken = crate::pairwise::subject_for(
+    let spoken = crate::oidc::pairwise::subject_for(
         transaction,
         signing.provider,
         consumer.as_ref().unwrap_or(client),

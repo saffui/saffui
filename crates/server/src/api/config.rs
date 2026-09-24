@@ -24,7 +24,7 @@ use crate::middleware::account_guard::AccountGuard;
 use crate::middleware::admin_guard::Guard;
 use crate::middleware::admin_policy::AdminPolicy;
 use crate::middleware::caller::Caller;
-use services::pdp::Journal;
+use services::authorization::pdp::Journal;
 
 /// How much JSON an authenticated caller may send.
 ///

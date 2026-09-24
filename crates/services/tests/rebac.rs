@@ -1,7 +1,9 @@
 mod support;
 
 use authz::rebac::{CompiledSchema, compile, parse};
-use services::rebac::{Budget, CHECK, Object, Step, Subject, Unwalkable, check, explain};
+use services::authorization::rebac::{
+    Budget, CHECK, Object, Step, Subject, Unwalkable, check, explain,
+};
 use store::providers::rebac;
 use store::tenancy::{TenantContext, UnitOfWork};
 use support::Fixture;
@@ -515,7 +517,7 @@ async fn a_node_reached_by_several_paths_is_walked_once() {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn an_edge_the_schema_does_not_describe_is_refused_at_the_door() {
-    use services::rebac::{Unwritable, relate as write};
+    use services::authorization::rebac::{Unwritable, relate as write};
 
     let fixture = Fixture::with_user().await;
     let transaction = fixture.scoped(&tenant()).await;
@@ -652,7 +654,7 @@ async fn an_edge_the_schema_no_longer_describes_can_still_be_taken_back() {
     .await;
 
     assert!(
-        services::rebac::unrelate(
+        services::authorization::rebac::unrelate(
             &transaction,
             "document",
             "doc",
@@ -672,7 +674,7 @@ async fn an_edge_the_schema_no_longer_describes_can_still_be_taken_back() {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_published_schema_is_the_compilation_of_its_own_source() {
-    use services::rebac::{Unpublishable, publish};
+    use services::authorization::rebac::{Unpublishable, publish};
 
     let fixture = Fixture::with_user().await;
     let transaction = fixture.scoped(&tenant()).await;

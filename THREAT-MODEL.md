@@ -134,7 +134,7 @@ Nothing the caller writes is authority. The clearest statement of it is the
 account plane, which admits a token only if the account console itself obtained
 it, for a login that is still open, carrying the account scope, and then reads
 the person off that login rather than off the subject the token names
-(`crates/services/src/account_api.rs:81`, `:106`, `:125`, `:144`).
+(`crates/services/src/account/api.rs:81`, `:106`, `:125`, `:144`).
 
 The sign in door keeps the same rule about what the caller writes. It takes two
 shapes of body: the script sends JSON, which a browser will not post to another
@@ -247,7 +247,7 @@ answers it, or the word that says nothing does.
 |---|---|---|---|
 | T-LOG-1 | A form posted from another site, riding the browser's cookie, answering somebody's sign in or their consent | TA-1 | The form carries a value sealed for that login, weighed before the flow runs, so a forged form spends nothing, not even one password attempt against an account (`crates/server/src/api/rest/endpoints/protocol/login.rs:237`, `crates/server/src/api/rest/endpoints/protocol/forgery.rs:35`) |
 | T-LOG-2 | The same, from a browser that says where the post came from | TA-1 | Refused before anything else where the browser says another site started it; absent, the header says nothing and the sealed value is the barrier (`crates/server/src/api/rest/endpoints/protocol/login.rs:113`, `forgery.rs:58`) |
-| T-LOG-3 | A password tried against one account as fast as the caller likes, or one password tried against many accounts | TA-1 | Failures counted per address, and per address with the typed name, on every door that verifies a password, on in a stock realm and weighed before the name is looked up, so an address turned away costs one read and no hash (`crates/auth/src/login/browser.rs:160`, `crates/ldapfront/src/lib.rs:279`, `crates/services/src/account.rs:75`); an IPv6 network of 64 bits is one address (`crates/auth/src/login/throttle.rs:145`); lockout per person where the realm turns it on. See R-2 |
+| T-LOG-3 | A password tried against one account as fast as the caller likes, or one password tried against many accounts | TA-1 | Failures counted per address, and per address with the typed name, on every door that verifies a password, on in a stock realm and weighed before the name is looked up, so an address turned away costs one read and no hash (`crates/auth/src/login/browser.rs:160`, `crates/ldapfront/src/lib.rs:279`, `crates/services/src/account/mod.rs:83`); an IPv6 network of 64 bits is one address (`crates/auth/src/login/throttle.rs:145`); lockout per person where the realm turns it on. See R-2 |
 | T-LOG-5 | Which names are held, read from when the count turns an address away | TA-1 | Every refusal counts, a name nobody holds and a person the lock refused alike, under the name as typed with case and spacing aside, never under the account it resolves to (`crates/auth/src/login/throttle.rs:9`, `crates/auth/src/login/browser.rs:272`, `crates/ldapfront/src/lib.rs:311`) |
 | T-LOG-4 | A sign-out believed done while the login, and every application it reached, stays signed in for whoever sits down next | TA-1 | A sign-out that could not be written says so and keeps the cookies, so it can be tried again (`crates/server/src/api/rest/endpoints/protocol/logout.rs:197`), and a transaction a failed statement aborted is refused at commit rather than reported as written (`crates/store/src/tenancy.rs:344`) |
 
@@ -255,15 +255,15 @@ answers it, or the word that says nothing does.
 
 | Id | Threat | Agent | What answers it |
 |---|---|---|---|
-| T-TOK-1 | A stolen code spent by another client, or against another redirect | TA-1, TA-4 | The code carries the client and the redirect it was minted for, compared at redemption (`crates/services/src/grant.rs:426`, `:431`) |
-| T-TOK-2 | A code spent twice | TA-1 | One atomic spend (`crates/store/src/providers/oidc.rs:77`); a replay revokes every token that code bought and closes the client session (`crates/services/src/grant.rs:405`) |
-| T-TOK-3 | A public client's code intercepted in the browser | TA-1 | A challenge is required of a public client, S256 only (`crates/services/src/authorize.rs:768`, `:771`) |
-| T-TOK-4 | The proof key stripped in flight | TA-1 | A verifier presented for a code carrying no challenge is refused whoever the client is (`crates/services/src/grant.rs:657`) |
-| T-TOK-5 | A refresh token stolen and renewed | TA-1, TA-4 | Rotation by default, compared and rotated in one write, and a replay closes the family while leaving the sign in alive (`crates/services/src/grant.rs:1449`, `crates/store/src/providers/sessions.rs:510`, `crates/services/src/grant.rs:1503`) |
+| T-TOK-1 | A stolen code spent by another client, or against another redirect | TA-1, TA-4 | The code carries the client and the redirect it was minted for, compared at redemption (`crates/services/src/oidc/grant.rs:432`, `:437`) |
+| T-TOK-2 | A code spent twice | TA-1 | One atomic spend (`crates/store/src/providers/oidc.rs:77`); a replay revokes every token that code bought and closes the client session (`crates/services/src/oidc/grant.rs:411`) |
+| T-TOK-3 | A public client's code intercepted in the browser | TA-1 | A challenge is required of a public client, S256 only (`crates/services/src/oidc/authorize.rs:768`, `:771`) |
+| T-TOK-4 | The proof key stripped in flight | TA-1 | A verifier presented for a code carrying no challenge is refused whoever the client is (`crates/services/src/oidc/grant.rs:668`) |
+| T-TOK-5 | A refresh token stolen and renewed | TA-1, TA-4 | Rotation by default, compared and rotated in one write, and a replay closes the family while leaving the sign in alive (`crates/services/src/oidc/grant.rs:1463`, `crates/store/src/providers/sessions.rs:510`, `crates/services/src/oidc/grant.rs:1517`) |
 | T-TOK-6 | A bearer token replayed by whoever holds it | TA-1 | Binding compared at presentation and at renewal, and a token naming two bindings satisfies both (`crates/services/src/token/mod.rs:200`) |
 | T-TOK-7 | Algorithm confusion, or an unsecured token | TA-4 | No unsecured variant exists to select, and the verifying algorithm comes from the stored key rather than the token's header (`crates/services/src/token/mod.rs:100`) |
-| T-TOK-8 | A public client acting as a machine | TA-4 | Refused, with the same face as a client that never opted in (`crates/services/src/grant.rs:191`) |
-| T-TOK-9 | Delegation grown wider or deeper than it was given | TA-4 | Scope intersected and never widened, a ceiling of five links, and a bound token cannot be exchanged (`crates/services/src/grant.rs:1883`, `:1765`, `:1688`) |
+| T-TOK-8 | A public client acting as a machine | TA-4 | Refused, with the same face as a client that never opted in (`crates/services/src/oidc/grant.rs:191`) |
+| T-TOK-9 | Delegation grown wider or deeper than it was given | TA-4 | Scope intersected and never widened, a ceiling of five links, and a bound token cannot be exchanged (`crates/services/src/oidc/grant.rs:1901`, `:1780`, `:1702`) |
 | T-TOK-10 | A revoked authority still spending | TA-2, TA-4 | Realm wide and per client cuts are read at every door that takes a token (`crates/services/src/token/mod.rs:252`, `:265`) |
 
 ### The admin plane, CJ-4

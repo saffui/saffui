@@ -14,7 +14,7 @@ use store::error::StoreError;
 use store::providers::{clients, users};
 use store::tenancy::UnitOfWork;
 
-use crate::capability;
+use crate::authorization::capability;
 
 /// How many tools one root may name. Past this, a root is a directory,
 /// and a directory is what scopes are for.
@@ -93,7 +93,7 @@ pub struct AgentBrief {
 fn brief_of(client: &ClientModel, keyed: bool) -> Option<AgentBrief> {
     let bag = client.configs.as_ref()?;
     let root = bag
-        .get(crate::grant::AGENT_CAPABILITIES)?
+        .get(crate::oidc::grant::AGENT_CAPABILITIES)?
         .as_str()?
         .split_whitespace()
         .map(str::to_owned)
@@ -104,7 +104,7 @@ fn brief_of(client: &ClientModel, keyed: bool) -> Option<AgentBrief> {
         enabled: client.enabled != Some(false),
         capabilities: root,
         session_seconds: bag
-            .get(crate::grant::AGENT_SESSION_SECONDS)
+            .get(crate::oidc::grant::AGENT_SESSION_SECONDS)
             .and_then(AttributeValue::as_str)
             .and_then(|held| held.trim().parse().ok()),
         keyed,
@@ -174,12 +174,12 @@ pub async fn register(
         AttributeValue::Bool(true),
     );
     bag.insert(
-        crate::grant::AGENT_CAPABILITIES.to_owned(),
+        crate::oidc::grant::AGENT_CAPABILITIES.to_owned(),
         AttributeValue::Str(root.join(" ")),
     );
     if let Some(seconds) = session {
         bag.insert(
-            crate::grant::AGENT_SESSION_SECONDS.to_owned(),
+            crate::oidc::grant::AGENT_SESSION_SECONDS.to_owned(),
             AttributeValue::Str(seconds.to_string()),
         );
     }
@@ -306,12 +306,12 @@ pub async fn reshape(
 
     let bag = client.configs.get_or_insert_with(Default::default);
     bag.insert(
-        crate::grant::AGENT_CAPABILITIES.to_owned(),
+        crate::oidc::grant::AGENT_CAPABILITIES.to_owned(),
         AttributeValue::Str(root.join(" ")),
     );
     if let Some(seconds) = session {
         bag.insert(
-            crate::grant::AGENT_SESSION_SECONDS.to_owned(),
+            crate::oidc::grant::AGENT_SESSION_SECONDS.to_owned(),
             AttributeValue::Str(seconds.to_string()),
         );
     }

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use config::serving::Egress;
-use services::logout::Notice;
+use services::oidc::logout::Notice;
 
 use super::hosted::{may_dial, outward_agent};
 

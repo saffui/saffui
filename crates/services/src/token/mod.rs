@@ -160,7 +160,7 @@ pub enum Binding<'a> {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Proofs<'a> {
     /// A proof over a key the caller signed with, RFC 9449.
-    pub key: Option<&'a crate::dpop::Proven>,
+    pub key: Option<&'a crate::client::dpop::Proven>,
     /// The certificate a trusted proxy said this caller presented, RFC 8705,
     /// as its thumbprint.
     pub certificate: Option<&'a str>,
@@ -288,7 +288,7 @@ pub async fn verify_presented(
         let offline = verified
             .scope
             .split_whitespace()
-            .any(|held| held == crate::authorize::OFFLINE_ACCESS);
+            .any(|held| held == crate::oidc::authorize::OFFLINE_ACCESS);
         let live = sessions::load(transaction, session_id)
             .await
             .map_err(|_| Refused::Unestablished)?

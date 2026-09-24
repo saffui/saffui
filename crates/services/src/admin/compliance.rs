@@ -829,19 +829,25 @@ pub async fn assemble_evidence_pack(
         retention: vec![
             (
                 "sign_in_log".to_owned(),
-                format!("{} days", crate::housekeeping::LOGIN_EVENTS_KEPT_DAYS),
+                format!(
+                    "{} days",
+                    crate::realm::housekeeping::LOGIN_EVENTS_KEPT_DAYS
+                ),
             ),
             (
                 "delivery_receipts".to_owned(),
-                format!("{} days", crate::housekeeping::RECEIPTS_KEPT_DAYS),
+                format!("{} days", crate::realm::housekeeping::RECEIPTS_KEPT_DAYS),
             ),
             (
                 "delivered_events".to_owned(),
-                format!("{} days", crate::housekeeping::DELIVERED_EVENTS_KEPT_DAYS),
+                format!(
+                    "{} days",
+                    crate::realm::housekeeping::DELIVERED_EVENTS_KEPT_DAYS
+                ),
             ),
             (
                 "security_notices".to_owned(),
-                format!("{} days", crate::housekeeping::NOTICES_KEPT_DAYS),
+                format!("{} days", crate::realm::housekeeping::NOTICES_KEPT_DAYS),
             ),
         ],
     })

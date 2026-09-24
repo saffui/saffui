@@ -71,8 +71,8 @@ impl Receiver {
                 "endpoint",
                 "audience",
                 "events",
-                crate::outbound::CLEAR_BEARER,
-                crate::outbound::SEALED_BEARER,
+                crate::scim::outbound::CLEAR_BEARER,
+                crate::scim::outbound::SEALED_BEARER,
             ];
             if !KNOWN.contains(&key.as_str()) {
                 return Err(Unusable::Malformed("the bag holds a key no receiver reads"));
@@ -219,16 +219,17 @@ fn translate_credential_type(payload: &Value) -> Value {
 )]
 pub async fn minted_set(
     transaction: &UnitOfWork,
-    signing: &crate::grant::Signing<'_>,
+    signing: &crate::oidc::grant::Signing<'_>,
     issuer: &str,
     receiver: &Receiver,
     event: &store::providers::outbox::OutboxEvent,
     uri: &str,
     body: Value,
     now: DateTime<Utc>,
-) -> Result<crate::token::issuance::Minted, crate::grant::Ungranted> {
+) -> Result<crate::token::issuance::Minted, crate::oidc::grant::Ungranted> {
     let key =
-        crate::grant::preferred_key(transaction, signing, crypto::provider::SignAlg::Rs256).await?;
+        crate::oidc::grant::preferred_key(transaction, signing, crypto::provider::SignAlg::Rs256)
+            .await?;
     let mut extra = serde_json::Map::new();
     extra.insert(
         "sub_id".into(),
@@ -257,7 +258,7 @@ pub async fn minted_set(
             extra,
         },
     )
-    .map_err(|_| crate::grant::Ungranted::Unmintable)
+    .map_err(|_| crate::oidc::grant::Ungranted::Unmintable)
 }
 
 /// The verification Security Event Token for one receiver: minted when an
@@ -266,15 +267,16 @@ pub async fn minted_set(
 /// it speaks about the subscription, named by the receiver's alias.
 pub async fn verification_set(
     transaction: &UnitOfWork,
-    signing: &crate::grant::Signing<'_>,
+    signing: &crate::oidc::grant::Signing<'_>,
     issuer: &str,
     receiver: &Receiver,
     alias: &str,
     state: &str,
     now: DateTime<Utc>,
-) -> Result<crate::token::issuance::Minted, crate::grant::Ungranted> {
+) -> Result<crate::token::issuance::Minted, crate::oidc::grant::Ungranted> {
     let key =
-        crate::grant::preferred_key(transaction, signing, crypto::provider::SignAlg::Rs256).await?;
+        crate::oidc::grant::preferred_key(transaction, signing, crypto::provider::SignAlg::Rs256)
+            .await?;
     let mut extra = serde_json::Map::new();
     extra.insert("sub_id".into(), json!({ "format": "opaque", "id": alias }));
     extra.insert("events".into(), json!({ VERIFICATION: { "state": state } }));
@@ -296,7 +298,7 @@ pub async fn verification_set(
             extra,
         },
     )
-    .map_err(|_| crate::grant::Ungranted::Unmintable)
+    .map_err(|_| crate::oidc::grant::Ungranted::Unmintable)
 }
 
 #[cfg(test)]

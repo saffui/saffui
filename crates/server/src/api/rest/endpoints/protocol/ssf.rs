@@ -57,12 +57,12 @@ pub async fn poll(
     let mut collector = None;
     for row in rows
         .iter()
-        .filter(|row| services::caep::is_receiver(row) && row.enabled != Some(false))
+        .filter(|row| services::messaging::caep::is_receiver(row) && row.enabled != Some(false))
     {
-        let Ok(receiver) = services::caep::Receiver::parse(row) else {
+        let Ok(receiver) = services::messaging::caep::Receiver::parse(row) else {
             continue;
         };
-        if receiver.delivery != services::caep::Delivery::Poll {
+        if receiver.delivery != services::messaging::caep::Delivery::Poll {
             continue;
         }
         if crate::federation::opened_bearer(&transaction, &sealing, &context, row)

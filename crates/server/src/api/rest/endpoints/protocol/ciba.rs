@@ -5,7 +5,7 @@ use config::serving::{Egress, PublicOrigin};
 use models::entities::backchannel::{BackchannelRequestModel, BackchannelState};
 use serde::Deserialize;
 use serde_json::json;
-use services::ciba::{self, Hint};
+use services::oidc::ciba::{self, Hint};
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy, UnitOfWork};
 
@@ -278,7 +278,7 @@ pub async fn open(
             .await
             {
                 Ok(verified) => {
-                    let account = services::pairwise::account_for(
+                    let account = services::oidc::pairwise::account_for(
                         &transaction,
                         Some(&presented),
                         &verified.subject,
@@ -481,7 +481,7 @@ async fn bearer_person(
         None => None,
     };
     let account =
-        services::pairwise::account_for(transaction, presenting.as_ref(), &verified.subject)
+        services::oidc::pairwise::account_for(transaction, presenting.as_ref(), &verified.subject)
             .await
             .map_err(|_| refused())?;
     store::providers::users::load(transaction, &account)

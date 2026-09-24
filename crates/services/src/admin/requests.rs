@@ -74,7 +74,7 @@ pub async fn lodge(
     let rules = sod::rules(transaction)
         .await
         .map_err(|_| Unaskable::Backend)?;
-    let reached = crate::sod::offences(&rules, &would_hold);
+    let reached = crate::governance::sod::offences(&rules, &would_hold);
     if !reached.is_empty() {
         let standing = sod::exceptions_of(transaction, &person.user_id)
             .await
@@ -82,9 +82,9 @@ pub async fn lodge(
         let now = Utc::now();
         if let Some(offence) = reached
             .iter()
-            .find(|offence| !crate::sod::excused(offence, &standing, now))
+            .find(|offence| !crate::governance::sod::excused(offence, &standing, now))
         {
-            return Err(Unaskable::Toxic(crate::sod::words(offence)));
+            return Err(Unaskable::Toxic(crate::governance::sod::words(offence)));
         }
     }
 
@@ -152,10 +152,10 @@ pub async fn approve(
             .await
             .map_err(|_| Unaskable::Backend)?;
     }
-    match crate::sod::weigh(transaction, &asked.user_id).await {
+    match crate::governance::sod::weigh(transaction, &asked.user_id).await {
         Ok(()) => {}
-        Err(crate::sod::Toxic::Refused(said)) => return Err(Unaskable::Toxic(said)),
-        Err(crate::sod::Toxic::Backend) => return Err(Unaskable::Backend),
+        Err(crate::governance::sod::Toxic::Refused(said)) => return Err(Unaskable::Toxic(said)),
+        Err(crate::governance::sod::Toxic::Backend) => return Err(Unaskable::Backend),
     }
 
     requests::load(transaction, request_id)

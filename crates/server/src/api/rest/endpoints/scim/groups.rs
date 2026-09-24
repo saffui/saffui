@@ -426,10 +426,12 @@ async fn weigh_seated(
     let arriving = roles::roles_reached_from(transaction, &carried)
         .await
         .map_err(|_| internal())?;
-    match services::sod::weigh_everyone(transaction, &newcomers, &arriving).await {
+    match services::governance::sod::weigh_everyone(transaction, &newcomers, &arriving).await {
         Ok(()) => Ok(()),
-        Err(services::sod::Toxic::Refused(said)) => Err(refused(&Refusal::invalid(said))),
-        Err(services::sod::Toxic::Backend) => Err(internal()),
+        Err(services::governance::sod::Toxic::Refused(said)) => {
+            Err(refused(&Refusal::invalid(said)))
+        }
+        Err(services::governance::sod::Toxic::Backend) => Err(internal()),
     }
 }
 

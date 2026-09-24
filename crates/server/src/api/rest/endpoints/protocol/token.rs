@@ -2,7 +2,7 @@ use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
 use config::serving::PublicOrigin;
 use services::client::{self, Unauthenticated};
-use services::grant::{self, Granted, Ungranted};
+use services::oidc::grant::{self, Granted, Ungranted};
 use store::error::StoreError;
 use store::keyring;
 use store::tenancy::{RealmNamed, Tenancy};
@@ -68,7 +68,7 @@ pub async fn ask(
     // RFC 7523: the assertion is the whole credential, so this grant turns
     // off before the client-authentication door. Nothing in it is believed
     // until the platform's own keys have spoken.
-    if asked.grant_type.as_deref() == Some(services::workload::GRANT) {
+    if asked.grant_type.as_deref() == Some(services::federation::workload::GRANT) {
         return workload_exchange(
             &request, &tenancy, &sealing, &origin, **egress, &context, &asked, now,
         )
@@ -124,11 +124,11 @@ pub async fn ask(
             let Ok(proof) = proof.to_str() else {
                 return Denied::InvalidDpopProof.answer("the proof could not be read");
             };
-            match services::dpop::proven(
+            match services::client::dpop::proven(
                 &transaction,
                 sealing.provider.as_ref(),
                 proof,
-                services::dpop::Bound {
+                services::client::dpop::Bound {
                     method: "POST",
                     url: &format!(
                         "{}/realms/{}/protocol/openid-connect/token",
@@ -156,8 +156,8 @@ pub async fn ask(
     // FAPI 2.0: a client wearing the profile is held to it wherever tokens
     // are asked for. Provisioned against it, it is refused whole; unable to
     // name a key its tokens will be bound to, it gets none.
-    if services::fapi::is_fapi2(&client) {
-        if services::fapi::conformant(&client).is_err() {
+    if services::oidc::fapi::is_fapi2(&client) {
+        if services::oidc::fapi::conformant(&client).is_err() {
             return Denied::InvalidClient.answer("the client is provisioned against its profile");
         }
         if bound_to.is_none() && certified_by.is_none() {
@@ -368,13 +368,13 @@ pub async fn ask(
                     trace_id: trace.as_deref(),
                 },
                 request
-                    .app_data::<web::Data<services::pdp::Journal>>()
+                    .app_data::<web::Data<services::authorization::pdp::Journal>>()
                     .map(|held| held.get_ref()),
                 now,
             )
             .await
         }
-        services::device::GRANT => {
+        services::oidc::device::GRANT => {
             let Some(device_code) = asked.device_code.as_deref().filter(|it| !it.is_empty()) else {
                 return Denied::InvalidRequest.answer("device_code is required");
             };
@@ -428,7 +428,7 @@ pub async fn ask(
                 }
             }
         }
-        services::ciba::GRANT => {
+        services::oidc::ciba::GRANT => {
             let Some(auth_req_id) = asked.auth_req_id.as_deref().filter(|it| !it.is_empty()) else {
                 return Denied::InvalidRequest.answer("auth_req_id is required");
             };
@@ -578,7 +578,7 @@ async fn workload_exchange(
     let Some(assertion) = asked.assertion.as_deref().filter(|it| !it.is_empty()) else {
         return Denied::InvalidRequest.answer("assertion carries the platform token");
     };
-    let Some(issuer) = services::workload::peeked_issuer(assertion) else {
+    let Some(issuer) = services::federation::workload::peeked_issuer(assertion) else {
         return Denied::InvalidGrant.answer("the grant presented was not honoured");
     };
     let transaction = match tenancy.begin(context).await {
@@ -597,8 +597,10 @@ async fn workload_exchange(
     };
     let trusted = rows
         .iter()
-        .filter(|row| services::workload::is_workload(row) && row.enabled != Some(false))
-        .filter_map(|row| services::workload::Trusted::parse(row).ok())
+        .filter(|row| {
+            services::federation::workload::is_workload(row) && row.enabled != Some(false)
+        })
+        .filter_map(|row| services::federation::workload::Trusted::parse(row).ok())
         .find(|held| held.issuer == issuer);
     let Some(trusted) = trusted else {
         return Denied::InvalidGrant.answer("the grant presented was not honoured");
@@ -610,11 +612,16 @@ async fn workload_exchange(
     let Ok(keys) = serde_json::from_str::<serde_json::Value>(&keys) else {
         return Denied::InvalidGrant.answer("the grant presented was not honoured");
     };
-    let Ok(claims) = services::assertion::read_against(&keys, assertion, &trusted.allowed_algs)
+    let Ok(claims) =
+        services::client::assertion::read_against(&keys, assertion, &trusted.allowed_algs)
     else {
         return Denied::InvalidGrant.answer("the grant presented was not honoured");
     };
-    let subject = match services::workload::asserted_subject(&trusted, &claims, now.timestamp()) {
+    let subject = match services::federation::workload::asserted_subject(
+        &trusted,
+        &claims,
+        now.timestamp(),
+    ) {
         Ok(subject) => subject,
         Err(why) => {
             tracing::debug!(why, "a platform token was refused");
@@ -699,7 +706,7 @@ async fn x509_exchange(
     let carried = request.headers().get(header)?.to_str().ok()?;
     let peer = request.peer_addr().map(|address| address.ip().to_string());
     let carried = proxying.client_certificate(peer.as_deref(), Some(carried))?;
-    let Ok(uris) = services::mtls::san_uris(carried) else {
+    let Ok(uris) = services::client::mtls::san_uris(carried) else {
         return refused();
     };
     if uris.is_empty() {
@@ -719,8 +726,10 @@ async fn x509_exchange(
     };
     let admitted = rows
         .iter()
-        .filter(|row| services::workload::is_workload(row) && row.enabled != Some(false))
-        .filter_map(|row| services::workload::Trusted::parse(row).ok())
+        .filter(|row| {
+            services::federation::workload::is_workload(row) && row.enabled != Some(false)
+        })
+        .filter_map(|row| services::federation::workload::Trusted::parse(row).ok())
         .find_map(|trusted| {
             uris.iter()
                 .find(|uri| trusted.admits(uri))

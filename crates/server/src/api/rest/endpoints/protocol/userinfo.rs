@@ -3,7 +3,7 @@ use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use services::userinfo::{self, Untold};
+use services::oidc::userinfo::{self, Untold};
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
@@ -69,11 +69,11 @@ pub async fn tell(
             let Ok(proof) = proof.to_str() else {
                 return challenged("the proof could not be read");
             };
-            match services::dpop::proven(
+            match services::client::dpop::proven(
                 &transaction,
                 sealing.provider.as_ref(),
                 proof,
-                services::dpop::Bound {
+                services::client::dpop::Bound {
                     method: request.method().as_str(),
                     url: &format!(
                         "{}/realms/{}/protocol/openid-connect/userinfo",
@@ -143,7 +143,7 @@ pub async fn tell(
             else {
                 return faulted();
             };
-            let signing = services::grant::Signing {
+            let signing = services::oidc::grant::Signing {
                 provider: sealing.provider.as_ref(),
                 ring: &ring,
                 envelope: &sealing.envelope,

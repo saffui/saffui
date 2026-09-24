@@ -3,7 +3,7 @@ use actix_web::{HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
 use config::serving::PublicOrigin;
 use secrecy::SecretBox;
-use services::recovery::{self, Unrecoverable};
+use services::account::recovery::{self, Unrecoverable};
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 

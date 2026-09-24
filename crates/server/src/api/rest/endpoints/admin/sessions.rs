@@ -2,7 +2,7 @@ use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use services::admin::sessions::Unreachable;
-use services::agent::read_agent;
+use services::user_agent::read_agent;
 use store::tenancy::{Tenancy, TenantContext};
 
 use super::users::named_user;

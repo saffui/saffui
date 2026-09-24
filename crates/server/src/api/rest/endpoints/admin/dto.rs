@@ -182,17 +182,20 @@ impl From<models::entities::client::ClientModel> for ClientBrief {
             frontchannel_logout_uri: client.frontchannel_logout_uri,
             description: client.description,
             client_uri: client.client_uri,
-            device_grant: services::device::allows_device(&held),
+            device_grant: services::oidc::device::allows_device(&held),
             token_exchange: matches!(
-                bag(&held, services::grant::EXCHANGE_FLAG).as_deref(),
+                bag(&held, services::oidc::grant::EXCHANGE_FLAG).as_deref(),
                 Some("true")
             ),
-            ciba_delivery: match services::ciba::delivery_of(&held) {
-                Some(services::ciba::Delivery::Poll) => "poll".to_owned(),
-                Some(services::ciba::Delivery::Ping { .. }) => "ping".to_owned(),
+            ciba_delivery: match services::oidc::ciba::delivery_of(&held) {
+                Some(services::oidc::ciba::Delivery::Poll) => "poll".to_owned(),
+                Some(services::oidc::ciba::Delivery::Ping { .. }) => "ping".to_owned(),
                 None => "off".to_owned(),
             },
-            ciba_notification_endpoint: bag(&held, services::ciba::NOTIFICATION_ENDPOINT_FLAG),
+            ciba_notification_endpoint: bag(
+                &held,
+                services::oidc::ciba::NOTIFICATION_ENDPOINT_FLAG,
+            ),
             tls_san_dns: bag(&held, "tls.san_dns"),
             tls_san_uri: bag(&held, "tls.san_uri"),
             tls_subject_dn: bag(&held, "tls.subject_dn"),

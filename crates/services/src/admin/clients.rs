@@ -13,7 +13,7 @@ use store::query::list_query::ListQuery;
 use store::tenancy::UnitOfWork;
 use url::Url;
 
-use crate::provisioning::provision_standard_scopes;
+use crate::realm::provisioning::provision_standard_scopes;
 
 /// What a client is registered as.
 #[derive(Debug, Clone, Default)]
@@ -53,7 +53,7 @@ pub struct Spec {
 /// may do.
 #[derive(Debug, Clone, Default)]
 pub struct Gates {
-    /// RFC 8628, read by `services::device::allows_device`.
+    /// RFC 8628, read by `services::oidc::device::allows_device`.
     pub device: Option<bool>,
     /// RFC 8693, read by the exchange grant.
     pub token_exchange: Option<bool>,
@@ -400,7 +400,7 @@ pub async fn update(
         let is_agent = client
             .configs
             .as_ref()
-            .is_some_and(|bag| bag.contains_key(crate::grant::AGENT_CAPABILITIES));
+            .is_some_and(|bag| bag.contains_key(crate::oidc::grant::AGENT_CAPABILITIES));
         if is_agent {
             let kind = if at != 0 {
                 store::providers::outbox::AGENT_REVOKED
@@ -625,31 +625,31 @@ fn apply_gates(client: &mut ClientModel, gates: &Gates) {
         }
     };
     if let Some(on) = gates.device {
-        said(crate::device::GRANT_FLAG, on);
+        said(crate::oidc::device::GRANT_FLAG, on);
     }
     if let Some(on) = gates.token_exchange {
-        said(crate::grant::EXCHANGE_FLAG, on);
+        said(crate::oidc::grant::EXCHANGE_FLAG, on);
     }
     if let Some(mode) = &gates.ciba {
         match mode {
             CibaOptIn::Off => {
-                bag.remove(crate::ciba::DELIVERY_FLAG);
-                bag.remove(crate::ciba::NOTIFICATION_ENDPOINT_FLAG);
+                bag.remove(crate::oidc::ciba::DELIVERY_FLAG);
+                bag.remove(crate::oidc::ciba::NOTIFICATION_ENDPOINT_FLAG);
             }
             CibaOptIn::Poll => {
                 bag.insert(
-                    crate::ciba::DELIVERY_FLAG.to_owned(),
+                    crate::oidc::ciba::DELIVERY_FLAG.to_owned(),
                     AttributeValue::Str("poll".to_owned()),
                 );
-                bag.remove(crate::ciba::NOTIFICATION_ENDPOINT_FLAG);
+                bag.remove(crate::oidc::ciba::NOTIFICATION_ENDPOINT_FLAG);
             }
             CibaOptIn::Ping(endpoint) => {
                 bag.insert(
-                    crate::ciba::DELIVERY_FLAG.to_owned(),
+                    crate::oidc::ciba::DELIVERY_FLAG.to_owned(),
                     AttributeValue::Str("ping".to_owned()),
                 );
                 bag.insert(
-                    crate::ciba::NOTIFICATION_ENDPOINT_FLAG.to_owned(),
+                    crate::oidc::ciba::NOTIFICATION_ENDPOINT_FLAG.to_owned(),
                     AttributeValue::Str(endpoint.clone()),
                 );
             }

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use chrono::Utc;
-use services::housekeeping::{self, Swept};
+use services::realm::housekeeping::{self, Swept};
 use store::tenancy::Tenancy;
 use tokio::task::JoinHandle;
 
@@ -282,7 +282,7 @@ pub async fn sync_every_realm(
             if federation.enabled == Some(false) {
                 continue;
             }
-            let Ok(settings) = services::federation::LdapSettings::parse(federation) else {
+            let Ok(settings) = services::federation::ldap::LdapSettings::parse(federation) else {
                 tracing::warn!(
                     tenant = realm.tenant,
                     realm = realm.realm_id,

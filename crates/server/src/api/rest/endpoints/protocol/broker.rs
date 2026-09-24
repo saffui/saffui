@@ -8,9 +8,9 @@ use data_encoding::BASE64;
 use models::entities::authz::IdentityProviderModel;
 use serde::Deserialize;
 use serde_json::Value;
-use services::brokering::{self, Arrival, Identity, Upstream};
-use services::landing::Landing;
-use services::saml_brokering::{self, SamlUpstream};
+use services::federation::brokering::{self, Arrival, Identity, Upstream};
+use services::federation::saml_brokering::{self, SamlUpstream};
+use services::oidc::landing::Landing;
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy, TenantContext, UnitOfWork};
 
@@ -132,7 +132,7 @@ async fn leave_for_saml(
     else {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };
-    let signing = services::grant::Signing {
+    let signing = services::oidc::grant::Signing {
         provider: sealing.provider.as_ref(),
         ring: &ring,
         envelope: &sealing.envelope,
@@ -489,7 +489,7 @@ pub(crate) async fn admit_arrival(
     let auth::login::browser::Step::Admitted(admitted) = step else {
         return Err(told(StatusCode::BAD_REQUEST, "refused"));
     };
-    let Ok(landed) = services::minting::landed(
+    let Ok(landed) = services::oidc::minting::landed(
         transaction,
         sealing.provider.as_ref(),
         context,
@@ -767,12 +767,12 @@ pub async fn dismiss(
     )
     .await
     .ok();
-    let signing = ring.as_ref().map(|ring| services::grant::Signing {
+    let signing = ring.as_ref().map(|ring| services::oidc::grant::Signing {
         provider: sealing.provider.as_ref(),
         ring,
         envelope: &sealing.envelope,
     });
-    let notices = services::logout::end_brokered_sessions(
+    let notices = services::oidc::logout::end_brokered_sessions(
         &transaction,
         signing.as_ref(),
         &origin.issuer(&context.realm_id),

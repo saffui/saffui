@@ -4,7 +4,7 @@ use commons::error::ErrorCode;
 use commons::http::ApiError;
 use serde::Deserialize;
 use serde_json::json;
-use services::rebac::{Unpublishable, Unwritable};
+use services::authorization::rebac::{Unpublishable, Unwritable};
 use store::tenancy::Tenancy;
 
 use crate::error::refuse_unopened_work;
@@ -53,17 +53,21 @@ pub async fn publish(
         .await
         .map_err(refuse_unopened_work)?;
     let source = body.into_inner().source;
-    services::rebac::publish(&transaction, &source, Some(admin.context.principal.id()))
-        .await
-        .map_err(|why| match why {
-            Unpublishable::Unreadable(said) => {
-                ApiError::with_detail(ErrorCode::ValidationError, said.to_string())
-            }
-            Unpublishable::Faulty(said) => {
-                ApiError::with_detail(ErrorCode::ValidationError, said.to_string())
-            }
-            Unpublishable::Unwritable => internal(),
-        })?;
+    services::authorization::rebac::publish(
+        &transaction,
+        &source,
+        Some(admin.context.principal.id()),
+    )
+    .await
+    .map_err(|why| match why {
+        Unpublishable::Unreadable(said) => {
+            ApiError::with_detail(ErrorCode::ValidationError, said.to_string())
+        }
+        Unpublishable::Faulty(said) => {
+            ApiError::with_detail(ErrorCode::ValidationError, said.to_string())
+        }
+        Unpublishable::Unwritable => internal(),
+    })?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(json!({ "source": source })))
 }
@@ -110,7 +114,7 @@ pub async fn relate(
         .await
         .map_err(refuse_unopened_work)?;
     let edge = body.into_inner();
-    services::rebac::relate(
+    services::authorization::rebac::relate(
         &transaction,
         &edge.object_type,
         &edge.object_id,
@@ -136,7 +140,7 @@ pub async fn unrelate(
         .await
         .map_err(refuse_unopened_work)?;
     let edge = body.into_inner();
-    let stood = services::rebac::unrelate(
+    let stood = services::authorization::rebac::unrelate(
         &transaction,
         &edge.object_type,
         &edge.object_id,

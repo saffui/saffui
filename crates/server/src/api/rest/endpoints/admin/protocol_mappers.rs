@@ -43,10 +43,10 @@ fn switches(keys: &[(&str, bool)]) -> Vec<serde_json::Value> {
 /// is realm scoped, and because what a build runs could one day differ by
 /// realm without every caller having to learn a new address.
 pub async fn kinds() -> Result<HttpResponse, ApiError> {
-    let described: Vec<serde_json::Value> = services::mappers::KNOWN_TYPES
+    let described: Vec<serde_json::Value> = services::oidc::mappers::KNOWN_TYPES
         .iter()
         .filter_map(|kind| {
-            services::mappers::keys_of(kind).map(|keys| {
+            services::oidc::mappers::keys_of(kind).map(|keys| {
                 serde_json::json!({
                     "mapper_type": kind,
                     "allowed": keys.allowed,
@@ -57,9 +57,9 @@ pub async fn kinds() -> Result<HttpResponse, ApiError> {
             })
         })
         .collect();
-    let flags: Vec<(&str, bool)> = services::mappers::TARGET_FLAGS
+    let flags: Vec<(&str, bool)> = services::oidc::mappers::TARGET_FLAGS
         .iter()
-        .map(|flag| (*flag, services::mappers::FLAG_RESTING))
+        .map(|flag| (*flag, services::oidc::mappers::FLAG_RESTING))
         .collect();
     Ok(HttpResponse::Ok().json(serde_json::json!({
         "kinds": described,
@@ -111,7 +111,7 @@ pub async fn preview(
     )
     .await
     .map_err(|_| internal())?;
-    let signing = services::grant::Signing {
+    let signing = services::oidc::grant::Signing {
         provider: sealing.provider.as_ref(),
         ring: &ring,
         envelope: &sealing.envelope,

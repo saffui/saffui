@@ -13,8 +13,8 @@ use crate::account::{
     Unremoved, change_own_password, own_factors, read_sign_in_standing, remove_own_factor,
 };
 use crate::context::minted_at;
-use crate::grant::Signing;
-use crate::logout::{Notice, notice_for_client, notices_for};
+use crate::oidc::grant::Signing;
+use crate::oidc::logout::{Notice, notice_for_client, notices_for};
 use crate::token::Verified;
 
 /// The one client whose tokens reach the account API: the realm's account console.
@@ -209,7 +209,7 @@ pub async fn read_me(
         .await
         .map_err(|_| Unread)?
         .ok_or(Unread)?;
-    let mut claims = crate::userinfo::held_claims(&person);
+    let mut claims = crate::oidc::userinfo::held_claims(&person);
     claims.remove("sub");
     Ok(claims)
 }

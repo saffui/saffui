@@ -12,7 +12,7 @@ use secrecy::ExposeSecret;
 use server::api::config::{Plane, Sealing, observed_with, register, register_ops};
 use server::api::rest::endpoints::ops::health::Vitals;
 use server::middleware::admin_policy::AdminPolicy;
-use services::provisioning;
+use services::realm::provisioning;
 use store::tenancy::{Tenancy, TenantContext};
 use tokio::signal;
 
@@ -781,7 +781,7 @@ async fn provision(wanted: &Wanted) -> Result<(), String> {
         tenant,
         realm,
         &provisioning::AccountConsole {
-            redirect_uris: vec![services::account_api::compose_account_console_redirect(
+            redirect_uris: vec![services::account::api::compose_account_console_redirect(
                 &plane.origin.issuer(realm),
             )],
         },

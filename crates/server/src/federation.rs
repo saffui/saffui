@@ -7,7 +7,7 @@ use auth::login::directory::{Bound, Directory, DirectoryPerson};
 use config::serving::Egress;
 use crypto::secrecy::{ExposeSecret, SecretBox};
 use ldap3::{LdapConnAsync, Scope, SearchEntry};
-use services::federation::LdapSettings;
+use services::federation::ldap::LdapSettings;
 use ureq::unversioned::resolver::DefaultResolver;
 
 /// The realm's directory, answered over LDAP. The one place in the
@@ -214,7 +214,7 @@ pub async fn directory_for(
     sealing: &crate::api::config::Sealing,
     context: &store::tenancy::TenantContext,
     held: &models::entities::brokering::UserFederationModel,
-    settings: services::federation::LdapSettings,
+    settings: services::federation::ldap::LdapSettings,
 ) -> LdapDirectory {
     let bind_password = opened_bind(transaction, sealing, context, held).await;
     LdapDirectory {
@@ -233,7 +233,7 @@ pub async fn opened_bind(
     let sealed = held
         .configs
         .as_ref()?
-        .get(services::federation::SEALED_BIND)?
+        .get(services::federation::ldap::SEALED_BIND)?
         .as_str()?;
     let sealed = BASE64.decode(sealed.as_bytes()).ok()?;
     let ring = store::keyring::load(
@@ -247,7 +247,7 @@ pub async fn opened_bind(
     let mut opened = ring
         .open(
             &sealing.envelope,
-            services::federation::PURPOSE,
+            services::federation::ldap::PURPOSE,
             &held.alias,
             &sealed,
         )
@@ -257,8 +257,8 @@ pub async fn opened_bind(
         opened = ring
             .open(
                 &sealing.envelope,
-                services::federation::PURPOSE,
-                services::federation::LEGACY_SEAL_NAME,
+                services::federation::ldap::PURPOSE,
+                services::federation::ldap::LEGACY_SEAL_NAME,
                 &sealed,
             )
             .await
@@ -530,27 +530,27 @@ pub async fn deliver_outbox(
         .map_err(|_| ())?;
     let connectors: Vec<_> = rows
         .iter()
-        .filter(|row| services::outbound::is_outbound(row) && row.enabled != Some(false))
+        .filter(|row| services::scim::outbound::is_outbound(row) && row.enabled != Some(false))
         .filter_map(|row| {
-            services::outbound::Connector::parse(row)
+            services::scim::outbound::Connector::parse(row)
                 .ok()
                 .map(|connector| (row, connector))
         })
         .collect();
     let receivers: Vec<_> = rows
         .iter()
-        .filter(|row| services::caep::is_receiver(row) && row.enabled != Some(false))
+        .filter(|row| services::messaging::caep::is_receiver(row) && row.enabled != Some(false))
         .filter_map(|row| {
-            services::caep::Receiver::parse(row)
+            services::messaging::caep::Receiver::parse(row)
                 .ok()
                 .map(|receiver| (row, receiver))
         })
         .collect();
     let webhooks: Vec<_> = rows
         .iter()
-        .filter(|row| services::webhook::is_webhook(row) && row.enabled != Some(false))
+        .filter(|row| services::messaging::webhook::is_webhook(row) && row.enabled != Some(false))
         .filter_map(|row| {
-            services::webhook::Webhook::parse(row)
+            services::messaging::webhook::Webhook::parse(row)
                 .ok()
                 .map(|hook| (row, hook))
         })
@@ -576,7 +576,7 @@ pub async fn deliver_outbox(
     for event in due {
         // A change to how someone signs in owes them a notice, settled apart from
         // this telling: noted once, however often the telling is retried.
-        services::notices::note_owed_notice(transaction, &event)
+        services::messaging::notices::note_owed_notice(transaction, &event)
             .await
             .map_err(|_| ())?;
         // The lifecycle converges before anything leaves the house: the
@@ -592,15 +592,17 @@ pub async fn deliver_outbox(
         // Nobody to tell is a telling done, not one to retry forever: with
         // no push attempted, `landed` stays true and the event is put away.
         let mut landed = true;
-        if let Some((uri, body)) = services::caep::security_event(&event.kind, &event.payload) {
+        if let Some((uri, body)) =
+            services::messaging::caep::security_event(&event.kind, &event.payload)
+        {
             for (row, receiver) in &receivers {
                 if !receiver.wants(uri) {
                     continue;
                 }
                 let minted = match &ring {
-                    Some(ring) => services::caep::minted_set(
+                    Some(ring) => services::messaging::caep::minted_set(
                         transaction,
-                        &services::grant::Signing {
+                        &services::oidc::grant::Signing {
                             provider: sealing.provider.as_ref(),
                             ring,
                             envelope: &sealing.envelope,
@@ -622,7 +624,7 @@ pub async fn deliver_outbox(
                 };
                 match receiver.delivery {
                     // A collector's tokens wait here; queueing is delivery.
-                    services::caep::Delivery::Poll => {
+                    services::messaging::caep::Delivery::Poll => {
                         if store::providers::caep_queue::queue(
                             transaction,
                             &row.internal_id,
@@ -636,7 +638,7 @@ pub async fn deliver_outbox(
                             landed = false;
                         }
                     }
-                    services::caep::Delivery::Push => {
+                    services::messaging::caep::Delivery::Push => {
                         let bearer = opened_bearer(transaction, sealing, context, row).await;
                         if !push_set(receiver, bearer.as_deref(), &set.token, egress).await {
                             landed = false;
@@ -675,7 +677,7 @@ pub async fn deliver_outbox(
                 let signed = opened_webhook_secret(transaction, sealing, context, row)
                     .await
                     .and_then(|secret| {
-                        services::webhook::signature(
+                        services::messaging::webhook::signature(
                             sealing.provider.as_ref(),
                             &secret,
                             body.as_bytes(),
@@ -731,7 +733,7 @@ pub(crate) async fn opened_bearer(
     let sealed = provider
         .configs
         .as_ref()?
-        .get(services::outbound::SEALED_BEARER)?
+        .get(services::scim::outbound::SEALED_BEARER)?
         .as_str()?;
     let sealed = BASE64.decode(sealed.as_bytes()).ok()?;
     let ring = store::keyring::load(
@@ -758,7 +760,7 @@ pub(crate) async fn opened_bearer(
 /// side said: signed like any real one, so the consumer's verification is
 /// exercised too.
 async fn ask_webhook(
-    hook: &services::webhook::Webhook,
+    hook: &services::messaging::webhook::Webhook,
     signature: &str,
     body: String,
     egress: Egress,
@@ -817,7 +819,7 @@ pub(crate) async fn opened_webhook_secret(
     let sealed = provider
         .configs
         .as_ref()?
-        .get(services::webhook::SEALED_SECRET)?
+        .get(services::messaging::webhook::SEALED_SECRET)?
         .as_str()?;
     let sealed = BASE64.decode(sealed.as_bytes()).ok()?;
     let ring = store::keyring::load(
@@ -843,7 +845,7 @@ pub(crate) async fn opened_webhook_secret(
 /// One signed telling to one webhook: these exact bytes, their signature,
 /// and the two headers a consumer dedups and routes by.
 pub(crate) async fn push_json(
-    hook: &services::webhook::Webhook,
+    hook: &services::messaging::webhook::Webhook,
     signature: &str,
     kind: &str,
     event_id: i64,
@@ -893,7 +895,7 @@ fn far_side_agent(egress: Egress) -> ureq::Agent {
 /// Hand one Security Event Token to one receiver, RFC 8935: a POST whose
 /// body is the token, acknowledged with a bare success.
 async fn push_set(
-    receiver: &services::caep::Receiver,
+    receiver: &services::messaging::caep::Receiver,
     bearer: Option<&str>,
     set: &str,
     egress: Egress,
@@ -925,7 +927,7 @@ async fn push_set(
 /// person at the far side by our identifier, then create, correct, or
 /// delete. Every path is idempotent, which is what at-least-once needs.
 async fn push_one(
-    connector: &services::outbound::Connector,
+    connector: &services::scim::outbound::Connector,
     bearer: Option<&str>,
     event: &store::providers::outbox::OutboxEvent,
     egress: Egress,
@@ -1041,14 +1043,14 @@ pub async fn prove_delivery(
     if row.enabled == Some(false) {
         return Err(Unprovable::Disabled);
     }
-    if services::outbound::is_outbound(&row) {
-        let connector = services::outbound::Connector::parse(&row)
+    if services::scim::outbound::is_outbound(&row) {
+        let connector = services::scim::outbound::Connector::parse(&row)
             .map_err(|why| Unprovable::NotProvable(why.to_string()))?;
         let bearer = opened_bearer(transaction, sealing, context, &row).await;
         return Ok(ask_scim_root(&connector, bearer.as_deref(), egress).await);
     }
-    if services::webhook::is_webhook(&row) {
-        let hook = services::webhook::Webhook::parse(&row)
+    if services::messaging::webhook::is_webhook(&row) {
+        let hook = services::messaging::webhook::Webhook::parse(&row)
             .map_err(|why| Unprovable::NotProvable(why.to_string()))?;
         let body = serde_json::json!({
             "event_id": 0,
@@ -1062,15 +1064,19 @@ pub async fn prove_delivery(
         let signature = opened_webhook_secret(transaction, sealing, context, &row)
             .await
             .and_then(|secret| {
-                services::webhook::signature(sealing.provider.as_ref(), &secret, body.as_bytes())
+                services::messaging::webhook::signature(
+                    sealing.provider.as_ref(),
+                    &secret,
+                    body.as_bytes(),
+                )
             })
             .ok_or_else(|| {
                 Unprovable::NotProvable("the webhook's secret could not be opened".to_owned())
             })?;
         return Ok(ask_webhook(&hook, &signature, body, egress).await);
     }
-    if services::caep::is_receiver(&row) {
-        let receiver = services::caep::Receiver::parse(&row)
+    if services::messaging::caep::is_receiver(&row) {
+        let receiver = services::messaging::caep::Receiver::parse(&row)
             .map_err(|why| Unprovable::NotProvable(why.to_string()))?;
         let ring = store::keyring::load(
             transaction,
@@ -1087,9 +1093,9 @@ pub async fn prove_delivery(
             .fill(&mut drawn)
             .map_err(|_| Unprovable::Backend)?;
         let state = data_encoding::HEXLOWER.encode(&drawn);
-        let set = services::caep::verification_set(
+        let set = services::messaging::caep::verification_set(
             transaction,
-            &services::grant::Signing {
+            &services::oidc::grant::Signing {
                 provider: sealing.provider.as_ref(),
                 ring: &ring,
                 envelope: &sealing.envelope,
@@ -1105,11 +1111,11 @@ pub async fn prove_delivery(
             Unprovable::NotProvable("the realm holds no key to sign the event".to_owned())
         })?;
         return Ok(match receiver.delivery {
-            services::caep::Delivery::Push => {
+            services::messaging::caep::Delivery::Push => {
                 let bearer = opened_bearer(transaction, sealing, context, &row).await;
                 push_verification(&receiver, bearer.as_deref(), &set.token, egress).await
             }
-            services::caep::Delivery::Poll => {
+            services::messaging::caep::Delivery::Poll => {
                 store::providers::caep_queue::queue(
                     transaction,
                     &row.internal_id,
@@ -1137,7 +1143,7 @@ pub async fn prove_delivery(
 /// ServiceProviderConfig with the bearer attached. Answering 2xx with a
 /// document naming its schemas proves the root and the bearer in one trip.
 async fn ask_scim_root(
-    connector: &services::outbound::Connector,
+    connector: &services::scim::outbound::Connector,
     bearer: Option<&str>,
     egress: Egress,
 ) -> Proof {
@@ -1215,7 +1221,7 @@ async fn ask_scim_root(
 /// the delivery loop's own push only wants a yes or no, an operator wants
 /// the status and the words.
 async fn push_verification(
-    receiver: &services::caep::Receiver,
+    receiver: &services::messaging::caep::Receiver,
     bearer: Option<&str>,
     set: &str,
     egress: Egress,

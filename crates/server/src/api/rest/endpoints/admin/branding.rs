@@ -3,7 +3,7 @@
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
-use services::theme::{Unusable, weigh_logo};
+use services::realm::theme::{Unusable, weigh_logo};
 use store::tenancy::Tenancy;
 
 use crate::api::rest::endpoints::within;

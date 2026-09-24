@@ -160,9 +160,9 @@ fn certificate_names(request: &HttpRequest) -> Option<client::CertificateNames> 
     let peer = request.peer_addr().map(|address| address.ip().to_string());
     let carried = proxying.client_certificate(peer.as_deref(), Some(carried))?;
     Some(client::CertificateNames {
-        dns: services::mtls::san_dns(carried).unwrap_or_default(),
-        uris: services::mtls::san_uris(carried).unwrap_or_default(),
-        subject: services::mtls::subject_dn(carried).ok(),
+        dns: services::client::mtls::san_dns(carried).unwrap_or_default(),
+        uris: services::client::mtls::san_uris(carried).unwrap_or_default(),
+        subject: services::client::mtls::subject_dn(carried).ok(),
     })
 }
 

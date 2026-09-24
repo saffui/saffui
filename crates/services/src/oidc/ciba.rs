@@ -92,7 +92,7 @@ pub fn read_hint_token(
         .jwks
         .as_ref()
         .ok_or(malformed("this client published no keys"))?;
-    let jwk = crate::request_object::key_named(keys, token, algorithm)
+    let jwk = crate::oidc::request_object::key_named(keys, token, algorithm)
         .map_err(|_| malformed("no published key signs this hint"))?;
     let verifier = crate::token::verifier_for(algorithm, &jwk)
         .ok_or(malformed("no published key signs this hint"))?;
@@ -131,7 +131,7 @@ pub fn read_signed_request(
         .jwks
         .as_ref()
         .ok_or(malformed("this client published no keys"))?;
-    let jwk = crate::request_object::key_named(keys, token, algorithm)
+    let jwk = crate::oidc::request_object::key_named(keys, token, algorithm)
         .map_err(|_| malformed("no published key signs this request"))?;
     let verifier = crate::token::verifier_for(algorithm, &jwk)
         .ok_or(malformed("no published key signs this request"))?;

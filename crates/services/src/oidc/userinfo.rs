@@ -63,7 +63,7 @@ impl Answer {
 /// nothing about what it asked for.
 pub async fn told_answer(
     transaction: &UnitOfWork,
-    signing: &crate::grant::Signing<'_>,
+    signing: &crate::oidc::grant::Signing<'_>,
     issuer: &str,
     answer: &Answer,
 ) -> Result<String, Untold> {
@@ -91,7 +91,7 @@ pub async fn told_answer(
     };
     let party = answer.party.as_ref().ok_or(Untold::Unreadable)?;
     let wrapped = answer.signed_with.is_some().then_some("JWT");
-    crate::encryption::sealed_for(party, registration, body.as_bytes(), wrapped)
+    crate::oidc::encryption::sealed_for(party, registration, body.as_bytes(), wrapped)
         .map_err(|_| Untold::Unreadable)
 }
 
@@ -101,7 +101,7 @@ pub async fn told_answer(
 /// neither could be replayed at another client as its own.
 pub async fn signed_answer(
     transaction: &UnitOfWork,
-    signing: &crate::grant::Signing<'_>,
+    signing: &crate::oidc::grant::Signing<'_>,
     issuer: &str,
     answer: &Answer,
 ) -> Result<String, Untold> {
@@ -161,9 +161,10 @@ pub async fn claims_for(
             .map_err(|_| Untold::Unreadable)?,
         None => None,
     };
-    let account = crate::pairwise::account_for(transaction, party.as_ref(), &verified.subject)
-        .await
-        .map_err(|_| Untold::InvalidToken)?;
+    let account =
+        crate::oidc::pairwise::account_for(transaction, party.as_ref(), &verified.subject)
+            .await
+            .map_err(|_| Untold::InvalidToken)?;
     let subject = users::load(transaction, &account)
         .await
         .map_err(|_| Untold::Unreadable)?
@@ -237,15 +238,22 @@ pub async fn claims_for(
     // a registration can rename the account. An `aud` a mapper asked for is
     // dropped here, since a UserInfo answer carries no audience to widen.
     if let Some(client) = party.as_ref() {
-        let resolved =
-            crate::mappers::resolve(transaction, &client.client_id, &account, &verified.scope)
-                .await
-                .map_err(|_| Untold::Unreadable)?;
+        let resolved = crate::oidc::mappers::resolve(
+            transaction,
+            &client.client_id,
+            &account,
+            &verified.scope,
+        )
+        .await
+        .map_err(|_| Untold::Unreadable)?;
         if !resolved.is_empty() {
-            let mut overlay =
-                crate::mappers::evaluate(crate::mappers::Target::UserInfo, &resolved, &subject);
+            let mut overlay = crate::oidc::mappers::evaluate(
+                crate::oidc::mappers::Target::UserInfo,
+                &resolved,
+                &subject,
+            );
             overlay.remove("aud");
-            crate::mappers::fill(&mut claims, overlay);
+            crate::oidc::mappers::fill(&mut claims, overlay);
         }
     }
 
@@ -279,7 +287,7 @@ pub fn claims_of_scope(scope: &str, held: &Map<String, Value>) -> Map<String, Va
 /// holds of this person and of what the client is entitled to be told.
 pub async fn asked_id_token_claims(
     transaction: &UnitOfWork,
-    signing: &crate::grant::Signing<'_>,
+    signing: &crate::oidc::grant::Signing<'_>,
     asked: Option<&Value>,
     client_id: &str,
     user_id: &str,
@@ -489,7 +497,7 @@ mod tests {
 /// What opens a held fetch token: the ring a minting already loaded, or what
 /// loading one takes, paid only by a person who holds a token.
 pub enum TokenOpener<'a> {
-    Loaded(&'a crate::grant::Signing<'a>),
+    Loaded(&'a crate::oidc::grant::Signing<'a>),
     Unloaded {
         envelope: &'a Envelope,
         tenant: &'a TenantContext,

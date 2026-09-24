@@ -1,3 +1,11 @@
+//! What a person does for themselves: their password and factors, their own
+//! console, signing up, recovering, and asking what is held on them.
+
+pub mod api;
+pub mod privacy;
+pub mod recovery;
+pub mod signup;
+
 use auth::login::authenticator::Authenticator;
 use auth::login::{lockout, throttle};
 use auth::password::{self, Compared, Unkept};
@@ -399,7 +407,7 @@ async fn flow_signing_in(
             .await
             .map_err(|_| Unread)?
     {
-        return crate::authorize::browser_flow(transaction, &client)
+        return crate::oidc::authorize::browser_flow(transaction, &client)
             .await
             .map(Some)
             .map_err(|_| Unread);

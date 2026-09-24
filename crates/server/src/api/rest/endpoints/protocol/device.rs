@@ -74,7 +74,7 @@ pub async fn open(
         Err(response) => return response,
     };
 
-    let opened = match services::device::open(
+    let opened = match services::oidc::device::open(
         &transaction,
         sealing.provider.as_ref(),
         &client,
@@ -84,11 +84,11 @@ pub async fn open(
     .await
     {
         Ok(opened) => opened,
-        Err(services::device::Unopened::Unauthorized) => {
+        Err(services::oidc::device::Unopened::Unauthorized) => {
             return Denied::UnauthorizedClient
                 .answer("this client does not sign people in over a device");
         }
-        Err(services::device::Unopened::Unreadable) => {
+        Err(services::oidc::device::Unopened::Unreadable) => {
             return Denied::InvalidRequest.answer("the realm could not be read");
         }
     };
@@ -181,7 +181,7 @@ pub async fn verify(
         Err(StoreError::Unavailable) => return page::notice_unavailable(),
         Err(_) => return sent_back(&back),
     };
-    let auth_session_id = match services::device::begin_verification(
+    let auth_session_id = match services::oidc::device::begin_verification(
         &transaction,
         sealing.provider.as_ref(),
         &context.realm_id,

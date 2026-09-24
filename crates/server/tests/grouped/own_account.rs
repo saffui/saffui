@@ -262,6 +262,56 @@ async fn a_wrong_current_password_counts_and_the_lock_holds() {
     );
 }
 
+/// The change keeps the counts per address every door keeps: a guess the
+/// person's lock refused still counts and is kept, and past the threshold the
+/// address is told to wait in the catalogue's words, the password untouched.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_current_password_guessed_from_one_address_is_turned_away() {
+    let plane = Plane::with_actions(&[AdminAction::AccountWrite]).await;
+    plane.count_logins(2).await;
+    plane
+        .throttle_sources(models::entities::realm::SourceThrottle {
+            throttled: true,
+            max_failures: 100,
+            max_name_failures: 4,
+            window_seconds: 900,
+        })
+        .await;
+    let bearer = plane.token(&support::claims());
+
+    let mut heard = Vec::new();
+    for _ in 0..5 {
+        let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+        let response = test::call_service(
+            &app,
+            test::TestRequest::put()
+                .uri(&own_password())
+                .peer_addr("203.0.113.7:40000".parse().expect("an address"))
+                .insert_header(("authorization", format!("Bearer {bearer}")))
+                .set_json(change("not-the-password-at-all", REPLACEMENT))
+                .to_request(),
+        )
+        .await;
+        let status = response.status().as_u16();
+        let told: Value = test::read_body_json(response).await;
+        heard.push((
+            status,
+            told["error_code"].as_str().unwrap_or_default().to_owned(),
+        ));
+    }
+    let expected = [
+        (422, "user.password.current_mismatch"),
+        (422, "user.password.current_mismatch"),
+        (429, "user.locked_out"),
+        (429, "user.locked_out"),
+        (429, "too_many_requests"),
+    ]
+    .map(|(status, code)| (status, code.to_owned()));
+    assert_eq!(heard, expected);
+    assert!(held_password_is(&plane, support::PASSWORD).await);
+}
+
 /// The realm's policy speaks here as at every other door, and a refused
 /// replacement leaves the password and every login as they were.
 #[tokio::test]

@@ -11,6 +11,7 @@ const HINTS: Record<string, string> = {
   service_unavailable: "toast-hint-service-unavailable",
   "user.password.current_mismatch": "toast-hint-current-password",
   "user.locked_out": "toast-hint-locked-out",
+  too_many_requests: "toast-hint-too-many-requests",
   "user.password.not_held_here": "toast-hint-password-not-held",
   "account.reauthentication_required": "toast-hint-sign-in-again",
   "account.stronger_sign_in_required": "toast-hint-sign-in-stronger",

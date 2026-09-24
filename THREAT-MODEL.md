@@ -56,7 +56,7 @@ which part.
 |---|---|---|
 | A.DATABASE | The deployment connects as `saffui_app` or another role with neither superuser nor `BYPASSRLS`, and no untrusted party holds a database session | CJ-2 entirely: a role that bypasses row level security reads every realm while every policy still reads as if it applied |
 | A.PROXY | Anything terminating TLS in front is named in `SAFFUI_PROXY_PEERS`, and the deployment sets the hop count to match its own chain | The caller's address and the request's scheme become whatever the caller wrote |
-| A.EDGE | The deployment bounds request rates in front of the data plane | T-EDGE-1: nothing inside this product limits how fast anything may be asked of it |
+| A.EDGE | The deployment bounds request rates in front of the data plane | T-EDGE-1: nothing inside this product limits how fast anything may be asked of it, but for passwords failed from one address |
 | A.HOST | The host and the container are not shared with an untrusted tenant, and process memory is not readable by one | TB-3: opened keys live in process memory while a realm is serving |
 | A.KEY-STORE | `SAFFUI_CRYPTO_KEK` resolves to a value held where the deployment keeps its secrets, not in the image or in a repository | CJ-5: the sealed keys open with it |
 | A.CLOCK | Nodes agree on the time to within the shortest lifetime a realm issues | Expiry, `not_before` cuts and step-up freshness all read differently on different nodes |
@@ -222,8 +222,8 @@ hand the same lock to a second writer.
 
 Scheduled work is claimed per realm with a transaction scoped advisory lock, and
 a node that does not get it moves on rather than doing the work twice: sweeping
-(`crates/server/src/jobs.rs:84`), outbox delivery (`:165`), and federation
-refresh (`:263`). Outbox rows are taken with skip locked, so two deliverers take
+(`crates/server/src/jobs.rs:85`), outbox delivery (`:166`), and federation
+refresh (`:264`). Outbox rows are taken with skip locked, so two deliverers take
 different rows rather than the same ones
 (`crates/store/src/providers/outbox.rs:122`).
 
@@ -236,7 +236,7 @@ answers it, or the word that says nothing does.
 
 | Id | Threat | Agent | What answers it |
 |---|---|---|---|
-| T-EDGE-1 | Anything asked as fast as the caller likes: credential stuffing, enumeration by volume, resource exhaustion | TA-1 | **Nothing inside this product.** No rate limiter exists on any port; the code defines a too many requests answer and never returns it (`crates/commons/src/error.rs:51`). A.EDGE is what stands here |
+| T-EDGE-1 | Anything asked as fast as the caller likes: credential stuffing, enumeration by volume, resource exhaustion | TA-1 | **No request rate is bounded inside this product.** Failed passwords are counted per address and turn that address away (T-LOG-3); the catalogue's too many requests answer is returned only to a password change turned away (`crates/commons/src/error.rs:51`, `crates/server/src/api/rest/endpoints/account.rs:195`). Volume from many addresses, and every request that is not a password, is A.EDGE's |
 | T-EDGE-2 | A body large enough to cost the server more than it costs the caller | TA-1 | Ceilings stated per scope rather than inherited (`crates/server/src/api/config.rs:47`) |
 | T-EDGE-3 | A plain request read as a secure one, or a caller's address believed from the caller | TA-1, TA-6 | The scheme and the certificate are read only from a named peer, and a deployment that named none gets nothing rather than everyone's (`crates/config/src/proxying.rs:201`); the address is counted from the right (`:276`) |
 | T-EDGE-4 | The server made to fetch inside its own network on somebody's say so | TA-3, TA-4 | One builder for every outbound call, scheme by policy and address by resolver, no redirect followed (`crates/server/src/api/rest/endpoints/protocol/hosted.rs:101`), including the sinks a client's own registration names (`backchannel.rs:20`, `ciba.rs:734`) |
@@ -247,7 +247,8 @@ answers it, or the word that says nothing does.
 |---|---|---|---|
 | T-LOG-1 | A form posted from another site, riding the browser's cookie, answering somebody's sign in or their consent | TA-1 | The form carries a value sealed for that login, weighed before the flow runs, so a forged form spends nothing, not even one password attempt against an account (`crates/server/src/api/rest/endpoints/protocol/login.rs:237`, `crates/server/src/api/rest/endpoints/protocol/forgery.rs:35`) |
 | T-LOG-2 | The same, from a browser that says where the post came from | TA-1 | Refused before anything else where the browser says another site started it; absent, the header says nothing and the sealed value is the barrier (`crates/server/src/api/rest/endpoints/protocol/login.rs:113`, `forgery.rs:58`) |
-| T-LOG-3 | A password tried against one account as fast as the caller likes | TA-1 | Lockout per person where the realm turns it on, and nothing per address. See R-1 and R-2 |
+| T-LOG-3 | A password tried against one account as fast as the caller likes, or one password tried against many accounts | TA-1 | Failures counted per address, and per address with the typed name, on every door that verifies a password, on in a stock realm and weighed before the name is looked up, so an address turned away costs one read and no hash (`crates/auth/src/login/browser.rs:160`, `crates/ldapfront/src/lib.rs:279`, `crates/services/src/account.rs:75`); an IPv6 network of 64 bits is one address (`crates/auth/src/login/throttle.rs:145`); lockout per person where the realm turns it on. See R-2 |
+| T-LOG-5 | Which names are held, read from when the count turns an address away | TA-1 | Every refusal counts, a name nobody holds and a person the lock refused alike, under the name as typed with case and spacing aside, never under the account it resolves to (`crates/auth/src/login/throttle.rs:9`, `crates/auth/src/login/browser.rs:272`, `crates/ldapfront/src/lib.rs:311`) |
 | T-LOG-4 | A sign-out believed done while the login, and every application it reached, stays signed in for whoever sits down next | TA-1 | A sign-out that could not be written says so and keeps the cookies, so it can be tried again (`crates/server/src/api/rest/endpoints/protocol/logout.rs:197`), and a transaction a failed statement aborted is refused at commit rather than reported as written (`crates/store/src/tenancy.rs:344`) |
 
 ### The token path, CJ-1
@@ -305,7 +306,7 @@ answers it, or the word that says nothing does.
 | Id | Threat | Agent | What answers it |
 |---|---|---|---|
 | T-NOD-1 | Two nodes forking one realm's chain | TA-7 | The append takes the head row for update (`crates/store/migrations/V011__audit_chain.sql:130`) |
-| T-NOD-2 | The same scheduled work done twice, or a message delivered twice | TA-7 | A lock per realm per job, and rows taken with skip locked (`crates/server/src/jobs.rs:84`, `crates/store/src/providers/outbox.rs:122`) |
+| T-NOD-2 | The same scheduled work done twice, or a message delivered twice | TA-7 | A lock per realm per job, and rows taken with skip locked (`crates/server/src/jobs.rs:85`, `crates/store/src/providers/outbox.rs:122`) |
 
 ### The mesh door
 
@@ -368,7 +369,7 @@ tree; none of them is written here as a recipe.
 | Id | Open | Consequence |
 |---|---|---|
 | R-1 | No rate limiting anywhere on the public port | Every volume attack is the deployment's to bound at its edge. A.EDGE |
-| R-2 | Brute force protection is off in a stock realm, and counts per person, never per address | A password tried once against many accounts trips nothing (`crates/models/src/entities/realm.rs:43`) |
+| R-2 | The lockout per person is off in a stock realm, and the count per address sees one address at a time, as the deployment believes it | A password tried once against many accounts from many addresses trips nothing; a deployment that believes a forwarded address from any peer lets a caller name a new one per attempt (T-EDGE-3); people who share one address share its count (`crates/models/src/entities/realm.rs:43`, `:102`) |
 | R-3 | The session identifier minted before authentication becomes the one used after it | Fixation needs a cookie writing position, which the flags and the path narrow, but no rotation stands behind them |
 | R-5 | The stated 8 KiB ceiling on the protocol scope is hung on forms only | A JSON body on that scope falls back to the framework's own default |
 | R-6 | Three endpoints are registered outside every scope | They take neither a scope ceiling nor the transport guard |
@@ -378,6 +379,7 @@ tree; none of them is written here as a recipe.
 | R-10 | Anchoring is an assertion the operator makes | The server publishes nothing itself, so the bound on a rewrite is only as good as where the operator published |
 | R-11 | No release pipeline: no SBOM, no signature, no provenance, no fuzzing, and no lint confining unsafe code | T-SUP-3, and unsafe is confined by convention rather than mechanically |
 | R-12 | No caching tier of any kind | Every decision reaches the database, which is an availability property rather than a secrecy one |
+| R-13 | A typed name is kept as an unkeyed SHA-256 digest for as long as the realm's window reaches (`crates/auth/src/login/throttle.rs:56`, `crates/store/src/providers/source_failures.rs:78`) | Whoever reads that table within the window can test guesses at a password typed into the name box |
 
 R-4 is closed and its number is left where it was rather than reused: a form
 posted to the sign in door now carries what the page it came from was served

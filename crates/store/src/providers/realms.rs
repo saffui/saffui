@@ -16,6 +16,8 @@ const COLUMNS: &str = "tenant, realm_id, name, display_name, enabled, \
                        require_pushed_authorization_requests, \
                        brute_force_protected, max_login_failures, lockout_seconds, \
                        max_lockout_seconds, failure_reset_seconds, \
+                       source_throttled, source_max_failures, source_name_max_failures, \
+                       source_window_seconds, \
                        register_email_as_username, verify_email, \
                        login_with_email_allowed, duplicated_email_allowed, \
                        edit_user_name_allowed, reset_password_allowed, remember_me, \
@@ -187,6 +189,16 @@ pub async fn update(transaction: &UnitOfWork, realm: &RealmModel) -> StoreResult
                 &realm.brute_force.max_lockout_seconds,
             ),
             col("failure_reset_seconds", &realm.brute_force.reset_seconds),
+            col("source_throttled", &realm.source_throttle.throttled),
+            col("source_max_failures", &realm.source_throttle.max_failures),
+            col(
+                "source_name_max_failures",
+                &realm.source_throttle.max_name_failures,
+            ),
+            col(
+                "source_window_seconds",
+                &realm.source_throttle.window_seconds,
+            ),
             col("registration_secret", &realm.registration_secret),
             col(
                 "registration_max_clients",
@@ -292,6 +304,12 @@ fn read(row: Row) -> RealmModel {
             lockout_seconds: row.get("lockout_seconds"),
             max_lockout_seconds: row.get("max_lockout_seconds"),
             reset_seconds: row.get("failure_reset_seconds"),
+        },
+        source_throttle: models::entities::realm::SourceThrottle {
+            throttled: row.get("source_throttled"),
+            max_failures: row.get("source_max_failures"),
+            max_name_failures: row.get("source_name_max_failures"),
+            window_seconds: row.get("source_window_seconds"),
         },
         register_email_as_username: row.get("register_email_as_username"),
         verify_email: row.get("verify_email"),

@@ -478,3 +478,55 @@ async fn a_pass_counts_the_text_counters_and_anchors_of_every_realm() {
         "a realm's text counters or anchors went uncounted: {swept:?}"
     );
 }
+
+/// A minute of failures from an address goes once its realm's own window no
+/// longer reaches it, and not before: twenty minutes is stale under a window
+/// of fifteen and still counted under one of an hour.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_pass_drops_the_minutes_no_window_reaches_any_more() {
+    let plane = Plane::with_actions(&[]).await;
+    plane.plant_realm("second").await;
+    let now = chrono::Utc::now().timestamp();
+    let minute = |ago: i64| (now - ago) - (now - ago).rem_euclid(60);
+    for (realm, window) in [(support::REALM, 900), ("second", 3600)] {
+        let transaction = plane
+            .scoped(&TenantContext::new(support::TENANT, realm))
+            .await;
+        transaction
+            .execute(
+                "UPDATE realms SET source_window_seconds = $1 WHERE realm_id = $2",
+                &[&window, &realm],
+            )
+            .await
+            .expect("the window");
+        for ago in [60, 20 * 60, 2 * 3600] {
+            transaction
+                .execute(
+                    "INSERT INTO source_failures \
+                         (tenant, realm_id, source, named, minute, failures) \
+                     VALUES ($1, $2, '203.0.113.7', '', $3, 1)",
+                    &[&support::TENANT, &realm, &minute(ago)],
+                )
+                .await
+                .expect("a counted minute");
+        }
+        transaction.commit().await.expect("the seed kept");
+    }
+
+    let swept = sweep_every_realm(&plane.tenancy())
+        .await
+        .expect("the realms were listed");
+    assert_eq!(swept.source_failures, 3, "{swept:?}");
+    for (realm, kept) in [(support::REALM, 1), ("second", 2)] {
+        let transaction = plane
+            .scoped(&TenantContext::new(support::TENANT, realm))
+            .await;
+        let left: i64 = transaction
+            .query_one("SELECT COUNT(*) FROM source_failures", &[])
+            .await
+            .expect("the counts")
+            .get(0);
+        assert_eq!(left, kept, "{realm} kept the wrong minutes");
+    }
+}

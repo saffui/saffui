@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
 use store::providers::{
     backchannel, brokering, caep_queue, deliveries, devices, dpop, form_post, login, notices, oidc,
-    one_time_tokens, outbox, page_previews, pushed, replay, saml_brokering, sessions, sms, ussd,
+    one_time_tokens, outbox, page_previews, pushed, replay, saml_brokering, sessions, sms,
+    source_failures, ussd,
 };
 use store::tenancy::UnitOfWork;
 
@@ -35,6 +36,8 @@ pub struct Swept {
     pub logins_in_progress: u64,
     pub one_time_tokens: u64,
     pub sms_counters: u64,
+    /// Minutes of failures from an address that no window reaches any more.
+    pub source_failures: u64,
     pub ussd_anchors: u64,
     pub replayed: u64,
     pub delivery_receipts: u64,
@@ -71,6 +74,7 @@ impl Swept {
             + self.logins_in_progress
             + self.one_time_tokens
             + self.sms_counters
+            + self.source_failures
             + self.ussd_anchors
             + self.replayed
             + self.delivery_receipts
@@ -98,6 +102,7 @@ impl Swept {
         self.logins_in_progress += other.logins_in_progress;
         self.one_time_tokens += other.one_time_tokens;
         self.sms_counters += other.sms_counters;
+        self.source_failures += other.source_failures;
         self.ussd_anchors += other.ussd_anchors;
         self.replayed += other.replayed;
         self.delivery_receipts += other.delivery_receipts;
@@ -146,6 +151,9 @@ pub async fn drop_expired_rows(
             .await
             .map_err(failed)?,
         sms_counters: sms::drop_stale_counters(transaction, now.timestamp())
+            .await
+            .map_err(failed)?,
+        source_failures: source_failures::drop_stale(transaction, now.timestamp())
             .await
             .map_err(failed)?,
         ussd_anchors: ussd::drop_expired_anchors(transaction, now)

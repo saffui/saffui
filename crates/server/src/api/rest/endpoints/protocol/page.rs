@@ -1166,6 +1166,7 @@ mod tests {
             "consent",
             "organization",
             "locked-out",
+            "throttled",
             "refused",
             "admitted",
             "sent_back",

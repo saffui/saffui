@@ -82,7 +82,11 @@ pub async fn change_own_password(
             transaction.commit().await.map_err(|_| internal())?;
             Err(ApiError::new(ErrorCode::CurrentPasswordMismatch))
         }
-        Err(Unchanged::LockedOut) => Err(ApiError::new(ErrorCode::UserLockedOut)),
+        Err(Unchanged::LockedOut) => {
+            transaction.commit().await.map_err(|_| internal())?;
+            Err(ApiError::new(ErrorCode::UserLockedOut))
+        }
+        Err(Unchanged::Throttled { .. }) => Err(ApiError::new(ErrorCode::TooManyRequests)),
         Err(Unchanged::NotHeldHere) => Err(ApiError::new(ErrorCode::PasswordNotHeldHere)),
         Err(Unchanged::Refused(said)) => {
             Err(ApiError::with_detail(ErrorCode::ValidationError, said))

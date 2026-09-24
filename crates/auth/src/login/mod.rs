@@ -4,6 +4,7 @@ pub mod directory;
 pub mod enrolment;
 pub mod lockout;
 pub mod step;
+pub mod throttle;
 
 use chrono::{DateTime, Utc};
 use config::serving::PublicOrigin;

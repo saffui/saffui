@@ -552,6 +552,23 @@ pub async fn answer(
                         Spoken::Form => shown(&page, "locked-out"),
                     }
                 }
+                // The address is what is turned away, so saying so tells the
+                // caller nothing about any account, and when to come back is
+                // the header every client already knows how to wait on.
+                Step::Throttled { until } => {
+                    tracing::warn!(until, "login throttled for its address");
+                    match spoken {
+                        Spoken::Json => {
+                            uncached(&mut HttpResponseBuilder::new(StatusCode::TOO_MANY_REQUESTS))
+                                .insert_header((
+                                    actix_web::http::header::RETRY_AFTER,
+                                    (until - now.timestamp()).max(1).to_string(),
+                                ))
+                                .json(serde_json::json!({ "status": "throttled", "until": until }))
+                        }
+                        Spoken::Form => shown(&page, "throttled"),
+                    }
+                }
                 // Over, and not admitted: the client hears why at its
                 // redirect, and the browser carries it there. The login's
                 // cookie goes; no session replaces it.

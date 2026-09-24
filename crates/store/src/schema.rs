@@ -643,6 +643,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V106__realm_logo.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 107,
+            name: "source_throttle",
+            sql: include_str!("../migrations/V107__source_throttle.sql"),
+            transactional: true,
+        }),
     ]
 }
 

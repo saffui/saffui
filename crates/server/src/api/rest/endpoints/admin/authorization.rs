@@ -865,7 +865,7 @@ pub async fn share(
         &server_id,
         &resource_id,
         &asked.relation,
-        &store::providers::authorization::rebac::Subject {
+        &authz::Subject {
             subject_type: asked.subject_type,
             subject_id: asked.subject_id,
             subject_relation: asked.subject_relation,
@@ -897,7 +897,7 @@ pub async fn unshare(
         &server_id,
         &resource_id,
         &asked.relation,
-        &store::providers::authorization::rebac::Subject {
+        &authz::Subject {
             subject_type: asked.subject_type,
             subject_id: asked.subject_id,
             subject_relation: asked.subject_relation,

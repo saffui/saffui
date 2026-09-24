@@ -45,7 +45,7 @@ fn live_events_replay_limit(asked: &LiveEventsReplayQuery) -> Result<i64, ApiErr
 
 fn to_live_event_summary(
     tenant: &str,
-    event: &store::providers::events::outbox::OutboxEvent,
+    event: &services::messaging::outbox::OutboxEvent,
 ) -> store::live::Told {
     store::live::Told {
         tenant: tenant.to_owned(),

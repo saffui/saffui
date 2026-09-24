@@ -231,6 +231,15 @@ pub enum Unbrokered {
     Backend,
 }
 
+/// Every provider this realm holds, whatever it is for and whether it is on.
+pub async fn read_providers(
+    transaction: &UnitOfWork,
+) -> Result<Vec<IdentityProviderModel>, crate::realm::Unreadable> {
+    brokering::list_providers(transaction)
+        .await
+        .map_err(|_| crate::realm::Unreadable)
+}
+
 pub fn depart(
     provider: &dyn CryptoProvider,
     upstream: &Upstream,

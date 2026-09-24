@@ -145,7 +145,7 @@ form path and on nothing else. Sealed rather than signed: the scope is
 authenticated, so a value minted for another login opens as nothing here, and
 nothing is stored and nothing expires on its own, because it names the login it
 outlives or does not (`crates/server/src/api/rest/endpoints/protocol/forgery.rs:19`,
-`:24`, `crates/server/src/api/rest/endpoints/protocol/page.rs:484`,
+`:24`, `crates/server/src/api/rest/endpoints/protocol/page.rs:434`,
 `crates/server/src/api/rest/endpoints/protocol/ui/login.html:17`).
 
 A realm's word on plain connections is kept here too, and in the order that

@@ -9,6 +9,17 @@ use store::tenancy::UnitOfWork;
 #[error("the draft could not be kept")]
 pub struct Unkept;
 
+/// A draft while it still lives. Nothing once it has expired, or when nobody
+/// kept one under that identifier.
+pub async fn read_page_preview(
+    transaction: &UnitOfWork,
+    preview_id: &str,
+) -> Result<Option<serde_json::Value>, crate::realm::Unreadable> {
+    page_previews::read(transaction, preview_id)
+        .await
+        .map_err(|_| crate::realm::Unreadable)
+}
+
 /// Keep a draft under a drawn identifier until `expires_at`.
 pub async fn keep_page_preview(
     transaction: &UnitOfWork,

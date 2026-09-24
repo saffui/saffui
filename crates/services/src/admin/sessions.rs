@@ -1,5 +1,5 @@
 use models::sessions::records::{ClientSessionModel, UserSessionModel};
-use store::providers::sessions;
+use store::providers::protocol::sessions;
 use store::tenancy::UnitOfWork;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

@@ -208,7 +208,7 @@ async fn counted(plane: &Plane) -> i64 {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
-    store::providers::login::failures(&transaction, support::SUBJECT)
+    store::providers::protocol::login::failures(&transaction, support::SUBJECT)
         .await
         .expect("the failures table")
         .map_or(0, |record| record.num_failures)

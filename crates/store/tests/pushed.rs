@@ -1,6 +1,6 @@
 mod support;
 
-use store::providers::pushed::{self, Pushed};
+use store::providers::protocol::pushed::{self, Pushed};
 use store::tenancy::TenantContext;
 use support::Fixture;
 

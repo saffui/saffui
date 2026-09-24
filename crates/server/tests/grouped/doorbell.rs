@@ -55,7 +55,7 @@ async fn opted_in(plane: &Plane) {
 async fn signed_in_session(plane: &Plane) -> String {
     let transaction = plane.scoped(&within()).await;
     let session_id = "a-browser-session".to_owned();
-    store::providers::sessions::open(
+    store::providers::protocol::sessions::open(
         &transaction,
         &models::sessions::records::UserSessionModel {
             browser_state: None,

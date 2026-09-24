@@ -1,7 +1,7 @@
 mod support;
 
 use models::entities::oidc::AuthorizationCode;
-use store::providers::oidc::{self, Redemption};
+use store::providers::protocol::oidc::{self, Redemption};
 use store::tenancy::TenantContext;
 use support::Fixture;
 

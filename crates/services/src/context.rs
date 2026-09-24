@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use models::entities::user::UserModel;
 use models::sessions::records::UserSessionState;
 use store::providers::directory::{organizations, users};
-use store::providers::sessions;
+use store::providers::protocol::sessions;
 use store::tenancy::{TenantContext, UnitOfWork};
 
 use crate::token::Verified;

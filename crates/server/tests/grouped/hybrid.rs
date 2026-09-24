@@ -394,7 +394,7 @@ async fn what_is_minted_here_is_a_grant_the_login_holds() {
                 support::REALM,
             ))
             .await;
-        let held = store::providers::sessions::clients_of(&transaction, &session_id)
+        let held = store::providers::protocol::sessions::clients_of(&transaction, &session_id)
             .await
             .expect("the clients of this login");
         assert_eq!(

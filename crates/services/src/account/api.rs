@@ -6,7 +6,8 @@ use models::sessions::records::{ClientSessionModel, UserSessionModel, UserSessio
 use secrecy::SecretBox;
 use serde_json::{Map, Value};
 use store::providers::directory::{consents, users};
-use store::providers::{clients, realms, sessions};
+use store::providers::protocol::sessions;
+use store::providers::{clients, realms};
 use store::tenancy::{TenantContext, UnitOfWork};
 
 use crate::account::{

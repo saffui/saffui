@@ -3,7 +3,7 @@ use crypto::provider::{CryptoProvider, HashAlg};
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
 use models::entities::client::ClientModel;
 use serde_json::{Map, Value};
-use store::providers::pushed::{self, Pushed};
+use store::providers::protocol::pushed::{self, Pushed};
 use store::tenancy::UnitOfWork;
 
 /// What every reference this server hands out starts with, §2.2. A value

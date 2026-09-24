@@ -389,7 +389,7 @@ pub async fn open(
     )
     .await;
 
-    let opened = store::providers::backchannel::open(
+    let opened = store::providers::protocol::backchannel::open(
         &transaction,
         sealing.provider.digest(),
         &auth_req_id,
@@ -515,7 +515,7 @@ async fn asking_person(
     };
     let session_id =
         super::binding::read(request, super::binding::SSO_SESSION).ok_or_else(refused)?;
-    let login = store::providers::sessions::load(transaction, &session_id)
+    let login = store::providers::protocol::sessions::load(transaction, &session_id)
         .await
         .map_err(|_| refused())?
         .filter(|held| held.state == models::sessions::records::UserSessionState::LoggedIn)
@@ -563,7 +563,8 @@ pub async fn pending(
         Err(response) => return response,
     };
     let Ok(standing) =
-        store::providers::backchannel::pending_for(&transaction, &person.user_id, now).await
+        store::providers::protocol::backchannel::pending_for(&transaction, &person.user_id, now)
+            .await
     else {
         return told(
             StatusCode::BAD_REQUEST,
@@ -652,7 +653,7 @@ pub async fn decide(
         Ok(person) => person,
         Err(response) => return response,
     };
-    let landed = store::providers::backchannel::decide(
+    let landed = store::providers::protocol::backchannel::decide(
         &transaction,
         &digest,
         &person.user_id,

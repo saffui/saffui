@@ -134,7 +134,7 @@ pub async fn callback(
                 None => end(screen_gone(tongue)),
                 Some((_, digest)) => {
                     let approved = answered == "1";
-                    let Ok(decided) = store::providers::backchannel::decide(
+                    let Ok(decided) = store::providers::protocol::backchannel::decide(
                         &transaction,
                         &digest,
                         &person.user_id,
@@ -168,9 +168,12 @@ pub async fn callback(
             // First visit, or an answer that was neither digit: show the
             // oldest waiting request and anchor it to this session, so the
             // digit that comes back decides the request that was shown.
-            let Ok(waiting) =
-                store::providers::backchannel::pending_for(&transaction, &person.user_id, now)
-                    .await
+            let Ok(waiting) = store::providers::protocol::backchannel::pending_for(
+                &transaction,
+                &person.user_id,
+                now,
+            )
+            .await
             else {
                 return plain(StatusCode::INTERNAL_SERVER_ERROR, "");
             };

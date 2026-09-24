@@ -4,7 +4,7 @@ use data_encoding::HEXLOWER;
 use models::entities::acr::{self, AchievedAuth};
 use models::entities::oidc::AuthorizationCode;
 use serde_json::Value;
-use store::providers::{login, oidc};
+use store::providers::protocol::{login, oidc};
 use store::tenancy::{TenantContext, UnitOfWork};
 
 use crate::oidc::landing::{Landing, ResponseMode};
@@ -267,7 +267,7 @@ pub async fn landed(
     // redeemable goes to this browser; the person is sent to the page that
     // says to go back to their device.
     if let Some(user_code) = noted(notes, "device_user_code") {
-        let approved = store::providers::devices::approve(
+        let approved = store::providers::protocol::devices::approve(
             transaction,
             user_code,
             &admitted.user_id,

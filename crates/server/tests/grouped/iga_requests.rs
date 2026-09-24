@@ -101,7 +101,7 @@ async fn planted_admin(plane: &Plane, named: &str) -> String {
     store::providers::directory::roles::grant_to_user(&transaction, named, "admins")
         .await
         .unwrap();
-    store::providers::sessions::open(
+    store::providers::protocol::sessions::open(
         &transaction,
         &models::sessions::records::UserSessionModel {
             browser_state: None,

@@ -739,7 +739,7 @@ pub async fn dismiss(
 
     // Each token acts once. A replay inside its window is refused with the
     // same face as a bad token, and the memory ages out with the sweep.
-    let remembered = store::providers::replay::remember_once(
+    let remembered = store::providers::protocol::replay::remember_once(
         &transaction,
         sealing.provider.digest(),
         "broker-logout-jti",
@@ -756,9 +756,12 @@ pub async fn dismiss(
         Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
     }
 
-    let Ok(standing) =
-        store::providers::sessions::brokered(&transaction, &alias, &dismissal.external_user_id)
-            .await
+    let Ok(standing) = store::providers::protocol::sessions::brokered(
+        &transaction,
+        &alias,
+        &dismissal.external_user_id,
+    )
+    .await
     else {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };

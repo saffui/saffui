@@ -256,10 +256,10 @@ answers it, or the word that says nothing does.
 | Id | Threat | Agent | What answers it |
 |---|---|---|---|
 | T-TOK-1 | A stolen code spent by another client, or against another redirect | TA-1, TA-4 | The code carries the client and the redirect it was minted for, compared at redemption (`crates/services/src/oidc/grant.rs:432`, `:437`) |
-| T-TOK-2 | A code spent twice | TA-1 | One atomic spend (`crates/store/src/providers/oidc.rs:77`); a replay revokes every token that code bought and closes the client session (`crates/services/src/oidc/grant.rs:411`) |
+| T-TOK-2 | A code spent twice | TA-1 | One atomic spend (`crates/store/src/providers/protocol/oidc.rs:77`); a replay revokes every token that code bought and closes the client session (`crates/services/src/oidc/grant.rs:411`) |
 | T-TOK-3 | A public client's code intercepted in the browser | TA-1 | A challenge is required of a public client, S256 only (`crates/services/src/oidc/authorize.rs:768`, `:771`) |
 | T-TOK-4 | The proof key stripped in flight | TA-1 | A verifier presented for a code carrying no challenge is refused whoever the client is (`crates/services/src/oidc/grant.rs:668`) |
-| T-TOK-5 | A refresh token stolen and renewed | TA-1, TA-4 | Rotation by default, compared and rotated in one write, and a replay closes the family while leaving the sign in alive (`crates/services/src/oidc/grant.rs:1463`, `crates/store/src/providers/sessions.rs:510`, `crates/services/src/oidc/grant.rs:1517`) |
+| T-TOK-5 | A refresh token stolen and renewed | TA-1, TA-4 | Rotation by default, compared and rotated in one write, and a replay closes the family while leaving the sign in alive (`crates/services/src/oidc/grant.rs:1463`, `crates/store/src/providers/protocol/sessions.rs:510`, `crates/services/src/oidc/grant.rs:1517`) |
 | T-TOK-6 | A bearer token replayed by whoever holds it | TA-1 | Binding compared at presentation and at renewal, and a token naming two bindings satisfies both (`crates/services/src/token/mod.rs:200`) |
 | T-TOK-7 | Algorithm confusion, or an unsecured token | TA-4 | No unsecured variant exists to select, and the verifying algorithm comes from the stored key rather than the token's header (`crates/services/src/token/mod.rs:100`) |
 | T-TOK-8 | A public client acting as a machine | TA-4 | Refused, with the same face as a client that never opted in (`crates/services/src/oidc/grant.rs:191`) |
@@ -379,7 +379,7 @@ tree; none of them is written here as a recipe.
 | R-10 | Anchoring is an assertion the operator makes | The server publishes nothing itself, so the bound on a rewrite is only as good as where the operator published |
 | R-11 | No release pipeline: no SBOM, no signature, no provenance, no fuzzing, and no lint confining unsafe code | T-SUP-3, and unsafe is confined by convention rather than mechanically |
 | R-12 | No caching tier of any kind | Every decision reaches the database, which is an availability property rather than a secrecy one |
-| R-13 | A typed name is kept as an unkeyed SHA-256 digest for as long as the realm's window reaches (`crates/auth/src/login/throttle.rs:56`, `crates/store/src/providers/source_failures.rs:78`) | Whoever reads that table within the window can test guesses at a password typed into the name box |
+| R-13 | A typed name is kept as an unkeyed SHA-256 digest for as long as the realm's window reaches (`crates/auth/src/login/throttle.rs:56`, `crates/store/src/providers/protocol/source_failures.rs:78`) | Whoever reads that table within the window can test guesses at a password typed into the name box |
 
 R-4 is closed and its number is left where it was rather than reused: a form
 posted to the sign in door now carries what the page it came from was served

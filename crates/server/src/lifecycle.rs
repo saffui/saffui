@@ -1,7 +1,7 @@
 use models::entities::user::UserModel;
 use store::providers::directory::{roles, users};
 use store::providers::governance::birthright;
-use store::providers::sessions;
+use store::providers::protocol::sessions;
 use store::tenancy::UnitOfWork;
 
 pub struct Converged {

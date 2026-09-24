@@ -2,10 +2,10 @@ use chrono::{DateTime, Utc};
 use store::providers::directory::one_time_tokens;
 use store::providers::events::{caep_queue, deliveries, notices, outbox};
 use store::providers::federation::{brokering, saml_brokering};
-use store::providers::realms::{page_previews, sms, ussd};
-use store::providers::{
+use store::providers::protocol::{
     backchannel, devices, dpop, form_post, login, oidc, pushed, replay, sessions, source_failures,
 };
+use store::providers::realms::{page_previews, sms, ussd};
 use store::tenancy::UnitOfWork;
 
 /// How long the sign-in log looks back. A window, not an archive: long

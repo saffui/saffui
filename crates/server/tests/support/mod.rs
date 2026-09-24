@@ -21,8 +21,9 @@ use pgcore::tls::PgConnector;
 use secrecy::SecretBox;
 use store::keyring;
 use store::providers::directory::{roles, users};
+use store::providers::protocol::sessions;
 use store::providers::realms::{realm_keys, tenants};
-use store::providers::{clients, realms, sessions};
+use store::providers::{clients, realms};
 use store::schema::migrations;
 use store::tenancy::{Tenancy, TenantContext, UnitOfWork};
 use tokio::sync::{Mutex, MutexGuard};
@@ -819,7 +820,7 @@ impl Plane {
             .expect("a digest");
 
         let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
-        store::providers::oidc::mint_code(
+        store::providers::protocol::oidc::mint_code(
             &transaction,
             &models::entities::oidc::AuthorizationCode {
                 code_hash: data_encoding::HEXLOWER.encode(&digest),
@@ -939,7 +940,7 @@ impl Plane {
     #[allow(dead_code, reason = "only the protocol suite asks")]
     pub async fn login_notes(&self, auth_session: &str) -> serde_json::Value {
         let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
-        store::providers::login::resume(&transaction, auth_session)
+        store::providers::protocol::login::resume(&transaction, auth_session)
             .await
             .expect("the auth session table")
             .map(|login| login.notes)
@@ -2527,7 +2528,7 @@ pub async fn granted_scope_of(plane: &Plane, asked: &[(&str, &str)]) -> String {
         .expect("a login was opened");
 
     let transaction = plane.scoped(&TenantContext::new(TENANT, REALM)).await;
-    let login = store::providers::login::resume(&transaction, &binding)
+    let login = store::providers::protocol::login::resume(&transaction, &binding)
         .await
         .expect("the login")
         .expect("a login");

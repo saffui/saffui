@@ -157,7 +157,7 @@ async fn planted_admin_token(plane: &Plane, named: &str) -> String {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    store::providers::sessions::open(
+    store::providers::protocol::sessions::open(
         &transaction,
         &models::sessions::records::UserSessionModel {
             browser_state: None,

@@ -97,7 +97,7 @@ async fn provision_account_console(plane: &Plane) {
 
 async fn prove_sign_in_reaching(plane: &Plane, at: i64, level: i32) {
     let transaction = plane.scoped(&within()).await;
-    store::providers::sessions::record_authentication(
+    store::providers::protocol::sessions::record_authentication(
         &transaction,
         support::SESSION,
         at,
@@ -173,7 +173,7 @@ fn own(leaf: &str) -> String {
 /// A login of the same person on another device.
 async fn open_login_elsewhere(plane: &Plane) {
     let transaction = plane.scoped(&within()).await;
-    store::providers::sessions::open(
+    store::providers::protocol::sessions::open(
         &transaction,
         &UserSessionModel {
             browser_state: None,
@@ -205,7 +205,7 @@ async fn open_login_elsewhere(plane: &Plane) {
 
 async fn login_stands(plane: &Plane, session_id: &str) -> bool {
     let transaction = plane.scoped(&within()).await;
-    store::providers::sessions::load(&transaction, session_id)
+    store::providers::protocol::sessions::load(&transaction, session_id)
         .await
         .expect("the sessions table")
         .is_some()
@@ -837,7 +837,7 @@ async fn open_login(
     user_agent: Option<&str>,
 ) {
     let transaction = plane.scoped(&within()).await;
-    store::providers::sessions::open(
+    store::providers::protocol::sessions::open(
         &transaction,
         &UserSessionModel {
             browser_state: None,
@@ -876,7 +876,7 @@ async fn plant_grant(
 ) {
     let now = chrono::Utc::now().timestamp();
     let transaction = plane.scoped(&within()).await;
-    store::providers::sessions::open_client_session(
+    store::providers::protocol::sessions::open_client_session(
         &transaction,
         &models::sessions::records::ClientSessionModel {
             tenant: support::TENANT.into(),
@@ -903,7 +903,7 @@ async fn plant_grant(
 
 async fn grants_of(plane: &Plane, session_id: &str) -> Vec<String> {
     let transaction = plane.scoped(&within()).await;
-    store::providers::sessions::client_sessions_of(&transaction, session_id)
+    store::providers::protocol::sessions::client_sessions_of(&transaction, session_id)
         .await
         .expect("the client sessions table")
         .into_iter()

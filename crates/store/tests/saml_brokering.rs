@@ -4,7 +4,7 @@ use chrono::{DateTime, Duration, Utc};
 use models::entities::brokering::{SamlBrokerSession, SamlLoginRequest, SamlLogoutRequest};
 use models::sessions::records::{UserSessionModel, UserSessionState};
 use store::providers::federation::saml_brokering;
-use store::providers::sessions;
+use store::providers::protocol::sessions;
 use store::tenancy::TenantContext;
 use support::Fixture;
 

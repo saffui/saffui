@@ -2,7 +2,8 @@ use chrono::{DateTime, Utc};
 use models::entities::keys::RealmSigningKeyView;
 use models::sessions::records::UserSessionState;
 use serde_json::Value;
-use store::providers::{clients, sessions};
+use store::providers::clients;
+use store::providers::protocol::sessions;
 use store::tenancy::UnitOfWork;
 
 use crate::token;

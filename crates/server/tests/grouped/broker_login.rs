@@ -700,7 +700,7 @@ async fn an_upstream_logout_reaches_down() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::sessions::brokered(&transaction, ALIAS, support::SUBJECT)
+        store::providers::protocol::sessions::brokered(&transaction, ALIAS, support::SUBJECT)
             .await
             .unwrap()
     }

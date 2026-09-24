@@ -5,7 +5,7 @@ use crypto::provider::{CryptoProvider, HashAlg, SignAlg};
 use crypto::thumbprint::jwk_sha256_thumbprint;
 use data_encoding::BASE64URL_NOPAD;
 use serde_json::Value;
-use store::providers::dpop;
+use store::providers::protocol::dpop;
 use store::tenancy::UnitOfWork;
 
 use crate::token::verifier_for;

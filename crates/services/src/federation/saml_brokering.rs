@@ -26,8 +26,8 @@ use saml::redirect::{Carried, decode_query, encode_query};
 use saml::response::{Accepted, Expected, Refused, accept_response, read_answered_request_id};
 use saml::xml::{Limits, read_message};
 use serde_json::{Map, Value};
+use store::providers::protocol::replay;
 use store::providers::realms::realm_keys;
-use store::providers::replay;
 use store::tenancy::UnitOfWork;
 
 use crate::federation::brokering::{Arrival, STATE_LIFESPAN, Unbrokered, text};

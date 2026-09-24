@@ -437,7 +437,7 @@ async fn a_token_whose_identifier_was_revoked_is_refused() {
     );
 
     let transaction = plane.scoped(&TenantContext::new("acme", REALM)).await;
-    store::providers::oidc::revoke(
+    store::providers::protocol::oidc::revoke(
         &transaction,
         "jti-1",
         Utc::now() + chrono::Duration::hours(1),

@@ -8,7 +8,7 @@ use services::authorization::pdp::{Journal, Question, Resource, decide};
 use services::context::{Context, establish};
 use services::token::Verified;
 use store::providers::authorization::authz_policies;
-use store::providers::sessions;
+use store::providers::protocol::sessions;
 use store::tenancy::{TenantContext, UnitOfWork};
 use support::Fixture;
 

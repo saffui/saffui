@@ -68,7 +68,7 @@ async fn log_out(plane: &Plane) {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
-    let ended = store::providers::sessions::set_state(
+    let ended = store::providers::protocol::sessions::set_state(
         &transaction,
         support::SESSION,
         UserSessionState::LoggedOut,
@@ -610,7 +610,7 @@ async fn offline_grant_ids(plane: &Plane) -> Vec<String> {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
-    store::providers::sessions::offline_grants_of(
+    store::providers::protocol::sessions::offline_grants_of(
         &transaction,
         support::SUBJECT,
         chrono::Utc::now().timestamp(),
@@ -705,7 +705,7 @@ async fn plant_older_grant(plane: &Plane, session_id: &str, client_id: &str) {
         .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     let now = chrono::Utc::now().timestamp();
-    store::providers::sessions::open_client_session(
+    store::providers::protocol::sessions::open_client_session(
         &transaction,
         &models::sessions::records::ClientSessionModel {
             tenant: support::TENANT.to_owned(),

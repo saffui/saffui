@@ -70,7 +70,7 @@ fn change(current: &str, replacement: &str) -> Value {
 /// A login of the same person on another device.
 async fn open_login_elsewhere(plane: &Plane) {
     let transaction = plane.scoped(&within()).await;
-    store::providers::sessions::open(
+    store::providers::protocol::sessions::open(
         &transaction,
         &UserSessionModel {
             browser_state: None,
@@ -102,7 +102,7 @@ async fn open_login_elsewhere(plane: &Plane) {
 
 async fn login_stands(plane: &Plane, session_id: &str) -> bool {
     let transaction = plane.scoped(&within()).await;
-    store::providers::sessions::load(&transaction, session_id)
+    store::providers::protocol::sessions::load(&transaction, session_id)
         .await
         .expect("the sessions table")
         .is_some()
@@ -451,7 +451,7 @@ async fn prove_sign_in_at(plane: &Plane, at: i64) {
 
 async fn prove_sign_in_reaching(plane: &Plane, at: i64, level: i32) {
     let transaction = plane.scoped(&within()).await;
-    store::providers::sessions::record_authentication(
+    store::providers::protocol::sessions::record_authentication(
         &transaction,
         support::SESSION,
         at,

@@ -38,7 +38,7 @@ pub async fn read(
     let clients = store::providers::clients::count(&transaction)
         .await
         .map_err(|_| internal())?;
-    let sessions = store::providers::sessions::count_standing(&transaction)
+    let sessions = store::providers::protocol::sessions::count_standing(&transaction)
         .await
         .map_err(|_| internal())?;
     let requests = store::providers::governance::requests::count_pending(&transaction)

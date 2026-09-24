@@ -7,7 +7,7 @@ use models::sessions::login_failure::UserLoginFailure;
 use secrecy::SecretBox;
 use store::error::StoreError;
 use store::providers::directory::users;
-use store::providers::login;
+use store::providers::protocol::login;
 use store::providers::realms::auth_flows;
 use store::query::list_query::ListQuery;
 use store::tenancy::UnitOfWork;

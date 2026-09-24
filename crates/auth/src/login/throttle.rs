@@ -17,7 +17,7 @@ use chrono::{DateTime, Utc};
 use crypto::provider::{CryptoProvider, HashAlg};
 use data_encoding::HEXLOWER;
 use models::entities::realm::{RealmModel, SourceThrottle};
-use store::providers::source_failures::{self, Counted, MINUTE};
+use store::providers::protocol::source_failures::{self, Counted, MINUTE};
 use store::tenancy::UnitOfWork;
 
 /// The address's own count, as opposed to one of a name typed from it.

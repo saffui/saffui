@@ -457,7 +457,8 @@ async fn read_live_login(
     let Ok(transaction) = tenancy.begin(&context).await else {
         return LiveLogin::default();
     };
-    let Ok(Some(login)) = store::providers::login::resume(&transaction, &binding).await else {
+    let Ok(Some(login)) = store::providers::protocol::login::resume(&transaction, &binding).await
+    else {
         return LiveLogin::default();
     };
     let ui_locales = login
@@ -643,7 +644,8 @@ pub async fn style(
             dressed = Some(sheet.clone());
         }
         if let Some(binding) = super::binding::read(&request, super::binding::AUTH_SESSION)
-            && let Ok(Some(login)) = store::providers::login::resume(&transaction, &binding).await
+            && let Ok(Some(login)) =
+                store::providers::protocol::login::resume(&transaction, &binding).await
             && let Some(slug) = login
                 .notes
                 .get("organization")

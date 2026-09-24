@@ -162,10 +162,10 @@ pub async fn fulfil_erasure(
     let outcome = match subject {
         None => "no account was held for the identifier; there was nothing to erase".to_owned(),
         Some(user_id) => {
-            store::providers::backchannel::erase_for_user(transaction, &user_id)
+            store::providers::protocol::backchannel::erase_for_user(transaction, &user_id)
                 .await
                 .map_err(|_| Unactionable::Backend)?;
-            store::providers::devices::erase_for_user(transaction, &user_id)
+            store::providers::protocol::devices::erase_for_user(transaction, &user_id)
                 .await
                 .map_err(|_| Unactionable::Backend)?;
             store::providers::events::outbox::erase_pending_for_user(transaction, &user_id)
@@ -489,7 +489,7 @@ async fn drawn_subject_bundle(
             })
         })
         .collect::<Vec<_>>();
-    let sessions = store::providers::sessions::load_for_user(transaction, user_id)
+    let sessions = store::providers::protocol::sessions::load_for_user(transaction, user_id)
         .await
         .map_err(|_| Unactionable::Backend)?
         .into_iter()

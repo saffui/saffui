@@ -4,8 +4,9 @@ use crypto::provider::CryptoProvider;
 use models::sessions::records::{UserSessionModel, UserSessionState};
 use serde_json::Value;
 use store::providers::directory::users;
-use store::providers::login::AuthSession;
-use store::providers::{login, realms, sessions};
+use store::providers::protocol::login::AuthSession;
+use store::providers::protocol::{login, sessions};
+use store::providers::realms;
 use store::tenancy::{TenantContext, UnitOfWork};
 
 use crate::login::authenticator::Answer;

@@ -362,7 +362,7 @@ async fn an_offline_poll_outlives_its_login() {
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         assert!(
-            store::providers::sessions::set_state(
+            store::providers::protocol::sessions::set_state(
                 &transaction,
                 sid,
                 models::sessions::records::UserSessionState::LoggedOut,
@@ -475,7 +475,7 @@ async fn an_online_poll_renews_past_its_first_window() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::sessions::load_for_user(&transaction, support::SUBJECT)
+        store::providers::protocol::sessions::load_for_user(&transaction, support::SUBJECT)
             .await
             .expect("the session table")
             .into_iter()

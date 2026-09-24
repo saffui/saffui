@@ -6,10 +6,11 @@ use models::entities::client::Protocol;
 use models::entities::keys::RealmSigningKeyView;
 use models::entities::user::{UserModel, address, profile};
 use serde_json::{Map, Value, json};
+use store::providers::clients;
 use store::providers::clients::client_scopes;
 use store::providers::directory::users;
 use store::providers::federation::brokering;
-use store::providers::{clients, sessions};
+use store::providers::protocol::sessions;
 use store::tenancy::{TenantContext, UnitOfWork};
 
 use crate::token;

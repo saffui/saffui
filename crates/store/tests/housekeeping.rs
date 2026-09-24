@@ -1,6 +1,7 @@
 mod support;
 
-use store::providers::{realms, sessions};
+use store::providers::protocol::sessions;
+use store::providers::realms;
 use store::tenancy::TenantContext;
 use support::Fixture;
 

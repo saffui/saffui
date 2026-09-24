@@ -4,7 +4,8 @@ use models::entities::attributes::AttributeValue;
 use models::entities::client::ClientModel;
 use models::entities::device::{DeviceCodeModel, DeviceCodeState};
 use serde_json::json;
-use store::providers::{clients, devices, login};
+use store::providers::clients;
+use store::providers::protocol::{devices, login};
 use store::tenancy::UnitOfWork;
 
 /// RFC 8628 §3.4, the grant a device polls with.

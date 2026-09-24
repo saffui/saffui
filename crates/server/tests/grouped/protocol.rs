@@ -1668,7 +1668,7 @@ async fn login_step_while_another_round_ends_it(
         ))
         .await;
     assert!(
-        store::providers::login::finish(&other_round, auth_session)
+        store::providers::protocol::login::finish(&other_round, auth_session)
             .await
             .expect("the auth session table"),
         "no login was in progress to end"

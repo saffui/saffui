@@ -6,7 +6,7 @@
 use chrono::{DateTime, Utc};
 use models::entities::realm::RealmModel;
 use store::error::StoreResult;
-use store::providers::login as login_store;
+use store::providers::protocol::login as login_store;
 use store::tenancy::UnitOfWork;
 
 /// When this person's lockout ends, or nothing when they are not locked.

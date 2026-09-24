@@ -5,7 +5,7 @@ use crypto::provider::CryptoProvider;
 use models::sessions::records::{ClientSessionModel, UserSessionModel, UserSessionState};
 use store::providers::directory::one_time_tokens::Spent;
 use store::providers::directory::one_time_tokens::{self, Owner};
-use store::providers::sessions::{self, Refreshed};
+use store::providers::protocol::sessions::{self, Refreshed};
 use store::tenancy::TenantContext;
 use support::{Fixture, provider};
 

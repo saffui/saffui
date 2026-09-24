@@ -4,7 +4,7 @@ use models::entities::realm::RealmModel;
 use models::sessions::records::ClientSessionModel;
 use serde_json::{Map, Value};
 use store::providers::directory::users;
-use store::providers::sessions;
+use store::providers::protocol::sessions;
 use store::tenancy::{TenantContext, UnitOfWork};
 
 use crate::oidc::detached::half_hash;

@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use models::entities::authz::IdentityProviderModel;
 use models::entities::credentials::{AuthenticatorAttachment, CredentialChange, CredentialType};
 use serde_json::{Value, json};
+use store::providers::events::caep_queue;
+use store::providers::federation::brokering;
 use store::tenancy::UnitOfWork;
 
 pub const KIND: &str = "caep-push";
@@ -299,6 +301,48 @@ pub async fn verification_set(
         },
     )
     .map_err(|_| crate::oidc::grant::Ungranted::Unmintable)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("the receivers or their queue could not be read or written")]
+pub struct Unqueued;
+
+/// The rows of the receivers that collect from this transmitter, RFC 8936:
+/// switched on, still reading as receivers, and set to poll.
+pub async fn read_collecting_receivers(
+    transaction: &UnitOfWork,
+) -> Result<Vec<IdentityProviderModel>, Unqueued> {
+    Ok(brokering::list_providers(transaction)
+        .await
+        .map_err(|_| Unqueued)?
+        .into_iter()
+        .filter(|row| is_receiver(row) && row.enabled != Some(false))
+        .filter(|row| Receiver::parse(row).is_ok_and(|held| held.delivery == Delivery::Poll))
+        .collect())
+}
+
+/// Let go of what a collector says it is done with.
+pub async fn acknowledge_sets(
+    transaction: &UnitOfWork,
+    receiver_id: &str,
+    jtis: &[String],
+) -> Result<(), Unqueued> {
+    caep_queue::ack(transaction, receiver_id, jtis)
+        .await
+        .map(|_| ())
+        .map_err(|_| Unqueued)
+}
+
+/// What waits for a collector, oldest first and `ceiling` at most, and whether
+/// more stands behind it.
+pub async fn read_waiting_sets(
+    transaction: &UnitOfWork,
+    receiver_id: &str,
+    ceiling: i64,
+) -> Result<(Vec<(String, String)>, bool), Unqueued> {
+    caep_queue::pending(transaction, receiver_id, ceiling)
+        .await
+        .map_err(|_| Unqueued)
 }
 
 #[cfg(test)]

@@ -6,6 +6,8 @@
 
 use models::entities::attributes::{AttributeValue, AttributesMap};
 use models::entities::brokering::RealmSpnegoModel;
+use store::providers::federation::brokering;
+use store::tenancy::UnitOfWork;
 
 /// Why a spnego bag could not be read as a door.
 #[derive(Debug, thiserror::Error)]
@@ -57,6 +59,19 @@ impl SpnegoSettings {
             .next()
             .unwrap_or_default()
     }
+}
+
+/// The door this realm answers, when it answers one. Nothing when it holds
+/// none, switched it off, or could not be read; a door that no longer reads is
+/// nothing too, with a line for the operator.
+pub async fn read_ticket_door(transaction: &UnitOfWork) -> Option<SpnegoSettings> {
+    let door = brokering::spnego(transaction).await.ok()??;
+    if door.enabled == Some(false) {
+        return None;
+    }
+    SpnegoSettings::parse(&door)
+        .inspect_err(|why| tracing::warn!(%why, "the realm's ticket door no longer reads"))
+        .ok()
 }
 
 /// Keep only what a bag may hold, spelled: an unknown key is a typo the

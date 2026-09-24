@@ -67,20 +67,13 @@ pub async fn register(
     };
     // The settings ride sealed; a realm with none simply mails nothing,
     // which the ceremony at first sign-in already knows how to say.
-    let mail = match store::keyring::load(
+    let mail = services::messaging::delivery::read_mail_settings(
         &transaction,
         &sealing.envelope,
         &context.tenant,
         &context.realm_id,
     )
-    .await
-    {
-        Ok(ring) => store::providers::realms::mail::load(&transaction, &ring, &sealing.envelope)
-            .await
-            .ok()
-            .flatten(),
-        Err(_) => None,
-    };
+    .await;
 
     let outcome = signup::register_person(
         &transaction,

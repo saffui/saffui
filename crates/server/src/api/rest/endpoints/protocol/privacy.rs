@@ -86,21 +86,13 @@ pub async fn ask_for_link(
     let Ok(Some(held)) = services::realm::named(&transaction, &context.realm_id).await else {
         return told(StatusCode::INTERNAL_SERVER_ERROR);
     };
-    let ring = store::keyring::load(
+    let settings = services::messaging::delivery::read_mail_settings(
         &transaction,
         &sealing.envelope,
         &context.tenant,
         &context.realm_id,
     )
-    .await
-    .ok();
-    let settings = match ring {
-        Some(ring) => store::providers::realms::mail::load(&transaction, &ring, &sealing.envelope)
-            .await
-            .ok()
-            .flatten(),
-        None => None,
-    };
+    .await;
 
     let outgoing = match privacy::offer_link(
         &transaction,

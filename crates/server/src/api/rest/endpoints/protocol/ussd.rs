@@ -2,6 +2,7 @@ use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::{Duration, Utc};
 use secrecy::ExposeSecret;
+use services::oidc::{ciba, ussd};
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
@@ -65,7 +66,7 @@ pub async fn callback(
     };
     // A realm that closed the bridge answers as one that never named a
     // gateway, which is the same door and the same silence.
-    if !store::providers::realms::realm_features::runs_for_realm(
+    if !services::realm::feature::runs_for_realm(
         &transaction,
         commons::feature::Feature::UssdBridge,
     )
@@ -73,8 +74,7 @@ pub async fn callback(
     {
         return plain(StatusCode::NOT_FOUND, "");
     }
-    let Ok(Some(secret)) =
-        store::providers::realms::ussd::load_secret(&transaction, &ring, &sealing.envelope).await
+    let Ok(Some(secret)) = ussd::read_gateway_secret(&transaction, &ring, &sealing.envelope).await
     else {
         // No gateway named is a door that does not exist.
         return plain(StatusCode::NOT_FOUND, "");
@@ -92,7 +92,7 @@ pub async fn callback(
     ) else {
         return plain(StatusCode::BAD_REQUEST, "");
     };
-    let Ok(Some(realm_row)) = store::providers::realms::of_context(&transaction).await else {
+    let Ok(Some(realm_row)) = services::realm::read_current_realm(&transaction).await else {
         return plain(StatusCode::INTERNAL_SERVER_ERROR, "");
     };
     let tongue = realm_row.default_locale.as_deref().unwrap_or("en");
@@ -100,14 +100,8 @@ pub async fn callback(
     // The number identifies the way it does at the login: proven, and one
     // account's. Anyone else hears an empty doorbell, in those exact bytes.
     let compact: String = phone.chars().filter(|held| !held.is_whitespace()).collect();
-    let person = match store::providers::directory::users::sole_by_proven_phone(
-        &transaction,
-        &compact,
-    )
-    .await
-    {
-        Ok(found) => found.filter(|held| held.enabled),
-        Err(_) => return plain(StatusCode::INTERNAL_SERVER_ERROR, ""),
+    let Ok(person) = ussd::read_dialling_person(&transaction, &compact).await else {
+        return plain(StatusCode::INTERNAL_SERVER_ERROR, "");
     };
 
     // The last thing typed on this session, whatever came before it: a
@@ -125,23 +119,16 @@ pub async fn callback(
     let answer = match (person, answered.as_str()) {
         (None, _) => end(nothing_waiting(tongue)),
         (Some(person), "1" | "2") => {
-            let Ok(anchored) =
-                store::providers::realms::ussd::take_anchor(&transaction, &session_id, now).await
-            else {
+            let Ok(anchored) = ussd::take_anchor(&transaction, &session_id, now).await else {
                 return plain(StatusCode::INTERNAL_SERVER_ERROR, "");
             };
             match anchored.filter(|(user, _)| *user == person.user_id) {
                 None => end(screen_gone(tongue)),
                 Some((_, digest)) => {
                     let approved = answered == "1";
-                    let Ok(decided) = store::providers::protocol::backchannel::decide(
-                        &transaction,
-                        &digest,
-                        &person.user_id,
-                        approved,
-                        now,
-                    )
-                    .await
+                    let Ok(decided) =
+                        ciba::decide_request(&transaction, &digest, &person.user_id, approved, now)
+                            .await
                     else {
                         return plain(StatusCode::INTERNAL_SERVER_ERROR, "");
                     };
@@ -168,19 +155,14 @@ pub async fn callback(
             // First visit, or an answer that was neither digit: show the
             // oldest waiting request and anchor it to this session, so the
             // digit that comes back decides the request that was shown.
-            let Ok(waiting) = store::providers::protocol::backchannel::pending_for(
-                &transaction,
-                &person.user_id,
-                now,
-            )
-            .await
+            let Ok(waiting) = ciba::read_pending_requests(&transaction, &person.user_id, now).await
             else {
                 return plain(StatusCode::INTERNAL_SERVER_ERROR, "");
             };
             match waiting.first() {
                 None => end(nothing_waiting(tongue)),
                 Some((digest, request)) => {
-                    if store::providers::realms::ussd::anchor(
+                    if ussd::anchor_screen(
                         &transaction,
                         &session_id,
                         &person.user_id,

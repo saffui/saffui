@@ -1,7 +1,14 @@
 use chrono::{DateTime, Duration, Utc};
+use crypto::provider::DigestProvider;
 use models::entities::backchannel::{BackchannelRequestModel, BackchannelState};
 use models::entities::client::ClientModel;
+use models::entities::user::UserModel;
+use models::sessions::records::UserSessionState;
 use serde_json::Value;
+use store::providers::clients;
+use store::providers::directory::users;
+use store::providers::protocol::{backchannel, sessions};
+use store::tenancy::UnitOfWork;
 
 pub const GRANT: &str = "urn:openid:params:grant-type:ciba";
 /// The client bag key opting a client in, naming its delivery mode. Poll is
@@ -378,6 +385,165 @@ pub fn shown_pending(digest: &[u8], request: &BackchannelRequestModel) -> Value 
         "binding_message": request.binding_message,
         "expires_at": request.expires_at.timestamp(),
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("the request could not be read or written")]
+pub struct Unrecorded;
+
+/// Who the hint names, among the people who may still sign in. Naming nobody
+/// is an answer; only a hint that cannot be read, or a realm that cannot be,
+/// is refused.
+pub async fn read_hinted_person(
+    transaction: &UnitOfWork,
+    presented: &ClientModel,
+    hint: &Hint,
+    now: DateTime<Utc>,
+) -> Result<Option<UserModel>, Unopened> {
+    let unreadable = || Unopened::invalid("the realm could not be read");
+    match hint {
+        Hint::Named(named) => {
+            let found = if named.contains('@') {
+                users::load_by_email(transaction, named).await
+            } else {
+                users::load_by_name(transaction, named).await
+            };
+            Ok(found.map_err(|_| unreadable())?.filter(|held| held.enabled))
+        }
+        // The client vouched for the hint by signing it; a hint it cannot
+        // sign is a protocol fault, and a verified hint naming nobody is the
+        // same ghost an unknown login_hint opens.
+        Hint::HintToken(token) => {
+            let Some(algorithm) = signing_alg_of(presented) else {
+                return Err(Unopened::invalid(
+                    "this client did not register request signing",
+                ));
+            };
+            let found = match read_hint_token(presented, algorithm, token)? {
+                Hinted::Subject(subject) => users::load(transaction, &subject).await,
+                Hinted::Email(address) => users::load_by_email(transaction, &address).await,
+            };
+            Ok(found.map_err(|_| unreadable())?.filter(|held| held.enabled))
+        }
+        Hint::IdToken(token) => {
+            let keys = crate::realm::published_keys(transaction)
+                .await
+                .map_err(|_| unreadable())?;
+            let Ok(verified) = crate::token::verify_presented(
+                transaction,
+                &keys,
+                token,
+                crate::token::Binding::Reported,
+                now,
+            )
+            .await
+            else {
+                return Err(Unopened::invalid("id_token_hint does not verify"));
+            };
+            let Ok(account) =
+                crate::oidc::pairwise::account_for(transaction, Some(presented), &verified.subject)
+                    .await
+            else {
+                return Ok(None);
+            };
+            Ok(users::load(transaction, &account)
+                .await
+                .ok()
+                .flatten()
+                .filter(|held| held.enabled))
+        }
+    }
+}
+
+/// Open the request under the digest of its identifier; the identifier itself
+/// is never written.
+pub async fn open_request(
+    transaction: &UnitOfWork,
+    digest: &dyn DigestProvider,
+    auth_req_id: &str,
+    request: &BackchannelRequestModel,
+) -> Result<(), Unrecorded> {
+    backchannel::open(transaction, digest, auth_req_id, request)
+        .await
+        .map_err(|_| Unrecorded)
+}
+
+/// The person a bearer token of this realm names, resolved the way the
+/// exchange resolves its subject: verified against the realm's keys,
+/// un-pairwised through the presenting client, and still enabled.
+pub async fn read_person_behind_bearer(
+    transaction: &UnitOfWork,
+    bearer: &str,
+    now: DateTime<Utc>,
+) -> Option<UserModel> {
+    let keys = crate::realm::published_keys(transaction).await.ok()?;
+    let verified = crate::token::verify_presented(
+        transaction,
+        &keys,
+        bearer,
+        crate::token::Binding::Reported,
+        now,
+    )
+    .await
+    .ok()?;
+    if verified.subject.is_empty() {
+        return None;
+    }
+    let presenting = match verified.claims.get("azp").and_then(Value::as_str) {
+        Some(azp) => clients::load(transaction, azp).await.ok()?,
+        None => None,
+    };
+    let account =
+        crate::oidc::pairwise::account_for(transaction, presenting.as_ref(), &verified.subject)
+            .await
+            .ok()?;
+    users::load(transaction, &account)
+        .await
+        .ok()?
+        .filter(|held| held.enabled)
+}
+
+/// The person signed in through this session, while it is open and has not
+/// run out, and while they may still sign in.
+pub async fn read_signed_in_person(
+    transaction: &UnitOfWork,
+    session_id: &str,
+    now: DateTime<Utc>,
+) -> Option<UserModel> {
+    let login = sessions::load(transaction, session_id)
+        .await
+        .ok()?
+        .filter(|held| held.state == UserSessionState::LoggedIn)
+        .filter(|held| held.expiration.is_none_or(|until| now.timestamp() < until))?;
+    users::load(transaction, &login.user_id)
+        .await
+        .ok()?
+        .filter(|held| held.enabled)
+}
+
+/// The requests waiting on this person, each under its digest.
+pub async fn read_pending_requests(
+    transaction: &UnitOfWork,
+    user_id: &str,
+    now: DateTime<Utc>,
+) -> Result<Vec<(Vec<u8>, BackchannelRequestModel)>, Unrecorded> {
+    backchannel::pending_for(transaction, user_id, now)
+        .await
+        .map_err(|_| Unrecorded)
+}
+
+/// Decide one of this person's pending requests. Nothing when it is somebody
+/// else's, already decided, expired, or was never there.
+pub async fn decide_request(
+    transaction: &UnitOfWork,
+    request_digest: &[u8],
+    user_id: &str,
+    approved: bool,
+    now: DateTime<Utc>,
+) -> Result<Option<BackchannelRequestModel>, Unrecorded> {
+    backchannel::decide(transaction, request_digest, user_id, approved, now)
+        .await
+        .map_err(|_| Unrecorded)
 }
 
 #[cfg(test)]

@@ -95,7 +95,7 @@ pub async fn serve(
         Err(StoreError::Unavailable) => return unavailable(id),
         Err(_) => return refused(id, -32000, "the realm could not be read"),
     };
-    let Ok(held) = store::providers::realms::load(&transaction, &context.realm_id).await else {
+    let Ok(held) = services::realm::named(&transaction, &context.realm_id).await else {
         return refused(id, -32000, "the realm could not be read");
     };
     let Some(held) = held else {
@@ -228,7 +228,7 @@ pub async fn serve(
                     true,
                 );
             };
-            let Ok(Some(client)) = store::providers::clients::load(&transaction, &client).await
+            let Ok(Some(client)) = services::client::read_client(&transaction, &client).await
             else {
                 return told(
                     id,

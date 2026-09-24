@@ -1,4 +1,7 @@
 use serde_json::Value;
+use store::providers::directory::organizations;
+use store::providers::realms;
+use store::tenancy::UnitOfWork;
 
 /// The token names the hosted pages read, and the only names a realm may
 /// override: the stylesheet's own contract, spelled once here so the door
@@ -111,6 +114,37 @@ pub fn css_of(theme: &Value) -> Result<String, &'static str> {
         css.push('}');
     }
     Ok(css)
+}
+
+/// What the realm overrides of the token contract, when it is dressed and its
+/// theme still passes the door.
+pub async fn read_realm_css(transaction: &UnitOfWork, realm_id: &str) -> Option<String> {
+    let theme = realms::theme_of(transaction, realm_id).await.ok()??;
+    css_of(&theme).ok()
+}
+
+/// The same for an organization a login names, while it stands enabled.
+pub async fn read_organization_css(transaction: &UnitOfWork, name: &str) -> Option<String> {
+    let organization = organizations::load_by_name(transaction, name)
+        .await
+        .ok()??;
+    if !organization.enabled {
+        return None;
+    }
+    let theme = organizations::theme_of(transaction, &organization.org_id)
+        .await
+        .ok()??;
+    css_of(&theme).ok()
+}
+
+/// The realm's mark and the media type it was weighed as, when it keeps one.
+pub async fn read_realm_logo(
+    transaction: &UnitOfWork,
+    realm_id: &str,
+) -> Result<Option<(Vec<u8>, String)>, crate::realm::Unreadable> {
+    realms::logo_of(transaction, realm_id)
+        .await
+        .map_err(|_| crate::realm::Unreadable)
 }
 
 fn block(selector: &str, tokens: &Value) -> Result<String, &'static str> {

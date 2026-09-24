@@ -2,6 +2,7 @@ use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
+use services::messaging::caep;
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
@@ -49,23 +50,13 @@ pub async fn poll(
         Err(StoreError::Unavailable) => return answer_unavailable(),
         Err(_) => return refused(),
     };
-    let Ok(rows) = store::providers::federation::brokering::list_providers(&transaction).await
-    else {
+    let Ok(rows) = caep::read_collecting_receivers(&transaction).await else {
         return refused();
     };
     // The collector is whichever collecting row's sealed bearer matches what
     // was presented. Nothing about which rows exist leaks on a miss.
     let mut collector = None;
-    for row in rows
-        .iter()
-        .filter(|row| services::messaging::caep::is_receiver(row) && row.enabled != Some(false))
-    {
-        let Ok(receiver) = services::messaging::caep::Receiver::parse(row) else {
-            continue;
-        };
-        if receiver.delivery != services::messaging::caep::Delivery::Poll {
-            continue;
-        }
+    for row in &rows {
         if crate::federation::opened_bearer(&transaction, &sealing, &context, row)
             .await
             .is_some_and(|held| held == presented)
@@ -79,7 +70,7 @@ pub async fn poll(
     };
 
     if let Some(done) = asked.ack.as_ref().filter(|held| !held.is_empty())
-        && store::providers::events::caep_queue::ack(&transaction, &row.internal_id, done)
+        && caep::acknowledge_sets(&transaction, &row.internal_id, done)
             .await
             .is_err()
     {
@@ -88,8 +79,7 @@ pub async fn poll(
 
     let ceiling = asked.max_events.unwrap_or(10).clamp(0, 100);
     let Ok((waiting, more)) =
-        store::providers::events::caep_queue::pending(&transaction, &row.internal_id, ceiling)
-            .await
+        caep::read_waiting_sets(&transaction, &row.internal_id, ceiling).await
     else {
         return refused();
     };

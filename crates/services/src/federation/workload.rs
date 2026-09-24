@@ -1,6 +1,8 @@
 use crypto::provider::SignAlg;
 use models::entities::authz::IdentityProviderModel;
 use serde_json::Value;
+use store::providers::federation::brokering;
+use store::tenancy::UnitOfWork;
 
 pub const KIND_KEY: &str = "kind";
 pub const KIND: &str = "workload";
@@ -178,6 +180,20 @@ impl Trusted {
                 None => subject == pattern,
             })
     }
+}
+
+/// The platforms this realm trusts for its workloads: switched on, and still
+/// reading as one. A row that no longer reads trusts nobody.
+pub async fn read_trusted_platforms(
+    transaction: &UnitOfWork,
+) -> Result<Vec<Trusted>, crate::realm::Unreadable> {
+    Ok(brokering::list_providers(transaction)
+        .await
+        .map_err(|_| crate::realm::Unreadable)?
+        .iter()
+        .filter(|row| is_workload(row) && row.enabled != Some(false))
+        .filter_map(|row| Trusted::parse(row).ok())
+        .collect())
 }
 
 /// The claims a platform token must carry, checked after its signature.

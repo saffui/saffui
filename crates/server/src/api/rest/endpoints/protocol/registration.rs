@@ -5,7 +5,6 @@ use models::entities::client::ClientModel;
 use serde_json::{Value, json};
 use services::oidc::registration::{self, Metadata, Refused};
 use store::error::StoreError;
-use store::providers::realms;
 use store::tenancy::{RealmNamed, Tenancy};
 
 use crate::api::config::Sealing;
@@ -88,7 +87,7 @@ pub async fn create(
         Err(StoreError::Unavailable) => return refused(&Refused::Unavailable),
         Err(_) => return refused(&Refused::Unwritable),
     };
-    let Ok(Some(held)) = realms::load(&transaction, &context.realm_id).await else {
+    let Ok(Some(held)) = services::realm::named(&transaction, &context.realm_id).await else {
         return refused(&Refused::Closed);
     };
     if let Err(why) = registration::admits(

@@ -178,42 +178,31 @@ pub async fn answer(
     // becomes an answer that fails the step, rather than silence that would
     // re-challenge the same doomed exchange forever.
     let mut negotiated: Option<String> = None;
-    if let Ok(Some(door)) = store::providers::federation::brokering::spnego(&transaction).await
-        && door.enabled != Some(false)
+    if let Some(settings) = services::federation::negotiation::read_ticket_door(&transaction).await
+        && let Some(token) = negotiate_token(&request)
     {
-        match services::federation::negotiation::SpnegoSettings::parse(&door) {
-            Err(why) => {
-                tracing::warn!(%why, "the realm's ticket door no longer reads");
+        let spn = settings.service_principal.clone();
+        let principal = web::block(move || crate::negotiate::accepted(&spn, &token))
+            .await
+            .map_err(|_| ())
+            .and_then(|held| {
+                held.map_err(|why| {
+                    tracing::debug!(%why, "a ticket was refused at the door");
+                })
+            });
+        match principal {
+            Ok(named) if named.rsplit('@').next() == Some(settings.kerberos_realm()) => {
+                let local = named.split('@').next().unwrap_or_default().to_owned();
+                negotiated = Some(local.clone());
+                answers.push(Answer::Negotiate(named));
             }
-            Ok(settings) => {
-                if let Some(token) = negotiate_token(&request) {
-                    let spn = settings.service_principal.clone();
-                    let principal = web::block(move || crate::negotiate::accepted(&spn, &token))
-                        .await
-                        .map_err(|_| ())
-                        .and_then(|held| {
-                            held.map_err(|why| {
-                                tracing::debug!(%why, "a ticket was refused at the door");
-                            })
-                        });
-                    match principal {
-                        Ok(named)
-                            if named.rsplit('@').next() == Some(settings.kerberos_realm()) =>
-                        {
-                            let local = named.split('@').next().unwrap_or_default().to_owned();
-                            negotiated = Some(local.clone());
-                            answers.push(Answer::Negotiate(named));
-                        }
-                        Ok(named) => {
-                            // A principal from another realm: nobody here.
-                            tracing::debug!(principal = %named, "a foreign-realm ticket");
-                            answers.push(Answer::Negotiate(String::new()));
-                        }
-                        Err(()) => {
-                            answers.push(Answer::Negotiate(String::new()));
-                        }
-                    }
-                }
+            Ok(named) => {
+                // A principal from another realm: nobody here.
+                tracing::debug!(principal = %named, "a foreign-realm ticket");
+                answers.push(Answer::Negotiate(String::new()));
+            }
+            Err(()) => {
+                answers.push(Answer::Negotiate(String::new()));
             }
         }
     }
@@ -258,29 +247,17 @@ pub async fn answer(
         envelope: &sealing.envelope,
     });
 
-    // The realm's directories, first-asked first. A row that stopped
-    // reading is skipped with a line for the operator: the plane refuses to
-    // write one, so a broken row is a migration of trouble, and bricking
-    // every login over it helps nobody.
-    let rows = match store::providers::federation::brokering::federations(&transaction).await {
-        Ok(rows) => rows,
+    let directories = match services::federation::ldap::read_directories_to_ask(&transaction).await
+    {
+        Ok(directories) => directories,
         Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
     };
     let mut federated = Vec::new();
-    for held in &rows {
-        if held.enabled == Some(false) {
-            continue;
-        }
-        match services::federation::ldap::LdapSettings::parse(held) {
-            Ok(settings) => federated.push((
-                held.alias.clone(),
-                crate::federation::directory_for(&transaction, &sealing, &context, held, settings)
-                    .await,
-            )),
-            Err(why) => {
-                tracing::warn!(%why, alias = held.alias, "a directory row no longer reads");
-            }
-        }
+    for (held, settings) in directories {
+        let directory =
+            crate::federation::directory_for(&transaction, &sealing, &context, &held, settings)
+                .await;
+        federated.push((held.alias, directory));
     }
     let federations: Vec<auth::login::directory::Named<'_>> = federated
         .iter()

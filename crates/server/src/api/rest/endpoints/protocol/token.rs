@@ -592,17 +592,11 @@ async fn workload_exchange(
 
     // The one trusted platform with this issuer, still enabled, still
     // reading as one. The issuer only picks the row; the row is the trust.
-    let Ok(rows) = store::providers::federation::brokering::list_providers(&transaction).await
+    let Ok(platforms) = services::federation::workload::read_trusted_platforms(&transaction).await
     else {
         return Denied::InvalidRequest.answer("the realm could not be read");
     };
-    let trusted = rows
-        .iter()
-        .filter(|row| {
-            services::federation::workload::is_workload(row) && row.enabled != Some(false)
-        })
-        .filter_map(|row| services::federation::workload::Trusted::parse(row).ok())
-        .find(|held| held.issuer == issuer);
+    let trusted = platforms.into_iter().find(|held| held.issuer == issuer);
     let Some(trusted) = trusted else {
         return Denied::InvalidGrant.answer("the grant presented was not honoured");
     };
@@ -630,7 +624,7 @@ async fn workload_exchange(
         }
     };
 
-    let Ok(Some(client)) = store::providers::clients::load(&transaction, &trusted.client_id).await
+    let Ok(Some(client)) = services::client::read_client(&transaction, &trusted.client_id).await
     else {
         return Denied::InvalidGrant.answer("the grant presented was not honoured");
     };
@@ -722,27 +716,21 @@ async fn x509_exchange(
     let Ok(Some(realm)) = services::realm::named(&transaction, &context.realm_id).await else {
         return Some(Denied::InvalidRequest.answer("the realm could not be read"));
     };
-    let Ok(rows) = store::providers::federation::brokering::list_providers(&transaction).await
+    let Ok(platforms) = services::federation::workload::read_trusted_platforms(&transaction).await
     else {
         return Some(Denied::InvalidRequest.answer("the realm could not be read"));
     };
-    let admitted = rows
-        .iter()
-        .filter(|row| {
-            services::federation::workload::is_workload(row) && row.enabled != Some(false)
-        })
-        .filter_map(|row| services::federation::workload::Trusted::parse(row).ok())
-        .find_map(|trusted| {
-            uris.iter()
-                .find(|uri| trusted.admits(uri))
-                .cloned()
-                .map(|uri| (trusted, uri))
-        });
+    let admitted = platforms.into_iter().find_map(|trusted| {
+        uris.iter()
+            .find(|uri| trusted.admits(uri))
+            .cloned()
+            .map(|uri| (trusted, uri))
+    });
     let Some((trusted, identity)) = admitted else {
         return refused();
     };
 
-    let Ok(Some(client)) = store::providers::clients::load(&transaction, &trusted.client_id).await
+    let Ok(Some(client)) = services::client::read_client(&transaction, &trusted.client_id).await
     else {
         return refused();
     };

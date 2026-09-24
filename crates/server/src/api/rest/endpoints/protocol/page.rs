@@ -2,7 +2,7 @@ use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, HttpResponseBuilder, web};
 use config::serving::PublicOrigin;
 use store::error::StoreError;
-use store::tenancy::{RealmNamed, UnitOfWork};
+use store::tenancy::RealmNamed;
 
 use crate::api::rest::endpoints::protocol::dto::uncached;
 use crate::api::rest::endpoints::protocol::{brands, i18n};
@@ -240,7 +240,7 @@ async fn draft_of_realm(
     draft: &str,
 ) -> Option<serde_json::Value> {
     let transaction = tenancy.begin_in(RealmNamed::ByName(realm)).await.ok()?;
-    store::providers::realms::page_previews::read(&transaction, draft)
+    services::realm::page_previews::read_page_preview(&transaction, draft)
         .await
         .ok()
         .flatten()
@@ -304,8 +304,7 @@ async fn doors_of_realm(
     let Ok(transaction) = tenancy.begin(&context).await else {
         return nothing();
     };
-    let Ok(Some(held)) = store::providers::realms::load(&transaction, &context.realm_id).await
-    else {
+    let Ok(Some(held)) = services::realm::named(&transaction, &context.realm_id).await else {
         return nothing();
     };
     let mut doors = Vec::new();
@@ -324,10 +323,12 @@ async fn doors_of_realm(
             doors.push("register-email");
         }
     }
-    if offers_recovery_codes(&transaction, held.browser_flow.as_deref()).await {
+    if services::oidc::sign_in::offers_recovery_codes(&transaction, held.browser_flow.as_deref())
+        .await
+    {
         doors.push("recovery-code");
     }
-    let idps = match store::providers::federation::brokering::list_providers(&transaction).await {
+    let idps = match services::federation::brokering::read_providers(&transaction).await {
         Ok(rows) => federated_doors(&rows),
         Err(_) => String::new(),
     };
@@ -385,57 +386,6 @@ fn federated_doors(rows: &[models::entities::authz::IdentityProviderModel]) -> S
     doors
 }
 
-/// Whether this realm's browser flow has a step that takes a printed code.
-///
-/// The realm's flow and not the client's: the page is built before any client
-/// is named, so a client that overrides the binding to a flow of its own is not
-/// read here. Offering the field where no step takes it costs a person one
-/// wrong guess; hiding it where one does would cost them the way back.
-///
-/// One level deep. A sub-flow is walked, because the built browser flow keeps
-/// its second factors in one, and a step buried two flows down is a shape
-/// nothing this build provisions.
-async fn offers_recovery_codes(transaction: &UnitOfWork, bound: Option<&str>) -> bool {
-    use models::entities::auth::ExecutionStep;
-    use store::providers::realms::auth_flows;
-
-    let Ok(Some(flow)) = auth_flows::flow_by_alias(transaction, bound.unwrap_or("browser")).await
-    else {
-        return false;
-    };
-    let Ok(steps) = auth_flows::executions_of(transaction, &flow.flow_id).await else {
-        return false;
-    };
-    for step in &steps {
-        if !step.is_enabled() {
-            continue;
-        }
-        match &step.step {
-            ExecutionStep::Authenticator { authenticator, .. } => {
-                if authenticator == "recovery-code" {
-                    return true;
-                }
-            }
-            ExecutionStep::SubFlow { flow_id } => {
-                let Ok(inner) = auth_flows::executions_of(transaction, flow_id).await else {
-                    continue;
-                };
-                if inner.iter().any(|held| {
-                    held.is_enabled()
-                        && matches!(
-                            &held.step,
-                            ExecutionStep::Authenticator { authenticator, .. }
-                                if authenticator == "recovery-code"
-                        )
-                }) {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
 /// Read the login this browser holds, for the page shown for it.
 ///
 /// Only a live one, and this is the last moment the server knows which
@@ -457,7 +407,7 @@ async fn read_live_login(
     let Ok(transaction) = tenancy.begin(&context).await else {
         return LiveLogin::default();
     };
-    let Ok(Some(login)) = store::providers::protocol::login::resume(&transaction, &binding).await
+    let Ok(Some(login)) = services::oidc::sign_in::read_open_login(&transaction, &binding).await
     else {
         return LiveLogin::default();
     };
@@ -466,7 +416,7 @@ async fn read_live_login(
         .get("ui_locales")
         .and_then(|held| held.as_str())
         .map(str::to_owned);
-    let way_back = match store::providers::clients::load(&transaction, &login.client_id).await {
+    let way_back = match services::client::read_client(&transaction, &login.client_id).await {
         Ok(Some(client)) => find_way_back(&client),
         _ => None,
     };
@@ -524,7 +474,7 @@ pub(in crate::api) async fn tongues_of_realm(
     let Ok(transaction) = tenancy.begin(&context).await else {
         return fallback();
     };
-    match store::providers::realms::load(&transaction, &context.realm_id).await {
+    match services::realm::named(&transaction, &context.realm_id).await {
         Ok(Some(held)) => i18n::RealmTongues::of(
             held.supported_locales.as_deref(),
             held.default_locale.as_deref(),
@@ -638,25 +588,22 @@ pub async fn style(
     if let Ok(transaction) = tenancy.begin_in(RealmNamed::ByName(&realm)).await {
         let context = transaction.context().clone();
         let mut sheet = STYLE.to_owned();
-        if let Some(overrides) = read_realm_overrides(&transaction, &context.realm_id).await {
+        if let Some(overrides) =
+            services::realm::theme::read_realm_css(&transaction, &context.realm_id).await
+        {
             sheet.push('\n');
             sheet.push_str(&overrides);
             dressed = Some(sheet.clone());
         }
         if let Some(binding) = super::binding::read(&request, super::binding::AUTH_SESSION)
             && let Ok(Some(login)) =
-                store::providers::protocol::login::resume(&transaction, &binding).await
+                services::oidc::sign_in::read_open_login(&transaction, &binding).await
             && let Some(slug) = login
                 .notes
                 .get("organization")
                 .and_then(|held| held.as_str())
-            && let Ok(Some(org)) =
-                store::providers::directory::organizations::load_by_name(&transaction, slug).await
-            && org.enabled
-            && let Ok(Some(theme)) =
-                store::providers::directory::organizations::theme_of(&transaction, &org.org_id)
-                    .await
-            && let Ok(overrides) = services::realm::theme::css_of(&theme)
+            && let Some(overrides) =
+                services::realm::theme::read_organization_css(&transaction, slug).await
         {
             sheet.push('\n');
             sheet.push_str(&overrides);
@@ -699,7 +646,7 @@ pub async fn serve_realm_logo(
         Err(_) => return told_nothing(StatusCode::NOT_FOUND),
     };
     let Ok(Some((bytes, kind))) =
-        store::providers::realms::logo_of(&transaction, &context.realm_id).await
+        services::realm::theme::read_realm_logo(&transaction, &context.realm_id).await
     else {
         // A realm keeping none is a mark that is not there, and the page falls
         // back to the letters it drew before any of this existed.
@@ -721,7 +668,8 @@ pub async fn serve_realm_theme(
     let mut overrides = String::new();
     if let Ok(transaction) = tenancy.begin_in(RealmNamed::ByName(&realm)).await
         && let Some(held) =
-            read_realm_overrides(&transaction, &transaction.context().realm_id).await
+            services::realm::theme::read_realm_css(&transaction, &transaction.context().realm_id)
+                .await
     {
         overrides = held;
     }
@@ -732,15 +680,6 @@ pub async fn serve_realm_theme(
         .insert_header(("X-Frame-Options", "DENY"))
         .insert_header(("Referrer-Policy", "no-referrer"))
         .body(overrides)
-}
-
-/// What the realm overrides of the token contract, when it is dressed and its
-/// theme still passes the door.
-async fn read_realm_overrides(transaction: &UnitOfWork, realm_id: &str) -> Option<String> {
-    let theme = store::providers::realms::theme_of(transaction, realm_id)
-        .await
-        .ok()??;
-    services::realm::theme::css_of(&theme).ok()
 }
 
 /// The same, for the one page whose job is to be inside somebody else's.

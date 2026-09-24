@@ -69,6 +69,15 @@ pub async fn named(
         .map_err(|_| Unreadable)
 }
 
+/// The realm this unit of work was opened in.
+pub async fn read_current_realm(
+    transaction: &UnitOfWork,
+) -> Result<Option<RealmModel>, Unreadable> {
+    realms::of_context(transaction)
+        .await
+        .map_err(|_| Unreadable)
+}
+
 /// One page of this tenant's realms.
 pub async fn listed(
     transaction: &UnitOfWork,

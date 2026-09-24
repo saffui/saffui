@@ -1452,3 +1452,75 @@ async fn the_agent_switch_round_trips() {
     assert_eq!(status, StatusCode::OK, "{held}");
     assert_eq!(held["agent_exchange_enabled"], true, "read back: {held}");
 }
+
+/// The count per address only takes values the table holds, refused in words
+/// rather than as a failed write, and a stock realm reads back on.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_address_throttle_holds_its_shapes() {
+    let plane = Plane::with_actions(&[AdminAction::RealmRead, AdminAction::RealmWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let at = format!("/admin/realms/{}", support::REALM);
+    let whole = format!("{at}?briefRepresentation=false");
+
+    let (status, held) = asked(&plane, Method::GET, &whole, &bearer, None).await;
+    assert_eq!(status, StatusCode::OK, "{held}");
+    assert_eq!(
+        held["source_throttle"],
+        serde_json::json!({
+            "throttled": true,
+            "max_failures": 100,
+            "max_name_failures": 10,
+            "window_seconds": 900,
+        }),
+        "a stock realm: {held}"
+    );
+
+    let shaped = |max_failures: i32, max_name_failures: i32, window_seconds: i32| {
+        serde_json::json!({ "source_throttle": {
+            "throttled": true,
+            "max_failures": max_failures,
+            "max_name_failures": max_name_failures,
+            "window_seconds": window_seconds,
+        }})
+    };
+    for (refused, named) in [
+        (shaped(0, 10, 900), "max_failures"),
+        (shaped(100_001, 10, 900), "max_failures"),
+        (shaped(100, 0, 900), "max_name_failures"),
+        (shaped(100, 10_001, 900), "max_name_failures"),
+        (shaped(100, 10, 59), "window_seconds"),
+        (shaped(100, 10, 86_401), "window_seconds"),
+    ] {
+        let (status, told) = asked(&plane, Method::PUT, &at, &bearer, Some(refused.clone())).await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "accepted: {refused} -> {told}"
+        );
+        assert!(
+            told["message"]
+                .as_str()
+                .is_some_and(|said| said.contains(named)),
+            "{refused} was not refused in words naming {named}: {told}"
+        );
+    }
+
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &at,
+        &bearer,
+        Some(serde_json::json!({ "source_throttle": {
+            "throttled": false,
+            "max_failures": 50,
+            "max_name_failures": 5,
+            "window_seconds": 600,
+        }})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let (_, held) = asked(&plane, Method::GET, &whole, &bearer, None).await;
+    assert_eq!(held["source_throttle"]["throttled"], false, "{held}");
+    assert_eq!(held["source_throttle"]["window_seconds"], 600, "{held}");
+}

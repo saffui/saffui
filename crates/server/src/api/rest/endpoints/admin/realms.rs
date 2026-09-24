@@ -535,6 +535,18 @@ pub async fn update(
             clash.to_string(),
         ));
     }
+    // Bounds the table holds as well, said in words rather than as a write
+    // that fails: a threshold of nothing would turn every address away.
+    if let Some(refusal) = asked
+        .source_throttle
+        .as_ref()
+        .and_then(models::entities::realm::SourceThrottle::refuse_out_of_bounds)
+    {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            refusal.to_owned(),
+        ));
+    }
     // A reworded message still has to work. A letter is followed, so its body
     // carries the link or the letter does nothing; a notice is read and carries
     // none, and demanding one would refuse every rewording of one. Which is

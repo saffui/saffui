@@ -73,6 +73,7 @@ export interface RealmSettings {
   ssl_enforcement: string | null;
   password_policy: PasswordPolicy | null;
   brute_force: BruteForce;
+  source_throttle: SourceThrottle;
 }
 
 /// Mirrors `models::entities::realm::PasswordPolicy`. The hashing block is
@@ -132,6 +133,22 @@ export interface BruteForce {
   reset_seconds: number;
 }
 
+/// Mirrors `models::entities::realm::SourceThrottle`.
+export interface SourceThrottle {
+  throttled: boolean;
+  max_failures: number;
+  max_name_failures: number;
+  window_seconds: number;
+}
+
+/// `SourceThrottle::default()`: what a stock realm counts per address.
+export const SOURCE_THROTTLE_DEFAULTS: SourceThrottle = {
+  throttled: true,
+  max_failures: 100,
+  max_name_failures: 10,
+  window_seconds: 900,
+};
+
 /// Mirrors `models::entities::realm::RealmUpdateModel`: every field optional,
 /// absent means unchanged, so a save sends only the group it edited.
 export interface RealmUpdate {
@@ -186,6 +203,7 @@ export interface RealmUpdate {
   default_locale?: string;
   client_registration?: "disabled" | "open" | "protected";
   brute_force?: BruteForce;
+  source_throttle?: SourceThrottle;
   registration_bounds?: {
     max_clients: number | null;
     requires_consent: boolean;

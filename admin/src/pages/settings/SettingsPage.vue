@@ -42,7 +42,7 @@ import type { RealmFeature } from "@/models/feature";
 import { ApiError } from "@/services/http";
 import type { MailBrief, MailRefusal, RelayReport } from "@/models/mail";
 import type { SmsBrief, SmsToday } from "@/models/sms";
-import { OTP_DEFAULTS, OWASP_HASHING } from "@/models/realm";
+import { OTP_DEFAULTS, OWASP_HASHING, SOURCE_THROTTLE_DEFAULTS } from "@/models/realm";
 import type { MailTemplate, PasswordPolicy, RealmSettings, RealmUpdate } from "@/models/realm";
 import type { ExecutionRow } from "@/models/flows";
 import { JURISDICTIONS } from "@/services/compliance";
@@ -170,6 +170,10 @@ const draft = ref({
   bf_lockout_seconds: 60,
   bf_max_lockout_seconds: 900,
   bf_reset_seconds: 900,
+  source_throttled: SOURCE_THROTTLE_DEFAULTS.throttled,
+  source_max_failures: SOURCE_THROTTLE_DEFAULTS.max_failures,
+  source_max_name_failures: SOURCE_THROTTLE_DEFAULTS.max_name_failures,
+  source_window_seconds: SOURCE_THROTTLE_DEFAULTS.window_seconds,
 });
 
 /// Assurance levels and free attributes, edited as rows.
@@ -310,6 +314,10 @@ function adopt(held: RealmSettings) {
     bf_lockout_seconds: held.brute_force.lockout_seconds,
     bf_max_lockout_seconds: held.brute_force.max_lockout_seconds,
     bf_reset_seconds: held.brute_force.reset_seconds,
+    source_throttled: held.source_throttle.throttled,
+    source_max_failures: held.source_throttle.max_failures,
+    source_max_name_failures: held.source_throttle.max_name_failures,
+    source_window_seconds: held.source_throttle.window_seconds,
   };
   acrRows.value = Object.entries(held.acr_loa_map ?? {}).map(([context, level]) => ({
     context,
@@ -466,6 +474,14 @@ function changesOf(which: Group): RealmUpdate {
         lockout_seconds: whole(held.bf_lockout_seconds) ?? 60,
         max_lockout_seconds: whole(held.bf_max_lockout_seconds) ?? 900,
         reset_seconds: whole(held.bf_reset_seconds) ?? 900,
+      },
+      source_throttle: {
+        throttled: held.source_throttled,
+        max_failures: whole(held.source_max_failures) ?? SOURCE_THROTTLE_DEFAULTS.max_failures,
+        max_name_failures:
+          whole(held.source_max_name_failures) ?? SOURCE_THROTTLE_DEFAULTS.max_name_failures,
+        window_seconds:
+          whole(held.source_window_seconds) ?? SOURCE_THROTTLE_DEFAULTS.window_seconds,
       },
     };
     if (held.ssl_enforcement) changes.ssl_enforcement = held.ssl_enforcement;
@@ -1481,6 +1497,48 @@ async function saveSmsTemplate() {
                   v-model="draft.bf_reset_seconds"
                   type="number"
                   min="1"
+                  class="sf-field mt-1 font-mono"
+                />
+              </label>
+            </div>
+
+            <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("settings-throttle-title") }}
+            </div>
+            <AppToggle v-model="draft.source_throttled">
+              {{ say("settings-throttle-enabled") }}
+              <AppHint name="settings-throttle-enabled-help" />
+            </AppToggle>
+            <div v-if="draft.source_throttled" class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("settings-throttle-address") }}
+                <AppHint name="settings-throttle-address-help" />
+                <input
+                  v-model="draft.source_max_failures"
+                  type="number"
+                  min="1"
+                  max="100000"
+                  class="sf-field mt-1 font-mono"
+                />
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("settings-throttle-name") }} <AppHint name="settings-throttle-name-help" />
+                <input
+                  v-model="draft.source_max_name_failures"
+                  type="number"
+                  min="1"
+                  max="10000"
+                  class="sf-field mt-1 font-mono"
+                />
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("settings-throttle-window") }}
+                <AppHint name="settings-throttle-window-help" />
+                <input
+                  v-model="draft.source_window_seconds"
+                  type="number"
+                  min="60"
+                  max="86400"
                   class="sf-field mt-1 font-mono"
                 />
               </label>

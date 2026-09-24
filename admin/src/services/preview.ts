@@ -1432,6 +1432,12 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
         max_lockout_seconds: 900,
         reset_seconds: 900,
       },
+      source_throttle: {
+        throttled: true,
+        max_failures: 100,
+        max_name_failures: 10,
+        window_seconds: 900,
+      },
       ...REALM_SETTINGS_CHANGES,
     };
     if (method === "PUT" && body && typeof body === "object" && !Array.isArray(body)) {

@@ -2,6 +2,8 @@ use super::support;
 use super::support::Plane;
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
+use crypto::provider::{CryptoProvider, HashAlg};
+use data_encoding::HEXLOWER;
 use models::entities::realm::SourceThrottle;
 use serde_json::Value;
 use server::api::config::{Plane as Mounted, register};
@@ -374,6 +376,33 @@ async fn a_stock_realm_counts_by_address_and_keeps_no_name_as_typed() {
     assert!(!digest.to_lowercase().contains("winter"), "{digest}");
 }
 
+/// What is kept of a typed name is a MAC under a key derived from the
+/// deployment's KEK, which the database never holds: not the plain digest a
+/// reader of the table could work out from a guess.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_typed_name_is_kept_under_a_key_the_database_does_not_hold() {
+    let plane = Plane::with_actions(&[]).await;
+
+    let (status, body) = answered_from(&plane, Some(HERE), " Winter2026! ", "a-guess").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+
+    let kept = plane.named_failures(support::REALM).await;
+    let plain = support::provider()
+        .digest()
+        .hash(HashAlg::Sha256, b"winter2026!")
+        .expect("a digest");
+    assert_ne!(
+        kept,
+        [(HEXLOWER.encode(&plain), 1)],
+        "the name was kept as its plain digest"
+    );
+    assert_eq!(
+        kept,
+        [(support::keyed_name(support::REALM, "winter2026!"), 1)]
+    );
+}
+
 /// Failures older than the window no longer count, whatever their number.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
@@ -489,8 +518,18 @@ async fn minted_at(plane: &Plane, typed: &str, at: chrono::DateTime<chrono::Utc>
     )
     .await
     .expect("the realm's keyring");
-    let knock = auth::login::throttle::Knock::new(sealing.provider.as_ref(), None, Some(typed))
-        .expect("a digest");
+    let realm = store::providers::realms::load(&transaction, support::REALM)
+        .await
+        .expect("the realms table")
+        .expect("a planted realm");
+    let knock = auth::login::throttle::Knock::new(
+        sealing.provider.as_ref(),
+        &sealing.names,
+        &realm,
+        None,
+        Some(typed),
+    )
+    .expect("a digest");
     auth::login::device::mint(
         sealing.provider.as_ref(),
         &ring,

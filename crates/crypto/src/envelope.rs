@@ -16,7 +16,8 @@
 //! layer that could read a table. So it offers four primitives: mint a DEK,
 //! wrap one, unwrap one, and seal or open a value under a DEK the caller
 //! supplies. *Which* DEK belongs to a realm is a question for whatever owns the
-//! table.
+//! table. Beside them it derives a MAC key per [`MacPurpose`], for a digest a
+//! table keeps and must not be able to recompute.
 //!
 //! That split is what makes the DEK a stored, rotatable, destroyable object
 //! rather than a pure function of the KEK. Deriving `DEK = HKDF(KEK, realm)`
@@ -55,7 +56,7 @@ use std::sync::Arc;
 use secrecy::{ExposeSecret, SecretBox};
 
 use crate::provider::{AeadAlg, CryptoError, CryptoProvider, HashAlg, HmacAlg, Result};
-use crate::secret::{Dek, KeyWrappingKey};
+use crate::secret::{Dek, KeyWrappingKey, MacKey};
 
 /// Magic and layout version. A reader that does not recognise the version
 /// refuses the blob rather than trying to parse it.
@@ -85,12 +86,34 @@ pub const DEK_LEN: usize = 32;
 /// which produces a perfectly working cipher with nothing behind it.
 const MIN_KEK_LEN: usize = 16;
 
-/// Domain separation for wrapping. The KEK does exactly two things — wrap DEKs
-/// and identify itself — and they must not share a derived key.
+/// Domain separation for wrapping. Every use of the KEK has a label of its own,
+/// so no two of them share a derived key.
 const WRAP_INFO: &[u8] = b"saffui/kek-wrap/v1";
 
 /// The label whose MAC under the KEK is the KEK's public fingerprint.
 const KEK_ID_LABEL: &[u8] = b"saffui/kek-id/v1";
+
+/// A derived MAC key, as wide as the SHA-256 it keys.
+const MAC_KEY_LEN: usize = 32;
+
+/// What a MAC key derived from the KEK is for.
+///
+/// Each purpose expands the KEK under a label kept here beside the wrapping
+/// one: a caller names a purpose, never a label, so none is handed the key
+/// that wraps or the key of another purpose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacPurpose {
+    /// The digest a count of failed attempts keeps of each name typed.
+    TypedNames,
+}
+
+impl MacPurpose {
+    fn label(self) -> &'static [u8] {
+        match self {
+            MacPurpose::TypedNames => b"saffui/typed-names/v1",
+        }
+    }
+}
 
 /// A data encryption key and the generation it belongs to.
 ///
@@ -212,6 +235,22 @@ impl Envelope {
                 .hkdf(HashAlg::Sha256, &self.kek, None, WRAP_INFO, DEK_LEN)?;
 
         Ok(KeyWrappingKey::new(derived.expose_secret().clone()))
+    }
+
+    /// A MAC key for `purpose`: HKDF of the KEK under that purpose's label.
+    ///
+    /// A digest keyed with it can be stored and compared, and nobody holding
+    /// only the table can recompute it to test a guess.
+    pub fn derive_mac_key(&self, purpose: MacPurpose) -> Result<MacKey> {
+        let derived = self.crypto.kdf().hkdf(
+            HashAlg::Sha256,
+            &self.kek,
+            None,
+            purpose.label(),
+            MAC_KEY_LEN,
+        )?;
+
+        Ok(MacKey::new(derived.expose_secret().clone()))
     }
 
     /// Mint a fresh DEK for `version`.
@@ -660,6 +699,44 @@ mod tests {
 
         assert_ne!(hex(wrapping.expose()), hex(envelope.kek.expose_secret()));
         assert!(!hex(wrapping.expose()).contains(&envelope.kek_id().unwrap()));
+    }
+
+    /// A MAC key is derived under its purpose's label, spelled out here since
+    /// a digest already stored was keyed under it, and it is neither the key
+    /// that wraps nor another deployment's.
+    #[test]
+    fn a_mac_key_is_derived_under_its_purpose_alone() {
+        let envelope = envelope();
+        let names = envelope.derive_mac_key(MacPurpose::TypedNames).unwrap();
+
+        let expected = envelope
+            .crypto
+            .kdf()
+            .hkdf(
+                HashAlg::Sha256,
+                &envelope.kek,
+                None,
+                b"saffui/typed-names/v1",
+                MAC_KEY_LEN,
+            )
+            .unwrap();
+        assert_eq!(names.expose(), expected.expose_secret().as_slice());
+        assert_ne!(
+            names.expose(),
+            envelope.wrapping_key().unwrap().expose(),
+            "a MAC key is the key that wraps"
+        );
+        assert!(!hex(names.expose()).contains(&envelope.kek_id().unwrap()));
+
+        let provider = Arc::new(OpenSslProvider::new(&CryptoConfig::default()).unwrap());
+        let theirs = Envelope::new(provider, "a different deployment key").unwrap();
+        assert_ne!(
+            names.expose(),
+            theirs
+                .derive_mac_key(MacPurpose::TypedNames)
+                .unwrap()
+                .expose()
+        );
     }
 
     /// A stored DEK of the wrong width is refused when it is unwrapped.

@@ -92,6 +92,7 @@ pub async fn change_password(
     let changed = change_caller_password(
         &transaction,
         sealing.provider.as_ref(),
+        &sealing.names,
         &caller,
         from.as_deref(),
         &SecretBox::new(Box::new(current_password)),

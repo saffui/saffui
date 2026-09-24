@@ -66,6 +66,7 @@ pub async fn change_own_password(
     let changed = account::change_own_password(
         &transaction,
         sealing.provider.as_ref(),
+        &sealing.names,
         &changing,
         &SecretBox::new(Box::new(current_password)),
         &SecretBox::new(Box::new(new_password)),

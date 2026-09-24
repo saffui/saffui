@@ -198,6 +198,11 @@ Code meant for the whole crate goes into a module of its own rather than into
    certificates for its keys without storing any; and the kind, strength and
    end of validity of a certified key, so an identity provider's weak key can
    be refused where an administrator saves it.
+6. `envelope::MacPurpose` and `Envelope::derive_mac_key` (2026-09-24, the
+   failure counts per address): a MAC key expanded from the KEK under a label
+   per purpose, the labels kept beside the wrapping one so that a caller names
+   a purpose and is never handed the key that wraps. The first purpose keys the
+   digest the failure counts keep of each typed name.
 
 ## Before vendoring anything
 

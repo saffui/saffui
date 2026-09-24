@@ -7,7 +7,7 @@ use crypto::jose::jws::{ES256, JwsHeader};
 use crypto::jose::jwt::{self, JwtPayload};
 use crypto::password::storage::StoredPassword;
 use crypto::provider::openssl::OpenSslProvider;
-use crypto::provider::{Argon2Params, CryptoConfig, CryptoProvider, SignAlg};
+use crypto::provider::{Argon2Params, CryptoConfig, CryptoProvider, HashAlg, HmacAlg, SignAlg};
 use deadpool_postgres::{Manager, Pool, Runtime};
 use models::auditable::AuditableModel;
 use models::entities::authz::{AdminAction, RoleMutationModel};
@@ -361,12 +361,33 @@ pub fn sealing_carrying(
     texter: Option<Arc<dyn auth::messaging::Texter>>,
 ) -> server::api::config::Sealing {
     let shared: Arc<dyn CryptoProvider> = Arc::new(provider());
-    server::api::config::Sealing {
-        sender,
-        texter,
-        envelope: Arc::new(Envelope::new(Arc::clone(&shared), KEK).expect("an envelope")),
-        provider: shared,
+    let envelope = Envelope::new(Arc::clone(&shared), KEK).expect("an envelope");
+    server::api::config::Sealing::new(sender, texter, shared, envelope).expect("a sealing")
+}
+
+/// What a count keeps of a name typed in `realm_id`, worked out here rather
+/// than by the server: a MAC under the key this suite's KEK expands to for
+/// names, over the tenant, the realm and the name, each led by its length.
+/// The label and the layout are spelled out, so any other shows.
+#[allow(dead_code, reason = "only the suites that count failures read it")]
+pub fn keyed_name(realm_id: &str, counted: &str) -> String {
+    let provider = provider();
+    let kek = SecretBox::new(Box::new(KEK.as_bytes().to_vec()));
+    let key = provider
+        .kdf()
+        .hkdf(HashAlg::Sha256, &kek, None, b"saffui/typed-names/v1", 32)
+        .expect("a key");
+    let mut keyed = Vec::new();
+    for field in [TENANT, realm_id, counted] {
+        keyed.extend_from_slice(&(field.len() as u32).to_be_bytes());
+        keyed.extend_from_slice(field.as_bytes());
     }
+    data_encoding::HEXLOWER.encode(
+        &provider
+            .hmac()
+            .hmac(HmacAlg::Hs256, &key, &keyed)
+            .expect("a digest"),
+    )
 }
 
 /// Keeps every message instead of sending it, so a test can read what a person
@@ -1079,6 +1100,24 @@ impl Plane {
             .await
             .expect("the realms table");
         transaction.commit().await.unwrap();
+    }
+
+    /// What is counted in `realm_id` under each typed name, whichever door
+    /// counted it.
+    #[allow(dead_code, reason = "only the suites that count failures read it")]
+    pub async fn named_failures(&self, realm_id: &str) -> Vec<(String, i64)> {
+        let transaction = self.scoped(&TenantContext::new(TENANT, realm_id)).await;
+        transaction
+            .query(
+                "SELECT named, SUM(failures)::bigint FROM source_failures \
+                 WHERE named <> '' GROUP BY named ORDER BY named",
+                &[],
+            )
+            .await
+            .expect("the counts")
+            .iter()
+            .map(|row| (row.get(0), row.get(1)))
+            .collect()
     }
 
     /// How many codes are left on the subject's sheet.

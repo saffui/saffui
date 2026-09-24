@@ -6,10 +6,12 @@
 #[allow(unused_imports)]
 use super::support;
 use super::support::Plane;
+use actix_web::http::StatusCode;
+use actix_web::{App, test};
 use ldap3::exop::{WhoAmI, WhoAmIResp};
 use ldap3::{Ldap, LdapConnAsync, Scope, SearchEntry};
 use models::entities::realm::SourceThrottle;
-use store::tenancy::TenantContext;
+use server::api::config::register;
 
 const BASE: &str = "dc=id,dc=example";
 const PEOPLE: &str = "ou=people,dc=id,dc=example";
@@ -17,15 +19,22 @@ const PEOPLE: &str = "ou=people,dc=id,dc=example";
 /// Spawn the front for one plane on a loopback port, sealed when an
 /// acceptor is handed in, and hand back the port.
 async fn fronted(plane: &Plane, tls: Option<openssl::ssl::SslContext>) -> u16 {
+    fronted_in(plane, support::REALM, tls).await
+}
+
+/// The same, answering for another realm of the plane's tenant.
+async fn fronted_in(plane: &Plane, realm_id: &str, tls: Option<openssl::ssl::SslContext>) -> u16 {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
+    let sealing = support::sealing();
     tokio::spawn(ldapfront::serve(
         listener,
         tls,
         plane.tenancy(),
-        std::sync::Arc::new(support::provider()),
+        sealing.provider,
+        sealing.names,
         ldapfront::Front {
-            realm_id: support::REALM.into(),
+            realm_id: realm_id.into(),
             base_dn: BASE.into(),
         },
     ));
@@ -369,41 +378,125 @@ async fn an_address_spraying_names_is_turned_away_at_this_door_too() {
     assert_eq!(held.rc, 51, "the address was not turned away: {held:?}");
 }
 
-/// The doors share one count, so an attacker cannot pick the entrance that
-/// does not keep one: failures another door counted for this name from this
-/// address hold the bind.
+/// A password answered at the sign-in page from the loopback, where the front
+/// hears its binds from.
+async fn answered_at_the_page(plane: &Plane, name: &str, password: &str) -> StatusCode {
+    let mounted = server::api::config::Plane {
+        tenancy: plane.tenancy(),
+        policy: server::middleware::admin_policy::AdminPolicy {
+            audiences: vec![support::AUDIENCE.to_owned()],
+            parties: vec![support::PARTY.to_owned()],
+            scope: support::SCOPE.to_owned(),
+        },
+        origin: support::origin(),
+        login_ui: support::login_ui(),
+        hops: config::proxying::Proxying::none(),
+        sealing: support::sealing(),
+        ceiling: support::ceiling(),
+        egress: config::serving::Egress::Outward,
+    };
+    let app = test::init_service(App::new().configure(register(&mounted))).await;
+    let opened = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/auth?client_id={}&redirect_uri={}\
+                 &response_type=code&scope=openid&state=s",
+                support::REALM,
+                support::CONFIDENTIAL,
+                support::urlencode(support::REDIRECT),
+            ))
+            .to_request(),
+    )
+    .await;
+    let cookies: Vec<String> = opened
+        .headers()
+        .get_all("set-cookie")
+        .filter_map(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .collect();
+    let binding = support::cookie_value(&cookies, support::AUTH_SESSION_COOKIE).expect("a login");
+    let answered = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/login",
+                support::REALM
+            ))
+            .insert_header((
+                "cookie",
+                format!("{}={binding}", support::AUTH_SESSION_COOKIE),
+            ))
+            .peer_addr("127.0.0.1:40000".parse().expect("an address"))
+            .set_json(serde_json::json!({ "username": name, "password": password }))
+            .to_request(),
+    )
+    .await;
+    answered.status()
+}
+
+/// The doors share one count under one key, so an attacker cannot pick the
+/// entrance that does not keep one: failures the sign-in page counted for this
+/// name from this address hold the bind, and both doors' failures sit under
+/// the one digest the deployment's key makes of the name.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_count_made_at_another_door_holds_this_one() {
     let plane = Plane::with_actions(&[]).await;
-    plane.throttle_sources(turning_away(100, 2)).await;
-    let transaction = plane
-        .scoped(&TenantContext::new(support::TENANT, support::REALM))
-        .await;
-    let realm = store::providers::realms::load(&transaction, support::REALM)
-        .await
-        .expect("the realms table")
-        .expect("a planted realm");
-    let knock = auth::login::throttle::Knock::new(
-        &support::provider(),
-        Some("127.0.0.1"),
-        Some(support::SUBJECT),
-    )
-    .expect("a knock");
+    plane.throttle_sources(turning_away(100, 3)).await;
     for _ in 0..2 {
-        auth::login::throttle::count(&transaction, &realm, &knock, chrono::Utc::now())
-            .await
-            .expect("counted");
+        let refused = answered_at_the_page(&plane, support::SUBJECT, "not-the-password").await;
+        assert_eq!(refused, StatusCode::UNAUTHORIZED);
     }
-    transaction.commit().await.expect("kept");
 
     let port = fronted(&plane, None).await;
     let mut ldap = dialled(&format!("ldap://127.0.0.1:{port}")).await;
+    let wrong = ldap
+        .simple_bind(&subject_dn(), "not-the-password")
+        .await
+        .expect("an answer");
+    assert_eq!(wrong.rc, 49, "{wrong:?}");
     let held = ldap
         .simple_bind(&subject_dn(), support::PASSWORD)
         .await
         .expect("an answer");
     assert_eq!(held.rc, 51, "another door's count was not read: {held:?}");
+    assert_eq!(
+        plane.named_failures(support::REALM).await,
+        [(support::keyed_name(support::REALM, support::SUBJECT), 3)],
+        "the doors counted the name apart, or under another key"
+    );
+}
+
+/// One name failed in two realms leaves two digests, each keyed with its own
+/// realm, so whoever reads the table whole without the key cannot tell that
+/// the two rows name the same person.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn one_name_failed_in_two_realms_is_kept_under_two_digests() {
+    let plane = Plane::with_actions(&[]).await;
+    plane.plant_realm("other").await;
+    for realm_id in [support::REALM, "other"] {
+        let port = fronted_in(&plane, realm_id, None).await;
+        let mut ldap = dialled(&format!("ldap://127.0.0.1:{port}")).await;
+        let wrong = ldap
+            .simple_bind(&subject_dn(), "not-the-password")
+            .await
+            .expect("an answer");
+        assert_eq!(wrong.rc, 49, "{realm_id}: {wrong:?}");
+    }
+
+    let here = plane.named_failures(support::REALM).await;
+    let there = plane.named_failures("other").await;
+    assert_eq!(
+        here,
+        [(support::keyed_name(support::REALM, support::SUBJECT), 1)]
+    );
+    assert_eq!(there, [(support::keyed_name("other", support::SUBJECT), 1)]);
+    assert_ne!(
+        here[0].0, there[0].0,
+        "one name left one digest in two realms"
+    );
 }
 
 /// A bind the person's lock refuses counts against the address like any

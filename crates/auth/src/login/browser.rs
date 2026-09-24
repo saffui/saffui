@@ -124,6 +124,7 @@ pub enum Unanswerable {
 pub async fn answer_step(
     transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
+    names: &throttle::NameKey,
     tenant: &TenantContext,
     origin: &PublicOrigin,
     auth_session_id: &str,
@@ -170,7 +171,7 @@ pub async fn answer_step(
     // address turned away costs one read: no directory asked, no hash run.
     let knock = match noted(&login.notes, WEIGHED_NAME_NOTE) {
         Some(counted) => throttle::Knock::counted_as(seen.address.as_deref(), counted),
-        None => throttle::Knock::new(provider, seen.address.as_deref(), username)
+        None => throttle::Knock::new(provider, names, &realm, seen.address.as_deref(), username)
             .map_err(|_| Unanswerable::Unreadable)?,
     };
     // A browser that proves it was admitted under this name before is

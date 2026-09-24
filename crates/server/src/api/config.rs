@@ -8,7 +8,7 @@ use tracing_actix_web::TracingLogger;
 use config::proxying::Proxying;
 use config::serving::{LoginUi, PublicOrigin};
 use crypto::envelope::Envelope;
-use crypto::provider::CryptoProvider;
+use crypto::provider::{CryptoError, CryptoProvider};
 use store::tenancy::Tenancy;
 
 use crate::api::rest::endpoints::account;
@@ -93,6 +93,29 @@ pub struct Sealing {
     pub texter: Option<std::sync::Arc<dyn auth::messaging::Texter>>,
     pub provider: Arc<dyn CryptoProvider>,
     pub envelope: Arc<Envelope>,
+    /// What every door counts a typed name under, derived from the envelope
+    /// once for the process rather than once a request.
+    pub names: Arc<auth::login::throttle::NameKey>,
+}
+
+impl Sealing {
+    /// Built over `envelope`, and deriving the key names are counted under from
+    /// it here, so the two cannot come from different deployments.
+    pub fn new(
+        sender: Option<Arc<dyn auth::messaging::Deliver>>,
+        texter: Option<Arc<dyn auth::messaging::Texter>>,
+        provider: Arc<dyn CryptoProvider>,
+        envelope: Envelope,
+    ) -> Result<Sealing, CryptoError> {
+        let names = Arc::new(auth::login::throttle::NameKey::derive(&envelope)?);
+        Ok(Sealing {
+            sender,
+            texter,
+            provider,
+            envelope: Arc::new(envelope),
+            names,
+        })
+    }
 }
 
 /// What this process carries and what was turned, fixed for its lifetime.

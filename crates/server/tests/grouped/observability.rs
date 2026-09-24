@@ -589,7 +589,7 @@ async fn a_trace_finds_its_own_decisions_and_writes() {
             "document",
             "doc",
             "owner",
-            &store::providers::rebac::Subject {
+            &store::providers::authorization::rebac::Subject {
                 subject_type: "user".into(),
                 subject_id: support::SUBJECT.into(),
                 subject_relation: String::new(),

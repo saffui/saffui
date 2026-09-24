@@ -171,14 +171,14 @@ pub async fn fulfil_erasure(
             store::providers::events::outbox::erase_pending_for_user(transaction, &user_id)
                 .await
                 .map_err(|_| Unactionable::Backend)?;
-            store::providers::authz_policies::pseudonymize_decisions_of(
+            store::providers::authorization::authz_policies::pseudonymize_decisions_of(
                 transaction,
                 crate::context::PERSON_KIND,
                 &user_id,
             )
             .await
             .map_err(|_| Unactionable::Backend)?;
-            store::providers::rebac::unrelate_everything_naming(
+            store::providers::authorization::rebac::unrelate_everything_naming(
                 transaction,
                 crate::context::PERSON_KIND,
                 &user_id,

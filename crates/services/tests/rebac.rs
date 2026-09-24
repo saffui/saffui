@@ -4,7 +4,7 @@ use authz::rebac::{CompiledSchema, compile, parse};
 use services::authorization::rebac::{
     Budget, CHECK, Object, Step, Subject, Unwalkable, check, explain,
 };
-use store::providers::rebac;
+use store::providers::authorization::rebac;
 use store::tenancy::{TenantContext, UnitOfWork};
 use support::Fixture;
 

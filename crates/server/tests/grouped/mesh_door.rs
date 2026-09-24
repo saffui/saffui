@@ -137,7 +137,7 @@ async fn recorded(plane: &Plane, decision_id: &str) -> Option<(String, String)> 
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    store::providers::authz_policies::recent(&transaction, 50)
+    store::providers::authorization::authz_policies::recent(&transaction, 50)
         .await
         .unwrap()
         .into_iter()
@@ -401,19 +401,22 @@ async fn a_check_records_the_trace_of_the_request_it_weighs() {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    let found: Vec<String> =
-        store::providers::authz_policies::decisions_of_trace(&transaction, TRACE, 10)
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|held| held.decision_id)
-            .collect();
+    let found: Vec<String> = store::providers::authorization::authz_policies::decisions_of_trace(
+        &transaction,
+        TRACE,
+        10,
+    )
+    .await
+    .unwrap()
+    .into_iter()
+    .map(|held| held.decision_id)
+    .collect();
     assert_eq!(
         found,
         vec!["mesh-traced".to_owned()],
         "the check did not record the trace of the request it weighed"
     );
-    let untraced = store::providers::authz_policies::recent(&transaction, 50)
+    let untraced = store::providers::authorization::authz_policies::recent(&transaction, 50)
         .await
         .unwrap()
         .into_iter()

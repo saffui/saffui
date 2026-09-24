@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use authz::rebac::{CompiledSchema, Rule};
-use store::providers::rebac;
+use store::providers::authorization::rebac;
 use store::tenancy::UnitOfWork;
 
 /// How far a check may go. No default, since bounds a caller did not choose are

@@ -5,7 +5,8 @@ use models::entities::authz::{
     ResourceMutationModel, ResourceServerModel, ScopeModel, ScopeMutationModel, StoredPolicy,
 };
 use store::error::StoreError;
-use store::providers::{authz_policies, authz_surface, clients};
+use store::providers::authorization::{authz_policies, authz_surface};
+use store::providers::clients;
 use store::tenancy::UnitOfWork;
 
 /// Why the authorization surface could not be written.
@@ -425,7 +426,7 @@ pub async fn prune_decisions(
     transaction: &UnitOfWork,
     before: chrono::DateTime<chrono::Utc>,
 ) -> Result<u64, Unwritable> {
-    store::providers::authz_policies::prune_decisions(transaction, before)
+    store::providers::authorization::authz_policies::prune_decisions(transaction, before)
         .await
         .map_err(|_| Unwritable::Backend)
 }
@@ -473,7 +474,7 @@ pub async fn share_resource(
     server_id: &str,
     resource_id: &str,
     relation: &str,
-    with: &store::providers::rebac::Subject,
+    with: &store::providers::authorization::rebac::Subject,
     by: &str,
 ) -> Result<(), Unshareable> {
     let server = authz_surface::load_server(transaction, server_id)
@@ -526,7 +527,7 @@ pub async fn unshare_resource(
     server_id: &str,
     resource_id: &str,
     relation: &str,
-    with: &store::providers::rebac::Subject,
+    with: &store::providers::authorization::rebac::Subject,
 ) -> Result<(), Unshareable> {
     authz_surface::load_server(transaction, server_id)
         .await

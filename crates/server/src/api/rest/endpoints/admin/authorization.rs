@@ -440,9 +440,14 @@ pub async fn decisions(
     let limit = window.limit.clamp(1, 1000);
     let found = match window.trace_id.as_deref().filter(|named| !named.is_empty()) {
         Some(trace) => {
-            store::providers::authz_policies::decisions_of_trace(&transaction, trace, limit).await
+            store::providers::authorization::authz_policies::decisions_of_trace(
+                &transaction,
+                trace,
+                limit,
+            )
+            .await
         }
-        None => store::providers::authz_policies::recent(&transaction, limit).await,
+        None => store::providers::authorization::authz_policies::recent(&transaction, limit).await,
     }
     .map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(found))
@@ -461,10 +466,12 @@ pub async fn disagreements(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let found =
-        store::providers::authz_policies::disagreements(&transaction, window.limit.clamp(1, 1000))
-            .await
-            .map_err(|_| internal())?;
+    let found = store::providers::authorization::authz_policies::disagreements(
+        &transaction,
+        window.limit.clamp(1, 1000),
+    )
+    .await
+    .map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(found))
 }
 
@@ -707,7 +714,7 @@ pub async fn routes(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let held = store::providers::authz_routes::routes(&transaction)
+    let held = store::providers::authorization::authz_routes::routes(&transaction)
         .await
         .map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(
@@ -798,14 +805,14 @@ pub async fn put_route(
     // The resource server has to be one this realm protects: a route naming
     // a server that does not exist is a route whose decisions could only ever
     // be refusals, written as if they were rules.
-    if store::providers::authz_surface::load_server(&transaction, &server_id)
+    if store::providers::authorization::authz_surface::load_server(&transaction, &server_id)
         .await
         .map_err(|_| internal())?
         .is_none()
     {
         return Err(refused("no protected application answers to that name"));
     }
-    let route = store::providers::authz_routes::AuthzRoute {
+    let route = store::providers::authorization::authz_routes::AuthzRoute {
         route_id: route_id.clone(),
         method,
         path: route_path,
@@ -816,9 +823,13 @@ pub async fn put_route(
         priority: asked.priority,
         enabled: asked.enabled.unwrap_or(true),
     };
-    store::providers::authz_routes::keep(&transaction, &route, admin.context.principal.id())
-        .await
-        .map_err(|_| internal())?;
+    store::providers::authorization::authz_routes::keep(
+        &transaction,
+        &route,
+        admin.context.principal.id(),
+    )
+    .await
+    .map_err(|_| internal())?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(serde_json::json!({ "route_id": route_id })))
 }
@@ -833,9 +844,10 @@ pub async fn delete_route(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let removed = store::providers::authz_routes::drop_route(&transaction, &route_id)
-        .await
-        .map_err(|_| internal())?;
+    let removed =
+        store::providers::authorization::authz_routes::drop_route(&transaction, &route_id)
+            .await
+            .map_err(|_| internal())?;
     if !removed {
         return Err(ApiError::new(ErrorCode::ResourceNotFound));
     }
@@ -894,7 +906,7 @@ pub async fn share(
         &server_id,
         &resource_id,
         &asked.relation,
-        &store::providers::rebac::Subject {
+        &store::providers::authorization::rebac::Subject {
             subject_type: asked.subject_type,
             subject_id: asked.subject_id,
             subject_relation: asked.subject_relation,
@@ -926,7 +938,7 @@ pub async fn unshare(
         &server_id,
         &resource_id,
         &asked.relation,
-        &store::providers::rebac::Subject {
+        &store::providers::authorization::rebac::Subject {
             subject_type: asked.subject_type,
             subject_id: asked.subject_id,
             subject_relation: asked.subject_relation,

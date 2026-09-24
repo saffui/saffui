@@ -5,7 +5,7 @@ use models::entities::authz::{
     DecisionStrategy, PolicyEnforcementMode, ResourceModel, ResourceMutationModel,
     ResourceServerModel, ResourceServerMutationModel, ScopeModel, ScopeMutationModel,
 };
-use store::providers::authz_surface;
+use store::providers::authorization::authz_surface;
 use store::tenancy::TenantContext;
 use support::Fixture;
 

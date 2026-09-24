@@ -2279,7 +2279,7 @@ async fn an_erasure_erases_and_tells_the_world_on_its_way_out() {
                 object_type,
                 object_id,
                 relation,
-                &store::providers::rebac::Subject {
+                &store::providers::authorization::rebac::Subject {
                     subject_type: "user".into(),
                     subject_id: subject_id.into(),
                     subject_relation: String::new(),

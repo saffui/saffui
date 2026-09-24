@@ -220,7 +220,7 @@ async fn the_decision_log_forgets_only_when_told() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::authz_policies::record(
+        store::providers::authorization::authz_policies::record(
             &transaction,
             &AuthzDecisionRecord {
                 decision_id: "remembered".to_owned(),

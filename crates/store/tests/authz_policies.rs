@@ -6,7 +6,7 @@ use models::entities::authz::{
     PolicyTerms, ReportedDecision, StoredPolicy,
 };
 use store::error::StoreError;
-use store::providers::authz_policies;
+use store::providers::authorization::authz_policies;
 use store::tenancy::TenantContext;
 use support::Fixture;
 
@@ -1043,7 +1043,7 @@ async fn a_policy_something_is_conditioned_on_does_not_vanish() {
     // And removing the whole application still takes both ends of an edge in
     // one statement, which is why the constraint is no action and not restrict.
     assert!(
-        store::providers::authz_surface::delete_server(&transaction, "app")
+        store::providers::authorization::authz_surface::delete_server(&transaction, "app")
             .await
             .unwrap()
     );

@@ -77,7 +77,7 @@ async fn recorded(plane: &Plane, decision_id: &str) -> Option<(String, String, S
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    store::providers::authz_policies::recent(&transaction, 50)
+    store::providers::authorization::authz_policies::recent(&transaction, 50)
         .await
         .unwrap()
         .into_iter()

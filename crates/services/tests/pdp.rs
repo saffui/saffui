@@ -7,7 +7,8 @@ use models::sessions::records::{UserSessionModel, UserSessionState};
 use services::authorization::pdp::{Journal, Question, Resource, decide};
 use services::context::{Context, establish};
 use services::token::Verified;
-use store::providers::{authz_policies, sessions};
+use store::providers::authorization::authz_policies;
+use store::providers::sessions;
 use store::tenancy::{TenantContext, UnitOfWork};
 use support::Fixture;
 
@@ -430,9 +431,9 @@ definition document {
 }
 ";
     let compiled = authz::rebac::compile(&authz::rebac::parse(source).unwrap()).unwrap();
-    store::providers::rebac::put_schema(
+    store::providers::authorization::rebac::put_schema(
         &transaction,
-        &store::providers::rebac::StoredSchema {
+        &store::providers::authorization::rebac::StoredSchema {
             format: authz::rebac::FORMAT as i32,
             revision: 1,
             source: source.to_owned(),
@@ -466,12 +467,12 @@ definition document {
         "an unrelated caller was recorded as unanswerable"
     );
 
-    store::providers::rebac::relate(
+    store::providers::authorization::rebac::relate(
         &transaction,
         "document",
         "doc",
         "owner",
-        &store::providers::rebac::Subject {
+        &store::providers::authorization::rebac::Subject {
             subject_type: "user".into(),
             subject_id: "ada".into(),
             subject_relation: String::new(),
@@ -505,7 +506,7 @@ definition document {
     assert_eq!(unknown.computed, Decision::Deny);
 
     // And every one of the three is in the journal, named by what it was about.
-    let written = store::providers::authz_policies::recent(&transaction, 10)
+    let written = store::providers::authorization::authz_policies::recent(&transaction, 10)
         .await
         .unwrap();
     let kinds: Vec<&str> = written.iter().map(|e| e.resource_kind.as_str()).collect();

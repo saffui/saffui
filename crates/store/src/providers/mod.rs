@@ -1,7 +1,5 @@
 pub mod auth_flows;
-pub mod authz_policies;
-pub mod authz_routes;
-pub mod authz_surface;
+pub mod authorization;
 pub mod backchannel;
 pub mod client_scopes;
 pub mod clients;
@@ -24,7 +22,6 @@ pub mod pushed;
 pub mod realm_features;
 pub mod realm_keys;
 pub mod realms;
-pub mod rebac;
 pub mod replay;
 pub mod roles;
 pub mod sessions;

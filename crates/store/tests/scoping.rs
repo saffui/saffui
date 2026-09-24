@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crypto::provider::openssl::OpenSslProvider;
 use crypto::provider::{CryptoConfig, CryptoProvider};
@@ -8,6 +8,11 @@ use pgcore::tls::PgConnector;
 use store::error::StoreError;
 use store::schema::migrations;
 use store::tenancy::{Tenancy, TenantContext};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::watch;
+use tokio_postgres::config::Host;
 use tokio_postgres::{Config, NoTls};
 
 static DATABASE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -455,19 +460,174 @@ async fn kept_statements_stay_under_a_ceiling() {
     );
 }
 
-/// What the unit saves, measured rather than claimed.
+/// A relay between a pool and the database that counts the requests the client
+/// sends and can hold back the answers.
+///
+/// A request is a simple query or a sync closing an extended one, and the
+/// database answers each. Requests that all leave while the answers are held
+/// share one round trip.
+struct Relay {
+    port: u16,
+    requests: watch::Receiver<usize>,
+    answering: watch::Sender<bool>,
+}
+
+impl Relay {
+    async fn start() -> Self {
+        let database = owner_config();
+        let [Host::Tcp(host), ..] = database.get_hosts() else {
+            panic!("the relay reaches the database over TCP");
+        };
+        let upstream = (
+            host.clone(),
+            database.get_ports().first().copied().unwrap_or(5432),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (counted, requests) = watch::channel(0);
+        let (answering, held) = watch::channel(true);
+        tokio::spawn(async move {
+            while let Ok((client, _)) = listener.accept().await {
+                let database = TcpStream::connect(&upstream).await.unwrap();
+                let (from_client, to_client) = client.into_split();
+                let (from_database, to_database) = database.into_split();
+                tokio::spawn(count_requests(from_client, to_database, counted.clone()));
+                tokio::spawn(hold_answers(from_database, to_client, held.clone()));
+            }
+        });
+        Self {
+            port,
+            requests,
+            answering,
+        }
+    }
+
+    fn one_connection_pool(&self) -> Pool {
+        let app = app_config();
+        let mut config = Config::new();
+        config
+            .host("127.0.0.1")
+            .port(self.port)
+            .user(app.get_user().expect("the application role"))
+            .password(app.get_password().expect("its password"));
+        if let Some(database) = app.get_dbname() {
+            config.dbname(database);
+        }
+        Pool::builder(Manager::new(config, NoTls))
+            .max_size(1)
+            .build()
+            .expect("a pool of one")
+    }
+
+    /// Run `work` with every answer held until `requests` have left, then let
+    /// the answers through: one round trip means nothing was sent after them.
+    ///
+    /// A request that waits for an answer cannot leave while they are held, so
+    /// the hold gives up after ten seconds; pipelined work never comes near it.
+    async fn run_in_one_round_trip<T>(
+        &self,
+        step: &str,
+        requests: usize,
+        work: impl Future<Output = T>,
+    ) -> T {
+        let before = *self.requests.borrow();
+        let mut counted = self.requests.clone();
+        self.answering.send_replace(false);
+        let (done, ahead) = tokio::join!(work, async {
+            let _ = tokio::time::timeout(
+                Duration::from_secs(10),
+                counted.wait_for(|&sent| sent - before >= requests),
+            )
+            .await;
+            let ahead = *counted.borrow() - before;
+            self.answering.send_replace(true);
+            ahead
+        });
+        let sent = *self.requests.borrow() - before;
+        assert_eq!(
+            (ahead, sent),
+            (requests, requests),
+            "{step} took more than one round trip: requests sent before an answer \
+             came back, then in all"
+        );
+        done
+    }
+}
+
+/// Pass what the client sends on to the database, counting each request before
+/// it is forwarded, so no answer to it can come back first.
+async fn count_requests(
+    mut from_client: OwnedReadHalf,
+    mut to_database: OwnedWriteHalf,
+    counted: watch::Sender<usize>,
+) {
+    let mut chunk = [0u8; 8192];
+    let mut unread = Vec::new();
+    // The startup message alone has no type byte before its length.
+    let mut started = false;
+    loop {
+        let read = match from_client.read(&mut chunk).await {
+            Ok(0) | Err(_) => return,
+            Ok(read) => read,
+        };
+        unread.extend_from_slice(&chunk[..read]);
+        loop {
+            let tagged = usize::from(started);
+            let Some(length) = unread.get(tagged..tagged + 4) else {
+                break;
+            };
+            let whole = tagged + u32::from_be_bytes(length.try_into().unwrap()) as usize;
+            if unread.len() < whole {
+                break;
+            }
+            if started && matches!(unread[0], b'Q' | b'S') {
+                counted.send_modify(|sent| *sent += 1);
+            }
+            started = true;
+            unread.drain(..whole);
+        }
+        if to_database.write_all(&chunk[..read]).await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Pass the database's answers back to the client, unless they are held.
+async fn hold_answers(
+    mut from_database: OwnedReadHalf,
+    mut to_client: OwnedWriteHalf,
+    mut answering: watch::Receiver<bool>,
+) {
+    let mut chunk = [0u8; 8192];
+    loop {
+        let read = match from_database.read(&mut chunk).await {
+            Ok(0) | Err(_) => return,
+            Ok(read) => read,
+        };
+        if answering.wait_for(|open| *open).await.is_err() {
+            return;
+        }
+        if to_client.write_all(&chunk[..read]).await.is_err() {
+            return;
+        }
+    }
+}
+
+/// What the unit saves, counted rather than timed.
 ///
 /// Opening used to be a `BEGIN` and two settings sent as text, each prepared
 /// and then executed: five round trips. The unit pipelines one. A statement
 /// sent as text is prepared on every run; the unit prepares it once per
-/// connection. Both shapes run here side by side on the same connection, and
-/// the figures are printed. The assertion is loose on purpose: a noisy runner
-/// must not turn this into a coin toss, and the gap is wide enough that a
-/// weak bound still catches a unit that stopped pipelining or keeping.
+/// connection, so running it again is one round trip. A relay counts both.
+///
+/// Both shapes are also timed side by side and the figures printed, but not
+/// asserted: one run on a busy machine had the kept reads slower (0.9x), and a
+/// ratio cannot tell that noise from a unit that stopped pipelining or keeping.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_unit_opens_and_reads_in_fewer_round_trips() {
     const RUNS: u32 = 200;
+    const READ: &str = "SELECT tenant_id FROM tenants";
 
     let _turn = DATABASE.lock().await;
     let pool = one_connection_pool().await;
@@ -510,10 +670,7 @@ async fn a_unit_opens_and_reads_in_fewer_round_trips() {
         let connection = pool.get().await.unwrap();
         connection.batch_execute("BEGIN").await.unwrap();
         for _ in 0..RUNS {
-            connection
-                .query("SELECT tenant_id FROM tenants", &[])
-                .await
-                .unwrap();
+            connection.query(READ, &[]).await.unwrap();
         }
         connection.batch_execute("COMMIT").await.unwrap();
     }
@@ -523,9 +680,7 @@ async fn a_unit_opens_and_reads_in_fewer_round_trips() {
     {
         let unit = tenancy.begin(&acme).await.unwrap();
         for _ in 0..RUNS {
-            unit.query("SELECT tenant_id FROM tenants", &[])
-                .await
-                .unwrap();
+            unit.query(READ, &[]).await.unwrap();
         }
         unit.commit().await.unwrap();
     }
@@ -538,12 +693,25 @@ async fn a_unit_opens_and_reads_in_fewer_round_trips() {
         opened_one_by_one.as_secs_f64() / opened_as_units.as_secs_f64(),
         read_prepared_each_time.as_secs_f64() / read_kept.as_secs_f64(),
     );
-    assert!(
-        opened_as_units < opened_one_by_one,
-        "opening a unit is no longer cheaper than five round trips"
-    );
-    assert!(
-        read_kept < read_prepared_each_time,
-        "reading through a unit is no longer cheaper than preparing every time"
-    );
+
+    let relay = Relay::start().await;
+    let relayed = Tenancy::unpinned(relay.one_connection_pool());
+    // The first unit on a connection prepares the scope and the read; every
+    // later one has to find them kept.
+    let first = relayed.begin(&acme).await.unwrap();
+    first.query(READ, &[]).await.unwrap();
+    first.commit().await.unwrap();
+
+    let unit = relay
+        .run_in_one_round_trip("opening", 2, relayed.begin(&acme))
+        .await
+        .unwrap();
+    relay
+        .run_in_one_round_trip("reading", 1, unit.query(READ, &[]))
+        .await
+        .unwrap();
+    relay
+        .run_in_one_round_trip("committing", 2, unit.commit())
+        .await
+        .unwrap();
 }

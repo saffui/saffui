@@ -31,7 +31,7 @@ tracing = { workspace = true }
 secrecy = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util"] }
 deadpool-postgres = { workspace = true }
 # A secret is built to be hashed, and building one is what a test that proves
 # the column holds no presentable value has to do first.

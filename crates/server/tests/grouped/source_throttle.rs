@@ -314,9 +314,21 @@ async fn a_realm_that_does_not_throttle_counts_nothing() {
         let (status, body) = answered_from(&plane, Some(HERE), name, "Winter2026!").await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
     }
-    let (status, body) =
-        answered_from(&plane, Some(HERE), support::SUBJECT, support::PASSWORD).await;
-    assert_eq!(body["status"], "admitted", "{status}: {body}");
+    let response = posted(
+        &plane,
+        Some(HERE),
+        support::SUBJECT,
+        support::PASSWORD,
+        false,
+    )
+    .await;
+    assert_eq!(
+        device_left_by(&response),
+        None,
+        "a realm that weighs no device minted a token"
+    );
+    let body: Value = test::read_body_json(response).await;
+    assert_eq!(body["status"], "admitted", "{body}");
     assert_eq!(counted_for_the_address(&plane).await, (0, 0));
 }
 

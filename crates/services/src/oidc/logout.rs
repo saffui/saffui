@@ -341,6 +341,17 @@ async fn mint_notice(
     }
 }
 
+/// The logins that stand behind one upstream account, through this provider.
+pub async fn read_brokered_sessions(
+    transaction: &UnitOfWork,
+    provider_alias: &str,
+    external_user_id: &str,
+) -> Result<Vec<String>, crate::realm::Unreadable> {
+    sessions::brokered(transaction, provider_alias, external_user_id)
+        .await
+        .map_err(|_| crate::realm::Unreadable)
+}
+
 /// End the logins an upstream's logout names. Every client of each login is told
 /// while the login's record can still be read, and the notices go out once the
 /// caller has written the endings, as the realm's own logout does it. Without the

@@ -3,6 +3,7 @@ use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
 use config::serving::{LoginUi, PublicOrigin};
 use serde::Deserialize;
+use services::federation::brokering;
 use services::federation::saml_brokering::{
     self, SamlLogoutMessage, SamlUpstream, TakenLogout, Unheeded, Untaken,
 };
@@ -45,9 +46,7 @@ pub async fn metadata(
         Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
     };
 
-    let Ok(Some(provider)) =
-        store::providers::federation::brokering::provider_by_alias(&transaction, &alias).await
-    else {
+    let Ok(Some(provider)) = brokering::read_provider(&transaction, &alias).await else {
         return told(StatusCode::NOT_FOUND, "no-such-provider");
     };
     if provider.enabled == Some(false) || !saml_brokering::is_saml(&provider) {
@@ -151,9 +150,7 @@ pub async fn consume_assertion(
         }
         Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
     };
-    let Ok(Some(provider)) =
-        store::providers::federation::brokering::provider_by_alias(&transaction, &alias).await
-    else {
+    let Ok(Some(provider)) = brokering::read_provider(&transaction, &alias).await else {
         return refused();
     };
     if provider.enabled == Some(false) || !saml_brokering::is_saml(&provider) {
@@ -375,9 +372,7 @@ async fn answer_logout_message(
         }
         Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
     };
-    let Ok(Some(provider)) =
-        store::providers::federation::brokering::provider_by_alias(&transaction, alias).await
-    else {
+    let Ok(Some(provider)) = brokering::read_provider(&transaction, alias).await else {
         return refused();
     };
     if provider.enabled == Some(false) || !saml_brokering::is_saml(&provider) {

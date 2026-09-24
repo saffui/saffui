@@ -3,6 +3,7 @@ pub mod admin;
 pub mod authorization;
 pub mod client;
 pub mod context;
+pub mod directory;
 pub mod federation;
 pub mod governance;
 pub mod messaging;

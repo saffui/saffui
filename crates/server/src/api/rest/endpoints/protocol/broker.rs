@@ -56,9 +56,7 @@ pub async fn begin(
         Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
     };
 
-    let Ok(Some(provider)) =
-        store::providers::federation::brokering::provider_by_alias(&transaction, &alias).await
-    else {
+    let Ok(Some(provider)) = brokering::read_provider(&transaction, &alias).await else {
         return told(StatusCode::NOT_FOUND, "no-such-provider");
     };
     if provider.enabled == Some(false) {
@@ -94,7 +92,7 @@ pub async fn begin(
     ) else {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };
-    if store::providers::federation::brokering::open_state(&transaction, &departure.state)
+    if brokering::keep_departure(&transaction, &departure)
         .await
         .is_err()
         || transaction.commit().await.is_err()
@@ -155,12 +153,9 @@ async fn leave_for_saml(
     ) else {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };
-    if store::providers::federation::saml_brokering::open_login_request(
-        &transaction,
-        &departure.request,
-    )
-    .await
-    .is_err()
+    if saml_brokering::keep_departure(&transaction, &departure)
+        .await
+        .is_err()
         || transaction.commit().await.is_err()
     {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
@@ -220,9 +215,7 @@ pub async fn conclude(
         Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
     };
 
-    let Ok(Some(provider)) =
-        store::providers::federation::brokering::provider_by_alias(&transaction, &alias).await
-    else {
+    let Ok(Some(provider)) = brokering::read_provider(&transaction, &alias).await else {
         return refused();
     };
     let Ok(upstream) = Upstream::parse(&provider) else {
@@ -466,8 +459,7 @@ pub(crate) async fn admit_arrival(
     external_user_id: &str,
     now: DateTime<Utc>,
 ) -> Result<(Admission, Landing), HttpResponse> {
-    let Ok(Some(person)) = store::providers::directory::users::load(transaction, user_id).await
-    else {
+    let Ok(Some(person)) = services::directory::read_person(transaction, user_id).await else {
         return Err(told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"));
     };
     let step = match auth::login::browser::admit_federated(
@@ -707,9 +699,7 @@ pub async fn dismiss(
         }
         Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
     };
-    let Ok(Some(provider)) =
-        store::providers::federation::brokering::provider_by_alias(&transaction, &alias).await
-    else {
+    let Ok(Some(provider)) = brokering::read_provider(&transaction, &alias).await else {
         tracing::warn!(alias, "an upstream logout named a provider nobody holds");
         return refused();
     };
@@ -739,12 +729,12 @@ pub async fn dismiss(
 
     // Each token acts once. A replay inside its window is refused with the
     // same face as a bad token, and the memory ages out with the sweep.
-    let remembered = store::providers::protocol::replay::remember_once(
+    let remembered = brokering::remember_dismissal(
         &transaction,
         sealing.provider.digest(),
-        "broker-logout-jti",
-        &format!("{alias}:{}", dismissal.jti),
-        now + chrono::Duration::seconds(600),
+        &alias,
+        &dismissal,
+        now,
     )
     .await;
     match remembered {
@@ -756,7 +746,7 @@ pub async fn dismiss(
         Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
     }
 
-    let Ok(standing) = store::providers::protocol::sessions::brokered(
+    let Ok(standing) = services::oidc::logout::read_brokered_sessions(
         &transaction,
         &alias,
         &dismissal.external_user_id,

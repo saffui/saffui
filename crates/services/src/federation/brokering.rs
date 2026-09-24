@@ -1,5 +1,5 @@
 use chrono::{DateTime, Duration, Utc};
-use crypto::provider::{CryptoProvider, HashAlg, SignAlg};
+use crypto::provider::{CryptoProvider, DigestProvider, HashAlg, SignAlg};
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
 use models::broker::link::{LinkDecision, LocalAccount, UpstreamIdentity};
 use models::entities::attributes::{AttributeValue, AttributesMap};
@@ -8,6 +8,7 @@ use models::entities::brokering::{BrokerLoginState, FederatedIdentityModel, IdpM
 use serde_json::{Map, Value};
 use store::providers::directory::users;
 use store::providers::federation::brokering;
+use store::providers::protocol::replay;
 use store::tenancy::UnitOfWork;
 
 use crate::oidc::mappers::{MULTIVALUED, config_bool};
@@ -231,6 +232,17 @@ pub enum Unbrokered {
     Backend,
 }
 
+/// The provider this realm holds under an alias, whatever it is for and
+/// whether it is on.
+pub async fn read_provider(
+    transaction: &UnitOfWork,
+    alias: &str,
+) -> Result<Option<IdentityProviderModel>, crate::realm::Unreadable> {
+    brokering::provider_by_alias(transaction, alias)
+        .await
+        .map_err(|_| crate::realm::Unreadable)
+}
+
 /// Every provider this realm holds, whatever it is for and whether it is on.
 pub async fn read_providers(
     transaction: &UnitOfWork,
@@ -290,6 +302,16 @@ pub fn depart(
             expires_at: now + STATE_LIFESPAN,
         },
     })
+}
+
+/// Keep the state a departure leaves behind, which the way back must spend.
+pub async fn keep_departure(
+    transaction: &UnitOfWork,
+    departure: &Departure,
+) -> Result<(), Unbrokered> {
+    brokering::open_state(transaction, &departure.state)
+        .await
+        .map_err(|_| Unbrokered::Backend)
 }
 
 /// Spend the state the way back names, exactly once, on this provider only.
@@ -1039,6 +1061,26 @@ pub fn dismissed(
         external_user_id: subject.to_owned(),
         jti: jti.to_owned(),
     })
+}
+
+/// Remember a dismissal's token for as long as a replay of it could still be
+/// presented. False when it was remembered already.
+pub async fn remember_dismissal(
+    transaction: &UnitOfWork,
+    digest: &dyn DigestProvider,
+    alias: &str,
+    dismissal: &Dismissal,
+    now: DateTime<Utc>,
+) -> Result<bool, Unbrokered> {
+    replay::remember_once(
+        transaction,
+        digest,
+        "broker-logout-jti",
+        &format!("{alias}:{}", dismissal.jti),
+        now + Duration::seconds(600),
+    )
+    .await
+    .map_err(|_| Unbrokered::Backend)
 }
 
 /// Percent-encode one query value: RFC 3986 unreserved stays, all else goes

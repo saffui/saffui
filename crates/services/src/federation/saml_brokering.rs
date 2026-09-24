@@ -424,6 +424,20 @@ pub fn arrive(upstream: &SamlUpstream, accepted: &Accepted) -> Result<Arrival, U
     })
 }
 
+/// Keep the request row a departure leaves behind, which the provider's answer
+/// will be held to.
+pub async fn keep_departure(
+    transaction: &UnitOfWork,
+    departure: &SamlDeparture,
+) -> Result<(), Unbrokered> {
+    store::providers::federation::saml_brokering::open_login_request(
+        transaction,
+        &departure.request,
+    )
+    .await
+    .map_err(|_| Unbrokered::Backend)
+}
+
 /// The private keys a realm decrypts assertions with: every RSA encryption key it
 /// still holds for use, a rotated one included, so an assertion encrypted to a key a
 /// provider imported before the rotation still opens. A key that does not read as

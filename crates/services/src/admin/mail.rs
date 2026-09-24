@@ -87,3 +87,15 @@ pub async fn forget(transaction: &UnitOfWork) -> Result<(), Unsettable> {
         .then_some(())
         .ok_or(Unsettable::NotFound)
 }
+
+/// What this realm tried to send since `since` and could not, most recent
+/// first, at most `max` of them.
+pub async fn read_refusals_since(
+    transaction: &UnitOfWork,
+    since: chrono::DateTime<chrono::Utc>,
+    max: i64,
+) -> Result<Vec<models::messaging::Delivery>, Unsettable> {
+    store::providers::events::deliveries::read_refusals_since(transaction, since, max)
+        .await
+        .map_err(|_| Unsettable::Unwritable)
+}

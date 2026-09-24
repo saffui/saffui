@@ -56,7 +56,7 @@ pub async fn keep(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    store::providers::realms::page_previews::keep(
+    services::realm::page_previews::keep_page_preview(
         &transaction,
         &preview_id,
         &asked.overrides,

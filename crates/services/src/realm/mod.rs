@@ -3,6 +3,7 @@
 
 pub mod feature;
 pub mod housekeeping;
+pub mod page_previews;
 pub mod provisioning;
 pub mod theme;
 

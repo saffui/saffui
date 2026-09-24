@@ -11,6 +11,7 @@ pub mod idps;
 pub mod iga;
 pub mod keys;
 pub mod mail;
+pub mod metrics;
 pub mod negotiation;
 pub mod portability;
 pub mod protocol_mappers;

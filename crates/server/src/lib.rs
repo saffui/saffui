@@ -19,7 +19,8 @@ mod tests {
     /// shape of a listing.
     const NAMEABLE: [&str; 6] = ["error", "keyring", "live", "query", "self", "tenancy"];
 
-    /// The doors reach the store's rows through services and nowhere else.
+    /// The doors reach the store's rows through services and nowhere else,
+    /// and so do the calls out and the timed passes they hand work to.
     ///
     /// A door parses, opens the unit of work, commits and answers; which rows
     /// to read or write, and what they mean, is decided below it. Any other
@@ -29,9 +30,13 @@ mod tests {
     /// `store::{tenancy::Tenancy, audit}` is caught like the rest.
     #[test]
     fn no_door_reaches_the_store_rows_itself() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let this = manifest.join("src").join("lib.rs");
+        let crates = manifest.parent().expect("the server sits among the crates");
         let mut offenders = Vec::new();
-        let mut pending = vec![root.clone()];
+        let mut pending = Vec::from(
+            ["server", "outbound", "scheduler"].map(|member| crates.join(member).join("src")),
+        );
         while let Some(path) = pending.pop() {
             if path.is_dir() {
                 pending.extend(
@@ -47,7 +52,7 @@ mod tests {
             let mut source = std::fs::read_to_string(&path).unwrap();
             // This module spells the paths it hunts for; what stands above it
             // may not.
-            if path == root.join("lib.rs")
+            if path == this
                 && let Some(at) = source.find("#[cfg(test)]")
             {
                 source.truncate(at);

@@ -1,7 +1,7 @@
 use crypto::provider::CryptoProvider;
 use data_encoding::BASE64URL_NOPAD;
 use models::entities::client::ClientModel;
-use store::providers::pairwise;
+use store::providers::directory::pairwise;
 use store::tenancy::UnitOfWork;
 use url::Url;
 

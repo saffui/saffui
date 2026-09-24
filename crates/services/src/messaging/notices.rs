@@ -6,10 +6,10 @@ use models::entities::mail::MailSettings;
 use models::entities::realm::RealmModel;
 use models::entities::user::{UserModel, profile};
 use serde_json::Value;
+use store::providers::directory::{credentials, users, webauthn};
 use store::providers::events::notices::{self, HeldNotice, Noted, Settled};
 use store::providers::events::outbox::{self, OutboxEvent};
 use store::providers::federation::brokering;
-use store::providers::{credentials, users, webauthn};
 use store::tenancy::UnitOfWork;
 
 /// What a receipt for a security notice is recorded under.

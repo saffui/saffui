@@ -5,7 +5,7 @@ use models::entities::client::{Protocol, ProtocolMapperModel};
 use models::entities::user::{UserModel, profile};
 use serde_json::{Map, Value};
 use store::providers::clients::client_scopes;
-use store::providers::{organizations, roles, users};
+use store::providers::directory::{organizations, roles, users};
 use store::tenancy::UnitOfWork;
 
 /// Map a user scalar (`username` / `email` / `emailVerified`) to a claim.

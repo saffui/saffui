@@ -7,7 +7,8 @@ use models::entities::user::UserCreateModel;
 use models::sessions::records::{UserSessionModel, UserSessionState};
 use services::context::{Acting, NotEstablished, establish};
 use services::token::Verified;
-use store::providers::{organizations, sessions, users};
+use store::providers::directory::{organizations, users};
+use store::providers::sessions;
 use store::tenancy::{TenantContext, UnitOfWork};
 use support::Fixture;
 

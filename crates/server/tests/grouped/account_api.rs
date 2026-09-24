@@ -226,9 +226,9 @@ async fn held_password_is(plane: &Plane, offered: &str) -> bool {
 
 async fn plant_key(plane: &Plane, credential_id: &[u8]) {
     let transaction = plane.scoped(&within()).await;
-    store::providers::webauthn::enrol(
+    store::providers::directory::webauthn::enrol(
         &transaction,
-        &store::providers::webauthn::EnrolledCredential {
+        &store::providers::directory::webauthn::EnrolledCredential {
             credential_id: credential_id.to_vec(),
             user_id: support::SUBJECT.into(),
             label: "laptop".into(),
@@ -249,7 +249,7 @@ async fn plant_key(plane: &Plane, credential_id: &[u8]) {
 async fn plant_recovery_codes(plane: &Plane) {
     use crypto::provider::CryptoProvider as _;
     let transaction = plane.scoped(&within()).await;
-    store::providers::credentials::replace_recovery_codes(
+    store::providers::directory::credentials::replace_recovery_codes(
         &transaction,
         support::provider().digest(),
         support::REALM,
@@ -1591,7 +1591,7 @@ async fn a_sign_in_through_the_account_console_opens_the_account_api() {
 async fn keep_consent(plane: &Plane, user_id: &str, client_id: &str, scopes: &[&str]) {
     let transaction = plane.scoped(&within()).await;
     let scopes: Vec<String> = scopes.iter().map(|scope| (*scope).to_owned()).collect();
-    store::providers::consents::keep(
+    store::providers::directory::consents::keep(
         &transaction,
         user_id,
         client_id,
@@ -1605,7 +1605,7 @@ async fn keep_consent(plane: &Plane, user_id: &str, client_id: &str, scopes: &[&
 
 async fn consent_held(plane: &Plane, user_id: &str, client_id: &str) -> bool {
     let transaction = plane.scoped(&within()).await;
-    store::providers::consents::held(&transaction, user_id, client_id)
+    store::providers::directory::consents::held(&transaction, user_id, client_id)
         .await
         .expect("the consents table")
         .is_some()

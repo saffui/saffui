@@ -166,7 +166,7 @@ async fn granted_role(plane: &Plane, user_id: &str, role_id: &str) {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    store::providers::roles::grant_to_user(&transaction, user_id, role_id)
+    store::providers::directory::roles::grant_to_user(&transaction, user_id, role_id)
         .await
         .unwrap();
     transaction.commit().await.unwrap();

@@ -1,8 +1,8 @@
 mod support;
 
 use models::entities::credentials::AuthenticatorAttachment;
+use store::providers::directory::webauthn::{self, EnrolledCredential};
 use store::providers::login::{self, AuthSession};
-use store::providers::webauthn::{self, EnrolledCredential};
 use store::tenancy::{TenantContext, UnitOfWork};
 use support::Fixture;
 

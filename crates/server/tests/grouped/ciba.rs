@@ -884,7 +884,7 @@ async fn a_person_with_a_code_rings_only_for_who_knows_it() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        let mut person = store::providers::users::load(&transaction, support::SUBJECT)
+        let mut person = store::providers::directory::users::load(&transaction, support::SUBJECT)
             .await
             .unwrap()
             .expect("ada");
@@ -895,7 +895,7 @@ async fn a_person_with_a_code_rings_only_for_who_knows_it() {
                 "ciba.user_code_digest".to_owned(),
                 AttributeValue::Str(code_digest),
             );
-        store::providers::users::update(&transaction, &person)
+        store::providers::directory::users::update(&transaction, &person)
             .await
             .unwrap();
         transaction.commit().await.unwrap();
@@ -1056,7 +1056,7 @@ async fn texting_arranged(plane: &Plane, phone_verified: bool) {
     )
     .await
     .expect("the settings kept");
-    store::providers::users::set_phone(
+    store::providers::directory::users::set_phone(
         &transaction,
         support::SUBJECT,
         Some("+22890123456"),
@@ -1158,7 +1158,7 @@ async fn a_silent_phone_never_costs_the_request() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::users::set_phone(
+        store::providers::directory::users::set_phone(
             &transaction,
             support::SUBJECT,
             Some("+22890123456"),

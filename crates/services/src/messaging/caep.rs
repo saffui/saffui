@@ -192,7 +192,7 @@ fn credential_change_claims(payload: &Value) -> Value {
 /// keychain. With neither, it stays `webauthn`.
 fn translate_credential_type(payload: &Value) -> Value {
     let named = payload["credential_type"].as_str().unwrap_or_default();
-    if named == store::providers::webauthn::CREDENTIAL_TYPE {
+    if named == store::providers::directory::webauthn::CREDENTIAL_TYPE {
         let attachment = payload["attachment"]
             .as_str()
             .and_then(|reported| reported.parse::<AuthenticatorAttachment>().ok());

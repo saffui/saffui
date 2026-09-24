@@ -242,7 +242,7 @@ pub async fn read_password_history(
         .await
         .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
-    let mut held = store::providers::credentials::load_for_user_of_type(
+    let mut held = store::providers::directory::credentials::load_for_user_of_type(
         &transaction,
         &user_id,
         models::entities::credentials::CredentialType::PasswordHistory,
@@ -411,7 +411,7 @@ pub async fn consents(
         .await
         .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
-    let held = store::providers::consents::of_user(&transaction, &user_id)
+    let held = store::providers::directory::consents::of_user(&transaction, &user_id)
         .await
         .map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(serde_json::json!({
@@ -441,7 +441,7 @@ pub async fn withdraw_consent(
         .await
         .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
-    if !store::providers::consents::withdraw(&transaction, &user_id, &client_id)
+    if !store::providers::directory::consents::withdraw(&transaction, &user_id, &client_id)
         .await
         .map_err(|_| internal())?
     {
@@ -464,7 +464,7 @@ pub async fn effective_roles(
         .await
         .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
-    let held = store::providers::roles::effective_roles(&transaction, &user_id)
+    let held = store::providers::directory::roles::effective_roles(&transaction, &user_id)
         .await
         .map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(serde_json::json!({
@@ -496,7 +496,7 @@ pub async fn member_groups(
     let mut groups = Vec::new();
     // Joined memberships only: each row here backs a remove control, and a
     // group reached through a parent has no membership row to remove.
-    for group_id in store::providers::users::groups_of(&transaction, &user_id)
+    for group_id in store::providers::directory::users::groups_of(&transaction, &user_id)
         .await
         .map_err(|_| internal())?
     {
@@ -525,7 +525,7 @@ pub async fn member_organizations(
         .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
     let mut organizations = Vec::new();
-    for org_id in store::providers::organizations::of_member(&transaction, &user_id)
+    for org_id in store::providers::directory::organizations::of_member(&transaction, &user_id)
         .await
         .map_err(|_| internal())?
     {

@@ -3,8 +3,9 @@ use config::serving::PublicOrigin;
 use crypto::provider::CryptoProvider;
 use models::sessions::records::{UserSessionModel, UserSessionState};
 use serde_json::Value;
+use store::providers::directory::users;
 use store::providers::login::AuthSession;
-use store::providers::{login, realms, sessions, users};
+use store::providers::{login, realms, sessions};
 use store::tenancy::{TenantContext, UnitOfWork};
 
 use crate::login::authenticator::Answer;
@@ -683,7 +684,8 @@ async fn named_subject(
             && let Ok(presented) =
                 serde_json::from_str::<webauthn_rs::prelude::PublicKeyCredential>(handed_back)
             && let Ok(Some(enrolled)) =
-                store::providers::webauthn::by_id(transaction, presented.raw_id.as_ref()).await
+                store::providers::directory::webauthn::by_id(transaction, presented.raw_id.as_ref())
+                    .await
         {
             return Ok(users::load(transaction, &enrolled.user_id)
                 .await
@@ -755,7 +757,7 @@ async fn named_subject(
         users::create(transaction, &shadow)
             .await
             .map_err(|_| Unanswerable::Unreadable)?;
-        store::providers::roles::join_default_groups(transaction, &shadow.user_id)
+        store::providers::directory::roles::join_default_groups(transaction, &shadow.user_id)
             .await
             .map_err(|_| Unanswerable::Unreadable)?;
         return Ok(Some(shadow));

@@ -41,7 +41,7 @@ async fn plant_what_the_console_lists(plane: &Plane) {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
-    store::providers::consents::keep(
+    store::providers::directory::consents::keep(
         &transaction,
         support::SUBJECT,
         support::CONFIDENTIAL,

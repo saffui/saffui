@@ -11,7 +11,8 @@ use models::entities::attributes::AttributeValue;
 use models::entities::client::{ClientCreateModel, ClientModel, Protocol};
 use models::entities::user::UserCreateModel;
 use store::error::StoreError;
-use store::providers::{clients, users};
+use store::providers::clients;
+use store::providers::directory::users;
 use store::tenancy::UnitOfWork;
 
 use crate::authorization::capability;

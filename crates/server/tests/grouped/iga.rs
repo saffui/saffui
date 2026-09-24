@@ -64,7 +64,7 @@ async fn planted_role(plane: &Plane, role_id: &str) {
         REALM.into(),
         models::auditable::AuditableModel::from_creator(support::TENANT.into(), "root".into()),
     );
-    store::providers::roles::create(&transaction, &role)
+    store::providers::directory::roles::create(&transaction, &role)
         .await
         .unwrap();
     transaction.commit().await.unwrap();
@@ -75,11 +75,11 @@ async fn roles_of(plane: &Plane, user_name: &str) -> Vec<String> {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    let person = store::providers::users::load_by_name(&transaction, user_name)
+    let person = store::providers::directory::users::load_by_name(&transaction, user_name)
         .await
         .unwrap()
         .expect("a person by that name");
-    store::providers::roles::effective_roles(&transaction, &person.user_id)
+    store::providers::directory::roles::effective_roles(&transaction, &person.user_id)
         .await
         .unwrap()
         .into_iter()
@@ -169,7 +169,7 @@ async fn a_whole_working_life_converges_by_itself() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        let mut person = store::providers::users::load_by_name(&transaction, "grace")
+        let mut person = store::providers::directory::users::load_by_name(&transaction, "grace")
             .await
             .unwrap()
             .expect("grace");
@@ -180,7 +180,7 @@ async fn a_whole_working_life_converges_by_itself() {
                 "department".into(),
                 AttributeValue::Str("engineering".into()),
             );
-        store::providers::users::update(&transaction, &person)
+        store::providers::directory::users::update(&transaction, &person)
             .await
             .unwrap();
         transaction.commit().await.unwrap();
@@ -196,13 +196,17 @@ async fn a_whole_working_life_converges_by_itself() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        let grace = store::providers::users::load_by_name(&transaction, "grace")
+        let grace = store::providers::directory::users::load_by_name(&transaction, "grace")
             .await
             .unwrap()
             .expect("grace");
-        store::providers::roles::grant_to_user(&transaction, &grace.user_id, "hand-picked")
-            .await
-            .unwrap();
+        store::providers::directory::roles::grant_to_user(
+            &transaction,
+            &grace.user_id,
+            "hand-picked",
+        )
+        .await
+        .unwrap();
         transaction.commit().await.unwrap();
     }
 
@@ -214,7 +218,7 @@ async fn a_whole_working_life_converges_by_itself() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        let mut person = store::providers::users::load_by_name(&transaction, "grace")
+        let mut person = store::providers::directory::users::load_by_name(&transaction, "grace")
             .await
             .unwrap()
             .expect("grace");
@@ -222,7 +226,7 @@ async fn a_whole_working_life_converges_by_itself() {
             .attributes
             .get_or_insert_with(Default::default)
             .insert("department".into(), AttributeValue::Str("hr".into()));
-        store::providers::users::update(&transaction, &person)
+        store::providers::directory::users::update(&transaction, &person)
             .await
             .unwrap();
         transaction.commit().await.unwrap();
@@ -382,10 +386,11 @@ async fn a_lifecycle_grant_that_breaks_a_separation_is_withheld() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        let person = store::providers::users::load_by_name(&transaction, support::SUBJECT)
-            .await
-            .unwrap()
-            .expect("the subject");
+        let person =
+            store::providers::directory::users::load_by_name(&transaction, support::SUBJECT)
+                .await
+                .unwrap()
+                .expect("the subject");
         store::providers::governance::birthright::governed_of(&transaction, &person.user_id)
             .await
             .unwrap()
@@ -434,12 +439,13 @@ async fn a_standing_breach_does_not_withhold_an_unrelated_grant() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        let person = store::providers::users::load_by_name(&transaction, support::SUBJECT)
-            .await
-            .unwrap()
-            .expect("the subject");
+        let person =
+            store::providers::directory::users::load_by_name(&transaction, support::SUBJECT)
+                .await
+                .unwrap()
+                .expect("the subject");
         for role in ["payer", "approver"] {
-            store::providers::roles::grant_to_user(&transaction, &person.user_id, role)
+            store::providers::directory::roles::grant_to_user(&transaction, &person.user_id, role)
                 .await
                 .unwrap();
         }

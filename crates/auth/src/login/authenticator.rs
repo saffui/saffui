@@ -12,7 +12,7 @@ use models::entities::mail::MailSettings;
 use models::entities::realm::RealmModel;
 use models::entities::user::UserModel;
 use secrecy::{ExposeSecret, SecretBox};
-use store::providers::{credentials, one_time_tokens, users};
+use store::providers::directory::{credentials, one_time_tokens, users};
 use store::tenancy::UnitOfWork;
 
 use crate::messaging::{Message, Outgoing};
@@ -1058,7 +1058,8 @@ async fn webauthn(
         return Answered::plain(Outcome::Failed);
     };
 
-    let Ok(enrolled) = store::providers::webauthn::of_user(transaction, &subject.user_id).await
+    let Ok(enrolled) =
+        store::providers::directory::webauthn::of_user(transaction, &subject.user_id).await
     else {
         return Answered::plain(Outcome::Failed);
     };
@@ -1122,7 +1123,7 @@ async fn webauthn(
     // The library says the assertion checks out; the store says whether this
     // device has gone backwards, and one that has is refused rather than
     // recorded.
-    let advanced = store::providers::webauthn::record_use(
+    let advanced = store::providers::directory::webauthn::record_use(
         transaction,
         result.cred_id().as_ref(),
         i64::from(result.counter()),

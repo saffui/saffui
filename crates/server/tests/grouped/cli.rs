@@ -84,7 +84,7 @@ async fn the_plane_is_operated_from_a_terminal() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::roles::grant_to_user(
+        store::providers::directory::roles::grant_to_user(
             &transaction,
             &format!("service-account-{}", support::CONFIDENTIAL),
             "admins",

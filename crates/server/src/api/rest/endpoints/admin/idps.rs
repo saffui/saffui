@@ -160,7 +160,7 @@ pub async fn identities_of_user(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    if store::providers::users::load(&transaction, &user_id)
+    if store::providers::directory::users::load(&transaction, &user_id)
         .await
         .map_err(|_| internal())?
         .is_none()

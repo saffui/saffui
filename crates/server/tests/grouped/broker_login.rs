@@ -305,7 +305,7 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
         .await
         .unwrap()
         .expect("a link was written");
-        let person = store::providers::users::load(&transaction, &linked)
+        let person = store::providers::directory::users::load(&transaction, &linked)
             .await
             .unwrap()
             .expect("the person the link names");
@@ -318,7 +318,7 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        let person = store::providers::users::load(&transaction, &linked)
+        let person = store::providers::directory::users::load(&transaction, &linked)
             .await
             .unwrap()
             .expect("the person");
@@ -331,7 +331,7 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
             "the attribute rule did not write on first arrival"
         );
         assert!(
-            store::providers::roles::effective_roles(&transaction, &linked)
+            store::providers::directory::roles::effective_roles(&transaction, &linked)
                 .await
                 .unwrap()
                 .iter()
@@ -349,7 +349,7 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
                 AttributeValue::Str("scrubbed".into()),
             );
         assert!(
-            store::providers::users::update(&transaction, &person)
+            store::providers::directory::users::update(&transaction, &person)
                 .await
                 .unwrap()
         );
@@ -394,7 +394,7 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::users::load(&transaction, &linked)
+        store::providers::directory::users::load(&transaction, &linked)
             .await
             .unwrap()
             .expect("the person")
@@ -560,7 +560,7 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::roles::effective_roles(&transaction, &linked)
+        store::providers::directory::roles::effective_roles(&transaction, &linked)
             .await
             .unwrap()
             .into_iter()
@@ -1106,7 +1106,7 @@ async fn a_plain_oauth2_upstream_links_only_by_an_address_its_list_verifies() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::users::load(&transaction, support::SUBJECT)
+        store::providers::directory::users::load(&transaction, support::SUBJECT)
             .await
             .expect("the account table")
             .expect("the local account")
@@ -1227,7 +1227,7 @@ async fn register_account(
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
     let transaction = plane.scoped(&context).await;
-    store::providers::users::load_by_name(&transaction, user_name)
+    store::providers::directory::users::load_by_name(&transaction, user_name)
         .await
         .expect("the users table")
         .expect("the registered account")
@@ -1288,7 +1288,7 @@ async fn a_registration_on_an_unproven_address_is_not_handed_an_arrival_vouching
             bound.is_empty(),
             "the unproven account was bound: {bound:?}"
         );
-        let holder = store::providers::users::sole_by_email(&transaction, VOUCHED)
+        let holder = store::providers::directory::users::sole_by_email(&transaction, VOUCHED)
             .await
             .expect("the users table")
             .expect("one account alone holds the address");
@@ -1300,13 +1300,14 @@ async fn a_registration_on_an_unproven_address_is_not_handed_an_arrival_vouching
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        let mut proven = store::providers::users::load(&transaction, &registered.user_id)
-            .await
-            .expect("the users table")
-            .expect("the registered account");
+        let mut proven =
+            store::providers::directory::users::load(&transaction, &registered.user_id)
+                .await
+                .expect("the users table")
+                .expect("the registered account");
         proven.email_verified = Some(true);
         assert!(
-            store::providers::users::update(&transaction, &proven)
+            store::providers::directory::users::update(&transaction, &proven)
                 .await
                 .expect("the users table")
         );
@@ -1380,7 +1381,7 @@ async fn an_arrival_gets_an_account_of_its_own_where_accounts_may_share_an_addre
         linked, registered.user_id,
         "the unproven account received the arrival"
     );
-    let own = store::providers::users::load(&transaction, &linked)
+    let own = store::providers::directory::users::load(&transaction, &linked)
         .await
         .expect("the users table")
         .expect("the arrival's own account");
@@ -2119,11 +2120,11 @@ async fn read_mapped_person(
         .await
         .expect("a read")
         .expect("a linked person");
-    let person = store::providers::users::load(&transaction, &user_id)
+    let person = store::providers::directory::users::load(&transaction, &user_id)
         .await
         .expect("a read")
         .expect("the person");
-    let roles = store::providers::roles::direct_roles_of(&transaction, &user_id)
+    let roles = store::providers::directory::roles::direct_roles_of(&transaction, &user_id)
         .await
         .expect("a read");
     (person.attributes.unwrap_or_default(), roles)

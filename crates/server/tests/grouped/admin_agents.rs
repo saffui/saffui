@@ -87,10 +87,11 @@ async fn an_agent_is_born_whole_and_keyless_or_not_at_all() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        let account = store::providers::users::load_service_account(&transaction, "scribe-1")
-            .await
-            .unwrap()
-            .expect("the service account was born with the agent");
+        let account =
+            store::providers::directory::users::load_service_account(&transaction, "scribe-1")
+                .await
+                .unwrap()
+                .expect("the service account was born with the agent");
         assert!(account.enabled);
         let client = store::providers::clients::load(&transaction, "scribe-1")
             .await
@@ -280,10 +281,11 @@ async fn a_revoked_agents_tokens_die_everywhere_at_once() {
             .execute("UPDATE realms SET agent_exchange_enabled = TRUE", &[])
             .await
             .expect("the switch turned");
-        let account = store::providers::users::load_service_account(&transaction, "scribe-2")
-            .await
-            .unwrap()
-            .expect("the account");
+        let account =
+            store::providers::directory::users::load_service_account(&transaction, "scribe-2")
+                .await
+                .unwrap()
+                .expect("the account");
         transaction.commit().await.expect("kept");
         account
     };
@@ -490,7 +492,7 @@ async fn a_deleted_client_takes_its_service_account_with_it() {
             .scoped(&store::tenancy::TenantContext::new(support::TENANT, REALM))
             .await;
         assert!(
-            store::providers::users::load_service_account(&transaction, "scribe-3")
+            store::providers::directory::users::load_service_account(&transaction, "scribe-3")
                 .await
                 .expect("the account table")
                 .is_none(),

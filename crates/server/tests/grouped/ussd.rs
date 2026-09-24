@@ -50,9 +50,14 @@ async fn arranged(plane: &Plane) {
             .await
             .unwrap()
     );
-    store::providers::users::set_phone(&transaction, support::SUBJECT, Some("+22890123456"), true)
-        .await
-        .expect("the phone proven");
+    store::providers::directory::users::set_phone(
+        &transaction,
+        support::SUBJECT,
+        Some("+22890123456"),
+        true,
+    )
+    .await
+    .expect("the phone proven");
     let sealing = support::sealing();
     let ring = store::keyring::load(&transaction, &sealing.envelope, support::TENANT, REALM)
         .await

@@ -92,7 +92,7 @@ pub async fn preview(
         .await
         .map_err(refuse_unopened_work)?;
     let scope = asked.scope.unwrap_or_else(|| "openid".to_owned());
-    let user = store::providers::users::load_by_id_or_name(&transaction, &asked.user_id)
+    let user = store::providers::directory::users::load_by_id_or_name(&transaction, &asked.user_id)
         .await
         .map_err(|_| internal())?
         .ok_or_else(|| ApiError::new(ErrorCode::UserNotFound))?;

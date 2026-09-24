@@ -6,8 +6,8 @@ use models::compliance::evidence_pack::{
     ChainAttestation, ChainVerification, EvidencePack, PackSection,
 };
 use models::compliance::subject_request::{DsarKind, DsarLodgement, DsarRequest, Jurisdiction};
+use store::providers::directory::users;
 use store::providers::governance::compliance;
-use store::providers::users;
 use store::tenancy::UnitOfWork;
 
 /// Why the register could not do what was asked.
@@ -316,10 +316,13 @@ pub async fn fulfil_objection(
         Some(user_id) => {
             let told = match client_id {
                 Some(named) => {
-                    let withdrawn =
-                        store::providers::consents::withdraw(transaction, &user_id, named)
-                            .await
-                            .map_err(|_| Unactionable::Backend)?;
+                    let withdrawn = store::providers::directory::consents::withdraw(
+                        transaction,
+                        &user_id,
+                        named,
+                    )
+                    .await
+                    .map_err(|_| Unactionable::Backend)?;
                     if withdrawn {
                         format!("the consent releasing data to {named} was withdrawn")
                     } else {
@@ -327,11 +330,12 @@ pub async fn fulfil_objection(
                     }
                 }
                 None => {
-                    let standing = store::providers::consents::of_user(transaction, &user_id)
-                        .await
-                        .map_err(|_| Unactionable::Backend)?;
+                    let standing =
+                        store::providers::directory::consents::of_user(transaction, &user_id)
+                            .await
+                            .map_err(|_| Unactionable::Backend)?;
                     for held in &standing {
-                        store::providers::consents::withdraw(
+                        store::providers::directory::consents::withdraw(
                             transaction,
                             &user_id,
                             &held.client_id,
@@ -473,7 +477,7 @@ async fn drawn_subject_bundle(
         return Ok(bundle);
     }
 
-    let credentials = store::providers::credentials::load_for_user(transaction, user_id)
+    let credentials = store::providers::directory::credentials::load_for_user(transaction, user_id)
         .await
         .map_err(|_| Unactionable::Backend)?
         .into_iter()
@@ -498,7 +502,7 @@ async fn drawn_subject_bundle(
             })
         })
         .collect::<Vec<_>>();
-    let consents = store::providers::consents::of_user(transaction, user_id)
+    let consents = store::providers::directory::consents::of_user(transaction, user_id)
         .await
         .map_err(|_| Unactionable::Backend)?
         .into_iter()

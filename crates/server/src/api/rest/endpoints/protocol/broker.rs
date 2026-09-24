@@ -466,7 +466,8 @@ pub(crate) async fn admit_arrival(
     external_user_id: &str,
     now: DateTime<Utc>,
 ) -> Result<(Admission, Landing), HttpResponse> {
-    let Ok(Some(person)) = store::providers::users::load(transaction, user_id).await else {
+    let Ok(Some(person)) = store::providers::directory::users::load(transaction, user_id).await
+    else {
         return Err(told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"));
     };
     let step = match auth::login::browser::admit_federated(

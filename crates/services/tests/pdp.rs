@@ -164,7 +164,7 @@ async fn a_permission_answers_on_what_the_caller_holds() {
     let transaction = fixture.scoped(&tenant()).await;
     plant(&transaction).await;
     protect(&transaction).await;
-    store::providers::roles::grant_to_user(&transaction, "ada", "editor")
+    store::providers::directory::roles::grant_to_user(&transaction, "ada", "editor")
         .await
         .unwrap();
 
@@ -188,7 +188,7 @@ async fn a_permission_answers_on_what_the_caller_holds() {
     assert!(answer.permitted(), "a caller holding the role was refused");
     assert_eq!(answer.computed, Decision::Permit);
 
-    store::providers::roles::revoke_from_user(&transaction, "ada", "editor")
+    store::providers::directory::roles::revoke_from_user(&transaction, "ada", "editor")
         .await
         .unwrap();
     let answer = decide(

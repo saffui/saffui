@@ -143,7 +143,7 @@ async fn a_directory_person_signs_in_and_leaves_a_shadow() {
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         assert!(
-            store::providers::users::load_by_name(&transaction, "fedora")
+            store::providers::directory::users::load_by_name(&transaction, "fedora")
                 .await
                 .unwrap()
                 .is_none()
@@ -170,7 +170,7 @@ async fn a_directory_person_signs_in_and_leaves_a_shadow() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::users::load_by_name(&transaction, "fedora")
+        store::providers::directory::users::load_by_name(&transaction, "fedora")
             .await
             .unwrap()
             .expect("a shadow row")
@@ -499,7 +499,7 @@ async fn the_sync_walks_the_shadows_and_an_outage_walks_away() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        let shadow = store::providers::users::load_by_name(&transaction, "fedora")
+        let shadow = store::providers::directory::users::load_by_name(&transaction, "fedora")
             .await
             .unwrap()
             .expect("the shadow stands");
@@ -556,7 +556,7 @@ async fn the_sync_walks_the_shadows_and_an_outage_walks_away() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        let shadow = store::providers::users::load_by_name(&transaction, "fedora")
+        let shadow = store::providers::directory::users::load_by_name(&transaction, "fedora")
             .await
             .unwrap()
             .expect("the shadow stands");
@@ -615,7 +615,7 @@ async fn the_first_directory_dead_does_not_shut_the_second() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        let shadow = store::providers::users::load_by_name(&transaction, "fedora")
+        let shadow = store::providers::directory::users::load_by_name(&transaction, "fedora")
             .await
             .unwrap()
             .expect("a shadow");
@@ -674,7 +674,7 @@ async fn an_import_mirrors_everybody_once() {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
-        let shadow = store::providers::users::load_by_name(&transaction, "fedora")
+        let shadow = store::providers::directory::users::load_by_name(&transaction, "fedora")
             .await
             .unwrap()
             .expect("an imported shadow");
@@ -770,7 +770,7 @@ async fn a_directory_person_is_not_mirrored_into_a_breach() {
                 REALM.into(),
                 AuditableModel::from_creator(support::TENANT.into(), "root".into()),
             );
-            store::providers::roles::create(&transaction, &model)
+            store::providers::directory::roles::create(&transaction, &model)
                 .await
                 .unwrap();
         }
@@ -784,11 +784,11 @@ async fn a_directory_person_is_not_mirrored_into_a_breach() {
             parent_id: None,
             metadata: AuditableModel::from_creator(support::TENANT.into(), "root".into()),
         };
-        store::providers::roles::create_group(&transaction, &everyone)
+        store::providers::directory::roles::create_group(&transaction, &everyone)
             .await
             .unwrap();
         for role in ["payer", "approver"] {
-            store::providers::roles::grant_to_group(&transaction, "everyone", role)
+            store::providers::directory::roles::grant_to_group(&transaction, "everyone", role)
                 .await
                 .unwrap();
         }
@@ -814,7 +814,7 @@ async fn a_directory_person_is_not_mirrored_into_a_breach() {
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     assert!(
-        store::providers::users::load_by_name(&transaction, "fedora")
+        store::providers::directory::users::load_by_name(&transaction, "fedora")
             .await
             .unwrap()
             .is_none(),

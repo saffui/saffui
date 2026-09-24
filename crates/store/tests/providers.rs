@@ -288,7 +288,8 @@ async fn a_state_change_bumps_the_stored_version() {
 
 use models::entities::client::{ClientCreateModel, ClientSecret, JweRegistration};
 use models::entities::user::{UserCreateModel, UserModel};
-use store::providers::{clients, users};
+use store::providers::clients;
+use store::providers::directory::users;
 
 fn user(tenant: &str, realm: &str, id: &str) -> UserModel {
     UserCreateModel {
@@ -560,7 +561,7 @@ use models::entities::credentials::{
     CredentialModel, CredentialSecret, CredentialType, OtpAlgorithm, OtpCredentialData,
     OtpParameters,
 };
-use store::providers::credentials;
+use store::providers::directory::credentials;
 
 fn otp_credential(tenant: &str, realm: &str, id: &str, priority: i64) -> CredentialModel {
     CredentialModel {

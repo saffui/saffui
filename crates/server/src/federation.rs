@@ -315,7 +315,7 @@ pub async fn sync_shadows(
     use models::entities::user::profile;
 
     let mut outcome = Synced::default();
-    let shadows = store::providers::users::shadows(transaction)
+    let shadows = store::providers::directory::users::shadows(transaction)
         .await
         .map_err(|_| ())?;
     for mut shadow in shadows {
@@ -374,7 +374,7 @@ pub async fn sync_shadows(
                     outcome.refreshed += 1;
                 }
                 if changed {
-                    store::providers::users::update(transaction, &shadow)
+                    store::providers::directory::users::update(transaction, &shadow)
                         .await
                         .map_err(|_| ())?;
                 }
@@ -388,7 +388,7 @@ pub async fn sync_shadows(
                     .attributes
                     .get_or_insert_with(Default::default)
                     .insert(SUSPENDED_BY_SYNC.to_owned(), AttributeValue::Bool(true));
-                store::providers::users::update(transaction, &shadow)
+                store::providers::directory::users::update(transaction, &shadow)
                     .await
                     .map_err(|_| ())?;
                 outcome.suspended += 1;
@@ -438,15 +438,16 @@ pub async fn import_everyone(
     };
     let now = Utc::now();
     for person in people {
-        let standing = store::providers::users::load_by_name(transaction, &person.username)
-            .await
-            .map_err(|_| Unimported::Unwritten)?;
+        let standing =
+            store::providers::directory::users::load_by_name(transaction, &person.username)
+                .await
+                .map_err(|_| Unimported::Unwritten)?;
         match standing {
             None => {
                 let shadow =
                     auth::login::browser::shadow_row(provider, context, alias, &person, now)
                         .map_err(|_| Unimported::Unwritten)?;
-                store::providers::users::create(transaction, &shadow)
+                store::providers::directory::users::create(transaction, &shadow)
                     .await
                     .map_err(|_| Unimported::Unwritten)?;
                 told.imported += 1;
@@ -495,7 +496,7 @@ async fn refresh_shadow(
         changed = true;
     }
     if changed {
-        store::providers::users::update(transaction, &shadow).await?;
+        store::providers::directory::users::update(transaction, &shadow).await?;
     }
     Ok(changed)
 }

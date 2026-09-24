@@ -6,8 +6,9 @@ use models::paging::Page;
 use models::sessions::login_failure::UserLoginFailure;
 use secrecy::SecretBox;
 use store::error::StoreError;
+use store::providers::directory::users;
+use store::providers::login;
 use store::providers::realms::auth_flows;
-use store::providers::{login, users};
 use store::query::list_query::ListQuery;
 use store::tenancy::UnitOfWork;
 
@@ -114,7 +115,7 @@ pub async fn create(
             StoreError::AlreadyExists => Uncreatable::AlreadyExists,
             _ => Uncreatable::Unwritable,
         })?;
-    store::providers::roles::join_default_groups(transaction, &user.user_id)
+    store::providers::directory::roles::join_default_groups(transaction, &user.user_id)
         .await
         .map_err(|_| Uncreatable::Unwritable)?;
     Ok(user)
@@ -424,7 +425,7 @@ pub async fn recovery_codes_left(
     transaction: &UnitOfWork,
     user_id: &str,
 ) -> Result<i64, Uncreatable> {
-    store::providers::credentials::count_recovery_codes(transaction, user_id)
+    store::providers::directory::credentials::count_recovery_codes(transaction, user_id)
         .await
         .map_err(|_| Uncreatable::Unwritable)
 }

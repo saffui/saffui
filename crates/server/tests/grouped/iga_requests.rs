@@ -65,7 +65,7 @@ async fn planted_role(plane: &Plane, role: &str) {
         REALM.into(),
         AuditableModel::from_creator(support::TENANT.into(), "root".into()),
     );
-    store::providers::roles::create(&transaction, &model)
+    store::providers::directory::roles::create(&transaction, &model)
         .await
         .unwrap();
     transaction.commit().await.unwrap();
@@ -95,10 +95,10 @@ async fn planted_admin(plane: &Plane, named: &str) -> String {
         service_account_client_link: None,
         metadata: AuditableModel::from_creator(support::TENANT.into(), "root".into()),
     };
-    store::providers::users::create(&transaction, &person)
+    store::providers::directory::users::create(&transaction, &person)
         .await
         .unwrap();
-    store::providers::roles::grant_to_user(&transaction, named, "admins")
+    store::providers::directory::roles::grant_to_user(&transaction, named, "admins")
         .await
         .unwrap();
     store::providers::sessions::open(
@@ -142,7 +142,7 @@ async fn roles_of(plane: &Plane, user: &str) -> Vec<String> {
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
-    store::providers::roles::effective_roles(&transaction, user)
+    store::providers::directory::roles::effective_roles(&transaction, user)
         .await
         .unwrap()
         .into_iter()

@@ -7,7 +7,7 @@ use models::entities::client::{
     ProtocolMapperMutationModel,
 };
 use store::providers::clients::client_scopes;
-use store::providers::roles;
+use store::providers::directory::roles;
 use store::tenancy::TenantContext;
 use support::Fixture;
 

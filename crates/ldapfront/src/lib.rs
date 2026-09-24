@@ -12,7 +12,8 @@ use ldap3_proto::simple::{
 };
 use models::entities::credentials::CredentialType;
 use models::entities::user::{UserModel, profile};
-use store::providers::{credentials, realms, users};
+use store::providers::directory::{credentials, users};
+use store::providers::realms;
 use store::tenancy::{RealmNamed, Tenancy, UnitOfWork};
 use tokio_util::codec::{FramedRead, FramedWrite};
 

@@ -62,7 +62,7 @@ async fn arrange(plane: &Plane, phone_verified: bool) {
     )
     .await
     .expect("the settings kept");
-    store::providers::users::set_phone(
+    store::providers::directory::users::set_phone(
         &transaction,
         support::SUBJECT,
         Some("+22890123456"),
@@ -100,14 +100,14 @@ async fn require_sms_otp(plane: &Plane) {
 /// Tell this person to prove a phone before their next session completes.
 async fn require_verify_phone(plane: &Plane) {
     let transaction = plane.scoped(&within()).await;
-    let mut subject = store::providers::users::load(&transaction, support::SUBJECT)
+    let mut subject = store::providers::directory::users::load(&transaction, support::SUBJECT)
         .await
         .expect("the users table")
         .expect("a planted subject");
     let mut actions = subject.required_actions.unwrap_or_default();
     actions.push(RequiredAction::VerifyPhone);
     subject.required_actions = Some(actions);
-    store::providers::users::update(&transaction, &subject)
+    store::providers::directory::users::update(&transaction, &subject)
         .await
         .expect("the instruction kept");
     transaction.commit().await.expect("the instruction kept");
@@ -364,7 +364,7 @@ async fn a_person_is_walked_through_proving_a_phone() {
     {
         // The ceremony must ask for a number, so the account starts bare.
         let transaction = plane.scoped(&within()).await;
-        store::providers::users::set_phone(&transaction, support::SUBJECT, None, false)
+        store::providers::directory::users::set_phone(&transaction, support::SUBJECT, None, false)
             .await
             .expect("the phone cleared");
         transaction.commit().await.expect("the clearing kept");
@@ -428,7 +428,7 @@ async fn a_person_is_walked_through_proving_a_phone() {
     assert_eq!(told["status"], "admitted", "{told}");
 
     let transaction = plane.scoped(&within()).await;
-    let subject = store::providers::users::load(&transaction, support::SUBJECT)
+    let subject = store::providers::directory::users::load(&transaction, support::SUBJECT)
         .await
         .expect("the users table")
         .expect("the subject");
@@ -683,7 +683,7 @@ async fn an_unproven_or_shared_number_names_nobody() {
     // Proven on two accounts, the number names neither.
     {
         let transaction = plane.scoped(&within()).await;
-        store::providers::users::set_phone(
+        store::providers::directory::users::set_phone(
             &transaction,
             support::SUBJECT,
             Some("+22890123456"),
@@ -692,9 +692,14 @@ async fn an_unproven_or_shared_number_names_nobody() {
         .await
         .expect("the phone proven");
         let other = format!("service-account-{}", support::CONFIDENTIAL);
-        store::providers::users::set_phone(&transaction, &other, Some("+22890123456"), true)
-            .await
-            .expect("the second phone proven");
+        store::providers::directory::users::set_phone(
+            &transaction,
+            &other,
+            Some("+22890123456"),
+            true,
+        )
+        .await
+        .expect("the second phone proven");
         transaction.commit().await.expect("the pair kept");
     }
     let binding = open(&plane, &textbox).await;

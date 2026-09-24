@@ -124,7 +124,7 @@ pub async fn put_rule(
         .await
         .map_err(refuse_unopened_work)?;
     for role in &roles {
-        let held = store::providers::roles::load(&transaction, role)
+        let held = store::providers::directory::roles::load(&transaction, role)
             .await
             .map_err(|_| internal())?;
         if held.is_none() {
@@ -197,7 +197,7 @@ pub async fn put_grant(
         .await
         .map(|held| held.user_id)
         .map_err(|_| refused("no user answers to that name"))?;
-    if store::providers::roles::load(&transaction, role_id)
+    if store::providers::directory::roles::load(&transaction, role_id)
         .await
         .map_err(|_| internal())?
         .is_none()
@@ -207,7 +207,7 @@ pub async fn put_grant(
     store::providers::governance::sod::hold_person(&transaction, user_id)
         .await
         .map_err(|_| internal())?;
-    store::providers::roles::grant_to_user(&transaction, user_id, role_id)
+    store::providers::directory::roles::grant_to_user(&transaction, user_id, role_id)
         .await
         .map_err(|_| internal())?;
     match services::governance::sod::weigh(&transaction, user_id).await {
@@ -274,7 +274,7 @@ pub async fn delete_grant(
         .await
         .map_err(refuse_unopened_work)?;
     let user_id = super::users::named_user(&transaction, &user_id).await?;
-    store::providers::roles::revoke_from_user(&transaction, &user_id, &role_id)
+    store::providers::directory::roles::revoke_from_user(&transaction, &user_id, &role_id)
         .await
         .map_err(|_| internal())?;
     birthright::erase_grant(&transaction, &user_id, &role_id)
@@ -403,7 +403,7 @@ pub async fn put_sod_rule(
         .await
         .map_err(refuse_unopened_work)?;
     for role in &roles {
-        if store::providers::roles::load(&transaction, role)
+        if store::providers::directory::roles::load(&transaction, role)
             .await
             .map_err(|_| internal())?
             .is_none()
@@ -476,7 +476,7 @@ pub async fn sod_violations(
                 max: 200,
                 clamped: false,
             });
-            let page = store::providers::users::list(&transaction, &query, false)
+            let page = store::providers::directory::users::list(&transaction, &query, false)
                 .await
                 .map_err(|_| internal())?;
             if page.items.is_empty() {
@@ -484,13 +484,15 @@ pub async fn sod_violations(
             }
             first += page.items.len() as i64;
             for person in &page.items {
-                let effective: Vec<String> =
-                    store::providers::roles::effective_roles(&transaction, &person.user_id)
-                        .await
-                        .map_err(|_| internal())?
-                        .into_iter()
-                        .map(|role| role.role_id)
-                        .collect();
+                let effective: Vec<String> = store::providers::directory::roles::effective_roles(
+                    &transaction,
+                    &person.user_id,
+                )
+                .await
+                .map_err(|_| internal())?
+                .into_iter()
+                .map(|role| role.role_id)
+                .collect();
                 let reached = services::governance::sod::offences(&rules, &effective);
                 if reached.is_empty() {
                     continue;

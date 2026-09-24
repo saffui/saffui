@@ -3664,7 +3664,7 @@ async fn a_required_key_is_enrolled_and_then_lets_the_subject_in() {
                 support::REALM,
             ))
             .await;
-        let kept = store::providers::webauthn::of_user(&transaction, support::SUBJECT)
+        let kept = store::providers::directory::webauthn::of_user(&transaction, support::SUBJECT)
             .await
             .expect("the keys table");
         let enrolled = kept
@@ -4283,7 +4283,7 @@ async fn the_profile_scope_releases_everything_the_realm_holds_of_it() {
                 support::REALM,
             ))
             .await;
-        let mut user = store::providers::users::load(&transaction, support::SUBJECT)
+        let mut user = store::providers::directory::users::load(&transaction, support::SUBJECT)
             .await
             .unwrap()
             .expect("the subject");
@@ -4301,7 +4301,7 @@ async fn the_profile_scope_releases_everything_the_realm_holds_of_it() {
         ] {
             held.insert(named.to_owned(), AttributeValue::Str(value.to_owned()));
         }
-        store::providers::users::update(&transaction, &user)
+        store::providers::directory::users::update(&transaction, &user)
             .await
             .unwrap();
         transaction.commit().await.unwrap();
@@ -4662,7 +4662,7 @@ async fn the_address_scope_releases_one_object_of_what_is_held() {
                 support::REALM,
             ))
             .await;
-        let mut user = store::providers::users::load(&transaction, support::SUBJECT)
+        let mut user = store::providers::directory::users::load(&transaction, support::SUBJECT)
             .await
             .unwrap()
             .expect("the subject");
@@ -4675,7 +4675,7 @@ async fn the_address_scope_releases_one_object_of_what_is_held() {
         ] {
             held.insert(named.to_owned(), AttributeValue::Str(value.to_owned()));
         }
-        store::providers::users::update(&transaction, &user)
+        store::providers::directory::users::update(&transaction, &user)
             .await
             .unwrap();
         transaction.commit().await.unwrap();

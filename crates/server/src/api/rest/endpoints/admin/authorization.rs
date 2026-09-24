@@ -559,17 +559,20 @@ pub async fn evaluate(
         .await
         .map_err(refuse_unopened_work)?;
 
-    let person = store::providers::users::load_by_id_or_name(&transaction, &subject)
+    let person = store::providers::directory::users::load_by_id_or_name(&transaction, &subject)
         .await
         .map_err(|_| internal())?
         .ok_or_else(|| ApiError::new(ErrorCode::UserNotFound))?;
     let acting = match &asked.organization {
         None => services::context::Acting::RealmWide,
         Some(org) => {
-            let member = store::providers::organizations::of_member(&transaction, &person.user_id)
-                .await
-                .map_err(|_| internal())?
-                .contains(org);
+            let member = store::providers::directory::organizations::of_member(
+                &transaction,
+                &person.user_id,
+            )
+            .await
+            .map_err(|_| internal())?
+            .contains(org);
             if !member {
                 return Err(ApiError::with_detail(
                     ErrorCode::ValidationError,

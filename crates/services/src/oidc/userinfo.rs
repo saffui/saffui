@@ -7,8 +7,9 @@ use models::entities::keys::RealmSigningKeyView;
 use models::entities::user::{UserModel, address, profile};
 use serde_json::{Map, Value, json};
 use store::providers::clients::client_scopes;
+use store::providers::directory::users;
 use store::providers::federation::brokering;
-use store::providers::{clients, sessions, users};
+use store::providers::{clients, sessions};
 use store::tenancy::{TenantContext, UnitOfWork};
 
 use crate::token;

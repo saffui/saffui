@@ -127,21 +127,23 @@ pub async fn weigh_grant(
             .filter(|rule| rule.enabled)
             .any(|rule| rule.roles.contains(role))
     };
-    let arriving = store::providers::roles::roles_reached_from(transaction, &[role_id.to_owned()])
-        .await
-        .map_err(|_| Toxic::Backend)?;
+    let arriving =
+        store::providers::directory::roles::roles_reached_from(transaction, &[role_id.to_owned()])
+            .await
+            .map_err(|_| Toxic::Backend)?;
     if !arriving.iter().any(named) {
         return Ok(());
     }
     store::providers::governance::sod::hold_person(transaction, user_id)
         .await
         .map_err(|_| Toxic::Backend)?;
-    let held: Vec<String> = store::providers::roles::effective_roles(transaction, user_id)
-        .await
-        .map_err(|_| Toxic::Backend)?
-        .into_iter()
-        .map(|role| role.role_id)
-        .collect();
+    let held: Vec<String> =
+        store::providers::directory::roles::effective_roles(transaction, user_id)
+            .await
+            .map_err(|_| Toxic::Backend)?
+            .into_iter()
+            .map(|role| role.role_id)
+            .collect();
     let new: Vec<String> = arriving
         .into_iter()
         .filter(|role| !held.contains(role))
@@ -178,10 +180,10 @@ pub async fn weigh_newcomer(transaction: &UnitOfWork) -> Result<(), Toxic> {
     if !rules.iter().any(|rule| rule.enabled) {
         return Ok(());
     }
-    let carried = store::providers::roles::roles_of_default_groups(transaction)
+    let carried = store::providers::directory::roles::roles_of_default_groups(transaction)
         .await
         .map_err(|_| Toxic::Backend)?;
-    let reached = store::providers::roles::roles_reached_from(transaction, &carried)
+    let reached = store::providers::directory::roles::roles_reached_from(transaction, &carried)
         .await
         .map_err(|_| Toxic::Backend)?;
     match offences(&rules, &reached).first() {
@@ -198,12 +200,13 @@ async fn weigh_against(
     if !rules.iter().any(|rule| rule.enabled) {
         return Ok(());
     }
-    let effective: Vec<String> = store::providers::roles::effective_roles(transaction, user_id)
-        .await
-        .map_err(|_| Toxic::Backend)?
-        .into_iter()
-        .map(|role| role.role_id)
-        .collect();
+    let effective: Vec<String> =
+        store::providers::directory::roles::effective_roles(transaction, user_id)
+            .await
+            .map_err(|_| Toxic::Backend)?
+            .into_iter()
+            .map(|role| role.role_id)
+            .collect();
     let reached = offences(rules, &effective);
     if reached.is_empty() {
         return Ok(());

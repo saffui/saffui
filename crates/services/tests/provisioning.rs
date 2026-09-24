@@ -10,7 +10,7 @@ use services::realm::provisioning::{
     provision_admin_console, provision_offered_flows, provision_realm_administration,
 };
 use store::providers::clients::client_scopes;
-use store::providers::roles;
+use store::providers::directory::roles;
 use store::tenancy::TenantContext;
 use support::Fixture;
 
@@ -368,8 +368,9 @@ async fn a_deployment_is_provisioned_once_and_left_alone_after() {
         provision_realm_administration, provision_signing_key, provision_tenant, provision_user,
     };
     use std::sync::Arc;
+    use store::providers::clients;
+    use store::providers::directory::{credentials, users};
     use store::providers::realms::{auth_flows, realm_keys};
-    use store::providers::{clients, credentials, users};
 
     let fixture = Fixture::empty().await;
     let provider = support::provider();

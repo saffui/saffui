@@ -7,7 +7,7 @@ use models::entities::user::UserModel;
 use serde_json::Value;
 use services::scim::{self, GroupPatch, Refusal, list_response, shown_group};
 use store::error::StoreError;
-use store::providers::{roles, users};
+use store::providers::directory::{roles, users};
 use store::query::list_query::ListQuery;
 use store::tenancy::{Tenancy, UnitOfWork};
 

@@ -111,7 +111,7 @@ async fn a_birth_hands_back_the_one_way_into_what_it_made() {
             "annex",
         ))
         .await;
-    let root = store::providers::users::load_by_name(&transaction, "root")
+    let root = store::providers::directory::users::load_by_name(&transaction, "root")
         .await
         .expect("the store answered")
         .expect("the annex holds its administrator");
@@ -129,7 +129,7 @@ async fn a_birth_hands_back_the_one_way_into_what_it_made() {
     );
 
     // Only the hash was kept, so what was handed back cannot be read again.
-    let stored = store::providers::credentials::load_for_user_of_type(
+    let stored = store::providers::directory::credentials::load_for_user_of_type(
         &transaction,
         &root.user_id,
         models::entities::credentials::CredentialType::Password,
@@ -143,7 +143,7 @@ async fn a_birth_hands_back_the_one_way_into_what_it_made() {
     );
 
     // And the account may actually administer the realm it was drawn for.
-    let held = store::providers::roles::direct_roles_of(&transaction, &root.user_id)
+    let held = store::providers::directory::roles::direct_roles_of(&transaction, &root.user_id)
         .await
         .expect("the store answered");
     assert!(

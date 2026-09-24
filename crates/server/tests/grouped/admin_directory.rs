@@ -3,7 +3,7 @@ use super::support::Plane;
 use actix_web::http::{Method, StatusCode};
 use models::entities::authz::AdminAction;
 use serde_json::Value;
-use store::providers::roles;
+use store::providers::directory::roles;
 #[allow(unused_imports)]
 use store::tenancy::{TenantContext, UnitOfWork};
 
@@ -1245,7 +1245,7 @@ async fn a_name_two_roles_already_share_is_still_a_conflict() {
         let transaction = plane
             .scoped(&store::tenancy::TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::roles::create(
+        store::providers::directory::roles::create(
             &transaction,
             &models::entities::authz::RoleModel {
                 role_id: "twin-of-the-client".to_owned(),

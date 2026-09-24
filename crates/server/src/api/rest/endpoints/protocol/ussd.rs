@@ -100,7 +100,12 @@ pub async fn callback(
     // The number identifies the way it does at the login: proven, and one
     // account's. Anyone else hears an empty doorbell, in those exact bytes.
     let compact: String = phone.chars().filter(|held| !held.is_whitespace()).collect();
-    let person = match store::providers::users::sole_by_proven_phone(&transaction, &compact).await {
+    let person = match store::providers::directory::users::sole_by_proven_phone(
+        &transaction,
+        &compact,
+    )
+    .await
+    {
         Ok(found) => found.filter(|held| held.enabled),
         Err(_) => return plain(StatusCode::INTERNAL_SERVER_ERROR, ""),
     };

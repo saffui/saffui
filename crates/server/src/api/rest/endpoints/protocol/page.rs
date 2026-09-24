@@ -649,10 +649,11 @@ pub async fn style(
                 .get("organization")
                 .and_then(|held| held.as_str())
             && let Ok(Some(org)) =
-                store::providers::organizations::load_by_name(&transaction, slug).await
+                store::providers::directory::organizations::load_by_name(&transaction, slug).await
             && org.enabled
             && let Ok(Some(theme)) =
-                store::providers::organizations::theme_of(&transaction, &org.org_id).await
+                store::providers::directory::organizations::theme_of(&transaction, &org.org_id)
+                    .await
             && let Ok(overrides) = services::realm::theme::css_of(&theme)
         {
             sheet.push('\n');

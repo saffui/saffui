@@ -516,7 +516,7 @@ async fn themes_cross_with_their_realm_and_organizations() {
             store::providers::realms::theme_of(&transaction, "dressed")
                 .await
                 .expect("the realms table"),
-            store::providers::organizations::theme_of(&transaction, &org_id)
+            store::providers::directory::organizations::theme_of(&transaction, &org_id)
                 .await
                 .expect("the organizations table"),
         )

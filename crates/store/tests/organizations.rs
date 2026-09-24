@@ -6,7 +6,8 @@ use models::entities::organization::{
     OrgMembershipType, OrganizationMemberModel, OrganizationModel, OrganizationMutationModel,
 };
 use models::entities::realm::RealmCreateModel;
-use store::providers::{organizations, realms, roles};
+use store::providers::directory::{organizations, roles};
+use store::providers::realms;
 use store::tenancy::TenantContext;
 use support::Fixture;
 

@@ -20,8 +20,9 @@ use pgcore::migrations::MigrationRunner;
 use pgcore::tls::PgConnector;
 use secrecy::SecretBox;
 use store::keyring;
+use store::providers::directory::{roles, users};
 use store::providers::realms::{realm_keys, tenants};
-use store::providers::{clients, realms, roles, sessions, users};
+use store::providers::{clients, realms, sessions};
 use store::schema::migrations;
 use store::tenancy::{Tenancy, TenantContext, UnitOfWork};
 use tokio::sync::{Mutex, MutexGuard};
@@ -913,9 +914,9 @@ impl Plane {
         attachment: Option<models::entities::credentials::AuthenticatorAttachment>,
     ) {
         let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
-        store::providers::webauthn::enrol(
+        store::providers::directory::webauthn::enrol(
             &transaction,
-            &store::providers::webauthn::EnrolledCredential {
+            &store::providers::directory::webauthn::EnrolledCredential {
                 credential_id,
                 user_id: SUBJECT.into(),
                 label: "a key".into(),
@@ -971,14 +972,14 @@ impl Plane {
     #[allow(dead_code, reason = "only the protocol suite does")]
     pub async fn require_of_subject(&self, action: models::entities::user::RequiredAction) {
         let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
-        let mut user = store::providers::users::load(&transaction, SUBJECT)
+        let mut user = store::providers::directory::users::load(&transaction, SUBJECT)
             .await
             .expect("the users table")
             .expect("the planted subject");
         user.required_actions
             .get_or_insert_with(Vec::new)
             .push(action);
-        store::providers::users::update(&transaction, &user)
+        store::providers::directory::users::update(&transaction, &user)
             .await
             .expect("the users table");
         transaction.commit().await.unwrap();
@@ -1008,7 +1009,7 @@ impl Plane {
             service_account_client_link: None,
         }
         .into_model(user_name.into(), REALM.into(), metadata());
-        store::providers::users::create(&transaction, &user)
+        store::providers::directory::users::create(&transaction, &user)
             .await
             .unwrap();
         let StoredPassword::Argon2id { encoded } = StoredPassword::hash_argon2id(
@@ -1019,7 +1020,7 @@ impl Plane {
         .expect("a hashed password") else {
             unreachable!("hash_argon2id returns the argon2id shape")
         };
-        store::providers::credentials::create(
+        store::providers::directory::credentials::create(
             &transaction,
             &models::entities::credentials::CredentialModel {
                 credential_id: format!("cred-{user_name}"),
@@ -1078,7 +1079,7 @@ impl Plane {
     #[allow(dead_code, reason = "only the protocol suite asks")]
     pub async fn recovery_codes_left(&self) -> i64 {
         let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
-        store::providers::credentials::count_recovery_codes(&transaction, SUBJECT)
+        store::providers::directory::credentials::count_recovery_codes(&transaction, SUBJECT)
             .await
             .expect("the credentials table")
     }
@@ -1087,7 +1088,7 @@ impl Plane {
     #[allow(dead_code, reason = "only the protocol suite asks")]
     pub async fn subject_owes(&self) -> Vec<models::entities::user::RequiredAction> {
         let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
-        store::providers::users::load(&transaction, SUBJECT)
+        store::providers::directory::users::load(&transaction, SUBJECT)
             .await
             .expect("the users table")
             .expect("the planted subject")
@@ -1101,13 +1102,13 @@ impl Plane {
     )]
     pub async fn rename_subject(&self, name: &str) {
         let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
-        let mut user = store::providers::users::load(&transaction, SUBJECT)
+        let mut user = store::providers::directory::users::load(&transaction, SUBJECT)
             .await
             .unwrap()
             .expect("the subject");
         user.user_name = name.to_owned();
         assert!(
-            store::providers::users::update(&transaction, &user)
+            store::providers::directory::users::update(&transaction, &user)
                 .await
                 .unwrap()
         );
@@ -1118,7 +1119,7 @@ impl Plane {
     #[allow(dead_code, reason = "only the protocol suite asks")]
     pub async fn subject_keys(&self) -> Vec<Vec<u8>> {
         let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
-        store::providers::webauthn::of_user(&transaction, SUBJECT)
+        store::providers::directory::webauthn::of_user(&transaction, SUBJECT)
             .await
             .expect("the credential table")
             .into_iter()
@@ -1150,7 +1151,7 @@ impl Plane {
     #[allow(dead_code, reason = "only the protocol suite asks")]
     pub async fn subject_totp_secrets(&self) -> Vec<String> {
         let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
-        store::providers::credentials::load_for_user_of_type(
+        store::providers::directory::credentials::load_for_user_of_type(
             &transaction,
             SUBJECT,
             models::entities::credentials::CredentialType::Totp,
@@ -1198,7 +1199,7 @@ impl Plane {
     #[allow(dead_code, reason = "only the protocol suite enrols another app")]
     pub async fn enrol_totp(&self, credential_id: &str, secret: &str) {
         let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
-        store::providers::credentials::create(
+        store::providers::directory::credentials::create(
             &transaction,
             &models::entities::credentials::CredentialModel::otp(
                 credential_id.to_owned(),
@@ -1388,12 +1389,12 @@ impl Plane {
     #[allow(dead_code, reason = "only the protocol suite does")]
     pub async fn disable_subject(&self) {
         let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
-        let mut user = store::providers::users::load(&transaction, SUBJECT)
+        let mut user = store::providers::directory::users::load(&transaction, SUBJECT)
             .await
             .expect("the users table")
             .expect("the planted subject");
         user.enabled = false;
-        store::providers::users::update(&transaction, &user)
+        store::providers::directory::users::update(&transaction, &user)
             .await
             .expect("the users table");
         transaction.commit().await.unwrap();
@@ -1472,7 +1473,7 @@ impl Plane {
     #[allow(dead_code, reason = "only the directory suite adds a member")]
     pub async fn add_org_member(&self, org_id: &str, user_id: &str) {
         let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
-        store::providers::organizations::add_member(
+        store::providers::directory::organizations::add_member(
             &transaction,
             &models::entities::organization::OrganizationMemberModel {
                 realm_id: REALM.to_owned(),
@@ -2381,7 +2382,7 @@ async fn plant_the_common_world(tenancy: &Tenancy) {
     .expect("a hashed password") else {
         unreachable!("hash_argon2id returns the argon2id shape")
     };
-    store::providers::credentials::create(
+    store::providers::directory::credentials::create(
         &transaction,
         &models::entities::credentials::CredentialModel {
             credential_id: "cred-1".into(),
@@ -2400,7 +2401,7 @@ async fn plant_the_common_world(tenancy: &Tenancy) {
 
     // A second factor for the subject. The secret is base32 because that is
     // what an authenticator app is handed and what the store keeps.
-    store::providers::credentials::create(
+    store::providers::directory::credentials::create(
         &transaction,
         &models::entities::credentials::CredentialModel::otp(
             "cred-totp".into(),

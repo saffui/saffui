@@ -122,9 +122,13 @@ async fn notice_states(plane: &Plane) -> Vec<String> {
 
 async fn mark_email_verified(plane: &Plane, verified: bool) {
     let transaction = plane.scoped(&within()).await;
-    store::providers::users::set_email_verified(&transaction, support::SUBJECT, verified)
-        .await
-        .expect("the users table");
+    store::providers::directory::users::set_email_verified(
+        &transaction,
+        support::SUBJECT,
+        verified,
+    )
+    .await
+    .expect("the users table");
     transaction.commit().await.expect("the address kept");
 }
 
@@ -143,7 +147,7 @@ async fn switch_notices(plane: &Plane, switched: Option<bool>) {
 
 async fn plant_recovery_codes(plane: &Plane) {
     let transaction = plane.scoped(&within()).await;
-    store::providers::credentials::replace_recovery_codes(
+    store::providers::directory::credentials::replace_recovery_codes(
         &transaction,
         support::provider().digest(),
         support::REALM,
@@ -260,7 +264,7 @@ async fn a_recovery_code_used_to_sign_in_is_mailed_with_the_codes_left() {
 
     {
         let transaction = plane.scoped(&within()).await;
-        let spent = store::providers::credentials::spend_recovery_code(
+        let spent = store::providers::directory::credentials::spend_recovery_code(
             &transaction,
             support::provider().digest(),
             support::SUBJECT,
@@ -482,7 +486,7 @@ async fn change_address(plane: &Plane, email: &str, declared_verified: Option<bo
 
 async fn subject_address_verified(plane: &Plane) -> Option<bool> {
     let transaction = plane.scoped(&within()).await;
-    store::providers::users::load(&transaction, support::SUBJECT)
+    store::providers::directory::users::load(&transaction, support::SUBJECT)
         .await
         .expect("the users table")
         .expect("ada stands")

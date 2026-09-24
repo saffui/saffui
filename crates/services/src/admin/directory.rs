@@ -4,7 +4,7 @@ use models::entities::authz::{GroupModel, GroupMutationModel, RoleModel, RoleMut
 use models::entities::organization::{OrganizationModel, OrganizationMutationModel};
 use models::paging::Page;
 use store::error::StoreError;
-use store::providers::{organizations, roles};
+use store::providers::directory::{organizations, roles};
 use store::query::list_query::ListQuery;
 use store::tenancy::UnitOfWork;
 

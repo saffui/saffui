@@ -32,7 +32,7 @@ pub async fn read(
         .await
         .map_err(refuse_unopened_work)?;
 
-    let users = store::providers::users::count(&transaction)
+    let users = store::providers::directory::users::count(&transaction)
         .await
         .map_err(|_| internal())?;
     let clients = store::providers::clients::count(&transaction)

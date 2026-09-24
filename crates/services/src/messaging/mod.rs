@@ -4,5 +4,6 @@
 pub mod caep;
 pub mod delivery;
 pub mod notices;
+pub mod outbox;
 pub mod webhook;
 pub mod wording;

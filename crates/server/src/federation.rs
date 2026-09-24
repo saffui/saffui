@@ -8,6 +8,7 @@ use config::serving::Egress;
 use crypto::secrecy::{ExposeSecret, SecretBox};
 use ldap3::{LdapConnAsync, Scope, SearchEntry};
 use services::federation::ldap::LdapSettings;
+use services::messaging::outbox;
 use ureq::unversioned::resolver::DefaultResolver;
 
 /// The realm's directory, answered over LDAP. The one place in the
@@ -270,237 +271,6 @@ pub async fn opened_bind(
     Some(crypto::secrecy::SecretBox::new(Box::new(clear)))
 }
 
-/// What a marker on the shadow says: this suspension is the sync's own,
-/// so only the sync may lift it. An operator's disabling carries no
-/// marker, and no reappearance re-enables it.
-pub const SUSPENDED_BY_SYNC: &str = "federation.suspended";
-
-/// What one realm's sync pass did.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct Synced {
-    pub refreshed: u64,
-    pub suspended: u64,
-    pub restored: u64,
-}
-
-impl Synced {
-    pub fn total(&self) -> u64 {
-        self.refreshed + self.suspended + self.restored
-    }
-    pub fn add(&mut self, other: Synced) {
-        self.refreshed += other.refreshed;
-        self.suspended += other.suspended;
-        self.restored += other.restored;
-    }
-}
-
-/// Walk one realm's shadows against its directory, off the request path.
-///
-/// A mirror found upstream is refreshed where the directory's answer
-/// differs; one the directory no longer holds is suspended, under the
-/// sync's own marker, so a person removed from the directory stops
-/// signing in here without their history going anywhere; and one that
-/// reappears under the marker is restored. The directory being
-/// unreachable ends the pass with nothing written: an outage is not a
-/// departure, and suspending a realm's people over a cable would be the
-/// outage deciding who may log in.
-pub async fn sync_shadows(
-    transaction: &UnitOfWork,
-    alias: &str,
-    first: bool,
-    directory: &LdapDirectory,
-) -> Result<Synced, ()> {
-    use auth::login::directory::{Directory, ORIGIN_ATTRIBUTE};
-    use models::entities::attributes::AttributeValue;
-    use models::entities::user::profile;
-
-    let mut outcome = Synced::default();
-    let shadows = store::providers::directory::users::shadows(transaction)
-        .await
-        .map_err(|_| ())?;
-    for mut shadow in shadows {
-        // Each pass walks its own directory's mirrors. A shadow from before
-        // the mark belongs to the first-asked directory.
-        let origin = shadow
-            .attributes
-            .as_ref()
-            .and_then(|bag| bag.get(ORIGIN_ATTRIBUTE))
-            .and_then(AttributeValue::as_str);
-        match origin {
-            Some(held) if held != alias => continue,
-            None if !first => continue,
-            _ => {}
-        }
-        let found = directory.find(&shadow.user_name).await?;
-        match found {
-            Some(person) => {
-                let mut changed = false;
-                let attributes = shadow.attributes.get_or_insert_with(Default::default);
-                for (key, held) in [
-                    (profile::FIRST_NAME, &person.first_name),
-                    (profile::LAST_NAME, &person.last_name),
-                ] {
-                    if let Some(value) = held {
-                        let fresh = AttributeValue::Str(value.clone());
-                        if attributes.get(key) != Some(&fresh) {
-                            attributes.insert(key.to_owned(), fresh);
-                            changed = true;
-                        }
-                    }
-                }
-                if let Some(email) = &person.email
-                    && &shadow.email != email
-                {
-                    shadow.email = email.clone();
-                    // The address moved, so whatever was verified was the
-                    // old one.
-                    shadow.email_verified = Some(false);
-                    changed = true;
-                }
-                let suspended = shadow
-                    .attributes
-                    .as_ref()
-                    .and_then(|held| held.get(SUSPENDED_BY_SYNC))
-                    .is_some();
-                if suspended {
-                    shadow
-                        .attributes
-                        .get_or_insert_with(Default::default)
-                        .remove(SUSPENDED_BY_SYNC);
-                    shadow.enabled = true;
-                    outcome.restored += 1;
-                    changed = true;
-                } else if changed {
-                    outcome.refreshed += 1;
-                }
-                if changed {
-                    store::providers::directory::users::update(transaction, &shadow)
-                        .await
-                        .map_err(|_| ())?;
-                }
-            }
-            None => {
-                if !shadow.enabled {
-                    continue;
-                }
-                shadow.enabled = false;
-                shadow
-                    .attributes
-                    .get_or_insert_with(Default::default)
-                    .insert(SUSPENDED_BY_SYNC.to_owned(), AttributeValue::Bool(true));
-                store::providers::directory::users::update(transaction, &shadow)
-                    .await
-                    .map_err(|_| ())?;
-                outcome.suspended += 1;
-            }
-        }
-    }
-    Ok(outcome)
-}
-
-/// What an operator-asked import did.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct Imported {
-    pub imported: u64,
-    pub refreshed: u64,
-    pub walked: u64,
-}
-
-/// Why an operator-asked import stopped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Unimported {
-    /// The directory could not be walked.
-    Unwalked,
-    /// A mirror could not be read or written here.
-    Unwritten,
-}
-
-/// Mirror everybody the directory holds: unknown people become shadows the
-/// way a first login would make them, known mirrors are refreshed the way
-/// the sync refreshes them. Local people keep their names.
-pub async fn import_everyone(
-    transaction: &UnitOfWork,
-    provider: &dyn crypto::provider::CryptoProvider,
-    context: &store::tenancy::TenantContext,
-    alias: &str,
-    directory: &LdapDirectory,
-) -> Result<Imported, Unimported> {
-    use auth::login::directory::Directory;
-    use chrono::Utc;
-
-    let people = directory
-        .everyone()
-        .await
-        .map_err(|()| Unimported::Unwalked)?;
-    let mut told = Imported {
-        walked: people.len() as u64,
-        ..Default::default()
-    };
-    let now = Utc::now();
-    for person in people {
-        let standing =
-            store::providers::directory::users::load_by_name(transaction, &person.username)
-                .await
-                .map_err(|_| Unimported::Unwritten)?;
-        match standing {
-            None => {
-                let shadow =
-                    auth::login::browser::shadow_row(provider, context, alias, &person, now)
-                        .map_err(|_| Unimported::Unwritten)?;
-                store::providers::directory::users::create(transaction, &shadow)
-                    .await
-                    .map_err(|_| Unimported::Unwritten)?;
-                told.imported += 1;
-            }
-            Some(held) if held.user_storage == Some(models::entities::user::UserStorage::Ldap) => {
-                let refreshed = refresh_shadow(transaction, held, &person)
-                    .await
-                    .map_err(|_| Unimported::Unwritten)?;
-                if refreshed {
-                    told.refreshed += 1;
-                }
-            }
-            Some(_) => {}
-        }
-    }
-    Ok(told)
-}
-
-async fn refresh_shadow(
-    transaction: &UnitOfWork,
-    mut shadow: models::entities::user::UserModel,
-    person: &auth::login::directory::DirectoryPerson,
-) -> Result<bool, store::error::StoreError> {
-    use models::entities::attributes::AttributeValue;
-    use models::entities::user::profile;
-
-    let mut changed = false;
-    let attributes = shadow.attributes.get_or_insert_with(Default::default);
-    for (key, held) in [
-        (profile::FIRST_NAME, &person.first_name),
-        (profile::LAST_NAME, &person.last_name),
-    ] {
-        if let Some(value) = held {
-            let fresh = AttributeValue::Str(value.clone());
-            if attributes.get(key) != Some(&fresh) {
-                attributes.insert(key.to_owned(), fresh);
-                changed = true;
-            }
-        }
-    }
-    if let Some(email) = &person.email
-        && &shadow.email != email
-    {
-        shadow.email = email.clone();
-        shadow.email_verified = Some(false);
-        changed = true;
-    }
-    if changed {
-        store::providers::directory::users::update(transaction, &shadow).await?;
-    }
-    Ok(changed)
-}
-
 pub struct Told {
     pub delivered: u64,
     pub failed: u64,
@@ -526,38 +296,9 @@ pub async fn deliver_outbox(
         failed: 0,
         dead: 0,
     };
-    let rows = store::providers::federation::brokering::list_providers(transaction)
-        .await
-        .map_err(|_| ())?;
-    let connectors: Vec<_> = rows
-        .iter()
-        .filter(|row| services::scim::outbound::is_outbound(row) && row.enabled != Some(false))
-        .filter_map(|row| {
-            services::scim::outbound::Connector::parse(row)
-                .ok()
-                .map(|connector| (row, connector))
-        })
-        .collect();
-    let receivers: Vec<_> = rows
-        .iter()
-        .filter(|row| services::messaging::caep::is_receiver(row) && row.enabled != Some(false))
-        .filter_map(|row| {
-            services::messaging::caep::Receiver::parse(row)
-                .ok()
-                .map(|receiver| (row, receiver))
-        })
-        .collect();
-    let webhooks: Vec<_> = rows
-        .iter()
-        .filter(|row| services::messaging::webhook::is_webhook(row) && row.enabled != Some(false))
-        .filter_map(|row| {
-            services::messaging::webhook::Webhook::parse(row)
-                .ok()
-                .map(|hook| (row, hook))
-        })
-        .collect();
+    let listeners = outbox::read_listeners(transaction).await.map_err(|_| ())?;
     // The realm's keys, only when somebody is listening for signed events.
-    let ring = if receivers.is_empty() {
+    let ring = if listeners.receivers.is_empty() {
         None
     } else {
         store::keyring::load(
@@ -571,7 +312,7 @@ pub async fn deliver_outbox(
     };
     let issuer = origin.issuer(&context.realm_id);
 
-    let due = store::providers::events::outbox::due(transaction, DELIVERY_CEILING, backoff_seconds)
+    let due = outbox::read_due_events(transaction, DELIVERY_CEILING, backoff_seconds)
         .await
         .map_err(|_| ())?;
     for event in due {
@@ -583,7 +324,7 @@ pub async fn deliver_outbox(
         // The lifecycle converges before anything leaves the house: the
         // provisioned apps should see the person as the rules already made
         // them.
-        if crate::lifecycle::converge_event(transaction, &event)
+        if services::governance::lifecycle::converge_event(transaction, &event)
             .await
             .is_err()
         {
@@ -596,7 +337,7 @@ pub async fn deliver_outbox(
         if let Some((uri, body)) =
             services::messaging::caep::security_event(&event.kind, &event.payload)
         {
-            for (row, receiver) in &receivers {
+            for (row, receiver) in &listeners.receivers {
                 if !receiver.wants(uri) {
                     continue;
                 }
@@ -626,15 +367,9 @@ pub async fn deliver_outbox(
                 match receiver.delivery {
                     // A collector's tokens wait here; queueing is delivery.
                     services::messaging::caep::Delivery::Poll => {
-                        if store::providers::events::caep_queue::queue(
-                            transaction,
-                            &row.internal_id,
-                            &set.token_id,
-                            &set.token,
-                            set.expires_at,
-                        )
-                        .await
-                        .is_err()
+                        if services::messaging::caep::queue_set(transaction, &row.internal_id, &set)
+                            .await
+                            .is_err()
                         {
                             landed = false;
                         }
@@ -651,7 +386,7 @@ pub async fn deliver_outbox(
         // The connectors speak person; a session or credential happening is
         // not theirs to provision.
         if event.kind.starts_with("user.") {
-            for (row, connector) in &connectors {
+            for (row, connector) in &listeners.connectors {
                 let bearer = opened_bearer(transaction, sealing, context, row).await;
                 if !push_one(connector, bearer.as_deref(), &event, egress).await {
                     landed = false;
@@ -661,7 +396,11 @@ pub async fn deliver_outbox(
         // The webhooks take every kind their filter admits, as one signed
         // JSON body: the signature covers these exact bytes, so the body is
         // rendered once and rides verbatim.
-        if webhooks.iter().any(|(_, hook)| hook.wants(&event.kind)) {
+        if listeners
+            .webhooks
+            .iter()
+            .any(|(_, hook)| hook.wants(&event.kind))
+        {
             let body = serde_json::json!({
                 "event_id": event.event_id,
                 "kind": event.kind,
@@ -671,7 +410,7 @@ pub async fn deliver_outbox(
                 "payload": event.payload,
             })
             .to_string();
-            for (row, hook) in &webhooks {
+            for (row, hook) in &listeners.webhooks {
                 if !hook.wants(&event.kind) {
                     continue;
                 }
@@ -703,12 +442,12 @@ pub async fn deliver_outbox(
             }
         }
         if landed {
-            store::providers::events::outbox::delivered(transaction, event.event_id)
+            outbox::mark_delivered(transaction, event.event_id)
                 .await
                 .map_err(|_| ())?;
             told.delivered += 1;
         } else if event.attempts >= DEAD_AFTER {
-            store::providers::events::outbox::dead(transaction, event.event_id)
+            outbox::mark_dead(transaction, event.event_id)
                 .await
                 .map_err(|_| ())?;
             told.dead += 1;
@@ -930,7 +669,7 @@ async fn push_set(
 async fn push_one(
     connector: &services::scim::outbound::Connector,
     bearer: Option<&str>,
-    event: &store::providers::events::outbox::OutboxEvent,
+    event: &outbox::OutboxEvent,
     egress: Egress,
 ) -> bool {
     let base = connector.base_url.clone();
@@ -962,12 +701,12 @@ async fn push_one(
             });
 
         match (event.kind.as_str(), found) {
-            (store::providers::events::outbox::USER_DELETED, Some(id)) => agent
+            (outbox::USER_DELETED, Some(id)) => agent
                 .delete(&format!("{base}/Users/{id}"))
                 .header("authorization", &authorization)
                 .call()
                 .is_ok(),
-            (store::providers::events::outbox::USER_DELETED, None) => true,
+            (outbox::USER_DELETED, None) => true,
             (_, Some(id)) => {
                 let patch = serde_json::json!({
                     "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
@@ -1037,7 +776,7 @@ pub async fn prove_delivery(
     alias: &str,
     egress: Egress,
 ) -> Result<Proof, Unprovable> {
-    let row = store::providers::federation::brokering::provider_by_alias(transaction, alias)
+    let row = services::federation::brokering::read_provider(transaction, alias)
         .await
         .map_err(|_| Unprovable::Backend)?
         .ok_or(Unprovable::NoSuchProvider)?;
@@ -1117,15 +856,9 @@ pub async fn prove_delivery(
                 push_verification(&receiver, bearer.as_deref(), &set.token, egress).await
             }
             services::messaging::caep::Delivery::Poll => {
-                store::providers::events::caep_queue::queue(
-                    transaction,
-                    &row.internal_id,
-                    &set.token_id,
-                    &set.token,
-                    set.expires_at,
-                )
-                .await
-                .map_err(|_| Unprovable::Backend)?;
+                services::messaging::caep::queue_set(transaction, &row.internal_id, &set)
+                    .await
+                    .map_err(|_| Unprovable::Backend)?;
                 Proof {
                     proven: true,
                     how: "queued",

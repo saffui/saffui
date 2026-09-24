@@ -321,6 +321,23 @@ pub async fn read_collecting_receivers(
         .collect())
 }
 
+/// Hold one token for a collecting receiver until its next poll.
+pub async fn queue_set(
+    transaction: &UnitOfWork,
+    receiver_id: &str,
+    set: &crate::token::issuance::Minted,
+) -> Result<(), Unqueued> {
+    caep_queue::queue(
+        transaction,
+        receiver_id,
+        &set.token_id,
+        &set.token,
+        set.expires_at,
+    )
+    .await
+    .map_err(|_| Unqueued)
+}
+
 /// Let go of what a collector says it is done with.
 pub async fn acknowledge_sets(
     transaction: &UnitOfWork,

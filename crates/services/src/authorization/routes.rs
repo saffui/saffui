@@ -1,4 +1,12 @@
-use store::providers::authorization::authz_routes::AuthzRoute;
+use store::providers::authorization::authz_routes::{self, AuthzRoute};
+use store::tenancy::UnitOfWork;
+
+/// The realm's routes, in the order they are asked.
+pub async fn read_routes(transaction: &UnitOfWork) -> Result<Vec<AuthzRoute>, super::Unreadable> {
+    authz_routes::routes(transaction)
+        .await
+        .map_err(|_| super::Unreadable)
+}
 
 /// Which route answers for this request, or none.
 ///

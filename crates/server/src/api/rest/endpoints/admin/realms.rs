@@ -5,8 +5,9 @@ use config::serving::PublicOrigin;
 use models::compliance::subject_request::Jurisdiction;
 use models::entities::realm::{RealmCreateModel, RealmUpdateModel};
 use models::representation::RepresentationParams;
+use services::admin::realms::{self, RealmBirth, Unrealmed, Witness};
 use services::realm::provisioning;
-use store::tenancy::{Tenancy, TenantContext, UnitOfWork};
+use store::tenancy::{Tenancy, TenantContext};
 
 use crate::api::config::Sealing;
 use crate::api::rest::endpoints::admin::dto::RealmBrief;
@@ -94,10 +95,23 @@ fn internal() -> ApiError {
     ApiError::new(ErrorCode::InternalError)
 }
 
-fn realm_write(why: store::error::StoreError) -> ApiError {
+fn refuse(why: Unrealmed) -> ApiError {
     match why {
-        store::error::StoreError::AlreadyExists => ApiError::new(ErrorCode::RealmAlreadyExists),
-        _ => internal(),
+        Unrealmed::AlreadyExists => ApiError::new(ErrorCode::RealmAlreadyExists),
+        Unrealmed::AtCeiling(_) | Unrealmed::Invalid(_) => {
+            ApiError::with_detail(ErrorCode::ValidationError, why.to_string())
+        }
+        Unrealmed::NotFound => ApiError::new(ErrorCode::RealmNotFound),
+        Unrealmed::Backend => internal(),
+    }
+}
+
+/// Who is changing the realm, as the tenant's chain records it.
+fn witness(admin: &Admin) -> Witness<'_> {
+    Witness {
+        actor: admin.context.principal.id(),
+        actor_realm: &admin.context.tenant.realm_id,
+        party: admin.context.presenter.as_deref(),
     }
 }
 
@@ -168,108 +182,35 @@ pub async fn create(
         .begin(&TenantContext::new(&tenant, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    if store::providers::realms::load(&transaction, &realm_id)
-        .await
-        .map_err(|_| internal())?
-        .is_some()
-    {
-        return Err(ApiError::new(ErrorCode::RealmAlreadyExists));
-    }
-    // The tenant's own ceiling, where it set one. The lock is taken before
-    // the count, so two creates one below the ceiling cannot both read a
-    // count that passes and both write.
-    store::providers::realms::tenants::hold_realms(&transaction, &tenant)
-        .await
-        .map_err(|_| internal())?;
-    let named = store::providers::realms::tenants::load(&transaction)
-        .await
-        .map_err(|_| internal())?
-        .and_then(|held| held.limits)
-        .and_then(|limits| limits.max_realms);
-    if let Some(ceiling) = ceiling.against(named)
-        && store::providers::realms::tenants::count_realms(&transaction)
-            .await
-            .map_err(|_| internal())?
-            >= ceiling
-    {
-        return Err(ApiError::with_detail(
-            ErrorCode::ValidationError,
-            format!("this tenant holds the {ceiling} realms it is allowed"),
-        ));
-    }
-    let realm = asked.into_model(
-        realm_id.clone(),
-        models::auditable::AuditableModel::from_creator(
-            tenant.clone(),
-            admin.context.principal.id().to_owned(),
-        ),
-    );
-    store::providers::realms::create(&transaction, &realm)
-        .await
-        .map_err(realm_write)?;
-    provisioning::provision_standard_scopes(&transaction, &tenant, &realm_id)
-        .await
-        .map_err(|_| internal())?;
-    if let Some(console) = policy.parties.first() {
-        provisioning::provision_admin_console(
-            &transaction,
-            &tenant,
-            &realm_id,
-            &provisioning::AdminConsole {
-                client_id: console,
-                scope: &policy.scope,
-                redirect_uris: vec![format!("{}/console/login/return", origin.as_str())],
-            },
-        )
-        .await
-        .map_err(|_| internal())?;
-    }
-    provisioning::provision_account_console(
-        &transaction,
-        &tenant,
-        &realm_id,
-        &provisioning::AccountConsole {
-            redirect_uris: vec![services::account::api::compose_account_console_redirect(
-                &origin.issuer(&realm_id),
-            )],
-        },
-    )
-    .await
-    .map_err(|_| internal())?;
-    provisioning::provision_signing_key(
+    let (realm, password) = realms::bear_realm(
         &transaction,
         sealing.provider.as_ref(),
         &sealing.envelope,
-        &tenant,
-        &realm_id,
+        **ceiling,
+        RealmBirth {
+            tenant: &tenant,
+            asked,
+            administrator_name: &first.user_name,
+            administrator_email: &first.email,
+            admin_console: policy
+                .parties
+                .first()
+                .map(|console| provisioning::AdminConsole {
+                    client_id: console,
+                    scope: &policy.scope,
+                    redirect_uris: vec![format!("{}/console/login/return", origin.as_str())],
+                }),
+            account_console: provisioning::AccountConsole {
+                redirect_uris: vec![services::account::api::compose_account_console_redirect(
+                    &origin.issuer(&realm_id),
+                )],
+            },
+        },
+        &witness(&admin),
         now,
     )
     .await
-    .map_err(|_| internal())?;
-    provisioning::provision_browser_flow(&transaction, &tenant, &realm_id)
-        .await
-        .map_err(|_| internal())?;
-    provisioning::provision_offered_flows(&transaction, &tenant, &realm_id)
-        .await
-        .map_err(|_| internal())?;
-    provisioning::provision_levels(&transaction, &realm_id)
-        .await
-        .map_err(|_| internal())?;
-    // Last, so a realm that fails to become usable does not leave a password
-    // in an operator's hands for an account that was never committed.
-    let password = provisioning::provision_first_administrator(
-        &transaction,
-        sealing.provider.as_ref(),
-        &tenant,
-        &realm_id,
-        &first.user_name,
-        &first.email,
-    )
-    .await
-    .map_err(|_| internal())?;
-    record_what_happened(&transaction, &admin, &realm_id, "realm.created", now)
-        .await
-        .map_err(|_| internal())?;
+    .map_err(refuse)?;
     transaction.commit().await.map_err(|_| internal())?;
 
     // The one time this password is ever readable. It is stored as a hash
@@ -281,35 +222,6 @@ pub async fn create(
         "password": password,
     });
     Ok(HttpResponse::Created().json(answer))
-}
-
-/// Write what happened to a realm where it will still be readable afterwards.
-///
-/// The tenant's chain, not the realm's: a realm's own chain is keyed to it and
-/// cascades with it, so the entry recording a deletion would be deleted by the
-/// statement it records. The served plane may append here and may not read,
-/// which keeps a neighbouring realm's existence as unknowable as the guard
-/// makes it.
-async fn record_what_happened(
-    transaction: &UnitOfWork,
-    admin: &Admin,
-    realm_id: &str,
-    kind: &str,
-    at: i64,
-) -> Result<(), store::error::StoreError> {
-    store::tenant_chain::append(
-        transaction,
-        &serde_json::json!({
-            "kind": kind,
-            "occurred_at": at as f64,
-            "realm": realm_id,
-            "actor": admin.context.principal.id(),
-            "actor_realm": admin.context.tenant.realm_id,
-            "party": admin.context.presenter,
-        }),
-    )
-    .await
-    .map(|_| ())
 }
 
 /// Take the realm away. The schema cascades, so everything keyed under it
@@ -348,24 +260,17 @@ pub async fn delete(
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    if !store::providers::realms::delete(&transaction, &realm_id)
-        .await
-        .map_err(|_| internal())?
-    {
-        return Err(ApiError::new(ErrorCode::RealmNotFound));
-    }
     // In the same transaction as the deletion, and in the tenant's chain
     // rather than the realm's: the realm's own chain went with the cascade a
-    // statement ago, which is the reason this table exists at all.
-    record_what_happened(
+    // statement ago, which is the reason that chain exists at all.
+    realms::take_realm_away(
         &transaction,
-        &admin,
         &realm_id,
-        "realm.deleted",
+        &witness(&admin),
         chrono::Utc::now().timestamp(),
     )
     .await
-    .map_err(|_| internal())?;
+    .map_err(refuse)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }
@@ -768,16 +673,9 @@ pub async fn update(
         .as_deref()
         .filter(|held| !held.is_empty())
     {
-        let usable = store::providers::realms::auth_flows::flow_by_alias(&transaction, alias)
+        realms::refuse_unstartable_flow(&transaction, alias)
             .await
-            .map_err(|_| internal())?
-            .is_some_and(|flow| flow.top_level == Some(true));
-        if !usable {
-            return Err(ApiError::with_detail(
-                ErrorCode::ValidationError,
-                format!("no top-level flow is aliased {alias}"),
-            ));
-        }
+            .map_err(refuse)?;
     }
     asked.apply(&mut held);
     if !services::realm::reshape(&transaction, &held)
@@ -801,9 +699,9 @@ pub async fn theme(
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let held = store::providers::realms::theme_of(&transaction, &realm_id)
+    let held = realms::read_theme(&transaction, &realm_id)
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse)?;
     Ok(HttpResponse::Ok().json(held.unwrap_or(serde_json::Value::Null)))
 }
 
@@ -828,12 +726,9 @@ pub async fn set_theme(
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    if !store::providers::realms::set_theme(&transaction, &realm_id, Some(&asked))
+    realms::write_theme(&transaction, &realm_id, Some(&asked))
         .await
-        .map_err(|_| internal())?
-    {
-        return Err(ApiError::new(ErrorCode::RealmNotFound));
-    }
+        .map_err(refuse)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }
@@ -849,12 +744,9 @@ pub async fn clear_theme(
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    if !store::providers::realms::set_theme(&transaction, &realm_id, None)
+    realms::write_theme(&transaction, &realm_id, None)
         .await
-        .map_err(|_| internal())?
-    {
-        return Err(ApiError::new(ErrorCode::RealmNotFound));
-    }
+        .map_err(refuse)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }

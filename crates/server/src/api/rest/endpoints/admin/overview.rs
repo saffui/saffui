@@ -32,29 +32,16 @@ pub async fn read(
         .await
         .map_err(refuse_unopened_work)?;
 
-    let users = store::providers::directory::users::count(&transaction)
-        .await
-        .map_err(|_| internal())?;
-    let clients = store::providers::clients::count(&transaction)
-        .await
-        .map_err(|_| internal())?;
-    let sessions = store::providers::protocol::sessions::count_standing(&transaction)
-        .await
-        .map_err(|_| internal())?;
-    let requests = store::providers::governance::requests::count_pending(&transaction)
-        .await
-        .map_err(|_| internal())?;
-
-    let waiting = store::providers::events::outbox::count_waiting(&transaction)
+    let counted = services::admin::realms::read_overview(&transaction)
         .await
         .map_err(|_| internal())?;
 
     let mut answer = serde_json::json!({
-        "users": users,
-        "clients": clients,
-        "sessions": sessions,
-        "pending_requests": requests,
-        "queue": waiting,
+        "users": counted.users,
+        "clients": counted.clients,
+        "sessions": counted.sessions,
+        "pending_requests": counted.pending_requests,
+        "queue": counted.waiting_events,
     });
     // Absent where this build measures nothing, so the console leaves the box
     // out rather than printing a placeholder for a reading that never comes.

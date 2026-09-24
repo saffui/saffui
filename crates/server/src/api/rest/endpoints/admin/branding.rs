@@ -3,6 +3,7 @@
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
+use services::admin::realms::{self, Unrealmed};
 use services::realm::theme::{Unusable, weigh_logo};
 use store::tenancy::Tenancy;
 
@@ -28,12 +29,9 @@ pub async fn keep(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let held = store::providers::realms::set_logo(&transaction, &realm_id, Some((&body, kind)))
+    realms::write_logo(&transaction, &realm_id, Some((&body, kind)))
         .await
-        .map_err(|_| internal())?;
-    if !held {
-        return Err(ApiError::new(ErrorCode::RealmNotFound));
-    }
+        .map_err(unwritten)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }
@@ -49,12 +47,9 @@ pub async fn forget(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let held = store::providers::realms::set_logo(&transaction, &realm_id, None)
+    realms::write_logo(&transaction, &realm_id, None)
         .await
-        .map_err(|_| internal())?;
-    if !held {
-        return Err(ApiError::new(ErrorCode::RealmNotFound));
-    }
+        .map_err(unwritten)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }
@@ -71,9 +66,9 @@ pub async fn describe(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let held = store::providers::realms::logo_of(&transaction, &realm_id)
+    let held = realms::read_logo(&transaction, &realm_id)
         .await
-        .map_err(|_| internal())?;
+        .map_err(unwritten)?;
     Ok(HttpResponse::Ok().json(serde_json::json!({
         "held": held.is_some(),
         "media_type": held.as_ref().map(|(_, kind)| kind.clone()),
@@ -83,6 +78,14 @@ pub async fn describe(
 
 fn refused(why: Unusable) -> ApiError {
     ApiError::with_detail(ErrorCode::ValidationError, why.to_string())
+}
+
+/// A mark the store did not take, or a realm nobody holds.
+fn unwritten(why: Unrealmed) -> ApiError {
+    match why {
+        Unrealmed::NotFound => ApiError::new(ErrorCode::RealmNotFound),
+        _ => internal(),
+    }
 }
 
 fn internal() -> ApiError {

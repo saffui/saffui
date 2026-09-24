@@ -25,11 +25,7 @@ pub fn refused(refusal: &Refusal) -> HttpResponse {
 }
 
 pub fn internal() -> HttpResponse {
-    refused(&Refusal {
-        status: 500,
-        scim_type: None,
-        detail: "the realm could not be read".into(),
-    })
+    refused(&Refusal::unreadable())
 }
 
 pub fn refuse_unopened_work(why: StoreError) -> HttpResponse {

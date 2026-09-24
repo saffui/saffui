@@ -2,44 +2,14 @@ use crate::api::rest::endpoints::within;
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, web};
 use config::serving::PublicOrigin;
-use crypto::password::storage::StoredPassword;
-use crypto::provider::Argon2Params;
-use crypto::secrecy::SecretBox;
-use models::entities::attributes::AttributeValue;
-use models::entities::authz::GroupModel;
-use models::entities::credentials::{CredentialModel, CredentialSecret, CredentialType};
-use models::entities::user::{UserModel, profile};
 use serde_json::Value;
-use services::scim::{self, AssertedUser, Matched, Refusal, UserPatch, list_response, shown_user};
-use store::error::StoreError;
-use store::providers::directory::{credentials, roles, users};
-use store::query::list_query::ListQuery;
-use store::tenancy::{Tenancy, UnitOfWork};
+use services::scim::users::{self as people, Birthplace};
+use services::scim::{self, AssertedUser, Refusal, list_response};
+use store::tenancy::Tenancy;
 
 use super::{answered, base_of, filter_of, internal, refuse_unopened_work, refused, window};
 use crate::api::config::Sealing;
 use crate::middleware::admin_guard::Admin;
-
-async fn groups_of(transaction: &UnitOfWork, person: &UserModel) -> Result<Vec<GroupModel>, ()> {
-    let mut held = Vec::new();
-    for group_id in users::groups_of(transaction, &person.user_id)
-        .await
-        .map_err(|_| ())?
-    {
-        if let Some(group) = roles::load_group(transaction, &group_id)
-            .await
-            .map_err(|_| ())?
-        {
-            held.push(group);
-        }
-    }
-    Ok(held)
-}
-
-async fn shown(transaction: &UnitOfWork, base: &str, person: &UserModel) -> Result<Value, ()> {
-    let groups = groups_of(transaction, person).await?;
-    Ok(shown_user(base, person, &groups))
-}
 
 pub async fn list(
     request: HttpRequest,
@@ -57,42 +27,22 @@ pub async fn list(
 
     let query = request.query_string();
     let (start_index, page) = window(query);
-
-    let found: Vec<UserModel> = match filter_of(query) {
-        Some(filter) => {
-            let matched = match scim::folded_filter(&filter, false) {
-                Ok(matched) => matched,
-                Err(refusal) => return refused(&refusal),
-            };
-            let one = match matched {
-                Matched::UserName(name) => users::load_by_name(&transaction, &name).await,
-                Matched::Email(address) => users::load_by_email(&transaction, &address).await,
-                Matched::ExternalId(external) => {
-                    users::load_by_attribute(&transaction, scim::EXTERNAL_ID, &external).await
-                }
-                Matched::GroupName(_) => {
-                    return refused(&Refusal::invalid_filter(
-                        "displayName filters groups, not users",
-                    ));
-                }
-            };
-            match one {
-                Ok(held) => held.into_iter().collect(),
-                Err(_) => return internal(),
-            }
-        }
-        None => match users::list(&transaction, &ListQuery::new(page), true).await {
-            Ok(held) => held.items,
-            Err(_) => return internal(),
-        },
+    let matched = match filter_of(query).map(|filter| scim::folded_filter(&filter, false)) {
+        None => None,
+        Some(Ok(matched)) => Some(matched),
+        Some(Err(refusal)) => return refused(&refusal),
+    };
+    let found = match people::people_matching(&transaction, matched, page).await {
+        Ok(found) => found,
+        Err(refusal) => return refused(&refusal),
     };
 
     let total = found.len() as i64;
     let mut resources = Vec::with_capacity(found.len());
     for person in &found {
-        match shown(&transaction, &base, person).await {
+        match people::shown_with_groups(&transaction, &base, person).await {
             Ok(body) => resources.push(body),
-            Err(()) => return internal(),
+            Err(refusal) => return refused(&refusal),
         }
     }
     answered(StatusCode::OK, list_response(start_index, total, resources))
@@ -111,13 +61,13 @@ pub async fn get(
         Ok(transaction) => transaction,
         Err(why) => return refuse_unopened_work(why),
     };
-    match users::load(&transaction, &user_id).await {
-        Ok(Some(person)) => match shown(&transaction, &base, &person).await {
-            Ok(body) => answered(StatusCode::OK, body),
-            Err(()) => internal(),
-        },
-        Ok(None) => refused(&Refusal::not_found()),
-        Err(_) => internal(),
+    let shown = match people::person(&transaction, &user_id).await {
+        Ok(person) => people::shown_with_groups(&transaction, &base, &person).await,
+        Err(refusal) => Err(refusal),
+    };
+    match shown {
+        Ok(body) => answered(StatusCode::OK, body),
+        Err(refusal) => refused(&refusal),
     }
 }
 
@@ -149,108 +99,30 @@ pub async fn create(
         Ok(transaction) => transaction,
         Err(why) => return refuse_unopened_work(why),
     };
-
-    if let Some(external) = &asserted.external_id {
-        match users::load_by_attribute(&transaction, scim::EXTERNAL_ID, external).await {
-            Ok(Some(_)) => {
-                return refused(&Refusal::uniqueness(format!(
-                    "externalId {external} is already taken"
-                )));
-            }
-            Ok(None) => {}
-            Err(_) => return internal(),
-        }
-    }
-
-    let mut metadata = models::auditable::AuditableModel::from_creator(
-        context.tenant.clone(),
-        admin.context.principal.id().to_owned(),
-    );
-    metadata.created_at = Some(chrono::Utc::now());
-    let mut drawn = [0_u8; 16];
-    if sealing.provider.rand().fill(&mut drawn).is_err() {
-        return internal();
-    }
-    let mut person = UserModel {
-        // Drawn like every other birth; SCIM addresses the row by this id,
-        // and the provisioner renaming a person must not mint a stranger.
-        user_id: crypto::provider::uuid_from(drawn),
-        realm_id: realm_id.clone(),
+    let born = people::provision_person(
+        &transaction,
+        sealing.provider.as_ref(),
+        &Birthplace {
+            tenant: &context.tenant,
+            realm_id: &realm_id,
+            by: admin.context.principal.id(),
+            now: chrono::Utc::now(),
+        },
+        &asserted,
         user_name,
-        enabled: asserted.active.unwrap_or(true),
-        email: asserted.email.clone().unwrap_or_default(),
-        // A provisioner asserts an address; verifying it stays this realm's
-        // own act, the same rule federation follows.
-        email_verified: Some(false),
-        phone_number: None,
-        phone_number_verified: None,
-        required_actions: None,
-        not_before: None,
-        user_storage: None,
-        attributes: None,
-        is_service_account: None,
-        service_account_client_link: None,
-        metadata,
+    )
+    .await;
+    let body = match born {
+        Ok(person) => people::shown_with_groups(&transaction, &base, &person).await,
+        Err(refusal) => Err(refusal),
     };
-    asserted.apply(&mut person);
-
-    // The same seat every newcomer takes: default groups that break a
-    // separation refuse the person, and the provisioner hears why.
-    if store::providers::governance::sod::hold_person(&transaction, &person.user_id)
-        .await
-        .is_err()
-    {
-        return internal();
+    match body {
+        Ok(body) => match transaction.commit().await {
+            Ok(()) => answered(StatusCode::CREATED, body),
+            Err(_) => internal(),
+        },
+        Err(refusal) => refused(&refusal),
     }
-    match services::governance::sod::weigh_newcomer(&transaction).await {
-        Ok(()) => {}
-        Err(services::governance::sod::Toxic::Refused(said)) => {
-            return refused(&Refusal::invalid(said));
-        }
-        Err(services::governance::sod::Toxic::Backend) => return internal(),
-    }
-    match users::create(&transaction, &person).await {
-        Ok(()) => {}
-        Err(StoreError::AlreadyExists) => {
-            return refused(&Refusal::uniqueness(format!(
-                "userName {} is already taken",
-                person.user_name
-            )));
-        }
-        Err(_) => return internal(),
-    }
-    if store::providers::directory::roles::join_default_groups(&transaction, &person.user_id)
-        .await
-        .is_err()
-    {
-        return internal();
-    }
-    if let Some(password) = &asserted.password {
-        match planted_password(
-            &transaction,
-            &sealing,
-            &admin.context.tenant.tenant,
-            &realm_id,
-            &person.user_id,
-            password,
-        )
-        .await
-        {
-            Ok(()) => {}
-            // The realm's own words. A directory told only that the password
-            // could not be kept retries the same password forever.
-            Err(said) => return refused(&Refusal::invalid(said)),
-        }
-    }
-
-    let body = match shown(&transaction, &base, &person).await {
-        Ok(body) => body,
-        Err(()) => return internal(),
-    };
-    if transaction.commit().await.is_err() {
-        return internal();
-    }
-    answered(StatusCode::CREATED, body)
 }
 
 #[allow(
@@ -277,53 +149,26 @@ pub async fn replace(
         Ok(transaction) => transaction,
         Err(why) => return refuse_unopened_work(why),
     };
-    let mut person = match users::load(&transaction, &user_id).await {
-        Ok(Some(person)) => person,
-        Ok(None) => return refused(&Refusal::not_found()),
-        Err(_) => return internal(),
+    let replaced = people::replace_person(
+        &transaction,
+        sealing.provider.as_ref(),
+        &admin.context.tenant.tenant,
+        &realm_id,
+        &user_id,
+        &asserted,
+    )
+    .await;
+    let shown = match replaced {
+        Ok(fresh) => people::shown_with_groups(&transaction, &base, &fresh).await,
+        Err(refusal) => Err(refusal),
     };
-    if let Some(renamed) = &asserted.user_name
-        && renamed != &person.user_name
-    {
-        return refused(&Refusal {
-            status: 400,
-            scim_type: Some("mutability"),
-            detail: "userName does not change here".into(),
-        });
-    }
-
-    asserted.apply(&mut person);
-    if users::update(&transaction, &person).await.is_err() {
-        return internal();
-    }
-    if let Some(password) = &asserted.password {
-        match planted_password(
-            &transaction,
-            &sealing,
-            &admin.context.tenant.tenant,
-            &realm_id,
-            &person.user_id,
-            password,
-        )
-        .await
-        {
-            Ok(()) => {}
-            // The realm's own words. A directory told only that the password
-            // could not be kept retries the same password forever.
-            Err(said) => return refused(&Refusal::invalid(said)),
-        }
-    }
-    let shown = match users::load(&transaction, &user_id).await {
-        Ok(Some(fresh)) => match shown(&transaction, &base, &fresh).await {
-            Ok(body) => body,
-            Err(()) => return internal(),
+    match shown {
+        Ok(body) => match transaction.commit().await {
+            Ok(()) => answered(StatusCode::OK, body),
+            Err(_) => internal(),
         },
-        _ => return internal(),
-    };
-    if transaction.commit().await.is_err() {
-        return internal();
+        Err(refusal) => refused(&refusal),
     }
-    answered(StatusCode::OK, shown)
 }
 
 #[allow(
@@ -350,81 +195,26 @@ pub async fn patch(
         Ok(transaction) => transaction,
         Err(why) => return refuse_unopened_work(why),
     };
-    let mut person = match users::load(&transaction, &user_id).await {
-        Ok(Some(person)) => person,
-        Ok(None) => return refused(&Refusal::not_found()),
-        Err(_) => return internal(),
+    let patched = people::patch_person(
+        &transaction,
+        sealing.provider.as_ref(),
+        &admin.context.tenant.tenant,
+        &realm_id,
+        &user_id,
+        folded,
+    )
+    .await;
+    let shown = match patched {
+        Ok(fresh) => people::shown_with_groups(&transaction, &base, &fresh).await,
+        Err(refusal) => Err(refusal),
     };
-
-    let mut password = None;
-    for change in folded {
-        let bag = person.attributes.get_or_insert_with(Default::default);
-        match change {
-            UserPatch::Active(active) => person.enabled = active,
-            UserPatch::GivenName(held) => {
-                match held {
-                    Some(value) => {
-                        bag.insert(profile::FIRST_NAME.to_owned(), AttributeValue::Str(value));
-                    }
-                    None => {
-                        bag.remove(profile::FIRST_NAME);
-                    }
-                };
-            }
-            UserPatch::FamilyName(held) => {
-                match held {
-                    Some(value) => {
-                        bag.insert(profile::LAST_NAME.to_owned(), AttributeValue::Str(value));
-                    }
-                    None => {
-                        bag.remove(profile::LAST_NAME);
-                    }
-                };
-            }
-            UserPatch::ExternalId(value) => {
-                bag.insert(scim::EXTERNAL_ID.to_owned(), AttributeValue::Str(value));
-            }
-            UserPatch::Password(value) => password = Some(value),
-            UserPatch::Email(value) => {
-                if person.email != value {
-                    person.email = value;
-                    person.email_verified = Some(false);
-                }
-            }
-        }
-    }
-
-    if users::update(&transaction, &person).await.is_err() {
-        return internal();
-    }
-    if let Some(password) = &password {
-        match planted_password(
-            &transaction,
-            &sealing,
-            &admin.context.tenant.tenant,
-            &realm_id,
-            &person.user_id,
-            password,
-        )
-        .await
-        {
-            Ok(()) => {}
-            // The realm's own words. A directory told only that the password
-            // could not be kept retries the same password forever.
-            Err(said) => return refused(&Refusal::invalid(said)),
-        }
-    }
-    let shown = match users::load(&transaction, &user_id).await {
-        Ok(Some(fresh)) => match shown(&transaction, &base, &fresh).await {
-            Ok(body) => body,
-            Err(()) => return internal(),
+    match shown {
+        Ok(body) => match transaction.commit().await {
+            Ok(()) => answered(StatusCode::OK, body),
+            Err(_) => internal(),
         },
-        _ => return internal(),
-    };
-    if transaction.commit().await.is_err() {
-        return internal();
+        Err(refusal) => refused(&refusal),
     }
-    answered(StatusCode::OK, shown)
 }
 
 pub async fn delete(
@@ -437,69 +227,11 @@ pub async fn delete(
         Ok(transaction) => transaction,
         Err(why) => return refuse_unopened_work(why),
     };
-    match users::delete(&transaction, &user_id).await {
-        Ok(true) => {
-            if transaction.commit().await.is_err() {
-                return internal();
-            }
-            HttpResponse::NoContent().finish()
-        }
-        Ok(false) => refused(&Refusal::not_found()),
-        Err(_) => internal(),
-    }
-}
-
-/// The same argon2 the login checks, replacing whatever password stood.
-///
-/// Under the realm's policy, which this door went around: a provisioning client
-/// could plant anything a realm had declared it would not have, and the realm
-/// went on refusing the same password to the person who owns the account. The
-/// refusal is handed back in the realm's own words rather than flattened, so a
-/// directory that pushes a password too short is told which rule it broke.
-async fn planted_password(
-    transaction: &UnitOfWork,
-    sealing: &Sealing,
-    tenant: &str,
-    realm_id: &str,
-    user_id: &str,
-    password: &str,
-) -> Result<(), &'static str> {
-    let secret = SecretBox::new(Box::new(password.to_owned()));
-    if let Err(services::admin::users::Uncreatable::Invalid(said)) =
-        services::admin::users::refuse_password_against_policy(
-            transaction,
-            sealing.provider.as_ref(),
-            realm_id,
-            user_id,
-            &secret,
-        )
-        .await
-    {
-        return Err(said);
-    }
-    let StoredPassword::Argon2id { encoded } =
-        StoredPassword::hash_argon2id(sealing.provider.as_ref(), Argon2Params::default(), &secret)
-            .map_err(|_| "the password could not be kept")?
-    else {
-        return Err("the password could not be kept");
-    };
-    credentials::replace_all_of_type(
-        transaction,
-        &CredentialModel {
-            credential_id: format!("scim-{user_id}"),
-            realm_id: realm_id.to_owned(),
-            user_id: user_id.to_owned(),
-            credential_type: CredentialType::Password,
-            secret: CredentialSecret::new(encoded),
-            user_label: Some("provisioned".to_owned()),
-            otp: None,
-            priority: 0,
-            metadata: models::auditable::AuditableModel::from_creator(
-                tenant.to_owned(),
-                "scim".to_owned(),
-            ),
+    match people::remove_person(&transaction, &user_id).await {
+        Ok(()) => match transaction.commit().await {
+            Ok(()) => HttpResponse::NoContent().finish(),
+            Err(_) => internal(),
         },
-    )
-    .await
-    .map_err(|_| "the password could not be kept")
+        Err(refusal) => refused(&refusal),
+    }
 }

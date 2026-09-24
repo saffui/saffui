@@ -222,8 +222,8 @@ hand the same lock to a second writer.
 
 Scheduled work is claimed per realm with a transaction scoped advisory lock, and
 a node that does not get it moves on rather than doing the work twice: sweeping
-(`crates/server/src/jobs.rs:85`), outbox delivery (`:166`), and federation
-refresh (`:264`). Outbox rows are taken with skip locked, so two deliverers take
+(`crates/server/src/jobs.rs:86`), outbox delivery (`:167`), and federation
+refresh (`:265`). Outbox rows are taken with skip locked, so two deliverers take
 different rows rather than the same ones
 (`crates/store/src/providers/events/outbox.rs:122`).
 
@@ -307,7 +307,7 @@ answers it, or the word that says nothing does.
 | Id | Threat | Agent | What answers it |
 |---|---|---|---|
 | T-NOD-1 | Two nodes forking one realm's chain | TA-7 | The append takes the head row for update (`crates/store/migrations/V011__audit_chain.sql:130`) |
-| T-NOD-2 | The same scheduled work done twice, or a message delivered twice | TA-7 | A lock per realm per job, and rows taken with skip locked (`crates/server/src/jobs.rs:85`, `crates/store/src/providers/events/outbox.rs:122`) |
+| T-NOD-2 | The same scheduled work done twice, or a message delivered twice | TA-7 | A lock per realm per job, and rows taken with skip locked (`crates/server/src/jobs.rs:86`, `crates/store/src/providers/events/outbox.rs:122`) |
 
 ### The mesh door
 

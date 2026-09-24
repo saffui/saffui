@@ -1,7 +1,9 @@
 //! Provisioning in the SCIM shape: what this realm answers, and the
 //! applications it provisions into.
 
+pub mod groups;
 pub mod outbound;
+pub mod users;
 
 use models::entities::attributes::{AttributeValue, AttributesMap};
 use models::entities::authz::GroupModel;
@@ -65,6 +67,15 @@ impl Refusal {
             status: 404,
             scim_type: None,
             detail: "no such resource".into(),
+        }
+    }
+
+    /// The realm failing to answer, which is nothing the provisioner did.
+    pub fn unreadable() -> Self {
+        Self {
+            status: 500,
+            scim_type: None,
+            detail: "the realm could not be read".into(),
         }
     }
 

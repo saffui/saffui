@@ -103,6 +103,9 @@ describe("a password change", () => {
       describePasswordRefusal(new ApiError(422, "", "user.password.current_mismatch")),
     ).toMatch(/^The current password is not right/);
     expect(describePasswordRefusal(new ApiError(429, "", "user.locked_out"))).toMatch(/locked/);
+    expect(describePasswordRefusal(new ApiError(429, "", "too_many_requests"))).toMatch(
+      /from your network/,
+    );
     expect(describePasswordRefusal(new ApiError(409, "", "user.password.not_held_here"))).toMatch(
       /another service/,
     );

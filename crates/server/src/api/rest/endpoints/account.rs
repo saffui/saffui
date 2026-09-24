@@ -109,12 +109,12 @@ pub async fn change_password(
         }
         // The count is the refusal: rolled back, a wrong guess would cost nothing
         // and the lock would never close.
-        Err(Unmade::Password(Unchanged::Mismatch)) => {
+        Err(Unmade::Password(counted @ (Unchanged::Mismatch | Unchanged::LockedOut))) => {
             transaction
                 .commit()
                 .await
                 .map_err(|_| AccountRefusal::Failed)?;
-            Err(refuse(Unmade::Password(Unchanged::Mismatch)))
+            Err(refuse(Unmade::Password(counted)))
         }
         Err(why) => Err(refuse(why)),
     }
@@ -192,6 +192,7 @@ fn refuse(why: Unmade) -> AccountRefusal {
         Unmade::StepUp(step_up) => AccountRefusal::StepUp(step_up),
         Unmade::Password(Unchanged::Mismatch) => refused(ErrorCode::CurrentPasswordMismatch),
         Unmade::Password(Unchanged::LockedOut) => refused(ErrorCode::UserLockedOut),
+        Unmade::Password(Unchanged::Throttled { .. }) => refused(ErrorCode::TooManyRequests),
         Unmade::Password(Unchanged::NotHeldHere) => refused(ErrorCode::PasswordNotHeldHere),
         Unmade::Password(Unchanged::Refused(said)) => {
             AccountRefusal::Refused(ApiError::with_detail(ErrorCode::ValidationError, said))

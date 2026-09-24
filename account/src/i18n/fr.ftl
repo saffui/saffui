@@ -124,6 +124,7 @@ security-password-missing = Saisissez votre mot de passe actuel et un nouveau.
 security-password-repeat-differs = Le nouveau mot de passe et sa répétition diffèrent.
 security-password-wrong = Le mot de passe actuel n'est pas le bon. Trop d'essais erronés peuvent verrouiller le compte un moment.
 security-password-locked = Trop d'essais erronés : votre compte est verrouillé pour un moment. Réessayez plus tard.
+security-password-throttled = Trop de tentatives échouées depuis votre réseau. Patientez un moment, puis réessayez.
 security-password-not-here = Votre mot de passe est géré par un autre service : il ne se change pas ici.
 security-password-changed = Mot de passe changé. { $count ->
     [0] Aucune autre connexion n'était ouverte.

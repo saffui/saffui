@@ -72,6 +72,7 @@ export function checkPasswordForm(form: PasswordForm): "missing" | "mismatch" | 
 export function describePasswordRefusal(refused: ApiError): string {
   if (refused.code === "user.password.current_mismatch") return say("security-password-wrong");
   if (refused.code === "user.locked_out") return say("security-password-locked");
+  if (refused.code === "too_many_requests") return say("security-password-throttled");
   if (refused.code === "user.password.not_held_here") return say("security-password-not-here");
   const named = PASSWORD_REFUSALS[refused.message];
   return named ? say(named) : refused.message;

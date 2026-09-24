@@ -609,6 +609,65 @@ async fn a_wrong_current_password_counts_against_the_lock() {
     );
 }
 
+/// The change keeps the counts per address every door keeps: a guess the
+/// person's lock refused still counts and is kept, and past the threshold the
+/// address is told to wait in the catalogue's words, the password untouched.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_current_password_guessed_from_one_address_is_turned_away() {
+    let plane = Plane::with_actions(&[]).await;
+    plane.count_logins(2).await;
+    plane
+        .throttle_sources(models::entities::realm::SourceThrottle {
+            throttled: true,
+            max_failures: 100,
+            max_name_failures: 4,
+            window_seconds: 900,
+        })
+        .await;
+    provision_account_console(&plane).await;
+    let bearer = plane.token(&account_claims());
+    prove_sign_in_reaching(&plane, chrono::Utc::now().timestamp(), 1).await;
+
+    let mut heard = Vec::new();
+    for _ in 0..5 {
+        let app = test::init_service(App::new().configure(register(&mounted_dialling(
+            &plane,
+            config::serving::Egress::Outward,
+        ))))
+        .await;
+        let response = test::call_service(
+            &app,
+            test::TestRequest::put()
+                .uri(&own("password"))
+                .peer_addr("203.0.113.7:40000".parse().expect("an address"))
+                .insert_header(("authorization", format!("Bearer {bearer}")))
+                .set_json(json!({
+                    "current_password": "not-the-password-at-all",
+                    "new_password": REPLACEMENT,
+                }))
+                .to_request(),
+        )
+        .await;
+        let status = response.status().as_u16();
+        let told: Value = test::read_body_json(response).await;
+        heard.push((
+            status,
+            told["error_code"].as_str().unwrap_or_default().to_owned(),
+        ));
+    }
+    let expected = [
+        (422, "user.password.current_mismatch"),
+        (422, "user.password.current_mismatch"),
+        (429, "user.locked_out"),
+        (429, "user.locked_out"),
+        (429, "too_many_requests"),
+    ]
+    .map(|(status, code)| (status, code.to_owned()));
+    assert_eq!(heard, expected);
+    assert!(held_password_is(&plane, support::PASSWORD).await);
+}
+
 /// A person reads what they hold to sign in with through the account API, and
 /// removes a factor only from a login recent and strong enough. Without a recent
 /// sign-in the removal is asked to step up and nothing goes; a factor the person

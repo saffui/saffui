@@ -1322,6 +1322,7 @@ toast-hint-last-factor = Ajoutez d'abord un autre facteur, puis retirez celui-ci
 subject-own-password = votre mot de passe
 toast-hint-current-password = Saisissez le mot de passe avec lequel vous vous connectez aujourd'hui.
 toast-hint-locked-out = Trop de mots de passe erronés. Attendez la levée du verrou, ou demandez à un autre administrateur de le lever.
+toast-hint-too-many-requests = Trop de tentatives échouées depuis ce réseau. Patientez un moment, puis réessayez.
 toast-hint-password-not-held = Ce compte ne garde pas de mot de passe ici : il se connecte par un annuaire ou un autre fournisseur.
 settings-group-credentials = Identifiants
 settings-unsaved = non enregistré

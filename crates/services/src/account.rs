@@ -1,5 +1,5 @@
 use auth::login::authenticator::Authenticator;
-use auth::login::lockout;
+use auth::login::{lockout, throttle};
 use auth::password::{self, Compared, Unkept};
 use chrono::{DateTime, Utc};
 use crypto::provider::CryptoProvider;
@@ -22,6 +22,9 @@ pub enum Unchanged {
     Mismatch,
     #[error("too many wrong passwords; try again later")]
     LockedOut,
+    /// Too many failures from where the change came from, until this instant.
+    #[error("too many failed attempts from this address; try again later")]
+    Throttled { until: i64 },
     /// A directory owns the password, or the account keeps none at all.
     #[error("this account keeps no password here to change")]
     NotHeldHere,
@@ -45,16 +48,17 @@ pub struct Changing<'a> {
 /// Replace a person's password on proof of the current one, and say how many
 /// of their other logins ended with it.
 ///
-/// Checked in a login's order: the lock first, verifying nothing, then the
-/// password, a wrong one counted against the same lock. The replacement goes
+/// Checked in a login's order: the address and the lock first, verifying
+/// nothing, then the password, a wrong one counted against the same lock and
+/// the same address as at every other door. The replacement goes
 /// through the writer every door shares, so the realm's policy and history
 /// speak here too. Every other login ends, with what clients got from it:
 /// whoever else knew the old password is shut out, and the login making the
 /// change keeps working.
 ///
-/// A mismatch has written its count, and the caller commits it: rolled back,
-/// a wrong guess costs nothing. Every other outcome is the caller's to commit
-/// or drop whole.
+/// A mismatch or a lock has written its counts, and the caller commits them:
+/// rolled back, a wrong guess costs nothing. Every other outcome is the
+/// caller's to commit or drop whole.
 pub async fn change_own_password(
     transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
@@ -66,10 +70,21 @@ pub async fn change_own_password(
     if person.user_storage == Some(UserStorage::Ldap) {
         return Err(Unchanged::NotHeldHere);
     }
+    let knock = throttle::Knock::new(provider, changing.from, Some(&person.user_name))
+        .map_err(|_| Unchanged::Backend)?;
+    if let Some(until) = throttle::until(transaction, changing.realm, &knock, changing.now)
+        .await
+        .map_err(|_| Unchanged::Backend)?
+    {
+        return Err(Unchanged::Throttled { until });
+    }
     let locked = lockout::until(transaction, changing.realm, &person.user_id, changing.now)
         .await
         .map_err(|_| Unchanged::Backend)?;
     if locked.is_some() {
+        throttle::count(transaction, changing.realm, &knock, changing.now)
+            .await
+            .map_err(|_| Unchanged::Backend)?;
         return Err(Unchanged::LockedOut);
     }
     match password::compare_with_held(transaction, provider, &person.user_id, current)
@@ -88,6 +103,9 @@ pub async fn change_own_password(
             )
             .await
             .map_err(|_| Unchanged::Backend)?;
+            throttle::count(transaction, changing.realm, &knock, changing.now)
+                .await
+                .map_err(|_| Unchanged::Backend)?;
             return Err(Unchanged::Mismatch);
         }
     }

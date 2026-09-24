@@ -124,6 +124,7 @@ security-password-missing = Type your current password and a new one.
 security-password-repeat-differs = The new password and its repeat differ.
 security-password-wrong = The current password is not right. Too many wrong tries can lock the account for a while.
 security-password-locked = Too many wrong tries: your account is locked for a while. Try again later.
+security-password-throttled = Too many failed attempts from your network. Wait a while, then try again.
 security-password-not-here = Your password is kept by another service, so it cannot be changed here.
 security-password-changed = Password changed. { $count ->
     [0] No other sign-in was open.

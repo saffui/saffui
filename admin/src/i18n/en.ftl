@@ -1322,6 +1322,7 @@ toast-hint-last-factor = Add another factor first, then remove this one.
 subject-own-password = your password
 toast-hint-current-password = Type the password you sign in with today.
 toast-hint-locked-out = Too many wrong passwords. Wait for the lock to lift, or ask another administrator to lift it.
+toast-hint-too-many-requests = Too many failed attempts from this network. Wait a while, then try again.
 toast-hint-password-not-held = This account keeps no password here: it signs in through a directory or another provider.
 settings-group-credentials = Credentials
 settings-unsaved = unsaved

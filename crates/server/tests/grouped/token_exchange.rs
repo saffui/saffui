@@ -225,6 +225,45 @@ async fn a_token_is_exchanged_for_delegation() {
     assert_eq!(told["error"], "invalid_request");
 }
 
+/// What an exchange mints lives no longer than the token it was shown:
+/// acting for somebody is bounded by their token, so exchanging again and
+/// again cannot keep an ending grant alive.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_exchange_never_outlives_the_token_it_was_shown() {
+    let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
+    opted_in(&plane, support::CONFIDENTIAL).await;
+    let minted = subject_tokens(&plane, "openid").await;
+    let original = plane
+        .claims_of(minted["access_token"].as_str().expect("an access token"))
+        .await;
+    let ending = chrono::Utc::now().timestamp() + 30;
+    let subject_token = resigned_with(&plane, &original, &[("exp", serde_json::json!(ending))]);
+
+    let (status, told) = asking(
+        &plane,
+        &[
+            ("grant_type", EXCHANGE),
+            ("subject_token", &subject_token),
+            ("subject_token_type", ACCESS_TYPE),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert!(
+        told["expires_in"].as_i64().expect("a lifespan") <= 30,
+        "the answer promises more than the token shown had left: {told}"
+    );
+    let exchanged = plane
+        .claims_of(told["access_token"].as_str().expect("a token"))
+        .await;
+    assert!(
+        exchanged["exp"].as_i64().expect("an expiry") <= ending,
+        "the exchanged token outlives the one it was shown: {exchanged}"
+    );
+}
+
 /// A public client cannot exchange, opted in or not: acting for somebody is
 /// a confidential power.
 #[tokio::test]
@@ -438,8 +477,10 @@ async fn a_pairwise_subject_is_respoken_for_the_audience() {
     assert_eq!(kept["sub"], worn, "{kept}");
 }
 
-/// The operator can bound where a client points an exchange; the client
-/// itself always stands, and the refusal wears the unauthorized face.
+/// The operator can bound where a client points an exchange, in one string
+/// or in a list; the client itself always stands, and the refusal wears the
+/// unauthorized face. A bound stated in a shape that names nobody allows
+/// nobody but the client, never everybody.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn an_exchange_points_only_where_the_operator_said() {
@@ -448,7 +489,17 @@ async fn an_exchange_points_only_where_the_operator_said() {
 
     let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
     opted_in(&plane, support::CONFIDENTIAL).await;
-    {
+    let minted = subject_tokens(&plane, "openid").await;
+    let subject_token = minted["access_token"].as_str().expect("an access token");
+
+    for (bound, listed) in [
+        (AttributeValue::Str("billing reports".to_owned()), true),
+        (
+            AttributeValue::ListStr(vec!["billing".to_owned(), "reports".to_owned()]),
+            true,
+        ),
+        (AttributeValue::Bool(true), false),
+    ] {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
@@ -456,42 +507,44 @@ async fn an_exchange_points_only_where_the_operator_said() {
             .await
             .unwrap()
             .expect("the client");
-        client.configs.get_or_insert_with(Default::default).insert(
-            "token.exchange.audiences".to_owned(),
-            AttributeValue::Str("billing reports".to_owned()),
-        );
+        client
+            .configs
+            .get_or_insert_with(Default::default)
+            .insert("token.exchange.audiences".to_owned(), bound.clone());
         assert!(
             store::providers::clients::update(&transaction, &client)
                 .await
                 .unwrap()
         );
         transaction.commit().await.unwrap();
-    }
-    let minted = subject_tokens(&plane, "openid").await;
-    let subject_token = minted["access_token"].as_str().expect("an access token");
 
-    for (audience, admitted) in [
-        ("billing", true),
-        ("reports", true),
-        ("elsewhere", false),
-        (support::CONFIDENTIAL, true),
-    ] {
-        let (status, told) = asking(
-            &plane,
-            &[
-                ("grant_type", EXCHANGE),
-                ("subject_token", subject_token),
-                ("subject_token_type", ACCESS_TYPE),
-                ("audience", audience),
-            ],
-            Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
-        )
-        .await;
-        if admitted {
-            assert_eq!(status, StatusCode::OK, "{audience}: {told}");
-        } else {
-            assert_eq!(status, StatusCode::BAD_REQUEST, "{audience}: {told}");
-            assert_eq!(told["error"], "unauthorized_client", "{told}");
+        for (audience, admitted) in [
+            ("billing", listed),
+            ("reports", listed),
+            ("elsewhere", false),
+            (support::CONFIDENTIAL, true),
+        ] {
+            let (status, told) = asking(
+                &plane,
+                &[
+                    ("grant_type", EXCHANGE),
+                    ("subject_token", subject_token),
+                    ("subject_token_type", ACCESS_TYPE),
+                    ("audience", audience),
+                ],
+                Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+            )
+            .await;
+            if admitted {
+                assert_eq!(status, StatusCode::OK, "{bound:?}, {audience}: {told}");
+            } else {
+                assert_eq!(
+                    status,
+                    StatusCode::BAD_REQUEST,
+                    "{bound:?}, {audience}: {told}"
+                );
+                assert_eq!(told["error"], "unauthorized_client", "{told}");
+            }
         }
     }
 }
@@ -772,6 +825,75 @@ async fn a_client_without_a_root_cannot_ask_for_capabilities() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
     assert_eq!(told["error"], "unauthorized_client", "{told}");
+}
+
+/// A policy named in part, or with a part in a shape nobody reads, is a
+/// policy nobody can answer: the exchange is refused rather than let through
+/// unasked.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_policy_named_in_part_refuses_the_exchange() {
+    use models::entities::attributes::AttributeValue;
+    use store::tenancy::TenantContext;
+
+    let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
+    opted_in(&plane, support::CONFIDENTIAL).await;
+    let minted = subject_tokens(&plane, "openid").await;
+    let subject_token = minted["access_token"].as_str().expect("an access token");
+    let text = |held: &str| AttributeValue::Str(held.to_owned());
+
+    for (label, named) in [
+        (
+            "one part of three",
+            vec![("token.exchange.policy_server", text(support::CONFIDENTIAL))],
+        ),
+        (
+            "a part in a shape nobody reads",
+            vec![
+                ("token.exchange.policy_server", text(support::CONFIDENTIAL)),
+                ("token.exchange.policy_resource", text("exchange")),
+                ("token.exchange.policy_scope", AttributeValue::Bool(true)),
+            ],
+        ),
+    ] {
+        let transaction = plane
+            .scoped(&TenantContext::new(support::TENANT, REALM))
+            .await;
+        let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
+            .await
+            .unwrap()
+            .expect("the client");
+        let bag = client.configs.get_or_insert_with(Default::default);
+        for key in [
+            "token.exchange.policy_server",
+            "token.exchange.policy_resource",
+            "token.exchange.policy_scope",
+        ] {
+            bag.remove(key);
+        }
+        for (key, value) in named {
+            bag.insert(key.to_owned(), value);
+        }
+        assert!(
+            store::providers::clients::update(&transaction, &client)
+                .await
+                .unwrap()
+        );
+        transaction.commit().await.unwrap();
+
+        let (status, told) = asking(
+            &plane,
+            &[
+                ("grant_type", EXCHANGE),
+                ("subject_token", subject_token),
+                ("subject_token_type", ACCESS_TYPE),
+            ],
+            Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{label}: {told}");
+        assert_eq!(told["error"], "unauthorized_client", "{label}: {told}");
+    }
 }
 
 /// Closing the exchange for a realm stops the door and the advertisement

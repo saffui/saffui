@@ -151,6 +151,22 @@ pub async fn ask(
             }
         }
     };
+    // The spend above has to outlive whatever the grant then decides: rolled
+    // back with a refusal, the same proof would present again for as long as
+    // its window lasts. Committed here, and the grant runs on a fresh
+    // transaction.
+    let transaction = if proven.is_some() {
+        if transaction.commit().await.is_err() {
+            return Denied::InvalidDpopProof.answer("the proof could not be spent");
+        }
+        match tenancy.begin(&context).await {
+            Ok(fresh) => fresh,
+            Err(StoreError::Unavailable) => return answer_unavailable(),
+            Err(_) => return Denied::InvalidRequest.answer("the realm could not be read"),
+        }
+    } else {
+        transaction
+    };
     let bound_to = proven.as_ref().map(|held| held.thumbprint.clone());
 
     // FAPI 2.0: a client wearing the profile is held to it wherever tokens

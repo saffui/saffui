@@ -81,7 +81,7 @@ pub async fn keep(
     if request.headers().get_all("dpop").count() > 1 {
         return Denied::InvalidDpopProof.answer("one proof, exactly");
     }
-    if let Some(proof) = request.headers().get("dpop") {
+    let transaction = if let Some(proof) = request.headers().get("dpop") {
         let Ok(proof) = proof.to_str() else {
             return Denied::InvalidDpopProof.answer("the proof could not be read");
         };
@@ -101,27 +101,38 @@ pub async fn keep(
             now,
         )
         .await;
-        match proven {
-            Ok(proven) => {
-                if parameters
-                    .get("dpop_jkt")
-                    .and_then(Value::as_str)
-                    .is_some_and(|named| named != proven.thumbprint)
-                {
-                    return Denied::InvalidDpopProof
-                        .answer("the push names one key and proves another");
-                }
-                // §10.1: a proof pushed with the request is the request
-                // naming its key, and the code is bound to it as though
-                // `dpop_jkt` had spelled it out.
-                parameters.insert("dpop_jkt".to_owned(), Value::from(proven.thumbprint));
-            }
+        let proven = match proven {
+            Ok(proven) => proven,
             Err(why) => {
                 tracing::warn!(why = ?why, "dpop proof refused at par");
                 return Denied::InvalidDpopProof.answer("the proof does not bind this request");
             }
+        };
+        // Spent, and kept spent whatever the push then turns out to be: rolled
+        // back with a refusal, the same proof would present again for as long
+        // as its window lasts.
+        if transaction.commit().await.is_err() {
+            return Denied::InvalidDpopProof.answer("the proof could not be spent");
         }
-    }
+        if parameters
+            .get("dpop_jkt")
+            .and_then(Value::as_str)
+            .is_some_and(|named| named != proven.thumbprint)
+        {
+            return Denied::InvalidDpopProof.answer("the push names one key and proves another");
+        }
+        // §10.1: a proof pushed with the request is the request naming its
+        // key, and the code is bound to it as though `dpop_jkt` had spelled
+        // it out.
+        parameters.insert("dpop_jkt".to_owned(), Value::from(proven.thumbprint));
+        match tenancy.begin(&context).await {
+            Ok(fresh) => fresh,
+            Err(StoreError::Unavailable) => return answer_unavailable(),
+            Err(_) => return Denied::InvalidRequest.answer("the request could not be kept"),
+        }
+    } else {
+        transaction
+    };
 
     match pushed::keep_request(
         &transaction,

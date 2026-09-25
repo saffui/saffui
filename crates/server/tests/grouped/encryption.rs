@@ -595,6 +595,88 @@ async fn a_client_that_encrypts_may_not_send_an_object_in_the_clear() {
     );
 }
 
+/// Push a request object, as the confidential client, and hand back what the
+/// push answered.
+async fn pushed(plane: &Plane, object: &str) -> (StatusCode, Value) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/par",
+                support::REALM
+            ))
+            .set_form([
+                ("client_id", support::CONFIDENTIAL),
+                ("client_secret", support::CLIENT_SECRET),
+                ("request", object),
+            ])
+            .to_request(),
+    )
+    .await;
+    let status = response.status();
+    (status, test::read_body_json(response).await)
+}
+
+/// Pushed, RFC 9126 §3, an object is judged as it would be at the authorization
+/// endpoint, and at the push, while the client still reads a status code:
+/// encrypted to the realm it is opened, in the clear from a client that
+/// registered encryption it is refused, and signed by a key the client never
+/// registered it is refused too.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_pushed_object_is_judged_at_the_push() {
+    let plane = Plane::with_actions(&[]).await;
+    let key = SigningKey::generate("client-key");
+    plane
+        .register_client_keys(
+            support::CONFIDENTIAL,
+            &key,
+            crypto::provider::SignAlg::Es256,
+        )
+        .await;
+    plane
+        .register_request_object_encryption(
+            support::CONFIDENTIAL,
+            crypto::provider::SignAlg::Es256,
+            asking(),
+        )
+        .await;
+    let realm_key = plane.realm_encryption_key().await;
+
+    let (status, told) = pushed(
+        &plane,
+        &sealed_to_realm(&realm_key, asking(), &signed_object(&key)),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "an encrypted object was not opened at the push: {told}"
+    );
+
+    let (status, told) = pushed(&plane, &signed_object(&key)).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a signed object was taken at the push where an encrypted one was registered: {told}"
+    );
+    assert_eq!(told["error"], "invalid_request_object", "{told}");
+
+    let stranger = SigningKey::generate("stranger");
+    let (status, told) = pushed(
+        &plane,
+        &sealed_to_realm(&realm_key, asking(), &signed_object(&stranger)),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "an object whose signature does not hold was taken at the push: {told}"
+    );
+    assert_eq!(told["error"], "invalid_request_object", "{told}");
+}
+
 /// The header is held to what was registered, before anything is decrypted.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]

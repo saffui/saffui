@@ -1109,10 +1109,10 @@ fn plane(database: &pgcore::database::Database) -> Result<Plane, String> {
         sealing: Sealing::new(
             match config::messaging::Sink::from_env().map_err(|e| e.to_string())? {
                 config::messaging::Sink::None => None,
-                config::messaging::Sink::Smtp => Some(Arc::new(server::messaging::Smtp)),
-                config::messaging::Sink::Logged => Some(Arc::new(server::messaging::Logged)),
+                config::messaging::Sink::Smtp => Some(Arc::new(outbound::senders::Smtp)),
+                config::messaging::Sink::Logged => Some(Arc::new(outbound::senders::Logged)),
                 config::messaging::Sink::Webhook { url } => {
-                    Some(Arc::new(server::messaging::Webhook::new(
+                    Some(Arc::new(outbound::senders::Webhook::new(
                         url,
                         config::optional("MESSAGE_WEBHOOK_TOKEN"),
                         egress,
@@ -1122,10 +1122,10 @@ fn plane(database: &pgcore::database::Database) -> Result<Plane, String> {
             match config::messaging::TextSink::from_env().map_err(|e| e.to_string())? {
                 config::messaging::TextSink::None => None,
                 config::messaging::TextSink::Http => {
-                    Some(Arc::new(server::messaging::HttpTexter::new(egress)))
+                    Some(Arc::new(outbound::senders::HttpTexter::new(egress)))
                 }
                 config::messaging::TextSink::Logged => {
-                    Some(Arc::new(server::messaging::LoggedTexter))
+                    Some(Arc::new(outbound::senders::LoggedTexter))
                 }
             },
             provider,

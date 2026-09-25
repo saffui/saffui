@@ -1,3 +1,6 @@
+//! A relay held in conversation and what it said written down, for the
+//! operator asking why mail stopped.
+
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::time::{Duration, Instant};

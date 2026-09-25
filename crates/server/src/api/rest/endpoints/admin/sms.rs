@@ -80,7 +80,7 @@ pub async fn send_test(
     // logged sink would print the text and prove nothing about the gateway.
     // A green answer means the settings on screen actually carry texts.
     use auth::messaging::Texter;
-    crate::messaging::HttpTexter::new(**egress)
+    outbound::senders::HttpTexter::new(**egress)
         .text(&settings, &text)
         .await
         .map_err(|_| {

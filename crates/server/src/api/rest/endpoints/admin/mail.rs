@@ -95,7 +95,7 @@ pub async fn send_test(
     // This drives the whole dialogue, connect, TLS, auth, delivery, so a
     // green answer means the settings on screen actually carry mail.
     use auth::messaging::Deliver;
-    crate::messaging::Smtp
+    outbound::senders::Smtp
         .send(&settings, &message)
         .await
         .map_err(|_| {
@@ -250,9 +250,10 @@ pub async fn look_at_relay(
     // Off the reactor: this holds a socket open for as long as the relay takes
     // to answer, and a slow one would otherwise hold every other request on
     // this worker.
-    let report = tokio::task::spawn_blocking(move || crate::smtp_probe::look_at_relay(&settings))
-        .await
-        .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
+    let report =
+        tokio::task::spawn_blocking(move || outbound::smtp_probe::look_at_relay(&settings))
+            .await
+            .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
     Ok(HttpResponse::Ok().json(report))
 }
 

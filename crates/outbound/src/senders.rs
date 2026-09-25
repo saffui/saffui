@@ -1,8 +1,13 @@
+//! What carries a message or a text out: the realm's relay or gateway, a
+//! gateway of the deployment's own, or the log of a deployment being built.
+
 use std::time::Duration;
 
 use auth::messaging::{Deliver, Message, Text, Texter, Undelivered};
 use config::serving::Egress;
 
+use crate::egress::{may_dial, outward_agent};
+use crypto::secrecy::ExposeSecret;
 use lettre::message::Mailbox;
 use lettre::message::{MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
@@ -10,8 +15,6 @@ use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::{Message as Letter, SmtpTransport, Transport};
 use models::entities::mail::MailSettings;
 use models::entities::sms::SmsSettings;
-use outbound::egress::{may_dial, outward_agent};
-use secrecy::ExposeSecret;
 
 /// How long a server gets to take a message.
 const PATIENCE: Duration = Duration::from_secs(10);
@@ -203,7 +206,7 @@ impl Texter for HttpTexter {
         let bearer = settings
             .token
             .as_ref()
-            .map(|held| secrecy::ExposeSecret::expose_secret(held).clone());
+            .map(|held| held.expose_secret().clone());
         tokio::task::spawn_blocking(move || {
             let agent = outward_agent(egress, PATIENCE);
             let mut posting = agent.post(&url);

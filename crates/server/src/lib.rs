@@ -5,12 +5,10 @@ pub mod error;
 #[cfg(feature = "mesh")]
 pub mod grpc;
 pub mod mesh;
-pub mod messaging;
 pub mod metrics;
 pub mod middleware;
 pub mod negotiate;
 pub mod otel;
-pub mod smtp_probe;
 
 #[cfg(test)]
 mod tests {

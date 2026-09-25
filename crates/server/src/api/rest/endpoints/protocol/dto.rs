@@ -68,6 +68,10 @@ pub enum Denied {
     /// `invalid_request`: a client that sends a proof and gets told only that
     /// its request was invalid cannot tell the proof was the part refused.
     InvalidDpopProof,
+    /// RFC 9126 §2.3: a push answers an object it cannot read with the
+    /// authorization endpoint's own words, RFC 9101 §6.2.
+    InvalidRequestObject,
+    RequestNotSupported,
     /// RFC 6749 §4.1.2.1, outside §5.2 on purpose: a client reading it with a
     /// 503 retries, which is right when no connection to the database was had.
     TemporarilyUnavailable,
@@ -83,6 +87,8 @@ impl Denied {
             Denied::UnsupportedGrantType => "unsupported_grant_type",
             Denied::InvalidScope => "invalid_scope",
             Denied::InvalidDpopProof => "invalid_dpop_proof",
+            Denied::InvalidRequestObject => "invalid_request_object",
+            Denied::RequestNotSupported => "request_not_supported",
             Denied::TemporarilyUnavailable => "temporarily_unavailable",
         }
     }

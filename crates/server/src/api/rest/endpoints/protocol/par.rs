@@ -89,6 +89,62 @@ pub async fn keep(
         (transaction, client)
     };
 
+    // RFC 9126 §3: the push is judged as the authorization request it stands
+    // for. Its object is opened where the client registered encryption, and
+    // refused in the clear from such a client, then read now, so a refusal
+    // comes back while the client still reads a status code. What is kept is
+    // the signed object, which the authorization endpoint reads again.
+    if let Some(raw) = parameters
+        .get("request")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    {
+        let signed = if client.request_object_encryption.is_some() {
+            let Ok(ring) = store::keyring::load(
+                &transaction,
+                &sealing.envelope,
+                &context.tenant,
+                &context.realm_id,
+            )
+            .await
+            else {
+                return Denied::InvalidRequestObject.answer("the request object could not be read");
+            };
+            match services::oidc::encryption::opened_request_object(
+                &transaction,
+                &ring,
+                &sealing.envelope,
+                &client,
+                &raw,
+            )
+            .await
+            {
+                Ok(opened) => opened,
+                Err(_) => {
+                    return Denied::InvalidRequestObject
+                        .answer("the request object could not be read");
+                }
+            }
+        } else {
+            raw
+        };
+        if let Err(unread) = services::oidc::request_object::read(
+            &client,
+            &signed,
+            &origin.issuer(&context.realm_id),
+            now,
+        ) {
+            let denied = match unread {
+                services::oidc::request_object::Unreadable::Unregistered => {
+                    Denied::RequestNotSupported
+                }
+                _ => Denied::InvalidRequestObject,
+            };
+            return denied.answer(&unread.to_string());
+        }
+        parameters.insert("request".to_owned(), Value::String(signed));
+    }
+
     // RFC 9449 §10.1: a proof pushed here is verified here, and a push that
     // names a key in `dpop_jkt` while proving another has contradicted
     // itself: refused now, when the client still reads a status code.

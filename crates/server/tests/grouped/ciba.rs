@@ -376,9 +376,10 @@ async fn a_client_cannot_answer_the_doorbell_for_the_person() {
         ),
         ("an event told about her", an_event),
     ];
+    let mut answered = Vec::new();
     for (label, payload) in refused {
         let bearer = plane.token(&payload);
-        let (status, told) = as_person(
+        let (listing, _) = as_person(
             &plane,
             actix_web::http::Method::GET,
             "/bc-pending",
@@ -386,8 +387,7 @@ async fn a_client_cannot_answer_the_doorbell_for_the_person() {
             None,
         )
         .await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "{label} listed: {told}");
-        let (status, told) = as_person(
+        let (deciding, _) = as_person(
             &plane,
             actix_web::http::Method::POST,
             "/bc-decide",
@@ -395,8 +395,14 @@ async fn a_client_cannot_answer_the_doorbell_for_the_person() {
             Some(json!({ "request": handle, "decision": "approve" })),
         )
         .await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "{label} decided: {told}");
+        if listing != StatusCode::UNAUTHORIZED || deciding != StatusCode::UNAUTHORIZED {
+            answered.push(format!("{label}: listing {listing}, deciding {deciding}"));
+        }
     }
+    assert!(
+        answered.is_empty(),
+        "the doorbell answered to: {answered:#?}"
+    );
 
     // Nothing was decided: the client is still told to wait, and the request
     // is still hers to answer.

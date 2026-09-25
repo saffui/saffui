@@ -129,10 +129,19 @@ pub async fn signed_answer(
     crate::token::issuance::sign_claims(&key, &claims).map_err(|_| Untold::Unreadable)
 }
 
+/// The scheme a token arrived under: the bearer one, header or form alike, or
+/// DPoP's, RFC 9449 §7.1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scheme {
+    Bearer,
+    Dpop,
+}
+
 pub async fn claims_for(
     transaction: &UnitOfWork,
     keys: &[RealmSigningKeyView],
     bearer: &str,
+    scheme: Scheme,
     // What the caller proved: a key it signed with, a certificate a trusted
     // proxy said it presented, or neither. A token naming one is refused here
     // without it.
@@ -149,6 +158,18 @@ pub async fn claims_for(
     )
     .await
     .map_err(|_| Untold::InvalidToken)?;
+
+    // RFC 9449 §7.2 and §7.1: the scheme says what the token is. A token bound
+    // to a key is no bearer token whatever rides beside it, and one bound to
+    // no key holds nothing a proof could be matched against.
+    let bound_to_a_key = verified
+        .claims
+        .get("cnf")
+        .and_then(|held| held.get("jkt"))
+        .is_some();
+    if bound_to_a_key != (scheme == Scheme::Dpop) {
+        return Err(Untold::InvalidToken);
+    }
 
     // An id token is a record of a login, not a credential, and it names the
     // client as its audience. Accepting one here would let anything that saw a

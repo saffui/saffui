@@ -328,3 +328,117 @@ async fn the_realm_paces_its_device_flow() {
     assert_eq!(opened["expires_in"], 120, "{opened}");
     assert_eq!(opened["interval"], 9, "{opened}");
 }
+
+/// Type `code` at the device page from `peer`: where the browser lands, and
+/// whether a login opened for it.
+async fn typed_from(plane: &Plane, peer: &str, code: &str) -> (String, bool) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!("/realms/{REALM}/protocol/openid-connect/device"))
+            .peer_addr(peer.parse().expect("an address"))
+            .set_form([("user_code", code)])
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let landing = response
+        .headers()
+        .get("location")
+        .and_then(|held| held.to_str().ok())
+        .expect("a landing")
+        .to_owned();
+    let cookies: Vec<String> = response
+        .headers()
+        .get_all("set-cookie")
+        .filter_map(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .collect();
+    (
+        landing,
+        cookie_value(&cookies, support::AUTH_SESSION_COOKIE).is_some(),
+    )
+}
+
+/// What is counted against `source`: on its own, and under any other key.
+async fn counted_against(plane: &Plane, source: &str) -> (i64, i64) {
+    let transaction = plane.scoped(&within()).await;
+    let row = transaction
+        .query_one(
+            "SELECT COALESCE(SUM(failures) FILTER (WHERE named = ''), 0)::bigint, \
+                    COALESCE(SUM(failures) FILTER (WHERE named <> ''), 0)::bigint \
+             FROM source_failures WHERE source = $1",
+            &[&source],
+        )
+        .await
+        .expect("the failures table");
+    (row.get(0), row.get(1))
+}
+
+/// Every code that does not stand counts against the address typing it, and
+/// once it has missed as often as the realm lets a name be missed, it is
+/// turned away before any code is looked up, the live one included. Another
+/// address still opens the login with that code.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn codes_guessed_from_one_address_turn_it_away() {
+    const GUESSER: &str = "203.0.113.7:40000";
+    const ELSEWHERE: &str = "198.51.100.2:40000";
+    let plane = Plane::with_actions(&[]).await;
+    allow_device(&plane).await;
+    plane
+        .throttle_sources(models::entities::realm::SourceThrottle {
+            throttled: true,
+            max_failures: 100,
+            max_name_failures: 3,
+            window_seconds: 900,
+        })
+        .await;
+    let (_, opened) = posted(&plane, "/device-authorization", &[("scope", "openid")]).await;
+    let user_code = opened["user_code"].as_str().expect("a code").to_owned();
+
+    // Vowels are never drawn, so none of these is anybody's code.
+    for guess in ["AAAA-AAAA", "EEEE-EEEE", "IIII-IIII"] {
+        let (landing, opened) = typed_from(&plane, GUESSER, guess).await;
+        assert!(landing.ends_with("#no-such-code"), "{landing}");
+        assert!(!opened, "a login opened for a code nobody minted");
+    }
+    assert_eq!(
+        counted_against(&plane, "203.0.113.7").await,
+        (3, 3),
+        "a miss was not counted, or not kept"
+    );
+
+    let (landing, opened) = typed_from(&plane, GUESSER, &user_code).await;
+    assert!(
+        landing.ends_with("#throttled"),
+        "an address past its misses had its code looked up: {landing}"
+    );
+    assert!(!opened, "a login opened for an address turned away");
+    assert_eq!(
+        counted_against(&plane, "203.0.113.7").await,
+        (3, 3),
+        "the refusal to look counted as a miss"
+    );
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let page = test::call_and_read_body(
+        &app,
+        test::TestRequest::get()
+            .uri(landing.split('#').next().expect("a path"))
+            .to_request(),
+    )
+    .await;
+    let page = String::from_utf8(page.to_vec()).expect("a page");
+    assert!(
+        page.contains(r#"<p id="throttled" class="flash" role="alert">Too many failed attempts"#),
+        "the page has no words for an address turned away"
+    );
+
+    let (landing, opened) = typed_from(&plane, ELSEWHERE, &user_code).await;
+    assert!(
+        opened,
+        "another address was turned away with the guesser: {landing}"
+    );
+    assert_eq!(counted_against(&plane, "198.51.100.2").await, (0, 0));
+}

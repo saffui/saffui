@@ -1,3 +1,4 @@
+use auth::login::throttle;
 use chrono::{DateTime, Duration, Utc};
 use crypto::provider::CryptoProvider;
 use models::entities::attributes::AttributeValue;
@@ -139,6 +140,10 @@ pub enum Unverifiable {
     /// nobody which short codes are live.
     #[error("that code does not stand")]
     NoSuchCode,
+    /// Too many codes that did not stand from where this one came from, until
+    /// this instant.
+    #[error("too many codes were tried from this address; try again later")]
+    Throttled { until: i64 },
     #[error("the store could not answer")]
     Unreadable,
 }
@@ -149,25 +154,37 @@ pub enum Unverifiable {
 /// so every factor, consent and organization rule holds here too. The row's
 /// digest rides the notes; the flow's completion approves the row instead of
 /// minting a browser answer.
+///
+/// The address typing is weighed before any code is looked up, and every code
+/// that does not stand is counted against it, §5.1: a short code is guessable
+/// only as fast as the door lets it be tried. A miss has written its count,
+/// and the caller commits it: rolled back, a wrong guess costs nothing.
 pub async fn begin_verification(
     transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     realm_name: &str,
+    from: Option<&str>,
     typed: &str,
     now: DateTime<Utc>,
 ) -> Result<String, Unverifiable> {
-    let user_code = normalized_user_code(typed);
-    if user_code.is_empty() {
-        return Err(Unverifiable::NoSuchCode);
+    let realm = store::providers::realms::of_context(transaction)
+        .await
+        .map_err(|_| Unverifiable::Unreadable)?
+        .ok_or(Unverifiable::Unreadable)?;
+    let knock = throttle::Knock::typing_user_code(from);
+    if let Some(until) = throttle::until(transaction, &realm, &knock, now)
+        .await
+        .map_err(|_| Unverifiable::Unreadable)?
+    {
+        return Err(Unverifiable::Throttled { until });
     }
-    let waiting = devices::pending_by_user_code(transaction, &user_code, now)
-        .await
-        .map_err(|_| Unverifiable::Unreadable)?
-        .ok_or(Unverifiable::NoSuchCode)?;
-    let client = clients::load(transaction, &waiting.client_id)
-        .await
-        .map_err(|_| Unverifiable::Unreadable)?
-        .ok_or(Unverifiable::NoSuchCode)?;
+    let user_code = normalized_user_code(typed);
+    let Some((waiting, client)) = read_standing_code(transaction, &user_code, now).await? else {
+        throttle::count(transaction, &realm, &knock, now)
+            .await
+            .map_err(|_| Unverifiable::Unreadable)?;
+        return Err(Unverifiable::NoSuchCode);
+    };
     let flow = crate::oidc::authorize::browser_flow(transaction, &client)
         .await
         .map_err(|_| Unverifiable::Unreadable)?;
@@ -201,6 +218,28 @@ pub async fn begin_verification(
     .map_err(|_| Unverifiable::Unreadable)?;
 
     Ok(auth_session_id)
+}
+
+/// The live row behind a short code and the client it opens a login for, or
+/// nothing when either is gone.
+async fn read_standing_code(
+    transaction: &UnitOfWork,
+    user_code: &str,
+    now: DateTime<Utc>,
+) -> Result<Option<(DeviceCodeModel, ClientModel)>, Unverifiable> {
+    if user_code.is_empty() {
+        return Ok(None);
+    }
+    let Some(waiting) = devices::pending_by_user_code(transaction, user_code, now)
+        .await
+        .map_err(|_| Unverifiable::Unreadable)?
+    else {
+        return Ok(None);
+    };
+    Ok(clients::load(transaction, &waiting.client_id)
+        .await
+        .map_err(|_| Unverifiable::Unreadable)?
+        .map(|client| (waiting, client)))
 }
 
 fn drawn_secret(provider: &dyn CryptoProvider) -> Result<String, Unopened> {

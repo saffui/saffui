@@ -1284,6 +1284,8 @@ async fn a_person_is_created_signs_in_and_is_retired_over_the_plane() {
     let response = test::call_service(&app, answered).await;
     let told: serde_json::Value = test::read_body_json(response).await;
     assert_eq!(told["status"], "admitted", "{told}");
+    let grace = born["user_id"].as_str().expect("an identifier");
+    assert!(plane.logins_held_by(grace).await > 0, "the sign-in opened no login");
 
     let (status, reshaped) = written(
         &plane,
@@ -1295,6 +1297,11 @@ async fn a_person_is_created_signs_in_and_is_retired_over_the_plane() {
     .await;
     assert_eq!(status, StatusCode::OK, "{reshaped}");
     assert_eq!(reshaped["enabled"], false);
+    assert_eq!(
+        plane.logins_held_by(grace).await,
+        0,
+        "switched off, she kept a login"
+    );
     assert_eq!(
         reshaped["given_name"], "Grace",
         "a field left out was not left alone"

@@ -734,8 +734,9 @@ async fn start_login(
 /// The login a browser named, when it is one this realm still stands behind.
 ///
 /// A cookie is a claim and not a fact. The row says whether the login is still
-/// open and whether it has run out, and both are checked here rather than being
-/// left to whatever reads the token minted from it.
+/// open, whether it has run out and whether its person is still switched on,
+/// and all three are checked here rather than being left to whatever reads the
+/// token minted from it.
 async fn live_login(
     transaction: &UnitOfWork,
     signed_in: Option<&str>,
@@ -744,7 +745,7 @@ async fn live_login(
     let Some(session_id) = signed_in.filter(|named| !named.is_empty()) else {
         return Ok(None);
     };
-    Ok(sessions::load(transaction, session_id)
+    Ok(sessions::load_if_person_enabled(transaction, session_id)
         .await
         .map_err(|_| Refusal::Redirect("server_error"))?
         .filter(|login| login.state == UserSessionState::LoggedIn)

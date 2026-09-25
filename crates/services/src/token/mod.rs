@@ -279,7 +279,8 @@ pub async fn verify_presented(
     }
 
     // Bound to a login, and refused with it: a logout that left the tokens it
-    // minted working would be a logout in name.
+    // minted working would be a logout in name. So is a person switched off,
+    // whose logins stand for nothing while they are.
     //
     // Except the one grant that exists to outlive a login. OIDC Core §11 asks
     // for an access token that reaches the UserInfo endpoint with the user
@@ -290,7 +291,7 @@ pub async fn verify_presented(
             .scope
             .split_whitespace()
             .any(|held| held == crate::oidc::authorize::OFFLINE_ACCESS);
-        let live = sessions::load(transaction, session_id)
+        let live = sessions::load_if_person_enabled(transaction, session_id)
             .await
             .map_err(|_| Refused::Unestablished)?
             .is_some_and(|session| offline || session.state == UserSessionState::LoggedIn);

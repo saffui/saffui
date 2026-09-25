@@ -196,8 +196,9 @@ pub async fn replace_person(
             detail: "userName does not change here".into(),
         });
     }
+    let was_enabled = held.enabled;
     asserted.apply(&mut held);
-    users::update(transaction, &held)
+    crate::directory::keep_person(transaction, &held, was_enabled)
         .await
         .map_err(|_| Refusal::unreadable())?;
     if let Some(password) = &asserted.password {
@@ -217,6 +218,7 @@ pub async fn patch_person(
     folded: Vec<UserPatch>,
 ) -> Result<UserModel, Refusal> {
     let mut held = person(transaction, user_id).await?;
+    let was_enabled = held.enabled;
     let mut password = None;
     for change in folded {
         let bag = held.attributes.get_or_insert_with(Default::default);
@@ -254,7 +256,7 @@ pub async fn patch_person(
             }
         }
     }
-    users::update(transaction, &held)
+    crate::directory::keep_person(transaction, &held, was_enabled)
         .await
         .map_err(|_| Refusal::unreadable())?;
     if let Some(password) = &password {

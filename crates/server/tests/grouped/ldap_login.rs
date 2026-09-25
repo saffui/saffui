@@ -467,6 +467,21 @@ async fn the_sync_walks_the_shadows_and_an_outage_walks_away() {
         answered(&plane, &cookie, "fedora", "wilderness").await,
         StatusCode::OK
     );
+    let fedora = {
+        use store::tenancy::TenantContext;
+        let transaction = plane
+            .scoped(&TenantContext::new(support::TENANT, REALM))
+            .await;
+        store::providers::directory::users::load_by_name(&transaction, "fedora")
+            .await
+            .unwrap()
+            .expect("the shadow stands")
+            .user_id
+    };
+    assert!(
+        plane.logins_held_by(&fedora).await > 0,
+        "the sign-in opened no login"
+    );
 
     let synced = |plane: &Plane| {
         let tenancy = plane.tenancy();
@@ -512,6 +527,11 @@ async fn the_sync_walks_the_shadows_and_an_outage_walks_away() {
             shadow.attributes
         );
     }
+    assert_eq!(
+        plane.logins_held_by(&fedora).await,
+        0,
+        "suspended, the shadow kept a login"
+    );
     let cookie = opened_login(&plane).await;
     assert_eq!(
         answered(&plane, &cookie, "fedora", "wilderness").await,

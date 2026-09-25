@@ -8,8 +8,8 @@ use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
 use crate::api::provenance::read_client_certificate;
-use crate::api::rest::endpoints::protocol::basic;
 use crate::api::rest::endpoints::protocol::dto::{answer_unavailable, uncached};
+use crate::api::rest::endpoints::protocol::{basic, caller};
 
 /// Tell what the token allows.
 ///
@@ -26,6 +26,7 @@ pub async fn tell(
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<outbound::Sealing>,
     origin: web::Data<config::serving::PublicOrigin>,
+    egress: web::Data<config::serving::Egress>,
 ) -> HttpResponse {
     let now = Utc::now();
     let Some(bearer) = presented(&request, body.as_deref()) else {
@@ -132,7 +133,34 @@ pub async fn tell(
         // answered with one or not at all. Falling back to JSON would answer a
         // client that is going to verify a signature with something that has
         // none, and one that is going to decrypt with something readable.
-        Ok(answer) => {
+        Ok(mut answer) => {
+            // Encrypted to the keys the client publishes now, read afresh
+            // when they were due.
+            let transaction = match answer.party.take() {
+                Some(party) if party.userinfo_encryption.is_some() => {
+                    match caller::with_client_keys_read(
+                        &tenancy,
+                        &context,
+                        transaction,
+                        *party,
+                        **egress,
+                        now,
+                    )
+                    .await
+                    {
+                        Ok((transaction, party)) => {
+                            answer.party = Some(Box::new(party));
+                            transaction
+                        }
+                        Err(StoreError::Unavailable) => return answer_unavailable(),
+                        Err(_) => return faulted(),
+                    }
+                }
+                party => {
+                    answer.party = party;
+                    transaction
+                }
+            };
             let Ok(ring) = store::keyring::load(
                 &transaction,
                 &sealing.envelope,

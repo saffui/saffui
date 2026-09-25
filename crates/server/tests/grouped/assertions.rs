@@ -584,3 +584,424 @@ async fn keys_published_elsewhere_are_read_and_read_again() {
     // connections nobody will close.
     handle.stop(false).await;
 }
+
+/// Register a client on a plane that may dial this machine, where its keys are
+/// published.
+async fn registered_dialling(plane: &Plane, metadata: Value) -> (String, Option<String>) {
+    let app = test::init_service(
+        App::new().configure(register(&mounted_dialling(plane, Egress::Anywhere))),
+    )
+    .await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/register",
+                support::REALM
+            ))
+            .set_json(&metadata)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body: Value = test::read_body_json(response).await;
+    (
+        body["client_id"]
+            .as_str()
+            .expect("an identifier")
+            .to_owned(),
+        body["client_secret"].as_str().map(str::to_owned),
+    )
+}
+
+/// A client's host is asked for its keys once a keeping, however often the
+/// client is named in between and however each of those requests ends: the
+/// reading is claimed before it is made, and a refused request does not undo
+/// the claim.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_clients_host_is_asked_once_a_keeping_however_often_it_is_named() {
+    use std::sync::atomic::Ordering;
+    use std::sync::{Arc, Mutex};
+
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .allow_registration(ClientRegistration::Open, None)
+        .await;
+    let published = SigningKey::generate("published");
+    let (uri, asked, handle) =
+        support::serving_keys(Arc::new(Mutex::new(jwks_of(&published.public()))));
+    let (client_id, _) = registered_dialling(
+        &plane,
+        json!({
+            "redirect_uris": ["https://app.example/cb"],
+            "token_endpoint_auth_method": "private_key_jwt",
+            "jwks_uri": uri,
+        }),
+    )
+    .await;
+    plane.age_client_keys(&client_id).await;
+    let before = asked.load(Ordering::SeqCst);
+
+    // Signed with a key the client never published: refused every time.
+    let stranger = SigningKey::generate("stranger");
+    let refused = |attempt: usize| {
+        let plane = &plane;
+        let client_id = client_id.clone();
+        let assertion = stranger.sign(
+            &claims(&client_id, &format!("refused-{attempt}")),
+            &stranger.kid,
+        );
+        async move {
+            let app = test::init_service(
+                App::new().configure(register(&mounted_dialling(plane, Egress::Anywhere))),
+            )
+            .await;
+            test::call_service(
+                &app,
+                test::TestRequest::post()
+                    .uri(&format!(
+                        "/realms/{}/protocol/openid-connect/introspect",
+                        support::REALM
+                    ))
+                    .set_form([
+                        ("token", "not-a-token"),
+                        (
+                            "client_assertion_type",
+                            "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+                        ),
+                        ("client_assertion", assertion.as_str()),
+                        ("client_id", client_id.as_str()),
+                    ])
+                    .to_request(),
+            )
+            .await
+            .status()
+        }
+    };
+    for attempt in 0..3 {
+        assert_eq!(refused(attempt).await, StatusCode::UNAUTHORIZED);
+    }
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        before + 1,
+        "refused requests asked the client's host again and again"
+    );
+
+    plane.age_client_keys(&client_id).await;
+    assert_eq!(refused(3).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        before + 2,
+        "a stale set was not read again"
+    );
+    handle.stop(false).await;
+}
+
+/// A client that encrypts its identity tokens and its userinfo, and publishes
+/// the keys to encrypt to at an address, is answered under the keys it
+/// publishes now: read before the first answer, then read again once what was
+/// kept is stale, by the token endpoint and by userinfo each on its own.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_encrypting_client_is_answered_under_the_keys_it_publishes_now() {
+    use crypto::jose::jwe::{RSA_OAEP_256, deserialize_compact};
+    use data_encoding::BASE64;
+    use std::sync::{Arc, Mutex};
+
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .allow_registration(ClientRegistration::Open, None)
+        .await;
+    let keys = [
+        SigningKey::generate_encryption("first"),
+        SigningKey::generate_encryption("second"),
+        SigningKey::generate_encryption("third"),
+    ];
+    let publishing = |key: &SigningKey| json!({ "keys": [key.public_for_encryption().as_ref()] });
+    let published = Arc::new(Mutex::new(publishing(&keys[0])));
+    let (uri, _, handle) = support::serving_keys(Arc::clone(&published));
+    let redirect = "https://app.example/cb";
+    let (client_id, secret) = registered_dialling(
+        &plane,
+        json!({
+            "redirect_uris": [redirect],
+            "token_endpoint_auth_method": "client_secret_basic",
+            "jwks_uri": uri,
+            "id_token_encrypted_response_alg": "RSA-OAEP-256",
+            "id_token_encrypted_response_enc": "A256GCM",
+            "userinfo_encrypted_response_alg": "RSA-OAEP-256",
+            "userinfo_encrypted_response_enc": "A256GCM",
+        }),
+    )
+    .await;
+    let secret = secret.expect("a secret");
+    let opens_with = |key: &SigningKey, token: &str| {
+        let decrypter = RSA_OAEP_256
+            .decrypter_from_jwk(key.private())
+            .expect("a decrypter");
+        deserialize_compact(token, &decrypter).is_ok()
+    };
+    let exchanged = || {
+        let plane = &plane;
+        let client_id = client_id.clone();
+        let secret = secret.clone();
+        async move {
+            let code = plane.mint_code(&client_id, redirect, "openid", None).await;
+            let app = test::init_service(
+                App::new().configure(register(&mounted_dialling(plane, Egress::Anywhere))),
+            )
+            .await;
+            let encoded = BASE64.encode(format!("{client_id}:{secret}").as_bytes());
+            let response = test::call_service(
+                &app,
+                test::TestRequest::post()
+                    .uri(&format!(
+                        "/realms/{}/protocol/openid-connect/token",
+                        support::REALM
+                    ))
+                    .insert_header(("authorization", format!("Basic {encoded}")))
+                    .set_form([
+                        ("grant_type", "authorization_code"),
+                        ("code", code.as_str()),
+                        ("redirect_uri", redirect),
+                    ])
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "the code exchange was refused"
+            );
+            let granted: Value = test::read_body_json(response).await;
+            (
+                granted["id_token"]
+                    .as_str()
+                    .expect("an identity token")
+                    .to_owned(),
+                granted["access_token"]
+                    .as_str()
+                    .expect("an access token")
+                    .to_owned(),
+            )
+        }
+    };
+    let told = |access: String| {
+        let plane = &plane;
+        async move {
+            let app = test::init_service(
+                App::new().configure(register(&mounted_dialling(plane, Egress::Anywhere))),
+            )
+            .await;
+            let response = test::call_service(
+                &app,
+                test::TestRequest::get()
+                    .uri(&format!(
+                        "/realms/{}/protocol/openid-connect/userinfo",
+                        support::REALM
+                    ))
+                    .insert_header(("authorization", format!("Bearer {access}")))
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK, "userinfo was refused");
+            String::from_utf8(test::read_body(response).await.to_vec()).expect("a body")
+        }
+    };
+
+    let (identity, access) = exchanged().await;
+    assert!(
+        opens_with(&keys[0], &identity),
+        "the identity token was not encrypted to the key the client publishes"
+    );
+    assert!(
+        opens_with(&keys[0], &told(access.clone()).await),
+        "userinfo was not encrypted to the key the client publishes"
+    );
+
+    // Rotated: the token endpoint reads the keys again for itself.
+    *published.lock().unwrap() = publishing(&keys[1]);
+    plane.age_client_keys(&client_id).await;
+    let (identity, _) = exchanged().await;
+    assert!(
+        opens_with(&keys[1], &identity) && !opens_with(&keys[0], &identity),
+        "the identity token was not encrypted to the key the client publishes now"
+    );
+
+    // Rotated again, and nothing but userinfo asked: it reads them itself.
+    *published.lock().unwrap() = publishing(&keys[2]);
+    plane.age_client_keys(&client_id).await;
+    assert!(
+        opens_with(&keys[2], &told(access).await),
+        "userinfo was not encrypted to the key the client publishes now"
+    );
+    handle.stop(false).await;
+}
+
+/// A request object pushed by a client that publishes its keys at an address
+/// is verified under the keys it publishes, read at the push, where the
+/// authorization endpoint that spends the reference then finds them.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_pushed_object_is_read_under_the_keys_its_client_publishes() {
+    use std::sync::{Arc, Mutex};
+
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .allow_registration(ClientRegistration::Open, None)
+        .await;
+    let signer = SigningKey::generate("signer");
+    let (uri, _, handle) = support::serving_keys(Arc::new(Mutex::new(jwks_of(&signer.public()))));
+    let redirect = "https://app.example/cb";
+    let (client_id, secret) = registered_dialling(
+        &plane,
+        json!({
+            "redirect_uris": [redirect],
+            "token_endpoint_auth_method": "client_secret_post",
+            "jwks_uri": uri,
+            "request_object_signing_alg": "ES256",
+        }),
+    )
+    .await;
+    let secret = secret.expect("a secret");
+    let mut payload = JwtPayload::new();
+    for (named, value) in [
+        ("iss", client_id.as_str()),
+        ("aud", support::origin().issuer(support::REALM).as_str()),
+        ("client_id", client_id.as_str()),
+        ("response_type", "code"),
+        ("redirect_uri", redirect),
+        ("scope", "openid"),
+    ] {
+        payload
+            .set_claim(named, Some(Value::from(value)))
+            .expect("a claim");
+    }
+    let object = signer.sign(&payload, &signer.kid);
+
+    let app = test::init_service(
+        App::new().configure(register(&mounted_dialling(&plane, Egress::Anywhere))),
+    )
+    .await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/par",
+                support::REALM
+            ))
+            .set_form([
+                ("client_id", client_id.as_str()),
+                ("client_secret", secret.as_str()),
+                ("request", object.as_str()),
+            ])
+            .to_request(),
+    )
+    .await;
+    let status = response.status();
+    let told: Value = test::read_body_json(response).await;
+    assert_eq!(status, StatusCode::CREATED, "the push was refused: {told}");
+    let reference = told["request_uri"].as_str().expect("a reference");
+
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/auth?client_id={}&request_uri={}",
+                support::REALM,
+                support::urlencode(&client_id),
+                support::urlencode(reference),
+            ))
+            .to_request(),
+    )
+    .await;
+    let status = response.status();
+    let landing = response
+        .headers()
+        .get("location")
+        .and_then(|held| held.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        status == StatusCode::FOUND && !landing.contains("error="),
+        "a pushed object was not read under the keys its client publishes: {status} {landing}"
+    );
+    handle.stop(false).await;
+}
+
+/// A request object carried inline to the authorization endpoint, by a client
+/// that publishes its keys at an address, is verified under the keys it
+/// publishes, read before the request is judged.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_inline_object_is_read_under_the_keys_its_client_publishes() {
+    use std::sync::{Arc, Mutex};
+
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .allow_registration(ClientRegistration::Open, None)
+        .await;
+    let signer = SigningKey::generate("signer");
+    let (uri, _, handle) = support::serving_keys(Arc::new(Mutex::new(jwks_of(&signer.public()))));
+    let redirect = "https://app.example/cb";
+    let (client_id, _) = registered_dialling(
+        &plane,
+        json!({
+            "redirect_uris": [redirect],
+            "token_endpoint_auth_method": "client_secret_basic",
+            "jwks_uri": uri,
+            "request_object_signing_alg": "ES256",
+        }),
+    )
+    .await;
+    let mut payload = JwtPayload::new();
+    for (named, value) in [
+        ("iss", client_id.as_str()),
+        ("aud", support::origin().issuer(support::REALM).as_str()),
+        ("client_id", client_id.as_str()),
+        ("response_type", "code"),
+        ("redirect_uri", redirect),
+        ("scope", "openid"),
+        ("state", "inline"),
+    ] {
+        payload
+            .set_claim(named, Some(Value::from(value)))
+            .expect("a claim");
+    }
+    let object = signer.sign(&payload, &signer.kid);
+
+    let app = test::init_service(
+        App::new().configure(register(&mounted_dialling(&plane, Egress::Anywhere))),
+    )
+    .await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/auth?client_id={}&response_type=code&scope=openid&request={}",
+                support::REALM,
+                support::urlencode(&client_id),
+                support::urlencode(&object),
+            ))
+            .to_request(),
+    )
+    .await;
+    let status = response.status();
+    let landing = response
+        .headers()
+        .get("location")
+        .and_then(|held| held.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert_eq!(
+        status,
+        StatusCode::FOUND,
+        "an inline object was not read under the keys its client publishes: {landing}"
+    );
+    assert!(
+        !landing.contains("error="),
+        "an inline object was not read under the keys its client publishes: {landing}"
+    );
+    handle.stop(false).await;
+}

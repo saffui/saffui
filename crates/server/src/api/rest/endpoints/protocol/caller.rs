@@ -42,10 +42,10 @@ pub async fn establish(
     // whatever the request then does: rolled back with a refused grant, the
     // assertion would be presentable again.
     let client = if matches!(presented, client::Presented::Assertion { .. }) {
+        outbound::egress::refresh_client_keys(tenancy, context, presented.client_id(), egress, now)
+            .await;
         let held = {
             let transaction = scoped(tenancy, context).await?;
-            outbound::egress::refresh_client_keys(&transaction, presented.client_id(), egress, now)
-                .await;
             let client = checked(
                 request,
                 &transaction,
@@ -83,6 +83,38 @@ pub async fn establish(
             .await?
         }
     };
+    Ok((transaction, client))
+}
+
+/// The transaction to go on in, and the client read again from it, once the
+/// keys the client publishes have been read afresh, when they were due.
+///
+/// Not due, which is every request but one a keeping, nothing changes. Due,
+/// the transaction in hand is committed, the keys read on none, and a fresh one
+/// opened: no pooled connection waits on the client's host.
+pub async fn with_client_keys_read(
+    tenancy: &Tenancy,
+    context: &TenantContext,
+    transaction: UnitOfWork,
+    client: ClientModel,
+    egress: Egress,
+    now: DateTime<Utc>,
+) -> Result<(UnitOfWork, ClientModel), StoreError> {
+    if client.jwks_uri.is_none()
+        || client::keys_due(&transaction, &client.client_id, now)
+            .await
+            .is_none()
+    {
+        return Ok((transaction, client));
+    }
+    transaction.commit().await?;
+    outbound::egress::refresh_client_keys(tenancy, context, &client.client_id, egress, now).await;
+    let transaction = tenancy.begin(context).await?;
+    let client = client::read_client(&transaction, &client.client_id)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(client);
     Ok((transaction, client))
 }
 

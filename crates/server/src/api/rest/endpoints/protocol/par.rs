@@ -75,6 +75,20 @@ pub async fn keep(
         Err(response) => return response,
     };
 
+    // A pushed request object is verified against the keys the client
+    // publishes, read afresh when they were due.
+    let (transaction, client) = if parameters.contains_key("request") {
+        match caller::with_client_keys_read(&tenancy, &context, transaction, client, **egress, now)
+            .await
+        {
+            Ok(held) => held,
+            Err(StoreError::Unavailable) => return answer_unavailable(),
+            Err(_) => return Denied::InvalidRequest.answer("the request could not be kept"),
+        }
+    } else {
+        (transaction, client)
+    };
+
     // RFC 9449 §10.1: a proof pushed here is verified here, and a push that
     // names a key in `dpop_jkt` while proving another has contradicted
     // itself: refused now, when the client still reads a status code.

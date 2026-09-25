@@ -66,6 +66,8 @@ pub struct Swept {
     pub client_sessions: u64,
     /// Security notices settled past their window.
     pub security_notices: u64,
+    /// Logout notices settled past their window.
+    pub logout_notices: u64,
 }
 
 impl Swept {
@@ -95,6 +97,7 @@ impl Swept {
             + self.sessions
             + self.client_sessions
             + self.security_notices
+            + self.logout_notices
     }
 
     pub fn add(&mut self, other: Swept) {
@@ -123,6 +126,7 @@ impl Swept {
         self.sessions += other.sessions;
         self.client_sessions += other.client_sessions;
         self.security_notices += other.security_notices;
+        self.logout_notices += other.logout_notices;
     }
 }
 
@@ -189,6 +193,12 @@ pub async fn drop_expired_rows(
         .await
         .map_err(failed)?,
         security_notices: notices::drop_settled_before(
+            transaction,
+            now - chrono::Duration::days(NOTICES_KEPT_DAYS),
+        )
+        .await
+        .map_err(failed)?,
+        logout_notices: store::providers::protocol::logout_notices::drop_settled_before(
             transaction,
             now - chrono::Duration::days(NOTICES_KEPT_DAYS),
         )

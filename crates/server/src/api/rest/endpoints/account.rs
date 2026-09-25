@@ -2,7 +2,6 @@ use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
-use config::serving::PublicOrigin;
 use data_encoding::BASE64URL_NOPAD;
 use secrecy::SecretBox;
 use services::account::api::{
@@ -13,13 +12,11 @@ use services::account::api::{
     withdraw_caller_consent,
 };
 use services::account::{OwnFactor, OwnFactors, Unchanged};
-use services::oidc::grant::Signing;
 use services::user_agent::read_agent;
-use store::tenancy::{Tenancy, UnitOfWork};
+use store::tenancy::Tenancy;
 
 use crate::api::provenance::read_provenance;
 use crate::api::rest::endpoints::admin::dto::PasswordChange;
-use crate::api::rest::endpoints::protocol::backchannel;
 use crate::api::rest::endpoints::protocol::dto::uncached;
 use crate::middleware::account_guard::AccountRefusal;
 use crate::middleware::admin_policy::AdminPolicy;
@@ -251,14 +248,11 @@ pub async fn list_sessions(
 }
 
 /// End one of the caller's logins, the one the request rides included, with what its
-/// applications got from it. The applications registered to hear of it are told once
-/// the ending has committed.
+/// applications got from it. The applications registered to hear of it are owed a
+/// logout notice, sent by the outbox pass once the ending has committed.
 pub async fn end_session(
     caller: web::ReqData<AccountCaller>,
     tenancy: web::Data<Tenancy>,
-    sealing: web::Data<Sealing>,
-    origin: web::Data<PublicOrigin>,
-    egress: web::Data<config::serving::Egress>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, AccountRefusal> {
     let (_, session_id) = path.into_inner();
@@ -266,65 +260,42 @@ pub async fn end_session(
         .begin(&caller.tenant)
         .await
         .map_err(AccountRefusal::for_unopened_work)?;
-    let ring = open_realm_keys(&transaction, &sealing, &caller).await;
-    let signing = ring.as_ref().map(|ring| sign_with(&sealing, ring));
-    let notices = end_caller_login(
-        &transaction,
-        &caller,
-        signing.as_ref(),
-        &origin.issuer(&caller.tenant.realm_id),
-        &session_id,
-    )
-    .await
-    .map_err(refuse_ending)?;
+    end_caller_login(&transaction, &caller, &session_id)
+        .await
+        .map_err(refuse_ending)?;
     transaction
         .commit()
         .await
         .map_err(|_| AccountRefusal::Failed)?;
-    backchannel::deliver(notices, **egress).await;
     Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::NO_CONTENT)).finish())
 }
 
 /// End every login of the caller's but the one the request rides, and say how many
-/// ended. The applications registered to hear of them are told once it committed.
+/// ended. Their applications are owed a logout notice each.
 pub async fn end_other_sessions(
     caller: web::ReqData<AccountCaller>,
     tenancy: web::Data<Tenancy>,
-    sealing: web::Data<Sealing>,
-    origin: web::Data<PublicOrigin>,
-    egress: web::Data<config::serving::Egress>,
 ) -> Result<HttpResponse, AccountRefusal> {
     let transaction = tenancy
         .begin(&caller.tenant)
         .await
         .map_err(AccountRefusal::for_unopened_work)?;
-    let ring = open_realm_keys(&transaction, &sealing, &caller).await;
-    let signing = ring.as_ref().map(|ring| sign_with(&sealing, ring));
-    let (ended, notices) = end_caller_other_logins(
-        &transaction,
-        &caller,
-        signing.as_ref(),
-        &origin.issuer(&caller.tenant.realm_id),
-    )
-    .await
-    .map_err(refuse_ending)?;
+    let ended = end_caller_other_logins(&transaction, &caller)
+        .await
+        .map_err(refuse_ending)?;
     transaction
         .commit()
         .await
         .map_err(|_| AccountRefusal::Failed)?;
-    backchannel::deliver(notices, **egress).await;
     Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
         .json(serde_json::json!({ "ended_sessions": ended })))
 }
 
 /// Take back what one application got from one of the caller's logins. The
-/// application is told, when it registered to hear of it, once the taking committed.
+/// application is owed a logout notice when it registered to hear of it.
 pub async fn revoke_grant(
     caller: web::ReqData<AccountCaller>,
     tenancy: web::Data<Tenancy>,
-    sealing: web::Data<Sealing>,
-    origin: web::Data<PublicOrigin>,
-    egress: web::Data<config::serving::Egress>,
     path: web::Path<(String, String, String)>,
 ) -> Result<HttpResponse, AccountRefusal> {
     let (_, session_id, client_id) = path.into_inner();
@@ -332,23 +303,13 @@ pub async fn revoke_grant(
         .begin(&caller.tenant)
         .await
         .map_err(AccountRefusal::for_unopened_work)?;
-    let ring = open_realm_keys(&transaction, &sealing, &caller).await;
-    let signing = ring.as_ref().map(|ring| sign_with(&sealing, ring));
-    let notices = revoke_caller_grant(
-        &transaction,
-        &caller,
-        signing.as_ref(),
-        &origin.issuer(&caller.tenant.realm_id),
-        &session_id,
-        &client_id,
-    )
-    .await
-    .map_err(refuse_ending)?;
+    revoke_caller_grant(&transaction, &caller, &session_id, &client_id)
+        .await
+        .map_err(refuse_ending)?;
     transaction
         .commit()
         .await
         .map_err(|_| AccountRefusal::Failed)?;
-    backchannel::deliver(notices, **egress).await;
     Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::NO_CONTENT)).finish())
 }
 
@@ -400,17 +361,10 @@ pub async fn withdraw_consent(
 }
 
 /// Take back everything one application got from the caller's logins, and say how many
-/// grants went. The application is told once for each login, once the taking committed.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each is a piece of app state this door reads"
-)]
+/// grants went. The application is owed a logout notice for each login.
 pub async fn take_back_access(
     caller: web::ReqData<AccountCaller>,
     tenancy: web::Data<Tenancy>,
-    sealing: web::Data<Sealing>,
-    origin: web::Data<PublicOrigin>,
-    egress: web::Data<config::serving::Egress>,
     policy: web::Data<AdminPolicy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, AccountRefusal> {
@@ -419,13 +373,9 @@ pub async fn take_back_access(
         .begin(&caller.tenant)
         .await
         .map_err(AccountRefusal::for_unopened_work)?;
-    let ring = open_realm_keys(&transaction, &sealing, &caller).await;
-    let signing = ring.as_ref().map(|ring| sign_with(&sealing, ring));
-    let (taken, notices) = take_back_caller_access(
+    let taken = take_back_caller_access(
         &transaction,
         &caller,
-        signing.as_ref(),
-        &origin.issuer(&caller.tenant.realm_id),
         &client_id,
         &list_realm_consoles(&policy.parties),
     )
@@ -435,34 +385,8 @@ pub async fn take_back_access(
         .commit()
         .await
         .map_err(|_| AccountRefusal::Failed)?;
-    backchannel::deliver(notices, **egress).await;
     Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
         .json(serde_json::json!({ "ended_grants": taken })))
-}
-
-/// The realm's keys, opened to sign the logout notices an ending owes. None when they
-/// cannot be opened: the ending goes ahead, and nobody is told.
-async fn open_realm_keys(
-    transaction: &UnitOfWork,
-    sealing: &Sealing,
-    caller: &AccountCaller,
-) -> Option<store::keyring::RealmKeyring> {
-    store::keyring::load(
-        transaction,
-        &sealing.envelope,
-        &caller.tenant.tenant,
-        &caller.tenant.realm_id,
-    )
-    .await
-    .ok()
-}
-
-fn sign_with<'a>(sealing: &'a Sealing, ring: &'a store::keyring::RealmKeyring) -> Signing<'a> {
-    Signing {
-        provider: sealing.provider.as_ref(),
-        ring,
-        envelope: &sealing.envelope,
-    }
 }
 
 /// An ending refused, in the words the account API answers with.

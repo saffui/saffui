@@ -854,6 +854,10 @@ pub async fn assemble_evidence_pack(
                 "security_notices".to_owned(),
                 format!("{} days", crate::realm::housekeeping::NOTICES_KEPT_DAYS),
             ),
+            (
+                "logout_notices".to_owned(),
+                format!("{} days", crate::realm::housekeeping::NOTICES_KEPT_DAYS),
+            ),
         ],
     })
 }

@@ -53,6 +53,7 @@ pub fn sweep_expired_rows(tenancy: Tenancy, every: Option<Duration>) -> Option<J
                     security_events = swept.security_events,
                     delivered_events = swept.delivered_events,
                     security_notices = swept.security_notices,
+                    logout_notices = swept.logout_notices,
                     login_events = swept.login_events,
                     backchannel_requests = swept.backchannel_requests,
                     device_codes = swept.device_codes,
@@ -208,6 +209,15 @@ pub async fn deliver_every_realm_with_egress(
     // walking still has its notices sent, each claimed by one sender alone.
     for realm in &realms {
         crate::notices::send_due_notices(tenancy, sealing, realm, backoff_seconds).await;
+        crate::logout_notices::send_due_logout_notices(
+            tenancy,
+            sealing,
+            origin,
+            realm,
+            backoff_seconds,
+            egress,
+        )
+        .await;
     }
 }
 

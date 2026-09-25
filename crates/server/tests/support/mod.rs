@@ -804,6 +804,45 @@ pub fn account_console_claims() -> JwtPayload {
     payload
 }
 
+/// A relying party's back-channel ear: one request accepted on a port of its
+/// own, its body handed back, a 200 sent.
+#[allow(dead_code, reason = "only the suites telling clients listen")]
+pub fn listening_ear() -> (String, std::sync::mpsc::Receiver<String>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let port = listener.local_addr().expect("an address").port();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("a caller");
+        let mut raw = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let read = stream.read(&mut chunk).unwrap_or(0);
+            if read == 0 {
+                break;
+            }
+            raw.extend_from_slice(&chunk[..read]);
+            let text = String::from_utf8_lossy(&raw).to_string();
+            if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                let length: usize = head
+                    .lines()
+                    .find_map(|line| {
+                        line.strip_prefix("Content-Length: ")
+                            .or_else(|| line.strip_prefix("content-length: "))
+                    })
+                    .and_then(|value| value.trim().parse().ok())
+                    .unwrap_or(0);
+                if body.len() >= length {
+                    let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+                    let _ = sender.send(body[..length].to_owned());
+                    break;
+                }
+            }
+        }
+    });
+    (format!("http://127.0.0.1:{port}/logout-token"), receiver)
+}
+
 /// A migrated database with a realm that signs, and a turn on it.
 pub struct Plane {
     #[allow(dead_code, reason = "only the sweep builds a node of its own")]
@@ -1726,6 +1765,70 @@ impl Plane {
             .await
             .expect("the session table")
             .is_some()
+    }
+
+    /// A login of `user_id`'s, open in the planted realm.
+    #[allow(dead_code, reason = "only the suites ending logins ask")]
+    pub async fn open_login_of(&self, session_id: &str, user_id: &str) {
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
+        sessions::open(
+            &transaction,
+            &models::sessions::records::UserSessionModel {
+                browser_state: None,
+                tenant: TENANT.into(),
+                session_id: session_id.into(),
+                realm_id: REALM.into(),
+                user_id: user_id.into(),
+                login_username: user_id.into(),
+                broker_session_id: None,
+                broker_user_id: None,
+                auth_method: None,
+                ip_address: None,
+                user_agent: None,
+                started_at: chrono::Utc::now().timestamp(),
+                auth_time: None,
+                loa: None,
+                expiration: None,
+                state: models::sessions::records::UserSessionState::LoggedIn,
+                remember_me: None,
+                last_session_refresh: None,
+                is_offline: None,
+                notes: None,
+            },
+        )
+        .await
+        .expect("a login");
+        transaction.commit().await.expect("the login kept");
+    }
+
+    /// What `client_id` got out of a login, for an hour.
+    #[allow(dead_code, reason = "only the suites ending logins ask")]
+    pub async fn plant_grant_of(&self, session_id: &str, user_id: &str, client_id: &str) {
+        let now = chrono::Utc::now().timestamp();
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
+        sessions::open_client_session(
+            &transaction,
+            &models::sessions::records::ClientSessionModel {
+                tenant: TENANT.into(),
+                session_id: format!("{session_id}-{client_id}"),
+                realm_id: REALM.into(),
+                user_id: user_id.into(),
+                user_session_id: session_id.into(),
+                client_id: client_id.into(),
+                auth_method: Some("authorization_code".into()),
+                redirect_uri: None,
+                started_at: now,
+                expiration: Some(now + 3600),
+                notes: None,
+                current_refresh_token: None,
+                current_refresh_token_use_count: None,
+                offline: Some(false),
+                requested_claims: None,
+            },
+        )
+        .await
+        .expect("the client sessions table");
+        transaction.commit().await.expect("the grant kept");
     }
 
     /// How many logins a person holds in the planted realm.

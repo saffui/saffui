@@ -1,5 +1,5 @@
 use models::sessions::records::{ClientSessionModel, UserSessionModel};
-use store::providers::protocol::sessions;
+use store::providers::protocol::{logout_notices, sessions};
 use store::tenancy::UnitOfWork;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -47,12 +47,14 @@ pub async fn list_sessions_of_realm(
         .map_err(|_| Unreachable::Unreadable)
 }
 
-/// End every login in this realm, saying how many went.
+/// End every login in this realm, saying how many went; their clients are owed a
+/// logout notice.
 ///
-/// Half of a breach answer, and it says so: the sessions stop renewing, while
-/// the access tokens already handed out live out their span unless the realm's
-/// cut is struck too. A console that offers one without the other offers a
-/// revocation that is not one.
+/// Half of a breach answer, and it says so: the sessions stop renewing, and the
+/// tokens already handed out stop wherever their login is asked after, while a
+/// resource server that checks them itself goes on accepting them unless the
+/// realm's cut is struck too. A console that offers one without the other offers
+/// a revocation that is not one.
 pub async fn end_sessions_of_realm(
     transaction: &UnitOfWork,
     realm_id: &str,
@@ -62,7 +64,8 @@ pub async fn end_sessions_of_realm(
         .map_err(|_| Unreachable::Unreadable)
 }
 
-/// End one login of this person, and everything any client got out of it.
+/// End one login of this person, and everything any client got out of it; its
+/// clients are owed a logout notice.
 ///
 /// Named through the person it belongs to, so an identifier from somebody
 /// else's listing reaches nothing.
@@ -79,7 +82,8 @@ pub async fn close(
 }
 
 /// Take back what one client got out of one login, leaving the login and every
-/// other client alone.
+/// other client alone. The client is owed a logout notice for that login when it
+/// registered where to be told, owed while its grant still says it took part.
 pub async fn revoke_grant(
     transaction: &UnitOfWork,
     user_id: &str,
@@ -87,6 +91,9 @@ pub async fn revoke_grant(
     client_id: &str,
 ) -> Result<(), Unreachable> {
     named_session(transaction, user_id, session_id).await?;
+    logout_notices::owe_for_client_of_login(transaction, session_id, client_id)
+        .await
+        .map_err(|_| Unreachable::Unreadable)?;
     let taken = sessions::close_client_session_of(transaction, session_id, client_id)
         .await
         .map_err(|_| Unreachable::Unreadable)?;

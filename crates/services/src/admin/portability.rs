@@ -7,6 +7,7 @@ use models::entities::export::{
 use models::entities::export::{
     ExportedRealm, ImportCollision, ImportCollisionPolicy, PartialImportReport,
 };
+use models::entities::realm::ClientRegistration;
 use models::paging::Window;
 use std::collections::HashSet;
 use store::error::StoreError;
@@ -1464,13 +1465,6 @@ fn describe_store_refusal(why: StoreError, item: &str) -> Unportable {
     }
 }
 
-/// Point every row of the document at the realm it is being written into.
-///
-/// The realm in the document is where it came from; the transaction is
-/// scoped to where it is going, and a row naming another realm would be
-/// refused or, worse, quietly rescoped by the session settings. The tenant
-/// is rewritten for the same reason: it is the importer's, never the
-/// document's.
 /// A theme the pages could not wear is refused before anything lands, named by
 /// what carries it: an import does not write what the admin plane would refuse.
 fn refuse_unsound_themes(doc: &ExportedRealm) -> Result<(), Unportable> {
@@ -1491,6 +1485,13 @@ fn refuse_unsound_themes(doc: &ExportedRealm) -> Result<(), Unportable> {
     Ok(())
 }
 
+/// Point every row of the document at the realm it is being written into.
+///
+/// The realm in the document is where it came from; the transaction is
+/// scoped to where it is going, and a row naming another realm would be
+/// refused or, worse, quietly rescoped by the session settings. The tenant
+/// is rewritten for the same reason: it is the importer's, never the
+/// document's.
 fn retarget(doc: &mut ExportedRealm, tenant: &str, realm_id: &str) {
     let name = realm_id.to_owned();
     doc.realm.realm_id = name.clone();
@@ -1668,6 +1669,10 @@ pub async fn record_partial_import(
 /// Write the document back as rows, in dependency order, inside the one
 /// transaction the caller opened for the target realm. Nothing commits
 /// here: a realm is wholly present or wholly absent.
+///
+/// The realm's settings are written as the document states them. The rules an
+/// edit of them meets are the caller's to weigh before committing, once the
+/// flows they may name are written too.
 pub async fn import_realm(
     transaction: &UnitOfWork,
     tenant: &str,
@@ -1690,6 +1695,14 @@ pub async fn import_realm(
         return Err(Unportable::AlreadyExists);
     }
     retarget(&mut doc, tenant, realm_id);
+    // No document carries a bearer credential, so the secret a protected
+    // registration stands on never arrives, and one written in by hand is not
+    // taken either. Such a realm lands closed to registration, for its
+    // operator to draw a secret and open it again.
+    doc.realm.registration_secret = None;
+    if doc.realm.client_registration == ClientRegistration::Protected {
+        doc.realm.client_registration = ClientRegistration::Disabled;
+    }
 
     realms::create(transaction, &doc.realm)
         .await
@@ -1697,6 +1710,11 @@ pub async fn import_realm(
             StoreError::AlreadyExists => Unportable::AlreadyExists,
             refused => describe_store_refusal(refused, &format!("realm {realm_id}")),
         })?;
+    // What the realm does travels with what it is: its policies, its brakes,
+    // its lifespans, the flow it signs in with. Creating it wrote only what it is.
+    realms::update(transaction, &doc.realm)
+        .await
+        .map_err(|why| describe_store_refusal(why, &format!("the settings of realm {realm_id}")))?;
     for action in &doc.required_actions {
         auth_flows::register_action(transaction, action)
             .await

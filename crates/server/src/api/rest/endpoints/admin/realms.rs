@@ -3,11 +3,11 @@ use commons::error::ErrorCode;
 use commons::http::ApiError;
 use config::serving::PublicOrigin;
 use models::compliance::subject_request::Jurisdiction;
-use models::entities::realm::{RealmCreateModel, RealmUpdateModel};
+use models::entities::realm::{RealmCreateModel, RealmModel, RealmUpdateModel};
 use models::representation::RepresentationParams;
 use services::admin::realms::{self, RealmBirth, Unrealmed, Witness};
 use services::realm::provisioning;
-use store::tenancy::{Tenancy, TenantContext};
+use store::tenancy::{Tenancy, TenantContext, UnitOfWork};
 
 use crate::api::rest::endpoints::admin::dto::RealmBrief;
 use crate::error::refuse_unopened_work;
@@ -386,6 +386,28 @@ pub async fn update(
         .map_err(|_| internal())?
         .ok_or_else(|| ApiError::new(ErrorCode::RealmNotFound))?;
     let asked = body.into_inner();
+    refuse_unsound_settings(&transaction, &hops, &asked, &held).await?;
+    asked.apply(&mut held);
+    if !services::realm::reshape(&transaction, &held)
+        .await
+        .map_err(|_| internal())?
+    {
+        return Err(ApiError::new(ErrorCode::RealmNotFound));
+    }
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::Ok().json(held))
+}
+
+/// Whether a realm's settings are ones this plane writes: the rules an edit
+/// meets, weighed the same whether the settings arrive one at a time over the
+/// plane or all at once in an imported document. `held` is what stands, for
+/// the rules that read an edit together with what it leaves alone.
+pub(super) async fn refuse_unsound_settings(
+    transaction: &UnitOfWork,
+    hops: &config::proxying::Proxying,
+    asked: &RealmUpdateModel,
+    held: &RealmModel,
+) -> Result<(), ApiError> {
     // OTP bounds an authenticator app will actually honour: RFC 6238 speaks
     // 6 to 8 digits, and a period or window outside sanity is a lockout
     // being configured.
@@ -673,19 +695,11 @@ pub async fn update(
         .as_deref()
         .filter(|held| !held.is_empty())
     {
-        realms::refuse_unstartable_flow(&transaction, alias)
+        realms::refuse_unstartable_flow(transaction, alias)
             .await
             .map_err(refuse)?;
     }
-    asked.apply(&mut held);
-    if !services::realm::reshape(&transaction, &held)
-        .await
-        .map_err(|_| internal())?
-    {
-        return Err(ApiError::new(ErrorCode::RealmNotFound));
-    }
-    transaction.commit().await.map_err(|_| internal())?;
-    Ok(HttpResponse::Ok().json(held))
+    Ok(())
 }
 
 /// The realm's theme tokens, for the console that edits them.

@@ -425,6 +425,155 @@ async fn a_realm_crosses_as_a_document() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
 }
 
+/// What a realm does crosses with what it is: its lifespans, its policies, its
+/// brakes and its bounds land as they stood. The one thing held back is the
+/// secret a protected registration stands on, which no document carries, so
+/// such a realm lands closed to registration. A document whose settings this
+/// plane would refuse as an edit is refused whole, and nothing of it lands.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_realm_crosses_with_its_settings() {
+    let plane = Plane::with_actions(&[
+        AdminAction::RealmExport,
+        AdminAction::RealmImport,
+        AdminAction::RealmWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let own = format!("/admin/realms/{REALM}");
+
+    // Settings nobody gets by default, written the way an operator writes them.
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("{own}/registration-secret"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert!(status.is_success(), "{status}: {told}");
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &own,
+        &bearer,
+        Some(json!({
+            "client_registration": "protected",
+            "access_token_lifespan": 321,
+            "refresh_token_lifespan": 1234,
+            "session_max_lifespan": 7200,
+            "offline_session_max_lifespan": 86400,
+            "max_offline_grants": 3,
+            "refresh_token_max_reuse": 1,
+            "require_pushed_authorization_requests": true,
+            "events_enabled": true,
+            "security_notices_enabled": false,
+            "password_policy": { "min_length": 12, "history_look_back": 3 },
+            "brute_force": {
+                "protected": true,
+                "max_failures": 7,
+                "lockout_seconds": 120,
+                "max_lockout_seconds": 1800,
+                "reset_seconds": 600,
+            },
+            "source_throttle": {
+                "throttled": true,
+                "max_failures": 50,
+                "max_name_failures": 10,
+                "window_seconds": 600,
+            },
+            "otp_policy": { "digits": 8, "period": 60, "algorithm": "SHA256", "window": 1 },
+            "device_code_lifespan": 900,
+            "device_poll_interval": 7,
+            "ciba_expiry": 120,
+            "ciba_interval": 3,
+            "sms_daily_cap": 50,
+            "sms_per_number_cap": 2,
+            "supported_locales": ["en", "fr"],
+            "default_locale": "fr",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+
+    let (status, document) =
+        asked(&plane, Method::GET, &format!("{own}/export"), &bearer, None).await;
+    assert_eq!(status, StatusCode::OK, "{document}");
+    assert_eq!(
+        document["realm"]["access_token_lifespan"], 321,
+        "{document}"
+    );
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms/import?as=twin",
+        &bearer,
+        Some(document.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+    let twin = {
+        use store::tenancy::TenantContext;
+        let transaction = plane
+            .scoped(&TenantContext::new(support::TENANT, "twin"))
+            .await;
+        let document =
+            services::admin::portability::export_realm(&transaction, "twin", chrono::Utc::now())
+                .await
+                .expect("the twin exports");
+        serde_json::to_value(document).expect("a document")
+    };
+
+    // Everything but what names the realm, what records who wrote it, and the
+    // registration its missing secret closes.
+    let settled = |document: &Value| -> Value {
+        let mut realm = document["realm"].clone();
+        let held = realm.as_object_mut().expect("a realm");
+        for aside in ["realm_id", "name", "metadata", "client_registration"] {
+            held.remove(aside);
+        }
+        realm
+    };
+    assert_eq!(
+        settled(&twin),
+        settled(&document),
+        "the twin does not do what its original does"
+    );
+    assert_eq!(document["realm"]["client_registration"], "protected");
+    assert_eq!(
+        twin["realm"]["client_registration"], "disabled",
+        "a registration whose secret did not cross is open on the twin"
+    );
+
+    // A setting the plane would refuse as an edit is refused in a document, and
+    // the realm it would have made is not there: the name is still free.
+    let mut unsound = document.clone();
+    unsound["realm"]["otp_policy"] =
+        json!({ "digits": 12, "period": 30, "algorithm": "SHA1", "window": 1 });
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms/import?as=unsound",
+        &bearer,
+        Some(unsound),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms/import?as=unsound",
+        &bearer,
+        Some(document),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "the refused import left something behind: {told}"
+    );
+}
+
 /// A realm's theme and its organizations' themes cross with the document, and a
 /// document carrying a theme the pages could not wear is refused before anything
 /// lands.

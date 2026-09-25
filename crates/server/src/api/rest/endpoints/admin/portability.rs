@@ -3,6 +3,7 @@ use chrono::Utc;
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use models::entities::export::{ExportedRealm, ImportCollisionPolicy};
+use models::entities::realm::RealmUpdateModel;
 use serde::Deserialize;
 use services::admin::portability::{self, Unportable};
 use store::tenancy::{Tenancy, TenantContext};
@@ -64,6 +65,7 @@ pub async fn import(
     landing: web::Query<Landing>,
     sealing: web::Data<Sealing>,
     ceiling: web::Data<config::serving::RealmCeiling>,
+    hops: web::Data<config::proxying::Proxying>,
     body: web::Json<ExportedRealm>,
 ) -> Result<HttpResponse, ApiError> {
     let document = body.into_inner();
@@ -101,6 +103,19 @@ pub async fn import(
     )
     .await
     .map_err(refused)?;
+    // What landed meets the rules an edit of it would, weighed now that the
+    // flows it may name are written too. A refusal rolls the whole realm back.
+    let landed = services::realm::named(&transaction, &realm_id)
+        .await
+        .map_err(|_| internal())?
+        .ok_or_else(internal)?;
+    super::realms::refuse_unsound_settings(
+        &transaction,
+        &hops,
+        &RealmUpdateModel::settings_of(&landed),
+        &landed,
+    )
+    .await?;
 
     // The way in, when one was asked for. The account may have arrived with
     // the document; either way it leaves here with a drawn password and the

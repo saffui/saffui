@@ -8,9 +8,9 @@ use serde::Deserialize;
 use services::admin::compliance::{self, Lodging, Unactionable};
 use store::tenancy::Tenancy;
 
-use crate::api::config::Sealing;
 use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
+use outbound::Sealing;
 
 /// What the plane is asked to lodge.
 #[derive(Debug, Deserialize)]

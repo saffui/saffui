@@ -706,7 +706,16 @@ mod tests {
             .parent()
             .expect("the store sits among the crates");
         let mut offenders = Vec::new();
-        for member in ["auth", "authz", "ldapfront", "saml", "server", "services"] {
+        for member in [
+            "auth",
+            "authz",
+            "ldapfront",
+            "outbound",
+            "saml",
+            "scheduler",
+            "server",
+            "services",
+        ] {
             let manifest = std::fs::read_to_string(crates.join(member).join("Cargo.toml"))
                 .expect("every member has a manifest");
             for driver in ["deadpool-postgres", "tokio-postgres"] {

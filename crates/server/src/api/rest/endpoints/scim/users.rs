@@ -8,8 +8,8 @@ use services::scim::{self, AssertedUser, Refusal, list_response};
 use store::tenancy::Tenancy;
 
 use super::{answered, base_of, filter_of, internal, refuse_unopened_work, refused, window};
-use crate::api::config::Sealing;
 use crate::middleware::admin_guard::Admin;
+use outbound::Sealing;
 
 pub async fn list(
     request: HttpRequest,

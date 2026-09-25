@@ -98,7 +98,7 @@ async fn arrange_mail(plane: &Plane) {
 /// `postbox`, or by nothing where the deployment sends nothing. No backoff to wait
 /// out: whatever failed is due again on the next walk.
 async fn walk(plane: &Plane, postbox: Option<&Postbox>) {
-    server::jobs::deliver_every_realm(
+    scheduler::jobs::deliver_every_realm(
         &plane.tenancy(),
         &support::sealing_sending(
             postbox.map(|held| Arc::new(held.clone()) as Arc<dyn auth::messaging::Deliver>),

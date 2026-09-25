@@ -351,7 +351,7 @@ pub fn provider() -> OpenSslProvider {
 }
 
 #[allow(dead_code, reason = "not every suite mints a token")]
-pub fn sealing() -> server::api::config::Sealing {
+pub fn sealing() -> outbound::Sealing {
     sealing_sending(None)
 }
 
@@ -376,9 +376,7 @@ pub async fn page_token_for(plane: &Plane, binding: &str) -> String {
 
 /// The same, with something to carry a message out.
 #[allow(dead_code, reason = "only the mailed suite sends")]
-pub fn sealing_sending(
-    sender: Option<Arc<dyn auth::messaging::Deliver>>,
-) -> server::api::config::Sealing {
+pub fn sealing_sending(sender: Option<Arc<dyn auth::messaging::Deliver>>) -> outbound::Sealing {
     sealing_carrying(sender, None)
 }
 
@@ -387,10 +385,10 @@ pub fn sealing_sending(
 pub fn sealing_carrying(
     sender: Option<Arc<dyn auth::messaging::Deliver>>,
     texter: Option<Arc<dyn auth::messaging::Texter>>,
-) -> server::api::config::Sealing {
+) -> outbound::Sealing {
     let shared: Arc<dyn CryptoProvider> = Arc::new(provider());
     let envelope = Envelope::new(Arc::clone(&shared), KEK).expect("an envelope");
-    server::api::config::Sealing::new(sender, texter, shared, envelope).expect("a sealing")
+    outbound::Sealing::new(sender, texter, shared, envelope).expect("a sealing")
 }
 
 /// What a count keeps of a name typed in `realm_id`, worked out here rather

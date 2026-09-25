@@ -471,7 +471,7 @@ async fn the_sync_walks_the_shadows_and_an_outage_walks_away() {
     let synced = |plane: &Plane| {
         let tenancy = plane.tenancy();
         async move {
-            server::jobs::sync_every_realm(&tenancy, &support::sealing())
+            scheduler::jobs::sync_every_realm(&tenancy, &support::sealing())
                 .await
                 .expect("the realms are listable")
         }

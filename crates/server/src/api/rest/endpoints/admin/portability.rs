@@ -7,9 +7,9 @@ use serde::Deserialize;
 use services::admin::portability::{self, Unportable};
 use store::tenancy::{Tenancy, TenantContext};
 
-use crate::api::config::Sealing;
 use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
+use outbound::Sealing;
 
 /// The realm as a document. Read whole inside one transaction, so no
 /// section can come from a different state than another.

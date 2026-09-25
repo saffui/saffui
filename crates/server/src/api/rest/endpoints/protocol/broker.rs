@@ -16,11 +16,11 @@ use store::tenancy::{RealmNamed, Tenancy, TenantContext, UnitOfWork};
 
 use config::serving::{LoginUi, PublicOrigin};
 
-use crate::api::config::Sealing;
 use crate::api::provenance::read_provenance;
 use crate::api::rest::endpoints::protocol::binding;
-use crate::api::rest::endpoints::protocol::hosted::{PATIENCE, fetch, may_dial, outward_agent};
 use crate::api::rest::endpoints::protocol::login::{Spoken, hand_over, shown, told, told_landing};
+use outbound::Sealing;
+use outbound::egress::{PATIENCE, fetch, may_dial, outward_agent};
 
 /// Send the browser to the upstream provider.
 ///

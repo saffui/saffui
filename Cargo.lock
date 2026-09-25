@@ -2291,6 +2291,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "outbound"
+version = "0.1.0"
+dependencies = [
+ "auth",
+ "chrono",
+ "config",
+ "crypto",
+ "data-encoding",
+ "ldap3",
+ "models",
+ "serde_json",
+ "services",
+ "store",
+ "tokio",
+ "tracing",
+ "ureq",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3010,7 +3029,9 @@ dependencies = [
  "ldapfront",
  "models",
  "openssl",
+ "outbound",
  "pgcore",
+ "scheduler",
  "secrecy",
  "serde",
  "serde_json",
@@ -3043,6 +3064,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91c1b7e4904c873ef0710c1f407dde2e6287de2bebc1bbbf7d430bb7cbffd939"
 dependencies = [
  "windows-sys",
+]
+
+[[package]]
+name = "scheduler"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "config",
+ "outbound",
+ "serde_json",
+ "services",
+ "store",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3195,12 +3230,14 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "outbound",
  "pgcore",
  "prometheus",
  "prost",
  "protoc-bin-vendored",
  "saffui",
  "saml",
+ "scheduler",
  "secrecy",
  "serde",
  "serde_cbor_2",
@@ -3219,7 +3256,6 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "unic-langid",
- "ureq",
  "webauthn-rs",
 ]
 

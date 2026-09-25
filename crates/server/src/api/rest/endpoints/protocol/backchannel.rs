@@ -3,7 +3,7 @@ use std::time::Duration;
 use config::serving::Egress;
 use services::oidc::logout::Notice;
 
-use super::hosted::{may_dial, outward_agent};
+use outbound::egress::{may_dial, outward_agent};
 
 /// How long one client gets to answer. §2.8 says not to wait on clients;
 /// this is how long "not" is.

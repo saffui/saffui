@@ -48,8 +48,13 @@ async fn asked(
 }
 
 async fn walked(plane: &Plane) {
-    server::jobs::deliver_every_realm(&plane.tenancy(), &support::sealing(), &support::origin(), 1)
-        .await;
+    scheduler::jobs::deliver_every_realm(
+        &plane.tenancy(),
+        &support::sealing(),
+        &support::origin(),
+        1,
+    )
+    .await;
 }
 
 /// A collector's whole visit: subscribe by row, let the walker queue what

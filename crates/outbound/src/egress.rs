@@ -1,3 +1,6 @@
+//! Calls this deployment makes outward, under the egress policy: one agent that
+//! reaches nothing inside the deployment, and what is fetched with it.
+
 use config::serving::Egress;
 use std::net::IpAddr;
 use std::time::Duration;
@@ -7,7 +10,7 @@ use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver
 use ureq::unversioned::transport::NextTimeout;
 
 /// How long the whole fetch gets. A browser is waiting on it.
-pub(crate) const PATIENCE: Duration = Duration::from_secs(5);
+pub const PATIENCE: Duration = Duration::from_secs(5);
 
 /// The most that will be read. A request object is a handful of claims; past
 /// this it is something else.
@@ -18,7 +21,7 @@ const CEILING: u64 = 64 * 1024;
 /// The check belongs here and not before the request: checked earlier, the
 /// name would be resolved twice and the second answer is the one dialled.
 #[derive(Debug)]
-pub(crate) struct Outward(pub(crate) DefaultResolver, pub(crate) Egress);
+pub struct Outward(pub DefaultResolver, pub Egress);
 
 impl Resolver for Outward {
     fn resolve(
@@ -81,7 +84,7 @@ fn reaches_outward(address: IpAddr) -> bool {
 /// contents do: a request object carries what the person is being asked about.
 /// A deployment reaching outward sends that across the open internet or not at
 /// all; one dialling its own network has already said the network is its own.
-pub(crate) fn may_dial(uri: &str, egress: Egress) -> bool {
+pub fn may_dial(uri: &str, egress: Egress) -> bool {
     uri.starts_with("https://") || (egress == Egress::Anywhere && uri.starts_with("http://"))
 }
 
@@ -98,7 +101,7 @@ pub(crate) fn may_dial(uri: &str, egress: Egress) -> bool {
 /// cannot honour is a panic at the first https call. It also trusts a root set
 /// of its own over the platform's, and a deployment that added an authority to
 /// its system store would find it ignored.
-pub(crate) fn outward_agent(egress: Egress, patience: Duration) -> ureq::Agent {
+pub fn outward_agent(egress: Egress, patience: Duration) -> ureq::Agent {
     ureq::Agent::with_parts(
         ureq::Agent::config_builder()
             .timeout_global(Some(patience))

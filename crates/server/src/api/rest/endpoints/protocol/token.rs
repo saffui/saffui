@@ -7,11 +7,11 @@ use store::error::StoreError;
 use store::keyring;
 use store::tenancy::{RealmNamed, Tenancy};
 
-use crate::api::config::Sealing;
 use crate::api::provenance::read_client_certificate;
 use crate::api::provenance::read_provenance;
 use crate::api::rest::endpoints::protocol::caller;
 use crate::api::rest::endpoints::protocol::dto::{Asked, Denied, answer_unavailable, uncached};
+use outbound::Sealing;
 
 /// Ask for a token. The realm is resolved before the body is read, since parsing
 /// against a realm nobody has is work done for a request that cannot be
@@ -601,7 +601,7 @@ async fn workload_exchange(
         return Denied::InvalidGrant.answer("the grant presented was not honoured");
     };
 
-    let Some(keys) = super::hosted::fetch(trusted.jwks_uri.clone(), egress).await else {
+    let Some(keys) = outbound::egress::fetch(trusted.jwks_uri.clone(), egress).await else {
         return Denied::InvalidGrant.answer("the grant presented was not honoured");
     };
     let Ok(keys) = serde_json::from_str::<serde_json::Value>(&keys) else {

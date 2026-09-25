@@ -7,9 +7,9 @@ use serde_json::json;
 use services::admin::requests::{self, Unaskable};
 use store::tenancy::Tenancy;
 
-use crate::api::config::Sealing;
 use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
+use outbound::Sealing;
 
 fn internal() -> ApiError {
     ApiError::new(ErrorCode::InternalError)

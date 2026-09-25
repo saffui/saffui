@@ -7,9 +7,9 @@ use services::account::recovery::{self, Unrecoverable};
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
-use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::dto::uncached;
-use crate::api::rest::endpoints::protocol::mail::deliver;
+use outbound::Sealing;
+use outbound::delivery::deliver;
 
 #[derive(serde::Deserialize)]
 pub struct Asking {

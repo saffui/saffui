@@ -24,7 +24,7 @@ pub async fn tell(
     realm: web::Path<String>,
     body: Option<web::Form<Carried>>,
     tenancy: web::Data<Tenancy>,
-    sealing: web::Data<crate::api::config::Sealing>,
+    sealing: web::Data<outbound::Sealing>,
     origin: web::Data<config::serving::PublicOrigin>,
 ) -> HttpResponse {
     let now = Utc::now();

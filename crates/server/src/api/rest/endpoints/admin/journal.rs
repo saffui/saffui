@@ -65,7 +65,7 @@ pub async fn list_entries(
 pub async fn verify_chain(
     admin: web::ReqData<Admin>,
     tenancy: web::Data<Tenancy>,
-    sealing: web::Data<crate::api::config::Sealing>,
+    sealing: web::Data<outbound::Sealing>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();

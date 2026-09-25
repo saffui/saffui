@@ -6,8 +6,8 @@ use services::oidc::{ciba, ussd};
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
-use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::dto::uncached;
+use outbound::Sealing;
 
 /// How long the answer to one screen stays good. Gateways cut idle sessions
 /// far sooner; this only bounds how long an anchor row can lie around.

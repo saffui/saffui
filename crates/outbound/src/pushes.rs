@@ -1,471 +1,17 @@
-use std::future::Future;
-use std::pin::Pin;
-use store::tenancy::UnitOfWork;
+//! What the outbox pushes, and to whom: SCIM connectors, receivers of security
+//! events and webhooks, each reached under the egress policy, and the proof an
+//! operator asks of one of them.
 
-use crate::api::rest::endpoints::protocol::hosted::{Outward, PATIENCE, may_dial};
-use auth::login::directory::{Bound, Directory, DirectoryPerson};
 use config::serving::Egress;
-use crypto::secrecy::{ExposeSecret, SecretBox};
-use ldap3::{LdapConnAsync, Scope, SearchEntry};
-use services::federation::ldap::LdapSettings;
 use services::messaging::outbox;
+use store::tenancy::UnitOfWork;
 use ureq::unversioned::resolver::DefaultResolver;
 
-/// The realm's directory, answered over LDAP. The one place in the
-/// workspace a directory protocol is spoken: the flow engine sees the port
-/// and nothing else.
-pub struct LdapDirectory {
-    pub settings: LdapSettings,
-    /// The service bind, opened from its seal for this login and dropped
-    /// with it.
-    pub bind_password: Option<SecretBox<String>>,
-}
+use crate::egress::{Outward, PATIENCE, may_dial};
 
-impl LdapDirectory {
-    /// One served connection. `ldap3` splits the socket driver from the
-    /// handle; the driver is parked on the runtime and dies with the handle.
-    async fn dial(&self) -> Result<ldap3::Ldap, ()> {
-        let (connection, ldap) = LdapConnAsync::new(&self.settings.url)
-            .await
-            .map_err(|why| tracing::warn!(%why, "the directory could not be dialled"))?;
-        ldap3::drive!(connection);
-        Ok(ldap)
-    }
-
-    /// The entry answering to this name, found as the service: its DN and
-    /// the attributes the mapping names.
-    async fn look_up(&self, username: &str) -> Result<Option<(String, DirectoryPerson)>, ()> {
-        let mut ldap = self.dial().await?;
-        let bound = ldap
-            .simple_bind(
-                &self.settings.bind_dn,
-                self.bind_password
-                    .as_ref()
-                    .map(|held| held.expose_secret().as_str())
-                    .unwrap_or_default(),
-            )
-            .await
-            .and_then(|answer| answer.success())
-            .map_err(|why| tracing::warn!(%why, "the service bind was refused"));
-        bound?;
-
-        let wanted = [
-            self.settings.username_attribute.as_str(),
-            self.settings.email_attribute.as_str(),
-            self.settings.first_name_attribute.as_str(),
-            self.settings.last_name_attribute.as_str(),
-        ];
-        let (entries, _) = ldap
-            .search(
-                &self.settings.users_dn,
-                Scope::Subtree,
-                &self.settings.filter_for(username),
-                &wanted,
-            )
-            .await
-            .and_then(|answer| answer.success())
-            .map_err(|why| tracing::warn!(%why, "the directory search failed"))?;
-        let _ = ldap.unbind().await;
-
-        let Some(entry) = entries.into_iter().next() else {
-            return Ok(None);
-        };
-        let entry = SearchEntry::construct(entry);
-        let first = |named: &str| {
-            entry
-                .attrs
-                .get(named)
-                .and_then(|values| values.first())
-                .cloned()
-        };
-        let Some(username) = first(&self.settings.username_attribute) else {
-            // An entry the mapping cannot name is an entry this realm cannot
-            // hold: skipped, and said in the operator log.
-            tracing::warn!("a directory entry carries no username attribute");
-            return Ok(None);
-        };
-        Ok(Some((
-            entry.dn,
-            DirectoryPerson {
-                username,
-                email: first(&self.settings.email_attribute),
-                first_name: first(&self.settings.first_name_attribute),
-                last_name: first(&self.settings.last_name_attribute),
-            },
-        )))
-    }
-}
-
-impl Directory for LdapDirectory {
-    /// The bind is the check: a fresh connection, bound as the person's own
-    /// entry. An invalid-credentials answer is a refusal; anything else that
-    /// goes wrong is the directory being unreachable, which is never an
-    /// admission and never a refusal pinned on the person.
-    fn verify<'a>(
-        &'a self,
-        username: &'a str,
-        offered: &'a SecretBox<String>,
-    ) -> Pin<Box<dyn Future<Output = Bound> + Send + 'a>> {
-        Box::pin(async move {
-            let found = match self.look_up(username).await {
-                Ok(Some((dn, _))) => dn,
-                Ok(None) => return Bound::Refused,
-                Err(()) => return Bound::Unreachable,
-            };
-            let Ok(mut ldap) = self.dial().await else {
-                return Bound::Unreachable;
-            };
-            let answer = ldap.simple_bind(&found, offered.expose_secret()).await;
-            let _ = ldap.unbind().await;
-            match answer {
-                Ok(done) => match done.success() {
-                    Ok(_) => Bound::Accepted,
-                    Err(ldap3::LdapError::LdapResult { result }) if result.rc == 49 => {
-                        Bound::Refused
-                    }
-                    Err(why) => {
-                        tracing::warn!(%why, "the directory answered a bind strangely");
-                        Bound::Unreachable
-                    }
-                },
-                Err(why) => {
-                    tracing::warn!(%why, "the person's bind could not be asked");
-                    Bound::Unreachable
-                }
-            }
-        })
-    }
-
-    fn find<'a>(
-        &'a self,
-        username: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<DirectoryPerson>, ()>> + Send + 'a>> {
-        Box::pin(async move { Ok(self.look_up(username).await?.map(|(_, person)| person)) })
-    }
-
-    /// Everybody, paged through the directory's own control and capped: an
-    /// import mirrors identities, it is not an ETL.
-    fn everyone<'a>(
-        &'a self,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<DirectoryPerson>, ()>> + Send + 'a>> {
-        const CEILING: usize = 10_000;
-        Box::pin(async move {
-            let mut ldap = self.dial().await?;
-            ldap.simple_bind(
-                &self.settings.bind_dn,
-                self.bind_password
-                    .as_ref()
-                    .map(|held| held.expose_secret().as_str())
-                    .unwrap_or_default(),
-            )
-            .await
-            .and_then(|answer| answer.success())
-            .map_err(|why| tracing::warn!(%why, "the service bind was refused"))?;
-
-            let wanted = [
-                self.settings.username_attribute.as_str(),
-                self.settings.email_attribute.as_str(),
-                self.settings.first_name_attribute.as_str(),
-                self.settings.last_name_attribute.as_str(),
-            ];
-            let mut search = ldap
-                .streaming_search_with(
-                    ldap3::adapters::PagedResults::new(500),
-                    &self.settings.users_dn,
-                    Scope::Subtree,
-                    &self.settings.filter_for_everyone(),
-                    &wanted,
-                )
-                .await
-                .map_err(|why| tracing::warn!(%why, "the directory listing failed"))?;
-            let mut people = Vec::new();
-            while let Ok(Some(entry)) = search.next().await {
-                if people.len() >= CEILING {
-                    tracing::warn!(ceiling = CEILING, "the import stopped at its ceiling");
-                    break;
-                }
-                let entry = SearchEntry::construct(entry);
-                let first = |named: &str| {
-                    entry
-                        .attrs
-                        .get(named)
-                        .and_then(|values| values.first())
-                        .cloned()
-                };
-                let Some(username) = first(&self.settings.username_attribute) else {
-                    continue;
-                };
-                people.push(DirectoryPerson {
-                    username,
-                    email: first(&self.settings.email_attribute),
-                    first_name: first(&self.settings.first_name_attribute),
-                    last_name: first(&self.settings.last_name_attribute),
-                });
-            }
-            let _ = ldap.unbind().await;
-            Ok(people)
-        })
-    }
-}
-
-/// The directory as the login will speak to it, its bind secret opened from
-/// the realm's seal for this attempt and dropped with it.
-pub async fn directory_for(
+pub async fn opened_bearer(
     transaction: &UnitOfWork,
-    sealing: &crate::api::config::Sealing,
-    context: &store::tenancy::TenantContext,
-    held: &models::entities::brokering::UserFederationModel,
-    settings: services::federation::ldap::LdapSettings,
-) -> LdapDirectory {
-    let bind_password = opened_bind(transaction, sealing, context, held).await;
-    LdapDirectory {
-        settings,
-        bind_password,
-    }
-}
-
-pub async fn opened_bind(
-    transaction: &UnitOfWork,
-    sealing: &crate::api::config::Sealing,
-    context: &store::tenancy::TenantContext,
-    held: &models::entities::brokering::UserFederationModel,
-) -> Option<crypto::secrecy::SecretBox<String>> {
-    use data_encoding::BASE64;
-    let sealed = held
-        .configs
-        .as_ref()?
-        .get(services::federation::ldap::SEALED_BIND)?
-        .as_str()?;
-    let sealed = BASE64.decode(sealed.as_bytes()).ok()?;
-    let ring = store::keyring::load(
-        transaction,
-        &sealing.envelope,
-        &context.tenant,
-        &context.realm_id,
-    )
-    .await
-    .ok()?;
-    let mut opened = ring
-        .open(
-            &sealing.envelope,
-            services::federation::ldap::PURPOSE,
-            &held.alias,
-            &sealed,
-        )
-        .await
-        .ok();
-    if opened.is_none() {
-        opened = ring
-            .open(
-                &sealing.envelope,
-                services::federation::ldap::PURPOSE,
-                services::federation::ldap::LEGACY_SEAL_NAME,
-                &sealed,
-            )
-            .await
-            .ok();
-    }
-    let opened = opened?;
-    let clear =
-        String::from_utf8(crypto::secrecy::ExposeSecret::expose_secret(&opened).clone()).ok()?;
-    Some(crypto::secrecy::SecretBox::new(Box::new(clear)))
-}
-
-pub struct Told {
-    pub delivered: u64,
-    pub failed: u64,
-    pub dead: u64,
-}
-
-const DELIVERY_CEILING: i64 = 50;
-const DEAD_AFTER: i32 = 8;
-
-/// One realm's outbox pass: each due telling goes to every connector, and a
-/// telling only counts delivered when every connector took it.
-pub async fn deliver_outbox(
-    transaction: &UnitOfWork,
-    sealing: &crate::api::config::Sealing,
-    origin: &config::serving::PublicOrigin,
-    context: &store::tenancy::TenantContext,
-    egress: Egress,
-    backoff_seconds: i64,
-    now: chrono::DateTime<chrono::Utc>,
-) -> Result<Told, ()> {
-    let mut told = Told {
-        delivered: 0,
-        failed: 0,
-        dead: 0,
-    };
-    let listeners = outbox::read_listeners(transaction).await.map_err(|_| ())?;
-    // The realm's keys, only when somebody is listening for signed events.
-    let ring = if listeners.receivers.is_empty() {
-        None
-    } else {
-        store::keyring::load(
-            transaction,
-            &sealing.envelope,
-            &context.tenant,
-            &context.realm_id,
-        )
-        .await
-        .ok()
-    };
-    let issuer = origin.issuer(&context.realm_id);
-
-    let due = outbox::read_due_events(transaction, DELIVERY_CEILING, backoff_seconds)
-        .await
-        .map_err(|_| ())?;
-    for event in due {
-        // A change to how someone signs in owes them a notice, settled apart from
-        // this telling: noted once, however often the telling is retried.
-        services::messaging::notices::note_owed_notice(transaction, &event)
-            .await
-            .map_err(|_| ())?;
-        // The lifecycle converges before anything leaves the house: the
-        // provisioned apps should see the person as the rules already made
-        // them.
-        if services::governance::lifecycle::converge_event(transaction, &event)
-            .await
-            .is_err()
-        {
-            told.failed += 1;
-            continue;
-        }
-        // Nobody to tell is a telling done, not one to retry forever: with
-        // no push attempted, `landed` stays true and the event is put away.
-        let mut landed = true;
-        if let Some((uri, body)) =
-            services::messaging::caep::security_event(&event.kind, &event.payload)
-        {
-            for (row, receiver) in &listeners.receivers {
-                if !receiver.wants(uri) {
-                    continue;
-                }
-                let minted = match &ring {
-                    Some(ring) => services::messaging::caep::minted_set(
-                        transaction,
-                        &services::oidc::grant::Signing {
-                            provider: sealing.provider.as_ref(),
-                            ring,
-                            envelope: &sealing.envelope,
-                        },
-                        &issuer,
-                        receiver,
-                        &event,
-                        uri,
-                        body.clone(),
-                        now,
-                    )
-                    .await
-                    .ok(),
-                    None => None,
-                };
-                let Some(set) = minted else {
-                    landed = false;
-                    continue;
-                };
-                match receiver.delivery {
-                    // A collector's tokens wait here; queueing is delivery.
-                    services::messaging::caep::Delivery::Poll => {
-                        if services::messaging::caep::queue_set(transaction, &row.internal_id, &set)
-                            .await
-                            .is_err()
-                        {
-                            landed = false;
-                        }
-                    }
-                    services::messaging::caep::Delivery::Push => {
-                        let bearer = opened_bearer(transaction, sealing, context, row).await;
-                        if !push_set(receiver, bearer.as_deref(), &set.token, egress).await {
-                            landed = false;
-                        }
-                    }
-                }
-            }
-        }
-        // The connectors speak person; a session or credential happening is
-        // not theirs to provision.
-        if event.kind.starts_with("user.") {
-            for (row, connector) in &listeners.connectors {
-                let bearer = opened_bearer(transaction, sealing, context, row).await;
-                if !push_one(connector, bearer.as_deref(), &event, egress).await {
-                    landed = false;
-                }
-            }
-        }
-        // The webhooks take every kind their filter admits, as one signed
-        // JSON body: the signature covers these exact bytes, so the body is
-        // rendered once and rides verbatim.
-        if listeners
-            .webhooks
-            .iter()
-            .any(|(_, hook)| hook.wants(&event.kind))
-        {
-            let body = serde_json::json!({
-                "event_id": event.event_id,
-                "kind": event.kind,
-                "realm": context.realm_id,
-                "user_id": event.user_id,
-                "occurred_at": event.occurred_at.to_rfc3339(),
-                "payload": event.payload,
-            })
-            .to_string();
-            for (row, hook) in &listeners.webhooks {
-                if !hook.wants(&event.kind) {
-                    continue;
-                }
-                let signed = opened_webhook_secret(transaction, sealing, context, row)
-                    .await
-                    .and_then(|secret| {
-                        services::messaging::webhook::signature(
-                            sealing.provider.as_ref(),
-                            &secret,
-                            body.as_bytes(),
-                        )
-                    });
-                let Some(signature) = signed else {
-                    landed = false;
-                    continue;
-                };
-                if !push_json(
-                    hook,
-                    &signature,
-                    &event.kind,
-                    event.event_id,
-                    body.clone(),
-                    egress,
-                )
-                .await
-                {
-                    landed = false;
-                }
-            }
-        }
-        if landed {
-            outbox::mark_delivered(transaction, event.event_id)
-                .await
-                .map_err(|_| ())?;
-            told.delivered += 1;
-        } else if event.attempts >= DEAD_AFTER {
-            outbox::mark_dead(transaction, event.event_id)
-                .await
-                .map_err(|_| ())?;
-            told.dead += 1;
-            tracing::warn!(
-                event = event.event_id,
-                kind = event.kind,
-                "a telling was given up on; it stays visible as dead"
-            );
-        } else {
-            told.failed += 1;
-        }
-    }
-    Ok(told)
-}
-
-pub(crate) async fn opened_bearer(
-    transaction: &UnitOfWork,
-    sealing: &crate::api::config::Sealing,
+    sealing: &crate::Sealing,
     context: &store::tenancy::TenantContext,
     provider: &models::entities::authz::IdentityProviderModel,
 ) -> Option<String> {
@@ -549,9 +95,9 @@ async fn ask_webhook(
     }
 }
 
-pub(crate) async fn opened_webhook_secret(
+pub async fn opened_webhook_secret(
     transaction: &UnitOfWork,
-    sealing: &crate::api::config::Sealing,
+    sealing: &crate::Sealing,
     context: &store::tenancy::TenantContext,
     provider: &models::entities::authz::IdentityProviderModel,
 ) -> Option<String> {
@@ -584,7 +130,7 @@ pub(crate) async fn opened_webhook_secret(
 
 /// One signed telling to one webhook: these exact bytes, their signature,
 /// and the two headers a consumer dedups and routes by.
-pub(crate) async fn push_json(
+pub async fn push_json(
     hook: &services::messaging::webhook::Webhook,
     signature: &str,
     kind: &str,
@@ -634,7 +180,7 @@ fn far_side_agent(egress: Egress) -> ureq::Agent {
 
 /// Hand one Security Event Token to one receiver, RFC 8935: a POST whose
 /// body is the token, acknowledged with a bare success.
-async fn push_set(
+pub async fn push_set(
     receiver: &services::messaging::caep::Receiver,
     bearer: Option<&str>,
     set: &str,
@@ -666,7 +212,7 @@ async fn push_set(
 /// Reconcile-then-write, the way the cloud provisioners do it: find the
 /// person at the far side by our identifier, then create, correct, or
 /// delete. Every path is idempotent, which is what at-least-once needs.
-async fn push_one(
+pub async fn push_one(
     connector: &services::scim::outbound::Connector,
     bearer: Option<&str>,
     event: &outbox::OutboxEvent,
@@ -770,7 +316,7 @@ pub enum Unprovable {
 /// verification event; a collector has one queued to take on its next poll.
 pub async fn prove_delivery(
     transaction: &UnitOfWork,
-    sealing: &crate::api::config::Sealing,
+    sealing: &crate::Sealing,
     origin: &config::serving::PublicOrigin,
     context: &store::tenancy::TenantContext,
     alias: &str,

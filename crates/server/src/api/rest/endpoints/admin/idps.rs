@@ -7,9 +7,9 @@ use models::entities::brokering::IdpMapperMutationModel;
 use services::admin::idps::{self, Unwritable};
 use store::tenancy::Tenancy;
 
-use crate::api::config::Sealing;
 use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
+use outbound::Sealing;
 
 pub async fn list(
     admin: web::ReqData<Admin>,
@@ -190,7 +190,7 @@ pub async fn prove(
         .begin(&context)
         .await
         .map_err(refuse_unopened_work)?;
-    let proof = crate::federation::prove_delivery(
+    let proof = outbound::pushes::prove_delivery(
         &transaction,
         &sealing,
         &origin,
@@ -200,17 +200,17 @@ pub async fn prove(
     )
     .await
     .map_err(|why| match why {
-        crate::federation::Unprovable::NoSuchProvider => {
+        outbound::pushes::Unprovable::NoSuchProvider => {
             ApiError::new(ErrorCode::IdentityProviderNotFound)
         }
-        crate::federation::Unprovable::Disabled => ApiError::with_detail(
+        outbound::pushes::Unprovable::Disabled => ApiError::with_detail(
             ErrorCode::ValidationError,
             "the connector is disabled".to_owned(),
         ),
-        crate::federation::Unprovable::NotProvable(what) => {
+        outbound::pushes::Unprovable::NotProvable(what) => {
             ApiError::with_detail(ErrorCode::ValidationError, what)
         }
-        crate::federation::Unprovable::Backend => internal(),
+        outbound::pushes::Unprovable::Backend => internal(),
     })?;
     // A collector's proof is a queued row; the ask is only kept if this lands.
     transaction.commit().await.map_err(|_| internal())?;

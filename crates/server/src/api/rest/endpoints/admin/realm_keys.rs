@@ -9,9 +9,9 @@ use services::admin::realm_keys::Unturnable;
 use store::keyring;
 use store::tenancy::Tenancy;
 
-use crate::api::config::Sealing;
 use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
+use outbound::Sealing;
 
 /// Every key the realm holds, disabled ones included. The public JWKS shows
 /// what verifies; this shows what the realm has.

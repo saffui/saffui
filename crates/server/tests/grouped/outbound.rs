@@ -133,8 +133,13 @@ async fn a_change_here_lands_in_the_provisioned_app() {
     let grace = told["user_id"].as_str().expect("an identity").to_owned();
 
     // One outbox pass, run the way the job runs it.
-    server::jobs::deliver_every_realm(&plane.tenancy(), &support::sealing(), &support::origin(), 1)
-        .await;
+    scheduler::jobs::deliver_every_realm(
+        &plane.tenancy(),
+        &support::sealing(),
+        &support::origin(),
+        1,
+    )
+    .await;
 
     // The mirror holds her, tied by our identifier.
     let (status, found) = asked(
@@ -167,8 +172,13 @@ async fn a_change_here_lands_in_the_provisioned_app() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    server::jobs::deliver_every_realm(&plane.tenancy(), &support::sealing(), &support::origin(), 1)
-        .await;
+    scheduler::jobs::deliver_every_realm(
+        &plane.tenancy(),
+        &support::sealing(),
+        &support::origin(),
+        1,
+    )
+    .await;
     let (_, shown) = asked(
         &plane,
         Method::GET,
@@ -189,8 +199,13 @@ async fn a_change_here_lands_in_the_provisioned_app() {
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    server::jobs::deliver_every_realm(&plane.tenancy(), &support::sealing(), &support::origin(), 1)
-        .await;
+    scheduler::jobs::deliver_every_realm(
+        &plane.tenancy(),
+        &support::sealing(),
+        &support::origin(),
+        1,
+    )
+    .await;
     let (status, _) = asked(
         &plane,
         Method::GET,
@@ -202,8 +217,13 @@ async fn a_change_here_lands_in_the_provisioned_app() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // Running the pass again moves nothing: everything due was delivered.
-    server::jobs::deliver_every_realm(&plane.tenancy(), &support::sealing(), &support::origin(), 1)
-        .await;
+    scheduler::jobs::deliver_every_realm(
+        &plane.tenancy(),
+        &support::sealing(),
+        &support::origin(),
+        1,
+    )
+    .await;
 }
 
 /// A change is due from the instant the database stamped it, and a pass whose
@@ -240,7 +260,7 @@ async fn a_host_clock_behind_the_database_does_not_hold_back_a_due_change() {
     // The host reads 71 ms earlier than the database that stamped the change.
     let host_now = stamped - chrono::Duration::milliseconds(71);
     let transaction = plane.scoped(&realm).await;
-    let told = server::federation::deliver_outbox(
+    let told = scheduler::outbox::deliver_outbox(
         &transaction,
         &support::sealing(),
         &support::origin(),

@@ -10,9 +10,9 @@ use services::oidc::response_type::ResponseType;
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
-use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::dto::uncached;
 use crate::api::rest::endpoints::protocol::{answering, binding, page};
+use outbound::Sealing;
 
 /// How long the cookie naming a login in progress lasts. The row expires on its
 /// own; this stops a browser offering a name that is already gone.
@@ -145,7 +145,7 @@ async fn start(
         {
             return shown("invalid_request_uri", "no login can start here");
         }
-        let Some(fetched) = super::hosted::fetch(uri, egress).await else {
+        let Some(fetched) = outbound::egress::fetch(uri, egress).await else {
             return shown(
                 "invalid_request_uri",
                 "the request object could not be read",
@@ -198,7 +198,7 @@ async fn start(
     if asked.request.is_some()
         && let Some(client_id) = asked.client_id.as_deref()
     {
-        super::hosted::refresh_client_keys(&transaction, client_id, egress, now).await;
+        outbound::egress::refresh_client_keys(&transaction, client_id, egress, now).await;
     }
 
     // Loaded either way: what the request wants is read inside, and asking

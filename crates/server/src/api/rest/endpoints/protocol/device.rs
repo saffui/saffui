@@ -7,9 +7,9 @@ use store::tenancy::{RealmNamed, Tenancy};
 
 use config::serving::LoginUi;
 
-use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::dto::{Denied, answer_unavailable, uncached};
 use crate::api::rest::endpoints::protocol::{binding, caller, i18n, page};
+use outbound::Sealing;
 
 /// How long the login a typed code opens may sit half finished; the cookie
 /// lives as long as the row.

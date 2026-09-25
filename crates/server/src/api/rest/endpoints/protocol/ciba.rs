@@ -13,8 +13,8 @@ use services::client;
 
 use super::caller;
 use super::dto::{answer_unavailable, uncached};
-use super::hosted::{may_dial, outward_agent};
-use crate::api::config::Sealing;
+use outbound::Sealing;
+use outbound::egress::{may_dial, outward_agent};
 
 #[derive(Debug, Deserialize)]
 pub struct Opening {
@@ -324,7 +324,7 @@ pub async fn open(
         );
     }
     if let Some(outgoing) = texting {
-        super::texting::deliver_text(&sealing, &tenancy, &context, outgoing).await;
+        outbound::delivery::deliver_text(&sealing, &tenancy, &context, outgoing).await;
     }
 
     uncached(&mut HttpResponseBuilder::new(StatusCode::OK)).json(json!({

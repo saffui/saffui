@@ -7,9 +7,9 @@ use serde::Deserialize;
 use services::admin::client_scopes::{self, Unwritable};
 use store::tenancy::Tenancy;
 
-use crate::api::config::Sealing;
 use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
+use outbound::Sealing;
 
 pub async fn list(
     admin: web::ReqData<Admin>,

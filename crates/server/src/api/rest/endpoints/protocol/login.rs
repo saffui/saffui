@@ -11,10 +11,10 @@ use services::oidc::landing::{Landing, ResponseMode};
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
-use crate::api::config::Sealing;
 use crate::api::provenance::read_provenance;
 use crate::api::rest::endpoints::protocol::dto::uncached;
 use crate::api::rest::endpoints::protocol::{answering, binding, forgery};
+use outbound::Sealing;
 
 /// What the caller answers with.
 ///
@@ -255,7 +255,7 @@ pub async fn answer(
     let mut federated = Vec::new();
     for (held, settings) in directories {
         let directory =
-            crate::federation::directory_for(&transaction, &sealing, &context, &held, settings)
+            outbound::directory::directory_for(&transaction, &sealing, &context, &held, settings)
                 .await;
         federated.push((held.alias, directory));
     }
@@ -384,8 +384,10 @@ pub async fn answer(
                     sending,
                 } => {
                     if let Some(outbound) = sending {
-                        super::texting::deliver_outbound(&sealing, &tenancy, &context, *outbound)
-                            .await;
+                        outbound::delivery::deliver_outbound(
+                            &sealing, &tenancy, &context, *outbound,
+                        )
+                        .await;
                     }
                     match spoken {
                         Spoken::Json => {

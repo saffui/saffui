@@ -49,8 +49,13 @@ async fn asked(
 }
 
 async fn walked(plane: &Plane) {
-    server::jobs::deliver_every_realm(&plane.tenancy(), &support::sealing(), &support::origin(), 1)
-        .await;
+    scheduler::jobs::deliver_every_realm(
+        &plane.tenancy(),
+        &support::sealing(),
+        &support::origin(),
+        1,
+    )
+    .await;
 }
 
 async fn planted_role(plane: &Plane, role: &str) {

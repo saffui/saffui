@@ -9,9 +9,9 @@ use services::admin::directory::{self, Unwritable};
 use store::query::list_query::{ListQuery, SortDirection};
 use store::tenancy::Tenancy;
 
-use crate::api::config::Sealing;
 use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
+use outbound::Sealing;
 
 /// The three entities share one file the way they share one manager: the
 /// handlers differ only in which manager call answers, and the listing order.

@@ -7,11 +7,10 @@ use services::oidc::registration::{self, Metadata, Refused};
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
-use crate::api::config::Sealing;
 use crate::api::provenance::read_provenance;
 use crate::api::rest::endpoints::protocol::dto::uncached;
-use crate::api::rest::endpoints::protocol::hosted;
 use config::serving::PublicOrigin;
+use outbound::Sealing;
 
 /// RFC 7591 §3.1: the caller may carry an initial access token, and RFC 7592
 /// §2 a registration access token. Both arrive the same way.
@@ -114,7 +113,7 @@ pub async fn create(
     // §5: fetched here, because reaching the network is the transport's, and
     // read by the service, which is what decides.
     let sector = match body.sector_identifier_uri.as_deref() {
-        Some(named) => match hosted::fetch(named.to_owned(), **egress).await {
+        Some(named) => match outbound::egress::fetch(named.to_owned(), **egress).await {
             Some(document) => serde_json::from_str::<Vec<String>>(&document).ok(),
             None => None,
         },

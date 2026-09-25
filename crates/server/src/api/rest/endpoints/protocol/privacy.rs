@@ -7,10 +7,10 @@ use services::account::privacy::{self, Undoored};
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
-use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::dto::uncached;
-use crate::api::rest::endpoints::protocol::mail::deliver;
 use crate::api::rest::endpoints::protocol::page::escaped;
+use outbound::Sealing;
+use outbound::delivery::deliver;
 
 /// What these pages may do: dress themselves from this server and post the
 /// form back to it. No code at all: nothing here needs any.

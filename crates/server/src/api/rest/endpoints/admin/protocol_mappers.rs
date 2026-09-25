@@ -8,9 +8,9 @@ use store::tenancy::Tenancy;
 
 use config::serving::PublicOrigin;
 
-use crate::api::config::Sealing;
 use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
+use outbound::Sealing;
 
 pub async fn list(
     admin: web::ReqData<Admin>,

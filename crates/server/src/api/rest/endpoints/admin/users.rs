@@ -8,10 +8,10 @@ use services::admin::users::{self as people, Spec, Uncreatable};
 use store::query::list_query::{ListQuery, SortDirection};
 use store::tenancy::{Tenancy, UnitOfWork};
 
-use crate::api::config::Sealing;
 use crate::api::rest::endpoints::admin::dto::{PasswordSpec, UserBrief, UserSpec};
 use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
+use outbound::Sealing;
 
 /// What a caller may narrow the listing by: an equality, and a prefix an
 /// index can walk.

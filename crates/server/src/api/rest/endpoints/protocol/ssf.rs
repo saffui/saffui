@@ -6,8 +6,8 @@ use services::messaging::caep;
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
-use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::dto::{answer_unavailable, uncached};
+use outbound::Sealing;
 
 /// What a collector says when it comes by, RFC 8936 §2.4: how much it can
 /// take, and which of the last batch it is done with.
@@ -57,7 +57,7 @@ pub async fn poll(
     // was presented. Nothing about which rows exist leaks on a miss.
     let mut collector = None;
     for row in &rows {
-        if crate::federation::opened_bearer(&transaction, &sealing, &context, row)
+        if outbound::pushes::opened_bearer(&transaction, &sealing, &context, row)
             .await
             .is_some_and(|held| held == presented)
         {

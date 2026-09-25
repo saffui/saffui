@@ -28,6 +28,8 @@ authz   = { path = "crates/authz" }
 saml    = { path = "crates/saml" }
 auth    = { path = "crates/auth" }
 services       = { path = "crates/services" }
+outbound       = { path = "crates/outbound" }
+scheduler      = { path = "crates/scheduler" }
 # Bare, so the binary crate alone decides which server features a build
 # carries; its own defaults re-enable them one by one.
 server         = { path = "crates/server", default-features = false }

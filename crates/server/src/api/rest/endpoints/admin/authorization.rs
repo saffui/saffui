@@ -10,9 +10,9 @@ use serde::Deserialize;
 use services::admin::authorization::{self as authz, Unwritable};
 use store::tenancy::{Tenancy, TenantContext, UnitOfWork};
 
-use crate::api::config::Sealing;
 use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
+use outbound::Sealing;
 
 /// The store speaks in whole sentences about what it refused, and the answer
 /// carries them out as the detail: restating a cycle or an unusable window

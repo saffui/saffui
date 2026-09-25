@@ -17,13 +17,13 @@ use services::oidc::grant::Signing;
 use services::user_agent::read_agent;
 use store::tenancy::{Tenancy, UnitOfWork};
 
-use crate::api::config::Sealing;
 use crate::api::provenance::read_provenance;
 use crate::api::rest::endpoints::admin::dto::PasswordChange;
 use crate::api::rest::endpoints::protocol::backchannel;
 use crate::api::rest::endpoints::protocol::dto::uncached;
 use crate::middleware::account_guard::AccountRefusal;
 use crate::middleware::admin_policy::AdminPolicy;
+use outbound::Sealing;
 
 /// What the realm holds of the caller, as they read it about themselves.
 pub async fn show_me(

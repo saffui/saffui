@@ -1,0 +1,22 @@
+[package]
+name = "scheduler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# The passes that run on a timer: expired rows swept, the outbox walked,
+# directories synced and security notices sent. No web framework: none of it
+# answers a request.
+
+[dependencies]
+config = { workspace = true }
+outbound = { workspace = true }
+services = { workspace = true }
+store = { workspace = true }
+chrono = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
+tracing = { workspace = true }

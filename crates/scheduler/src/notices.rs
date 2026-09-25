@@ -3,8 +3,8 @@ use services::messaging::notices::{
 };
 use store::tenancy::{Tenancy, TenantContext};
 
-use crate::api::config::Sealing;
-use crate::api::rest::endpoints::protocol::mail::deliver;
+use outbound::Sealing;
+use outbound::delivery::deliver;
 
 /// How many notices one pass takes on in one realm.
 const NOTICE_CEILING: i64 = 50;

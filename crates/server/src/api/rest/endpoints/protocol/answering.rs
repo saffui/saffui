@@ -5,9 +5,9 @@ use services::oidc::landing::{Landing, ResponseMode};
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
-use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::dto::uncached;
 use crate::api::rest::endpoints::protocol::{binding, page};
+use outbound::Sealing;
 
 /// The response, rendered the way the request named, to a request that was a
 /// `GET`.

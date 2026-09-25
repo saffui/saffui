@@ -112,21 +112,20 @@ is a drawing, so each row carries one.
 The data plane on `127.0.0.1:8080` by default and the operations port on
 `127.0.0.1:8081` by default, bound separately so a probe is never reachable from
 wherever the data plane is published
-(`crates/saffui/src/main.rs:39`, `crates/saffui/src/main.rs:43`,
-`crates/server/src/api/config.rs:564`).
+(`crates/saffui/src/main.rs:40`, `crates/saffui/src/main.rs:44`,
+`crates/server/src/api/config.rs:521`).
 
 Request bodies are bounded explicitly rather than by whatever a dependency
 defaults to: 8 KiB on the protocol doors, 8 KiB on the account plane, 512 KiB
 for a posted SAML message, and 8 MiB on the authenticated admin plane
-(`crates/server/src/api/config.rs:47`, `:51`, `:55`, `:34`).
+(`crates/server/src/api/config.rs:46`, `:50`, `:54`, `:33`).
 
 This boundary is crossed outbound as well as inbound, since the server fetches
 URLs that an administrator or a federation partner supplies. Every such fetch is
 dialled through one builder, which reads the scheme against the deployment's
 egress policy and resolves the address through a resolver that refuses every
 address inside the deployment, checking each address a name answers with rather
-than the first (`crates/server/src/api/rest/endpoints/protocol/hosted.rs:84`,
-`:101`, `:45`, `:21`).
+than the first (`crates/outbound/src/egress.rs:87`, `:104`, `:48`, `:24`).
 
 ### TB-2, the decision core
 
@@ -188,7 +187,7 @@ so: a superuser or a role holding `BYPASSRLS` reads every realm while every
 policy still reads as if it were being applied, which is the failure that looks
 most like success (`crates/store/migrations/V001__tenancy.sql:141`). The server
 asks the database who it serves as before serving anything, through a pooler as
-well, and refuses to start as either (`crates/saffui/src/main.rs:1008`,
+well, and refuses to start as either (`crates/saffui/src/main.rs:1009`,
 `crates/store/src/tenancy.rs:273`).
 
 The link to it carries every query and every answer, sessions and personal
@@ -228,8 +227,8 @@ hand the same lock to a second writer.
 
 Scheduled work is claimed per realm with a transaction scoped advisory lock, and
 a node that does not get it moves on rather than doing the work twice: sweeping
-(`crates/server/src/jobs.rs:86`), outbox delivery (`:167`), and federation
-refresh (`:265`). Outbox rows are taken with skip locked, so two deliverers take
+(`crates/scheduler/src/jobs.rs:86`), outbox delivery (`:167`), and federation
+refresh (`:262`). Outbox rows are taken with skip locked, so two deliverers take
 different rows rather than the same ones
 (`crates/store/src/providers/events/outbox.rs:122`).
 
@@ -243,9 +242,9 @@ answers it, or the word that says nothing does.
 | Id | Threat | Agent | What answers it |
 |---|---|---|---|
 | T-EDGE-1 | Anything asked as fast as the caller likes: credential stuffing, enumeration by volume, resource exhaustion | TA-1 | **No request rate is bounded inside this product.** Failed passwords are counted per address and turn that address away (T-LOG-3); the catalogue's too many requests answer is returned only to a password change turned away (`crates/commons/src/error.rs:51`, `crates/server/src/api/rest/endpoints/account.rs:196`). Volume from many addresses, and every request that is not a password, is A.EDGE's |
-| T-EDGE-2 | A body large enough to cost the server more than it costs the caller | TA-1 | Ceilings stated per scope rather than inherited (`crates/server/src/api/config.rs:47`) |
+| T-EDGE-2 | A body large enough to cost the server more than it costs the caller | TA-1 | Ceilings stated per scope rather than inherited (`crates/server/src/api/config.rs:46`) |
 | T-EDGE-3 | A plain request read as a secure one, or a caller's address believed from the caller | TA-1, TA-6 | The scheme and the certificate are read only from a named peer, and a deployment that named none gets nothing rather than everyone's (`crates/config/src/proxying.rs:201`); the address is counted from the right (`:276`) |
-| T-EDGE-4 | The server made to fetch inside its own network on somebody's say so | TA-3, TA-4 | One builder for every outbound call, scheme by policy and address by resolver, no redirect followed (`crates/server/src/api/rest/endpoints/protocol/hosted.rs:101`), including the sinks a client's own registration names (`backchannel.rs:20`, `ciba.rs:593`) |
+| T-EDGE-4 | The server made to fetch inside its own network on somebody's say so | TA-3, TA-4 | One builder for every outbound call, scheme by policy and address by resolver, no redirect followed (`crates/outbound/src/egress.rs:104`), including the sinks a client's own registration names (`crates/server/src/api/rest/endpoints/protocol/backchannel.rs:20`, `crates/server/src/api/rest/endpoints/protocol/ciba.rs:593`) |
 
 ### The sign in door
 
@@ -255,7 +254,7 @@ answers it, or the word that says nothing does.
 | T-LOG-2 | The same, from a browser that says where the post came from | TA-1 | Refused before anything else where the browser says another site started it; absent, the header says nothing and the sealed value is the barrier (`crates/server/src/api/rest/endpoints/protocol/login.rs:113`, `forgery.rs:58`) |
 | T-LOG-3 | A password tried against one account as fast as the caller likes, or one password tried against many accounts | TA-1 | Failures counted per address, and per address with the typed name, on every door that verifies a password, on in a stock realm and weighed before the name is looked up, so an address turned away costs one read and no hash (`crates/auth/src/login/browser.rs:198`, `crates/ldapfront/src/lib.rs:285`, `crates/services/src/account/mod.rs:93`); an IPv6 network of 64 bits is one address (`crates/auth/src/login/throttle.rs:210`); at the sign-in page, a browser holding a token sealed for the typed name is counted in its address's place, under the same thresholds (`crates/auth/src/login/browser.rs:182`, `crates/auth/src/login/throttle.rs:116`); lockout per person where the realm turns it on, and spared to that browser. See R-2 |
 | T-LOG-5 | Which names are held, read from when the count turns an address away | TA-1 | Every refusal counts, a name nobody holds and a person the lock refused alike, under the name as typed with case and spacing aside, never under the account it resolves to (`crates/auth/src/login/throttle.rs:11`, `crates/auth/src/login/browser.rs:318`, `crates/ldapfront/src/lib.rs:317`); a device token is read from the token alone before the name is looked up, and one that does not open under the typed name is no token, so holding one says nothing its holder had not proved (`crates/auth/src/login/device.rs:74`) |
-| T-LOG-6 | A password typed into the name box, read back out of the failure counts, or out of the notes of a login in progress, in a database dump, or one name matched across realms there | TA-7 | A typed name is kept as a MAC under a key the KEK is expanded to for that use alone, which the database never holds, so the counts read without the KEK test no guess (`crates/auth/src/login/throttle.rs:86`, `crates/crypto/src/envelope.rs:244`, `:113`); the tenant and the realm are keyed with the name, so one name typed in two realms leaves two digests nobody can match without the KEK (`crates/auth/src/login/throttle.rs:242`); a login notes the name it is weighed under in that form, and a device token is sealed under it (`crates/auth/src/login/browser.rs:287`, `:511`); the key is derived once when the process starts and handed to every door, so each counts a name where the others do (`crates/server/src/api/config.rs:110`, `crates/saffui/src/main.rs:420`) |
+| T-LOG-6 | A password typed into the name box, read back out of the failure counts, or out of the notes of a login in progress, in a database dump, or one name matched across realms there | TA-7 | A typed name is kept as a MAC under a key the KEK is expanded to for that use alone, which the database never holds, so the counts read without the KEK test no guess (`crates/auth/src/login/throttle.rs:86`, `crates/crypto/src/envelope.rs:244`, `:113`); the tenant and the realm are keyed with the name, so one name typed in two realms leaves two digests nobody can match without the KEK (`crates/auth/src/login/throttle.rs:242`); a login notes the name it is weighed under in that form, and a device token is sealed under it (`crates/auth/src/login/browser.rs:287`, `:511`); the key is derived once when the process starts and handed to every door, so each counts a name where the others do (`crates/outbound/src/sealing.rs:37`, `crates/saffui/src/main.rs:421`) |
 | T-LOG-4 | A sign-out believed done while the login, and every application it reached, stays signed in for whoever sits down next | TA-1 | A sign-out that could not be written says so and keeps the cookies, so it can be tried again (`crates/server/src/api/rest/endpoints/protocol/logout.rs:197`), and a transaction a failed statement aborted is refused at commit rather than reported as written (`crates/store/src/tenancy.rs:472`) |
 
 ### The token path, CJ-1
@@ -307,14 +306,14 @@ answers it, or the word that says nothing does.
 | T-DB-1 | Queries and answers read or rewritten between a node and the database | TA-6 | `verify-full` on every connection the process opens (`crates/pgcore/src/database.rs:98`); `require` encrypts without judging the certificate, and the operator's guide says so |
 | T-DB-2 | A deployment running in the clear without anyone having chosen it | TA-6 | A database off this machine with no stated mode refuses to start, and an address and a setting that disagree about encrypting refuse too (`crates/pgcore/src/database.rs:307`, `:299`) |
 | T-DB-3 | The application role's password read on its way to the server or out of its statement log | TA-6 | Sent as a SCRAM verifier and never as itself (`crates/pgcore/src/password.rs:5`) |
-| T-DB-4 | A deployment serving as a role above row security, written in its own address or chosen by a pooler's configuration | TA-7 | The server asks the database who it would serve as and refuses to start as a superuser or a role holding `BYPASSRLS`, naming the setting to change (`crates/saffui/src/main.rs:1008`, `crates/store/src/tenancy.rs:273`) |
+| T-DB-4 | A deployment serving as a role above row security, written in its own address or chosen by a pooler's configuration | TA-7 | The server asks the database who it would serve as and refuses to start as a superuser or a role holding `BYPASSRLS`, naming the setting to change (`crates/saffui/src/main.rs:1009`, `crates/store/src/tenancy.rs:273`) |
 
 ### Nodes and scheduled work, TB-5
 
 | Id | Threat | Agent | What answers it |
 |---|---|---|---|
 | T-NOD-1 | Two nodes forking one realm's chain | TA-7 | The append takes the head row for update (`crates/store/migrations/V011__audit_chain.sql:130`) |
-| T-NOD-2 | The same scheduled work done twice, or a message delivered twice | TA-7 | A lock per realm per job, and rows taken with skip locked (`crates/server/src/jobs.rs:86`, `crates/store/src/providers/events/outbox.rs:122`) |
+| T-NOD-2 | The same scheduled work done twice, or a message delivered twice | TA-7 | A lock per realm per job, and rows taken with skip locked (`crates/scheduler/src/jobs.rs:86`, `crates/store/src/providers/events/outbox.rs:122`) |
 
 ### The mesh door
 

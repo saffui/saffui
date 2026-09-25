@@ -8,10 +8,10 @@ use store::tenancy::{Tenancy, TenantContext, UnitOfWork};
 
 use config::serving::{Egress, PublicOrigin};
 
-use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::basic;
 use crate::api::rest::endpoints::protocol::dto::{Denied, answer_unavailable};
 use crate::api::rest::endpoints::protocol::token::refused;
+use outbound::Sealing;
 
 /// The client, authenticated, and the transaction it was read in.
 #[allow(
@@ -44,7 +44,7 @@ pub async fn establish(
     let client = if matches!(presented, client::Presented::Assertion { .. }) {
         let held = {
             let transaction = scoped(tenancy, context).await?;
-            super::hosted::refresh_client_keys(&transaction, presented.client_id(), egress, now)
+            outbound::egress::refresh_client_keys(&transaction, presented.client_id(), egress, now)
                 .await;
             let client = checked(
                 request,

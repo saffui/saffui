@@ -79,6 +79,9 @@ pub async fn send_test(
     let settings = services::admin::mail::read(&transaction, &ring, &sealing.envelope)
         .await
         .map_err(|_| ApiError::new(ErrorCode::MailSettingsNotFound))?;
+    // Given back before the relay is dialled, which lasts as long as the relay
+    // cares to talk: held, it is a pooled connection nobody else can have.
+    drop(transaction);
 
     // Sent in both halves like every other letter, so the test proves the relay
     // carries what the relay will actually be asked to carry.
@@ -246,6 +249,8 @@ pub async fn look_at_relay(
     let settings = services::admin::mail::read(&transaction, &ring, &sealing.envelope)
         .await
         .map_err(|_| ApiError::new(ErrorCode::MailSettingsNotFound))?;
+    // Given back before the relay is dialled, as for the test send.
+    drop(transaction);
 
     // Off the reactor: this holds a socket open for as long as the relay takes
     // to answer, and a slow one would otherwise hold every other request on

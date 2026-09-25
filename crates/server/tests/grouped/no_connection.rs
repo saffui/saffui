@@ -2,7 +2,10 @@ use super::support::{self, Plane};
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
 use config::proxying::{Peer, ProxyHeader, Proxying};
-use serde_json::Value;
+use models::entities::authz::AdminAction;
+use models::entities::mail::MailSettings;
+use models::entities::sms::SmsSettings;
+use serde_json::{Value, json};
 use server::api::config::{Plane as Mounted, register};
 use std::time::Duration;
 use store::tenancy::{Tenancy, TenantContext};
@@ -147,4 +150,121 @@ async fn a_request_that_finds_no_connection_is_told_to_come_back() {
         response.headers().get("set-cookie").is_none(),
         "a sign-out that ended nothing let go of the cookies"
     );
+}
+
+/// Mail and texts both aimed at `port` on this machine.
+async fn aim_settings_at(plane: &Plane, port: u16) {
+    let transaction = plane
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
+        .await;
+    let sealing = support::sealing();
+    let ring = store::keyring::load(
+        &transaction,
+        &sealing.envelope,
+        support::TENANT,
+        support::REALM,
+    )
+    .await
+    .expect("a keyring");
+    store::providers::realms::mail::keep(
+        &transaction,
+        &ring,
+        &sealing.envelope,
+        &MailSettings {
+            host: "127.0.0.1".to_owned(),
+            port,
+            from_address: "no-reply@example.test".to_owned(),
+            from_name: String::new(),
+            reply_to: None,
+            implicit_tls: false,
+            credentials: None,
+        },
+    )
+    .await
+    .expect("the mail settings kept");
+    store::providers::realms::sms::keep(
+        &transaction,
+        &ring,
+        &sealing.envelope,
+        &SmsSettings {
+            url: format!("http://127.0.0.1:{port}/send"),
+            sender: "saffui".to_owned(),
+            token: None,
+        },
+    )
+    .await
+    .expect("the sms settings kept");
+    transaction.commit().await.expect("the settings kept");
+}
+
+/// A door that talks to somebody else's server gives its connection back
+/// before it dials. Held, a relay or a gateway that takes its time holds a
+/// pooled connection with it, and a few slow ones hold every connection the
+/// deployment has.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_door_gives_its_connection_back_before_it_dials_out() {
+    let plane = Plane::with_actions(&[AdminAction::RealmRead, AdminAction::RealmWrite]).await;
+    // Answers nothing: whatever dials it waits until it lets go.
+    let silent = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a port");
+    aim_settings_at(&plane, silent.local_addr().expect("an address").port()).await;
+
+    let tenancy = plane.build_tenancy_of(1, Duration::from_millis(200));
+    // Anywhere, so that an address on this machine is dialled at all.
+    let app = test::init_service(App::new().configure(register(&Mounted {
+        egress: config::serving::Egress::Anywhere,
+        ..mounted(tenancy)
+    })))
+    .await;
+    let bearer = format!("Bearer {}", plane.token(&support::claims()));
+    let realm = support::REALM;
+
+    let dialling = [
+        (
+            "the relay probe",
+            test::TestRequest::get().uri(&format!("/admin/realms/{realm}/mail/probe")),
+        ),
+        (
+            "the test mail",
+            test::TestRequest::post()
+                .uri(&format!("/admin/realms/{realm}/mail/test"))
+                .set_json(json!({ "to": "someone@acme.test" })),
+        ),
+        (
+            "the test text",
+            test::TestRequest::post()
+                .uri(&format!("/admin/realms/{realm}/sms/test"))
+                .set_json(json!({ "to": "+22890123456" })),
+        ),
+    ];
+    for (door, request) in dialling {
+        let dialled = test::call_service(
+            &app,
+            request
+                .insert_header(("authorization", bearer.clone()))
+                .to_request(),
+        );
+        let meanwhile = async {
+            let (held, _) = silent.accept().await.expect("the door dialled");
+            let response = test::call_service(
+                &app,
+                test::TestRequest::get()
+                    .uri(&format!("/admin/realms/{realm}/mail"))
+                    .insert_header(("authorization", bearer.clone()))
+                    .to_request(),
+            )
+            .await;
+            // Let go, so that the door hears its peer leave and answers.
+            drop(held);
+            response.status()
+        };
+        let (_, read) = tokio::join!(dialled, meanwhile);
+        assert_eq!(
+            read,
+            StatusCode::OK,
+            "{door} held the only connection while it dialled"
+        );
+    }
 }

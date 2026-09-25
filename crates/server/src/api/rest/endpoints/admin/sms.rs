@@ -69,6 +69,10 @@ pub async fn send_test(
     let settings = services::admin::sms::read(&transaction, &ring, &sealing.envelope)
         .await
         .map_err(|_| ApiError::new(ErrorCode::SmsSettingsNotFound))?;
+    // Given back before the gateway is dialled, which lasts as long as the
+    // gateway cares to answer: held, it is a pooled connection nobody else
+    // can have.
+    drop(transaction);
 
     let text = auth::messaging::Text {
         to,

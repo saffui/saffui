@@ -27,8 +27,8 @@ against a row of this document.
 Inside:
 
 - the binary and every crate it is built from: `auth`, `authz`, `commons`,
-  `config`, `crypto`, `ldapfront`, `models`, `pgcore`, `saffui`, `saml`,
-  `server`, `services`, `store`;
+  `config`, `crypto`, `ldapfront`, `models`, `outbound`, `pgcore`, `saffui`,
+  `saml`, `scheduler`, `server`, `services`, `store`;
 - the two consoles as the binary serves them, and the hosted pages;
 - the migrations, because the isolation rules are written there rather than in
   the code that queries;
@@ -126,6 +126,10 @@ dialled through one builder, which reads the scheme against the deployment's
 egress policy and resolves the address through a resolver that refuses every
 address inside the deployment, checking each address a name answers with rather
 than the first (`crates/outbound/src/egress.rs:87`, `:104`, `:48`, `:24`).
+Mail relays are spoken to by a client of the server's own, held to the same
+rule: every address the relay's name answers with is weighed before any is
+dialled, the one dialled is one that was weighed, and the certificate is checked
+against the name (`crates/outbound/src/smtp.rs:164`, `:174`, `:201`).
 
 ### TB-2, the decision core
 
@@ -244,7 +248,9 @@ answers it, or the word that says nothing does.
 | T-EDGE-1 | Anything asked as fast as the caller likes: credential stuffing, enumeration by volume, resource exhaustion | TA-1 | **No request rate is bounded inside this product.** Failed passwords are counted per address and turn that address away (T-LOG-3); the catalogue's too many requests answer is returned only to a password change turned away (`crates/commons/src/error.rs:51`, `crates/server/src/api/rest/endpoints/account.rs:196`). Volume from many addresses, and every request that is not a password, is A.EDGE's |
 | T-EDGE-2 | A body large enough to cost the server more than it costs the caller | TA-1 | Ceilings stated per scope rather than inherited (`crates/server/src/api/config.rs:46`) |
 | T-EDGE-3 | A plain request read as a secure one, or a caller's address believed from the caller | TA-1, TA-6 | The scheme and the certificate are read only from a named peer, and a deployment that named none gets nothing rather than everyone's (`crates/config/src/proxying.rs:201`); the address is counted from the right (`:276`) |
-| T-EDGE-4 | The server made to fetch inside its own network on somebody's say so | TA-3, TA-4 | One builder for every outbound call, scheme by policy and address by resolver, no redirect followed (`crates/outbound/src/egress.rs:104`), including the sinks a client's own registration names (`crates/server/src/api/rest/endpoints/protocol/backchannel.rs:20`, `crates/server/src/api/rest/endpoints/protocol/ciba.rs:593`) |
+| T-EDGE-4 | The server made to fetch inside its own network on somebody's say so | TA-3, TA-4 | One builder for every outbound HTTP call, scheme by policy and address by resolver, no redirect followed (`crates/outbound/src/egress.rs:104`), including the sinks a client's own registration names (`crates/server/src/api/rest/endpoints/protocol/backchannel.rs:20`, `crates/server/src/api/rest/endpoints/protocol/ciba.rs:593`); the relay a realm names for its mail is weighed under the same policy before it is dialled, the relay probe included (`crates/outbound/src/smtp.rs:164`) |
+| T-EDGE-5 | A relay or a gateway a realm names made to hold the server: a line that never ends, a conversation that never does, or a slow one keeping a database connection while it lasts | TA-3 | One deadline for the whole conversation with a relay, and a bound on each line and each reply it speaks (`crates/outbound/src/smtp.rs:28`, `:433`, `:424`); a call to a gateway bounded as a whole (`crates/outbound/src/egress.rs:107`); the doors that test a relay or a gateway give their database connection back before they dial (`crates/server/src/api/rest/endpoints/admin/mail.rs:85`, `:256`, `crates/server/src/api/rest/endpoints/admin/sms.rs:75`) |
+| T-EDGE-6 | A reply slipped in before TLS starts, or a letter ended early so that a second rides behind it | TA-6, TA-3 | Nothing but EHLO and STARTTLS is said before TLS, and a relay that does not offer it is left (`crates/outbound/src/smtp.rs:135`); bytes that came with the acceptance of STARTTLS end the conversation (`:518`); a command never carries a line break (`:475`), and DATA ends every line with CRLF whatever ended it and doubles a leading dot, so a realm's own wording cannot end a letter early (`:612`) |
 
 ### The sign in door
 

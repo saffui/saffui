@@ -7,6 +7,7 @@ use crypto::password::StoredPassword;
 use crypto::password::migration::{burn_verification_time, verify_and_plan};
 use crypto::provider::CryptoProvider;
 use data_encoding::{BASE32_NOPAD, BASE64URL_NOPAD};
+use models::entities::acr::AcrLoaMap;
 use models::entities::credentials::{CredentialType, OtpCredentialData, OtpParameters};
 use models::entities::mail::MailSettings;
 use models::entities::realm::RealmModel;
@@ -162,6 +163,33 @@ impl Authenticator {
             Self::SmsOtp => "mfa",
         }
     }
+
+    /// The context this one reaches among everything that passed in the same
+    /// login, itself included.
+    ///
+    /// A one-time code proves one thing the person has. Beside anything else
+    /// that passed it is the second thing proved; alone it is the only one,
+    /// the class of a single factor, like a password. A key is two things on
+    /// its own, since its ceremony has the person verify themselves on it.
+    pub fn context_among(self, passed: &[Self]) -> &'static str {
+        match self {
+            Self::Totp | Self::SmsOtp | Self::RecoveryCode
+                if passed.iter().all(|other| *other == self) =>
+            {
+                Self::Password.context()
+            }
+            _ => self.context(),
+        }
+    }
+}
+
+/// The level a login reaches through the authenticators that passed in it: the
+/// highest any of them reaches among the others, under the realm's map.
+pub fn reached_level(map: &AcrLoaMap, passed: &[Authenticator]) -> Option<i32> {
+    passed
+        .iter()
+        .filter_map(|ran| map.loa_of(ran.context_among(passed)))
+        .max()
 }
 
 /// What a caller answered a challenge with.
@@ -1150,4 +1178,28 @@ pub(crate) fn relying_party(
         .allow_subdomains(policy.allow_subdomains)
         .build()
         .map_err(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A one-time code proves one thing the person has: alone it reaches the
+    /// class of a single factor, beside anything else the second one. A key is
+    /// two things on its own.
+    #[test]
+    fn a_code_alone_is_one_factor_and_a_key_is_two() {
+        use Authenticator::{MagicLink, Password, RecoveryCode, SmsOtp, Totp, Webauthn};
+        let map = AcrLoaMap::from_pairs([("password", 1), ("mfa", 2)]);
+
+        for alone in [SmsOtp, Totp, RecoveryCode] {
+            assert_eq!(reached_level(&map, &[alone]), Some(1), "{alone:?} alone");
+        }
+        assert_eq!(reached_level(&map, &[Password, SmsOtp]), Some(2));
+        assert_eq!(reached_level(&map, &[Password, Totp]), Some(2));
+        assert_eq!(reached_level(&map, &[MagicLink, SmsOtp]), Some(2));
+        assert_eq!(reached_level(&map, &[Webauthn]), Some(2));
+        assert_eq!(reached_level(&map, &[Password]), Some(1));
+        assert_eq!(reached_level(&map, &[]), None);
+    }
 }

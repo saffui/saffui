@@ -9,7 +9,7 @@ use store::providers::protocol::{login, sessions};
 use store::providers::realms;
 use store::tenancy::{TenantContext, UnitOfWork};
 
-use crate::login::authenticator::Answer;
+use crate::login::authenticator::{Answer, reached_level};
 use crate::login::enrolment::{self, Enrolment};
 use crate::login::{Lock, Progress, device, run_flow, throttle};
 use models::claims_request::ClaimsRequest;
@@ -480,11 +480,13 @@ pub async fn answer_step(
 
             // The highest of what actually ran. A flow that reached a second
             // factor is stronger than the password that opened it, and reading
-            // only the first would report a level the login exceeded.
+            // only the first would report a level the login exceeded; a code
+            // that ran alone reached one factor, whatever it would be beside a
+            // password.
             let reached = realm
                 .acr_loa_map
                 .as_ref()
-                .and_then(|map| by.iter().filter_map(|ran| map.loa_of(ran.context())).max());
+                .and_then(|map| reached_level(map, &by));
             let mut admitted = admit(
                 transaction,
                 provider,

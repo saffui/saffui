@@ -629,6 +629,8 @@ async fn a_proven_phone_alone_signs_a_person_in() {
     offer_texted_login(&plane).await;
     let textbox = Textbox::default();
 
+    let held_before = logins_of(&plane).await;
+
     // The number is the name, spelled with the spaces a person types, and
     // no password rides the round.
     let binding = open(&plane, &textbox).await;
@@ -655,6 +657,32 @@ async fn a_proven_phone_alone_signs_a_person_in() {
     .await;
     assert_eq!(status, StatusCode::OK, "{told}");
     assert_eq!(told["status"], "admitted", "{told}");
+
+    // One thing proved, the handset: the login reached one factor's level,
+    // not the second factor's a texted code reaches beside a password.
+    let opened: Vec<_> = logins_of(&plane)
+        .await
+        .into_iter()
+        .filter(|login| {
+            !held_before
+                .iter()
+                .any(|held| held.session_id == login.session_id)
+        })
+        .collect();
+    assert_eq!(opened.len(), 1, "{opened:?}");
+    assert_eq!(
+        opened[0].loa,
+        Some(1),
+        "a texted code alone counted as two factors"
+    );
+}
+
+/// Every login ada holds.
+async fn logins_of(plane: &Plane) -> Vec<models::sessions::records::UserSessionModel> {
+    let transaction = plane.scoped(&within()).await;
+    store::providers::protocol::sessions::load_for_user(&transaction, support::SUBJECT)
+        .await
+        .expect("the sessions table")
 }
 
 #[tokio::test]

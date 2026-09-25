@@ -41,6 +41,12 @@ saying what it proves. They are driven deliberately, not by CI.
 - `deploy/observability/README.md` says how to see what a request did.
 - `SECURITY.md` says how to report a vulnerability.
 
+## Building against one
+
+`INTEGRATING.md` says how an application, a device, a service or an agent
+gets tokens from a realm, grant by grant: what to set up first, what to send,
+what comes back, and where the server does less than a specification allows.
+
 ## What is in the tree
 
 - `crates/saffui` the binary: `serve`, `migrate`, `provision`, and the

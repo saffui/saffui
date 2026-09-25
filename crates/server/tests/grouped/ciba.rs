@@ -484,6 +484,57 @@ async fn renewed(plane: &Plane, refresh_token: &str) -> (StatusCode, Value) {
     .await
 }
 
+/// A client that registered encryption for its identity tokens is handed the
+/// one a poll collects wrapped for it, as the code grant hands it: a signed
+/// token inside, said to be one. The access and refresh tokens stay this
+/// server's own.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_polled_identity_token_is_wrapped_for_the_client_that_asked() {
+    use crypto::jose::jwe::{RSA_OAEP_256, deserialize_compact};
+    use models::entities::client::JweRegistration;
+    use models::entities::keys::{JweAlgorithm, JweEncryption};
+
+    let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
+    opted_in(&plane).await;
+    let key = support::SigningKey::generate_encryption("wrapping");
+    plane
+        .register_client_encryption(
+            support::CONFIDENTIAL,
+            json!({ "keys": [key.public_for_encryption().as_ref()] }),
+            Some(JweRegistration::new(
+                JweAlgorithm::RsaOaep256,
+                Some(JweEncryption::A256Gcm),
+            )),
+            None,
+        )
+        .await;
+
+    let minted = collected(&plane, "openid").await;
+    let told = minted["id_token"].as_str().expect("an identity token");
+    assert_eq!(
+        told.split('.').count(),
+        5,
+        "the identity token was handed out in the clear"
+    );
+    let decrypter = RSA_OAEP_256
+        .decrypter_from_jwk(key.private())
+        .expect("a decrypter");
+    let (inside, header) = deserialize_compact(told, &decrypter).expect("opened by the client");
+    assert_eq!(header.content_type(), Some("JWT"));
+    assert_eq!(
+        String::from_utf8(inside)
+            .expect("a token")
+            .split('.')
+            .count(),
+        3
+    );
+    for named in ["access_token", "refresh_token"] {
+        let held = minted[named].as_str().expect(named);
+        assert_eq!(held.split('.').count(), 3, "{named} was wrapped too");
+    }
+}
+
 /// What the poll collects renews: a fresh set comes back, and the grant stands
 /// for the renewal after it.
 #[tokio::test]

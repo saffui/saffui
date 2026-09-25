@@ -236,6 +236,58 @@ async fn a_device_signs_in_by_a_person_somewhere_better() {
     assert_eq!(status, StatusCode::OK, "{renewed}");
 }
 
+/// A client that registered encryption for its identity tokens is handed the
+/// one a device collects wrapped for it, as the code grant hands it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_device_collects_its_identity_token_wrapped_for_its_client() {
+    use crypto::jose::jwe::{RSA_OAEP_256, deserialize_compact};
+    use models::entities::client::JweRegistration;
+    use models::entities::keys::{JweAlgorithm, JweEncryption};
+
+    let plane = Plane::with_actions(&[]).await;
+    allow_device(&plane).await;
+    let key = support::SigningKey::generate_encryption("wrapping");
+    plane
+        .register_client_encryption(
+            support::CONFIDENTIAL,
+            serde_json::json!({ "keys": [key.public_for_encryption().as_ref()] }),
+            Some(JweRegistration::new(
+                JweAlgorithm::RsaOaep256,
+                Some(JweEncryption::A256Gcm),
+            )),
+            None,
+        )
+        .await;
+
+    let (_, opened) = posted(&plane, "/device-authorization", &[("scope", "openid")]).await;
+    let device_code = opened["device_code"].as_str().expect("a secret").to_owned();
+    let user_code = opened["user_code"].as_str().expect("a code").to_owned();
+    approved_on_the_second_screen(&plane, &user_code).await;
+    rewind_poll(&plane).await;
+    let (status, granted) = polled(&plane, &device_code).await;
+    assert_eq!(status, StatusCode::OK, "{granted}");
+
+    let told = granted["id_token"].as_str().expect("an identity token");
+    assert_eq!(
+        told.split('.').count(),
+        5,
+        "the identity token was handed out in the clear"
+    );
+    let decrypter = RSA_OAEP_256
+        .decrypter_from_jwk(key.private())
+        .expect("a decrypter");
+    let (inside, header) = deserialize_compact(told, &decrypter).expect("opened by the client");
+    assert_eq!(header.content_type(), Some("JWT"));
+    assert_eq!(
+        String::from_utf8(inside)
+            .expect("a token")
+            .split('.')
+            .count(),
+        3
+    );
+}
+
 /// The doors hold: a client never opted in cannot open a device sign-in, and
 /// a sign-in that ran out answers expired_token to the device and "does not
 /// stand" to the person.

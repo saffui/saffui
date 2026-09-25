@@ -13,7 +13,8 @@ use store::tenancy::UnitOfWork;
 pub const GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
 /// The client bag key opting a client into the device grant. Presence is the
-/// permission, the way the backchannel's delivery flag is.
+/// permission, the way the backchannel's delivery flag is, unless what is
+/// present says no.
 pub const GRANT_FLAG: &str = "device.grant";
 
 /// How long the pair of codes lives, §3.2's guidance.
@@ -36,8 +37,14 @@ pub fn allows_device(client: &ClientModel) -> bool {
         .configs
         .as_ref()
         .and_then(|bag| bag.get(GRANT_FLAG))
-        .and_then(AttributeValue::as_str)
-        .is_some()
+        .is_some_and(|held| match held {
+            AttributeValue::Bool(on) => *on,
+            AttributeValue::Str(said) => !matches!(
+                said.trim().to_ascii_lowercase().as_str(),
+                "" | "false" | "off" | "no" | "0"
+            ),
+            _ => false,
+        })
 }
 
 /// What §3.2 answers the device with.
@@ -269,6 +276,44 @@ fn drawn_user_code(provider: &dyn CryptoProvider) -> Result<String, Unopened> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn flagged(held: Option<AttributeValue>) -> ClientModel {
+        let mut client = models::entities::client::ClientCreateModel {
+            name: "tv".into(),
+            display_name: "tv".into(),
+            description: String::new(),
+            enabled: Some(true),
+        }
+        .into_model(
+            "tv".into(),
+            "main".into(),
+            models::auditable::AuditableModel::from_creator("acme".into(), "root".into()),
+        );
+        client.configs = held.map(|held| [(GRANT_FLAG.to_owned(), held)].into_iter().collect());
+        client
+    }
+
+    /// Presence opts a client in, unless what is present says no.
+    #[test]
+    fn a_flag_that_says_no_opts_nobody_in() {
+        let said = |text: &str| Some(AttributeValue::Str(text.to_owned()));
+        for (held, allowed) in [
+            (None, false),
+            (said("true"), true),
+            (said("enabled"), true),
+            (Some(AttributeValue::Bool(true)), true),
+            (said("false"), false),
+            (said(" FALSE "), false),
+            (said("off"), false),
+            (said("no"), false),
+            (said("0"), false),
+            (said(""), false),
+            (Some(AttributeValue::Bool(false)), false),
+            (Some(AttributeValue::Int(1)), false),
+        ] {
+            assert_eq!(allows_device(&flagged(held.clone())), allowed, "{held:?}");
+        }
+    }
 
     #[test]
     fn a_typed_code_is_read_the_way_people_type_it() {

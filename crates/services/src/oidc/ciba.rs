@@ -5,10 +5,9 @@ use models::entities::client::ClientModel;
 use models::entities::user::UserModel;
 use models::sessions::records::UserSessionState;
 use serde_json::Value;
-use store::providers::clients;
 use store::providers::directory::users;
 use store::providers::protocol::{backchannel, sessions};
-use store::tenancy::UnitOfWork;
+use store::tenancy::{TenantContext, UnitOfWork};
 
 pub const GRANT: &str = "urn:openid:params:grant-type:ciba";
 /// The client bag key opting a client in, naming its delivery mode. Poll is
@@ -468,39 +467,25 @@ pub async fn open_request(
         .map_err(|_| Unrecorded)
 }
 
-/// The person a bearer token of this realm names, resolved the way the
-/// exchange resolves its subject: verified against the realm's keys,
-/// un-pairwised through the presenting client, and still enabled.
+/// The person a bearer token speaks for at the doorbell, admitted as the
+/// account API admits one: a token the realm's account console obtained, bound
+/// to nothing, from a login still open.
+///
+/// A decision here hands somebody else's client a set of tokens, so no other
+/// token answers for the person. Another client's would let a client approve
+/// what it asked for itself, a refresh or an identity token is nobody's
+/// credential at a door, and a bound one shown without its proof is a stolen
+/// one.
 pub async fn read_person_behind_bearer(
     transaction: &UnitOfWork,
+    tenant: TenantContext,
     bearer: &str,
     now: DateTime<Utc>,
-) -> Option<UserModel> {
-    let keys = crate::realm::published_keys(transaction).await.ok()?;
-    let verified = crate::token::verify_presented(
-        transaction,
-        &keys,
-        bearer,
-        crate::token::Binding::Reported,
-        now,
-    )
-    .await
-    .ok()?;
-    if verified.subject.is_empty() {
-        return None;
-    }
-    let presenting = match verified.claims.get("azp").and_then(Value::as_str) {
-        Some(azp) => clients::load(transaction, azp).await.ok()?,
-        None => None,
-    };
-    let account =
-        crate::oidc::pairwise::account_for(transaction, presenting.as_ref(), &verified.subject)
-            .await
-            .ok()?;
-    users::load(transaction, &account)
+) -> Option<String> {
+    crate::account::api::admit_account_bearer(transaction, tenant, bearer, now)
         .await
-        .ok()?
-        .filter(|held| held.enabled)
+        .ok()
+        .map(|caller| caller.user_id)
 }
 
 /// The person signed in through this session, while it is open and has not

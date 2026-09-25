@@ -1465,13 +1465,6 @@ fn describe_store_refusal(why: StoreError, item: &str) -> Unportable {
     }
 }
 
-/// Point every row of the document at the realm it is being written into.
-///
-/// The realm in the document is where it came from; the transaction is
-/// scoped to where it is going, and a row naming another realm would be
-/// refused or, worse, quietly rescoped by the session settings. The tenant
-/// is rewritten for the same reason: it is the importer's, never the
-/// document's.
 /// A theme the pages could not wear is refused before anything lands, named by
 /// what carries it: an import does not write what the admin plane would refuse.
 fn refuse_unsound_themes(doc: &ExportedRealm) -> Result<(), Unportable> {
@@ -1492,6 +1485,13 @@ fn refuse_unsound_themes(doc: &ExportedRealm) -> Result<(), Unportable> {
     Ok(())
 }
 
+/// Point every row of the document at the realm it is being written into.
+///
+/// The realm in the document is where it came from; the transaction is
+/// scoped to where it is going, and a row naming another realm would be
+/// refused or, worse, quietly rescoped by the session settings. The tenant
+/// is rewritten for the same reason: it is the importer's, never the
+/// document's.
 fn retarget(doc: &mut ExportedRealm, tenant: &str, realm_id: &str) {
     let name = realm_id.to_owned();
     doc.realm.realm_id = name.clone();

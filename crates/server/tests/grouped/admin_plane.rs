@@ -1285,7 +1285,10 @@ async fn a_person_is_created_signs_in_and_is_retired_over_the_plane() {
     let told: serde_json::Value = test::read_body_json(response).await;
     assert_eq!(told["status"], "admitted", "{told}");
     let grace = born["user_id"].as_str().expect("an identifier");
-    assert!(plane.logins_held_by(grace).await > 0, "the sign-in opened no login");
+    assert!(
+        plane.logins_held_by(grace).await > 0,
+        "the sign-in opened no login"
+    );
 
     let (status, reshaped) = written(
         &plane,

@@ -754,6 +754,72 @@ pub struct RealmUpdateModel {
 }
 
 impl RealmUpdateModel {
+    /// The payload stating every setting `realm` holds, and no more: what a
+    /// realm arriving whole is weighed as, by the rules an edit of it would
+    /// meet.
+    pub fn settings_of(realm: &RealmModel) -> Self {
+        Self {
+            display_name: Some(realm.display_name.clone()),
+            enabled: Some(realm.enabled),
+            registration_allowed: realm.registration_allowed,
+            register_email_as_username: realm.register_email_as_username,
+            verify_email: realm.verify_email,
+            login_with_email_allowed: realm.login_with_email_allowed,
+            duplicated_email_allowed: realm.duplicated_email_allowed,
+            edit_user_name_allowed: realm.edit_user_name_allowed,
+            reset_password_allowed: realm.reset_password_allowed,
+            remember_me: realm.remember_me,
+            ssl_enforcement: realm.ssl_enforcement,
+            password_policy: realm.password_policy.clone(),
+            revoke_refresh_token: realm.revoke_refresh_token,
+            refresh_token_max_reuse: realm.refresh_token_max_reuse,
+            access_token_lifespan: realm.access_token_lifespan,
+            refresh_token_lifespan: realm.refresh_token_lifespan,
+            session_max_lifespan: Some(realm.session_max_lifespan),
+            offline_session_lifespan: realm.offline_session_lifespan,
+            action_tokens_lifespan: realm.action_tokens_lifespan,
+            access_code_lifespan: realm.access_code_lifespan,
+            access_code_lifespan_user_action: realm.access_code_lifespan_user_action,
+            access_code_lifespan_login: realm.access_code_lifespan_login,
+            events_enabled: realm.events_enabled,
+            admin_events_enabled: realm.admin_events_enabled,
+            security_notices_enabled: realm.security_notices_enabled,
+            not_before: realm.not_before,
+            attributes: realm.attributes.clone(),
+            acr_loa_map: realm.acr_loa_map.clone(),
+            browser_flow: realm.browser_flow.clone(),
+            otp_policy: realm.otp_policy,
+            webauthn_policy: realm.webauthn_policy.clone(),
+            mail_templates: realm.mail_templates.clone(),
+            device_code_lifespan: realm.device_code_lifespan,
+            ciba_expiry: realm.ciba_expiry,
+            agent_exchange_enabled: realm.agent_exchange_enabled,
+            device_poll_interval: realm.device_poll_interval,
+            ciba_interval: realm.ciba_interval,
+            webauthn_passwordless: realm.webauthn_passwordless,
+            page_overrides: realm.page_overrides.clone(),
+            sms_daily_cap: realm.sms_daily_cap,
+            sms_per_number_cap: realm.sms_per_number_cap,
+            sms_blocked_prefixes: realm.sms_blocked_prefixes.clone(),
+            sms_templates: realm.sms_templates.clone(),
+            dsar_jurisdiction: realm
+                .dsar_jurisdiction
+                .map(|jurisdiction| jurisdiction.as_str().to_owned()),
+            dsar_response_days: realm.dsar_response_days,
+            supported_locales: realm.supported_locales.clone(),
+            default_locale: realm.default_locale.clone(),
+            client_registration: Some(realm.client_registration),
+            brute_force: Some(realm.brute_force),
+            source_throttle: Some(realm.source_throttle),
+            registration_bounds: Some(realm.registration_bounds.clone()),
+            offline_session_max_lifespan: Some(realm.offline_session_max_lifespan),
+            max_offline_grants: Some(realm.max_offline_grants),
+            require_pushed_authorization_requests: Some(
+                realm.require_pushed_authorization_requests,
+            ),
+        }
+    }
+
     /// Write what the payload carries onto `realm`.
     ///
     /// Every field is optional and absent means unchanged, so an update that

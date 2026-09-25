@@ -1262,6 +1262,11 @@ pub async fn device_code(
     )
     .await
     .map_err(|_| Unpolled::Backend)?;
+    if offline {
+        make_room_for_offline(transaction, within.realm, &person.user_id, now)
+            .await
+            .map_err(|_| Unpolled::Backend)?;
+    }
 
     Ok(Granted {
         issued_token_type: None,

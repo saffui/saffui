@@ -346,6 +346,91 @@ async fn the_device_doors_refuse_the_unregistered_and_the_expired() {
     assert!(swept.device_codes >= 1, "{}", swept.device_codes);
 }
 
+/// A whole device sign-in asking for offline access, down to the answer the
+/// device collects.
+async fn collected_offline(plane: &Plane) -> Value {
+    let (status, opened) = posted(
+        plane,
+        "/device-authorization",
+        &[("scope", "openid offline_access")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    let device_code = opened["device_code"].as_str().expect("a secret").to_owned();
+    let user_code = opened["user_code"].as_str().expect("a code").to_owned();
+    approved_on_the_second_screen(plane, &user_code).await;
+    let (status, granted) = polled(plane, &device_code).await;
+    assert_eq!(status, StatusCode::OK, "{granted}");
+    granted
+}
+
+/// The realm's cap on offline grants counts what a device collects too, and
+/// ends the older grant.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_device_grant_keeps_to_the_realms_offline_cap() {
+    let plane = Plane::with_actions(&[]).await;
+    allow_device(&plane).await;
+    {
+        let transaction = plane.scoped(&within()).await;
+        let mut realm = store::providers::realms::load(&transaction, REALM)
+            .await
+            .expect("the realms table")
+            .expect("a planted realm");
+        realm.max_offline_grants = 1;
+        store::providers::realms::update(&transaction, &realm)
+            .await
+            .expect("the realms table");
+        transaction.commit().await.expect("the cap kept");
+    }
+
+    let older = collected_offline(&plane).await;
+    // Started a minute back, or the two grants would tie on their start.
+    {
+        let transaction = plane.scoped(&within()).await;
+        transaction
+            .execute(
+                "UPDATE client_sessions SET started_at = started_at - 60 WHERE offline",
+                &[],
+            )
+            .await
+            .expect("an ageing");
+        transaction.commit().await.expect("the ageing kept");
+    }
+    let newer = collected_offline(&plane).await;
+
+    let renewed = |granted: &Value| {
+        let refresh_token = granted["refresh_token"]
+            .as_str()
+            .expect("a refresh token")
+            .to_owned();
+        let plane = &plane;
+        async move {
+            posted(
+                plane,
+                "/token",
+                &[
+                    ("grant_type", "refresh_token"),
+                    ("refresh_token", &refresh_token),
+                ],
+            )
+            .await
+        }
+    };
+    let (status, told) = renewed(&older).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "the cap left the older grant standing: {told}"
+    );
+    let (status, told) = renewed(&newer).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the cap ended the newer grant: {told}"
+    );
+}
+
 /// The realm paces its own device flow: a retuned lifespan and interval
 /// reach the next opening, spoken in the answer exactly as stored.
 #[tokio::test]

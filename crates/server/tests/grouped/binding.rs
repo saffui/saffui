@@ -135,6 +135,29 @@ async fn userinfo(plane: &Plane, access: &str, proof: Option<&str>) -> StatusCod
     test::call_service(&app, asked.to_request()).await.status()
 }
 
+/// Introspect a token as the confidential client, the way a resource server
+/// that holds a secret asks.
+async fn introspected(plane: &Plane, token: &str) -> Value {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/introspect",
+                support::REALM
+            ))
+            .set_form([
+                ("token", token),
+                ("client_id", support::CONFIDENTIAL),
+                ("client_secret", support::CLIENT_SECRET),
+            ])
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    test::read_body_json(response).await
+}
+
 /// A caller that proves a key gets a token naming it.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
@@ -367,6 +390,52 @@ async fn a_forwarded_certificate_is_named_by_the_token_it_earns() {
     assert!(
         claims["cnf"]["x5t#S256"].as_str().is_some(),
         "the token names no certificate: {claims}"
+    );
+}
+
+/// RFC 9449 §6.2 and RFC 8705 §3.2: a resource server that asks is told what a
+/// token is bound to, since it is the one holding the proof and has to compare.
+/// A token bound to a key is a DPoP token; one bound to a certificate, or to
+/// nothing, stays a bearer token, the unbound one naming no binding at all.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn introspection_tells_what_a_token_is_bound_to() {
+    let plane = Plane::with_actions(&[]).await;
+    let key = SigningKey::generate("holder");
+    let proof = key.proof("POST", &at("token"), None, "one", now());
+    let (status, granted) = exchanged(&plane, &code_for(&plane).await, Some(&proof)).await;
+    assert_eq!(status, StatusCode::OK, "{granted}");
+    let told = introspected(&plane, granted["access_token"].as_str().expect("a token")).await;
+    assert_eq!(told["active"], true, "{told}");
+    assert_eq!(told["token_type"], "DPoP", "{told}");
+    assert_eq!(told["cnf"]["jkt"], key.thumbprint(), "{told}");
+
+    let (status, granted) = exchanged_behind(
+        &plane,
+        &code_for(&plane).await,
+        Some(A_CERTIFICATE),
+        "10.1.2.3",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{granted}");
+    let access = granted["access_token"].as_str().expect("a token");
+    let told = introspected(&plane, access).await;
+    assert_eq!(told["token_type"], "Bearer", "{told}");
+    let thumbprint = &told["cnf"]["x5t#S256"];
+    assert!(thumbprint.is_string(), "no certificate named: {told}");
+    assert_eq!(
+        thumbprint,
+        &plane.claims_of(access).await["cnf"]["x5t#S256"],
+        "{told}"
+    );
+
+    let (status, granted) = exchanged(&plane, &code_for(&plane).await, None).await;
+    assert_eq!(status, StatusCode::OK, "{granted}");
+    let told = introspected(&plane, granted["access_token"].as_str().expect("a token")).await;
+    assert_eq!(told["token_type"], "Bearer", "{told}");
+    assert!(
+        told.get("cnf").is_none(),
+        "an unbound token named a binding: {told}"
     );
 }
 

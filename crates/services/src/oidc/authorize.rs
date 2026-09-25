@@ -75,7 +75,25 @@ pub enum Begun {
     Admitted { landing: Landing },
 }
 
-/// Why the login did not start.
+/// Why the login did not start, and where that is said.
+///
+/// The destination is decided here, with the request as it was read, pushed or
+/// signed included, and never by whoever answers the browser: a redirect taken
+/// from the raw query is one nobody checked.
+#[derive(Debug)]
+pub enum Refused {
+    /// Shown to whoever asked. No redirect this client registered stands
+    /// behind the request, so there is nowhere a refusal may be sent.
+    Shown(&'static str),
+    /// Sent to a redirect the client registered, with the state and in the
+    /// mode of the request as it was read.
+    Sent {
+        error: &'static str,
+        landing: Landing,
+    },
+}
+
+/// Why a step refused, before anything decides where that is said.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Refusal {
     /// Shown to the user, carrying the code that names why. Nothing here may be
@@ -138,7 +156,7 @@ pub async fn begin(
     // What it takes to sign. A code needs none of it.
     signing: Option<&crate::oidc::grant::Signing<'_>>,
     now: DateTime<Utc>,
-) -> Result<Begun, Refusal> {
+) -> Result<Begun, Refused> {
     // Read before it is spent. Inside here a `request_uri` is always a
     // reference this server issued: one the client hosts was fetched by the
     // transport and arrives as an inline object.
@@ -149,17 +167,19 @@ pub async fn begin(
         Some(handle) => {
             taken = pushed::spend_reference(transaction, provider, handle)
                 .await
-                .ok_or(Refusal::Unshowable("invalid_request_uri"))?;
+                .ok_or(Refused::Shown("invalid_request_uri"))?;
             if asked
                 .client_id
                 .is_some_and(|named| named != taken.client_id)
             {
-                return Err(Refusal::Unshowable("invalid_request_uri"));
+                return Err(Refused::Shown("invalid_request_uri"));
             }
             &taken.as_request()
         }
     };
-    let client = named_client(transaction, asked.client_id).await?;
+    let client = named_client(transaction, asked.client_id)
+        .await
+        .map_err(Refused::shown)?;
 
     // What the client signed governs the request, so it is read before the
     // redirect is looked up: the object is where a client states one.
@@ -169,18 +189,109 @@ pub async fn begin(
         None => asked,
         Some(raw) => {
             carried = request_object::read(&client, raw, issuer, now)
-                .map_err(|why| Refusal::Redirect(why.told()))?;
+                .map_err(|why| refused_unread(&client, asked, issuer, why.told()))?;
             merged = carried
                 .over(asked)
-                .map_err(|why| Refusal::Redirect(why.told()))?;
+                .map_err(|why| refused_unread(&client, asked, issuer, why.told()))?;
             &merged
         }
     };
-    let redirect_uri = registered_redirect(&client, requested.redirect_uri)?;
+    let redirect_uri =
+        registered_redirect(&client, requested.redirect_uri).map_err(Refused::shown)?;
 
     // From here the client and the redirect are established, so a refusal can
     // travel to the client rather than stopping at the user.
-    //
+    established(
+        transaction,
+        provider,
+        tenant,
+        issuer,
+        &client,
+        redirect_uri,
+        requested,
+        pushed_first,
+        signed_in,
+        signing,
+        now,
+    )
+    .await
+    .map_err(|refusal| match refusal {
+        Refusal::Unshowable(error) => Refused::Shown(error),
+        Refusal::Redirect(error) => sent(redirect_uri, requested, issuer, error),
+    })
+}
+
+impl Refused {
+    fn shown(refusal: Refusal) -> Refused {
+        match refusal {
+            Refusal::Unshowable(error) | Refusal::Redirect(error) => Refused::Shown(error),
+        }
+    }
+}
+
+/// A request whose signed object could not be read. What the object says is
+/// not to be believed, its redirect included, so the refusal goes to the
+/// redirect carried beside it only when the client registered that one, and
+/// is shown otherwise.
+fn refused_unread(
+    client: &ClientModel,
+    beside: &Requested<'_>,
+    issuer: &str,
+    error: &'static str,
+) -> Refused {
+    match registered_redirect(client, beside.redirect_uri) {
+        Ok(redirect_uri) => sent(redirect_uri, beside, issuer, error),
+        Err(_) => Refused::Shown(error),
+    }
+}
+
+/// A refusal on its way to a redirect already found registered, RFC 6749
+/// §4.1.2.1, carrying the issuer as RFC 9207 has every answer carry it.
+fn sent(
+    redirect_uri: &str,
+    requested: &Requested<'_>,
+    issuer: &str,
+    error: &'static str,
+) -> Refused {
+    Refused::Sent {
+        error,
+        landing: Landing::new(redirect_uri, refused_in(requested))
+            .carrying("error", error)
+            .carrying_any("state", requested.state)
+            .carrying("iss", issuer),
+    }
+}
+
+/// How a refusal travels: the way the answer would have. A request whose
+/// response was going in a fragment is refused in one, or a client reading
+/// there never learns it was refused. A mode this build does not know is told
+/// as a query, which is what a request naming none gets.
+fn refused_in(requested: &Requested<'_>) -> ResponseMode {
+    let named = requested.response_mode.or_else(|| {
+        ResponseType::read(requested.response_type.unwrap_or_default())
+            .map(ResponseType::default_mode)
+    });
+    ResponseMode::read(named).unwrap_or_default()
+}
+
+/// The rest of the start, once the client and its redirect are established.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one request"
+)]
+async fn established(
+    transaction: &UnitOfWork,
+    provider: &dyn CryptoProvider,
+    tenant: &TenantContext,
+    issuer: &str,
+    client: &ClientModel,
+    redirect_uri: &str,
+    requested: &Requested<'_>,
+    pushed_first: bool,
+    signed_in: Option<&str>,
+    signing: Option<&crate::oidc::grant::Signing<'_>>,
+    now: DateTime<Utc>,
+) -> Result<Begun, Refusal> {
     // `token` alone is OAuth's: nothing identifying the person comes back.
     let Some(asked_for) = ResponseType::read(requested.response_type.unwrap_or_default())
         .filter(|asked| !asked.as_str().is_empty())
@@ -233,7 +344,7 @@ pub async fn begin(
     {
         return Err(Refusal::Redirect("invalid_scope"));
     }
-    proof_is_registered(&client, requested)?;
+    proof_is_registered(client, requested)?;
 
     // Read in full before anything is decided on it. A request for claims that
     // cannot be read is a request whose wishes are unknown, and answering it
@@ -311,7 +422,7 @@ pub async fn begin(
     // RFC 9126 §5. A pushed request never reaches a browser's history, a
     // proxy's log or a referrer header, which is what a client that must push
     // is being kept away from.
-    if !pushed_first && must_push(&realm, &client) {
+    if !pushed_first && must_push(&realm, client) {
         return Err(Refusal::Redirect("invalid_request"));
     }
 
@@ -319,8 +430,8 @@ pub async fn begin(
     // strips the options the profile forbids whatever the realm tolerates.
     // A client provisioned against its own profile is refused whole rather
     // than served under it.
-    if crate::oidc::fapi::is_fapi2(&client) {
-        if crate::oidc::fapi::conformant(&client).is_err() {
+    if crate::oidc::fapi::is_fapi2(client) {
+        if crate::oidc::fapi::conformant(client).is_err() {
             return Err(Refusal::Redirect("unauthorized_client"));
         }
         if !asked_for.code || asked_for.mints_here() {
@@ -364,7 +475,7 @@ pub async fn begin(
             return start_login(
                 transaction,
                 provider,
-                &client,
+                client,
                 redirect_uri,
                 mode,
                 asked_for,
@@ -383,7 +494,7 @@ pub async fn begin(
         // the login again, and nothing is minted on its standing.
         if auth::consent::must_ask(
             transaction,
-            &client,
+            client,
             &login.user_id,
             &granted,
             prompt.consent,
@@ -399,7 +510,7 @@ pub async fn begin(
             return start_login(
                 transaction,
                 provider,
-                &client,
+                client,
                 redirect_uri,
                 mode,
                 asked_for,
@@ -470,7 +581,7 @@ pub async fn begin(
     start_login(
         transaction,
         provider,
-        &client,
+        client,
         redirect_uri,
         mode,
         asked_for,

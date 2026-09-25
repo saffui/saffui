@@ -1632,8 +1632,8 @@ pub const ACCESS_TOKEN_TYPE: &str = "urn:ietf:params:oauth:token-type:access_tok
 /// The flag on a client's bag that opts it into exchanging. Default-deny:
 /// acting for somebody is a power an operator grants by name.
 pub const EXCHANGE_FLAG: &str = "token.exchange.enabled";
-/// Space-separated audiences an exchange may point at. Absent means any;
-/// the client itself always stands.
+/// The audiences an exchange may point at, space-separated in one string or
+/// spread over a list. Absent means any; the client itself always stands.
 pub const EXCHANGE_AUDIENCES: &str = "token.exchange.audiences";
 
 /// The capability root an agent client holds, space-separated tool names or
@@ -1931,13 +1931,19 @@ pub async fn token_exchange(
         .to_owned();
     // The operator can bound where this client may point an exchange. The
     // client itself always stands: exchanging toward yourself widens
-    // nothing. Same refusal face as not being opted in.
+    // nothing. Same refusal face as not being opted in. A bound stated in a
+    // shape that names nobody allows nobody else, rather than everybody.
     if audience != client.client_id
-        && let Some(models::entities::attributes::AttributeValue::Str(allowed)) = client
+        && let Some(bound) = client
             .configs
             .as_ref()
             .and_then(|bag| bag.get(EXCHANGE_AUDIENCES))
-        && !allowed.split_whitespace().any(|named| named == audience)
+        && !bound
+            .as_list()
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|allowed| allowed.split_whitespace())
+            .any(|named| named == audience)
     {
         return Err(Ungranted::Unauthorized);
     }

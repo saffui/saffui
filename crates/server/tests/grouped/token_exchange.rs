@@ -438,8 +438,10 @@ async fn a_pairwise_subject_is_respoken_for_the_audience() {
     assert_eq!(kept["sub"], worn, "{kept}");
 }
 
-/// The operator can bound where a client points an exchange; the client
-/// itself always stands, and the refusal wears the unauthorized face.
+/// The operator can bound where a client points an exchange, in one string
+/// or in a list; the client itself always stands, and the refusal wears the
+/// unauthorized face. A bound stated in a shape that names nobody allows
+/// nobody but the client, never everybody.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn an_exchange_points_only_where_the_operator_said() {
@@ -448,7 +450,17 @@ async fn an_exchange_points_only_where_the_operator_said() {
 
     let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
     opted_in(&plane, support::CONFIDENTIAL).await;
-    {
+    let minted = subject_tokens(&plane, "openid").await;
+    let subject_token = minted["access_token"].as_str().expect("an access token");
+
+    for (bound, listed) in [
+        (AttributeValue::Str("billing reports".to_owned()), true),
+        (
+            AttributeValue::ListStr(vec!["billing".to_owned(), "reports".to_owned()]),
+            true,
+        ),
+        (AttributeValue::Bool(true), false),
+    ] {
         let transaction = plane
             .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
@@ -456,42 +468,44 @@ async fn an_exchange_points_only_where_the_operator_said() {
             .await
             .unwrap()
             .expect("the client");
-        client.configs.get_or_insert_with(Default::default).insert(
-            "token.exchange.audiences".to_owned(),
-            AttributeValue::Str("billing reports".to_owned()),
-        );
+        client
+            .configs
+            .get_or_insert_with(Default::default)
+            .insert("token.exchange.audiences".to_owned(), bound.clone());
         assert!(
             store::providers::clients::update(&transaction, &client)
                 .await
                 .unwrap()
         );
         transaction.commit().await.unwrap();
-    }
-    let minted = subject_tokens(&plane, "openid").await;
-    let subject_token = minted["access_token"].as_str().expect("an access token");
 
-    for (audience, admitted) in [
-        ("billing", true),
-        ("reports", true),
-        ("elsewhere", false),
-        (support::CONFIDENTIAL, true),
-    ] {
-        let (status, told) = asking(
-            &plane,
-            &[
-                ("grant_type", EXCHANGE),
-                ("subject_token", subject_token),
-                ("subject_token_type", ACCESS_TYPE),
-                ("audience", audience),
-            ],
-            Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
-        )
-        .await;
-        if admitted {
-            assert_eq!(status, StatusCode::OK, "{audience}: {told}");
-        } else {
-            assert_eq!(status, StatusCode::BAD_REQUEST, "{audience}: {told}");
-            assert_eq!(told["error"], "unauthorized_client", "{told}");
+        for (audience, admitted) in [
+            ("billing", listed),
+            ("reports", listed),
+            ("elsewhere", false),
+            (support::CONFIDENTIAL, true),
+        ] {
+            let (status, told) = asking(
+                &plane,
+                &[
+                    ("grant_type", EXCHANGE),
+                    ("subject_token", subject_token),
+                    ("subject_token_type", ACCESS_TYPE),
+                    ("audience", audience),
+                ],
+                Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+            )
+            .await;
+            if admitted {
+                assert_eq!(status, StatusCode::OK, "{bound:?}, {audience}: {told}");
+            } else {
+                assert_eq!(
+                    status,
+                    StatusCode::BAD_REQUEST,
+                    "{bound:?}, {audience}: {told}"
+                );
+                assert_eq!(told["error"], "unauthorized_client", "{told}");
+            }
         }
     }
 }

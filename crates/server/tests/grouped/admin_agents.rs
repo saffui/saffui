@@ -503,3 +503,55 @@ async fn a_deleted_client_takes_its_service_account_with_it() {
     let (status, again) = asked(&plane, Method::POST, &agents, &bearer, registration()).await;
     assert_eq!(status, StatusCode::CREATED, "{again}");
 }
+
+/// An agent reads as exchanging where the console looks, the way the exchange
+/// itself reads it, so saving the client's drawer over something else leaves
+/// the agent exchanging.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_agent_reads_as_exchanging_where_the_console_looks() {
+    use models::entities::authz::AdminAction;
+    let plane = Plane::with_actions(&[AdminAction::ClientRead, AdminAction::ClientWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let (status, born) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/agents"),
+        &bearer,
+        Some(json!({ "client_id": "scribe-1", "capabilities": ["github.create_issue"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+
+    let at = format!("/admin/realms/{REALM}/clients/scribe-1");
+    let (status, shown) = asked(&plane, Method::GET, &at, &bearer, None).await;
+    assert_eq!(status, StatusCode::OK, "{shown}");
+    assert_eq!(
+        shown["token_exchange"], true,
+        "the console shows an exchanging agent as not exchanging: {shown}"
+    );
+
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &at,
+        &bearer,
+        Some(json!({
+            "description": "renamed in the drawer",
+            "token_exchange": shown["token_exchange"],
+        })),
+    )
+    .await;
+    assert!(status.is_success(), "{status}: {told}");
+    let transaction = plane
+        .scoped(&TenantContext::new(support::TENANT, REALM))
+        .await;
+    let client = store::providers::clients::load(&transaction, "scribe-1")
+        .await
+        .unwrap()
+        .expect("the client");
+    assert!(
+        services::oidc::grant::allows_exchange(&client),
+        "saving the drawer turned the agent's exchange off"
+    );
+}

@@ -2013,7 +2013,7 @@ pub async fn token_exchange(
 
 /// Whether the operator opted this client into exchanging, on its bag, as a
 /// flag or as the word.
-fn allows_exchange(client: &ClientModel) -> bool {
+pub fn allows_exchange(client: &ClientModel) -> bool {
     match client
         .configs
         .as_ref()

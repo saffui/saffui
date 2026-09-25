@@ -5333,6 +5333,14 @@ async fn a_required_authenticator_app_is_set_up_inside_the_login() {
 /// A client's ear: one HTTP request accepted on a port of its own, its body
 /// handed back, a 200 sent. What a relying party's back-channel endpoint is.
 fn listening_client() -> (String, std::sync::mpsc::Receiver<String>) {
+    listening_client_answering_after(std::time::Duration::ZERO)
+}
+
+/// The same ear, taking `delay` to answer once the body has landed: a relying
+/// party that is slow to say it heard.
+fn listening_client_answering_after(
+    delay: std::time::Duration,
+) -> (String, std::sync::mpsc::Receiver<String>) {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
     let port = listener.local_addr().unwrap().port();
@@ -5359,14 +5367,100 @@ fn listening_client() -> (String, std::sync::mpsc::Receiver<String>) {
                     .and_then(|value| value.trim().parse().ok())
                     .unwrap_or(0);
                 if body.len() >= length {
-                    let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
                     let _ = sender.send(body[..length].to_owned());
+                    std::thread::sleep(delay);
+                    let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
                     break;
                 }
             }
         }
     });
     (format!("http://127.0.0.1:{port}/logout-token"), receiver)
+}
+
+/// Take part in the signed-in browser's login as `client_id`, and hand back
+/// the identity token that says so.
+async fn joined(plane: &Plane, session: &str, client_id: &str) -> String {
+    let (_, landing) = authorize_signed_in(
+        plane,
+        &[
+            ("response_type", "code"),
+            ("client_id", client_id),
+            ("redirect_uri", REDIRECT),
+            ("scope", "openid"),
+            ("state", "s"),
+        ],
+        session,
+    )
+    .await;
+    let code = landing
+        .split_once("code=")
+        .expect("a code")
+        .1
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
+    let (status, granted) = asking(
+        plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((client_id, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{granted}");
+    granted["id_token"]
+        .as_str()
+        .expect("an id token")
+        .to_owned()
+}
+
+/// The clients of a login are told at once, not one after another: the logout
+/// answers in about the time the slowest of them takes to say it heard, never
+/// in the sum of theirs.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_clients_of_a_login_are_told_at_once() {
+    let plane = Plane::with_actions(&[]).await;
+    let slow = std::time::Duration::from_secs(2);
+    let (first_uri, first) = listening_client_answering_after(slow);
+    let (second_uri, second) = listening_client_answering_after(slow);
+    plane
+        .register_backchannel(support::CONFIDENTIAL, &first_uri)
+        .await;
+    plane
+        .register_backchannel(support::OTHER, &second_uri)
+        .await;
+
+    let session = signed_in_once(&plane).await;
+    let hint = joined(&plane, &session, support::CONFIDENTIAL).await;
+    joined(&plane, &session, support::OTHER).await;
+
+    let started = std::time::Instant::now();
+    let (status, _, _) = logout_dialling(
+        &plane,
+        &[("id_token_hint", hint.as_str())],
+        Some(&session),
+        Egress::Anywhere,
+    )
+    .await;
+    let took = started.elapsed();
+    assert_eq!(status, StatusCode::OK);
+    for (label, told) in [("the first client", first), ("the second", second)] {
+        assert!(
+            told.recv_timeout(std::time::Duration::from_secs(10))
+                .is_ok(),
+            "{label} was never told"
+        );
+    }
+    assert!(
+        took < slow * 2 - std::time::Duration::from_millis(500),
+        "the clients were told one after another: the logout took {took:?}"
+    );
 }
 
 /// Back-Channel Logout 1.0: when a login ends, every client that took part

@@ -97,6 +97,20 @@ pub async fn ask(
         Err(response) => return response,
     };
 
+    // A client that encrypts its identity tokens is answered under the keys it
+    // publishes now.
+    let (transaction, client) = if client.id_token_encryption.is_some() {
+        match caller::with_client_keys_read(&tenancy, &context, transaction, client, **egress, now)
+            .await
+        {
+            Ok(held) => held,
+            Err(StoreError::Unavailable) => return answer_unavailable(),
+            Err(_) => return Denied::InvalidRequest.answer("the realm could not be read"),
+        }
+    } else {
+        (transaction, client)
+    };
+
     let Ok(Some(realm)) = services::realm::named(&transaction, &context.realm_id).await else {
         return Denied::InvalidRequest.answer("the realm could not be read");
     };

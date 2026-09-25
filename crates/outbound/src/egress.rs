@@ -4,7 +4,7 @@
 use config::serving::Egress;
 use std::net::IpAddr;
 use std::time::Duration;
-use store::tenancy::UnitOfWork;
+use store::tenancy::{Tenancy, TenantContext};
 
 use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
 use ureq::unversioned::transport::NextTimeout;
@@ -147,13 +147,27 @@ pub async fn fetch(uri: String, egress: Egress) -> Option<String> {
 /// Before the check and not after it: a client that rotated its keys presents
 /// a signature this server cannot verify yet, and re-reading only once that
 /// has failed makes the first request after every rotation fail.
+///
+/// The reading is claimed first, on a transaction of its own committed at
+/// once, so however many requests name the client together its host is asked
+/// once while a reading is kept, whether or not each of them is then refused.
+/// No transaction is open while the host answers, so no pooled connection
+/// waits on it.
 pub async fn refresh_client_keys(
-    transaction: &UnitOfWork,
+    tenancy: &Tenancy,
+    context: &TenantContext,
     client_id: &str,
     egress: Egress,
     now: chrono::DateTime<chrono::Utc>,
 ) {
-    let Some(uri) = services::client::keys_due(transaction, client_id, now).await else {
+    let claimed = async {
+        let transaction = tenancy.begin(context).await.ok()?;
+        let uri = services::client::claim_keys_read(&transaction, client_id, now).await?;
+        transaction.commit().await.ok()?;
+        Some(uri)
+    }
+    .await;
+    let Some(uri) = claimed else {
         return;
     };
     let Some(document) = fetch(uri, egress).await else {
@@ -161,8 +175,14 @@ pub async fn refresh_client_keys(
     };
     // Left alone when it cannot be read. The set already kept is the last one
     // that was readable, which verifies more than nothing does.
-    if let Ok(jwks) = serde_json::from_str::<serde_json::Value>(&document) {
-        services::client::keep_keys(transaction, client_id, &jwks, now).await;
+    let Ok(jwks) = serde_json::from_str::<serde_json::Value>(&document) else {
+        return;
+    };
+    let Ok(transaction) = tenancy.begin(context).await else {
+        return;
+    };
+    if services::client::keep_keys(&transaction, client_id, &jwks, now).await {
+        let _ = transaction.commit().await;
     }
 }
 

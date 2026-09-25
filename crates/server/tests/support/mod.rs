@@ -2733,3 +2733,46 @@ pub async fn granted_scope_of(plane: &Plane, asked: &[(&str, &str)]) -> String {
         .expect("a granted scope")
         .to_owned()
 }
+
+/// A key set served at a local address, as a client publishes it, answering
+/// with whatever `published` holds when asked and counting every time it is.
+#[allow(
+    dead_code,
+    reason = "only the suites that read published keys serve them"
+)]
+pub fn serving_keys(
+    published: std::sync::Arc<std::sync::Mutex<serde_json::Value>>,
+) -> (
+    String,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    actix_web::dev::ServerHandle,
+) {
+    use actix_web::{HttpResponse, HttpServer, web};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let asked = Arc::new(AtomicUsize::new(0));
+    let counting = Arc::clone(&asked);
+    let server = HttpServer::new(move || {
+        let published = Arc::clone(&published);
+        let counting = Arc::clone(&counting);
+        actix_web::App::new().route(
+            "/jwks",
+            web::get().to(move || {
+                let published = Arc::clone(&published);
+                let counting = Arc::clone(&counting);
+                async move {
+                    counting.fetch_add(1, Ordering::SeqCst);
+                    HttpResponse::Ok().json(published.lock().unwrap().clone())
+                }
+            }),
+        )
+    })
+    .bind(("127.0.0.1", 0))
+    .expect("a port");
+    let port = server.addrs().first().expect("an address").port();
+    let running = server.run();
+    let handle = running.handle();
+    tokio::spawn(running);
+    (format!("http://127.0.0.1:{port}/jwks"), asked, handle)
+}

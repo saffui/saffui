@@ -58,7 +58,20 @@ async fn opted_signing(plane: &Plane, key: &SigningKey) {
 }
 
 async fn posted(plane: &Plane, form: &[(&str, &str)]) -> (StatusCode, Value) {
-    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    posted_through(plane, config::serving::Egress::Outward, form).await
+}
+
+/// The same, on a plane that dials where the deployment lets it.
+async fn posted_through(
+    plane: &Plane,
+    egress: config::serving::Egress,
+    form: &[(&str, &str)],
+) -> (StatusCode, Value) {
+    let app = test::init_service(App::new().configure(register(&server::api::config::Plane {
+        egress,
+        ..mounted(plane)
+    })))
+    .await;
     let mut sent: Vec<(String, String)> = vec![
         ("client_id".into(), support::CONFIDENTIAL.into()),
         ("client_secret".into(), support::CLIENT_SECRET.into()),
@@ -210,4 +223,57 @@ async fn a_signing_client_is_held_to_its_signature() {
     let (status, opened) = posted(&plane, &[("request", &request)]).await;
     assert_eq!(status, StatusCode::OK, "{opened}");
     assert!(opened["auth_req_id"].is_string(), "{opened}");
+}
+
+/// A signing client that publishes its keys at an address is held to the keys
+/// it publishes, read before its signed request is judged.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_signed_request_is_read_under_the_keys_its_client_publishes() {
+    use std::sync::{Arc, Mutex};
+
+    let plane = Plane::with_actions(&[]).await;
+    let key = SigningKey::generate("ciba-signer");
+    opted_signing(&plane, &key).await;
+    let (uri, _, handle) = support::serving_keys(Arc::new(Mutex::new(json!({
+        "keys": [serde_json::to_value(key.public().as_ref()).unwrap()],
+    }))));
+    // The key moves to where the client publishes it: nothing is kept inline.
+    {
+        let transaction = plane
+            .scoped(&TenantContext::new(support::TENANT, REALM))
+            .await;
+        let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
+            .await
+            .unwrap()
+            .expect("the client");
+        client.jwks = None;
+        client.jwks_uri = Some(uri);
+        assert!(
+            store::providers::clients::update(&transaction, &client)
+                .await
+                .unwrap()
+        );
+        transaction.commit().await.unwrap();
+    }
+
+    let request = signed_request(
+        &key,
+        &[
+            ("scope", Value::from("openid")),
+            ("login_hint", Value::from(support::SUBJECT)),
+        ],
+    );
+    let (status, opened) = posted_through(
+        &plane,
+        config::serving::Egress::Anywhere,
+        &[("request", &request)],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a signed request was not read under the keys its client publishes: {opened}"
+    );
+    handle.stop(false).await;
 }

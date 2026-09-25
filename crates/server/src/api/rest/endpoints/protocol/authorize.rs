@@ -119,6 +119,19 @@ async fn start(
             return shown("unauthorized_client", "no login can start here");
         }
     };
+    // A request object is verified against the client's keys, and a client
+    // that publishes them elsewhere may have rotated since they were read.
+    // Read again before any transaction opens, so none waits on its host.
+    if let Some(held) = &asked
+        && (held.request.is_some()
+            || held
+                .request_uri
+                .as_deref()
+                .is_some_and(|named| !named.starts_with(services::oidc::pushed::HANDLE)))
+        && let Some(client_id) = held.client_id.as_deref()
+    {
+        outbound::egress::refresh_client_keys(tenancy, &context, client_id, egress, now).await;
+    }
     let transaction = match tenancy.begin(&context).await {
         Ok(transaction) => transaction,
         Err(StoreError::Unavailable) => return page::answer_unavailable_to(&request),
@@ -189,14 +202,6 @@ async fn start(
                 );
             }
         }
-    }
-
-    // A request object is verified against the client's keys, and a client
-    // that publishes them elsewhere may have rotated since they were read.
-    if asked.request.is_some()
-        && let Some(client_id) = asked.client_id.as_deref()
-    {
-        outbound::egress::refresh_client_keys(&transaction, client_id, egress, now).await;
     }
 
     // Loaded either way: what the request wants is read inside, and asking

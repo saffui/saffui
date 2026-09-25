@@ -192,6 +192,29 @@ pub async fn published_keys_at(
         .map(|row| (row.get("jwks_uri"), row.get("jwks_fetched_at"))))
 }
 
+/// Claim the next reading of the keys this client publishes: when it publishes
+/// them at an address and what was kept was read before `stale_before`, mark
+/// them read at `now` and hand back where to read them. One claim wins while a
+/// reading is kept, however many callers ask at once.
+pub async fn claim_published_keys_read(
+    transaction: &UnitOfWork,
+    client_id: &str,
+    now: chrono::DateTime<chrono::Utc>,
+    stale_before: chrono::DateTime<chrono::Utc>,
+) -> StoreResult<Option<String>> {
+    Ok(transaction
+        .query_opt(
+            "UPDATE clients SET jwks_fetched_at = $2 \
+             WHERE client_id = $1 AND jwks_uri IS NOT NULL \
+               AND (jwks_fetched_at IS NULL OR jwks_fetched_at <= $3) \
+             RETURNING jwks_uri",
+            &[&client_id, &now, &stale_before],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .map(|row| row.get("jwks_uri")))
+}
+
 /// Keep the key set just read, and when it was read.
 ///
 /// Behind a savepoint, because this happens inside a transaction opened for

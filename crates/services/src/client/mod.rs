@@ -223,6 +223,19 @@ pub async fn keys_due(
     }
 }
 
+/// Where to read this client's published keys, the reading claimed so no
+/// other caller makes it too, when what was kept has been kept long enough.
+pub async fn claim_keys_read(
+    transaction: &UnitOfWork,
+    client_id: &str,
+    now: DateTime<Utc>,
+) -> Option<String> {
+    clients::claim_published_keys_read(transaction, client_id, now, now - KEYS_KEPT)
+        .await
+        .ok()
+        .flatten()
+}
+
 /// Keep the key set just read from where the client publishes it.
 pub async fn keep_keys(
     transaction: &UnitOfWork,

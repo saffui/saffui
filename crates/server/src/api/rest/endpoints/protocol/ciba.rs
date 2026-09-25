@@ -109,6 +109,32 @@ pub async fn open(
             );
         }
     };
+    // A signed request, or a hint token, is verified against the keys the
+    // client publishes, read afresh when they were due.
+    let (transaction, presented) = if asked.request.is_some() || asked.login_hint_token.is_some() {
+        match caller::with_client_keys_read(
+            &tenancy,
+            &context,
+            transaction,
+            presented,
+            **egress,
+            now,
+        )
+        .await
+        {
+            Ok(held) => held,
+            Err(StoreError::Unavailable) => return answer_unavailable(),
+            Err(_) => {
+                return told(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "the client could not be read",
+                );
+            }
+        }
+    } else {
+        (transaction, presented)
+    };
     // §7.1: a client registered for signed requests speaks only in them, and
     // one that is not registered may not present one. The parameters then
     // come from inside the token alone.

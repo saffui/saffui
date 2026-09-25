@@ -22,33 +22,39 @@ pub async fn deliver(notices: Vec<Notice>, egress: Egress) {
         return;
     }
     tracing::info!(clients = notices.len(), "telling clients a login ended");
-    let posting = notices.into_iter().map(|notice| {
-        tokio::task::spawn_blocking(move || {
-            if !may_dial(&notice.uri, egress) {
-                tracing::warn!(
-                    client_id = %notice.client_id,
-                    "a logout address is not one this egress policy dials"
-                );
-                return;
-            }
-            let agent = outward_agent(egress, PATIENCE);
-            let outcome = agent
-                .post(&notice.uri)
-                .send_form([("logout_token", notice.logout_token.as_str())]);
-            match outcome {
-                Ok(response) => tracing::info!(
-                    client_id = %notice.client_id,
-                    status = response.status().as_u16(),
-                    "logout told"
-                ),
-                Err(error) => tracing::warn!(
-                    client_id = %notice.client_id,
-                    error = %error,
-                    "logout not told"
-                ),
-            }
+    // Collected before any is awaited: a lazy map would start each post only
+    // once the one before it answered, and a logout would wait the sum of every
+    // client's patience rather than the longest.
+    let posting: Vec<_> = notices
+        .into_iter()
+        .map(|notice| {
+            tokio::task::spawn_blocking(move || {
+                if !may_dial(&notice.uri, egress) {
+                    tracing::warn!(
+                        client_id = %notice.client_id,
+                        "a logout address is not one this egress policy dials"
+                    );
+                    return;
+                }
+                let agent = outward_agent(egress, PATIENCE);
+                let outcome = agent
+                    .post(&notice.uri)
+                    .send_form([("logout_token", notice.logout_token.as_str())]);
+                match outcome {
+                    Ok(response) => tracing::info!(
+                        client_id = %notice.client_id,
+                        status = response.status().as_u16(),
+                        "logout told"
+                    ),
+                    Err(error) => tracing::warn!(
+                        client_id = %notice.client_id,
+                        error = %error,
+                        "logout not told"
+                    ),
+                }
+            })
         })
-    });
+        .collect();
     for handle in posting {
         // A telling that could not even be attempted is a client left
         // believing a login is live, so it is on the record like any other.

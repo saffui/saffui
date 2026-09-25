@@ -4,9 +4,7 @@ use chrono::Utc;
 use config::serving::Egress;
 use config::serving::{LoginUi, PublicOrigin};
 use serde::Deserialize;
-use services::oidc::authorize::{self, Begun, Refusal, Requested};
-use services::oidc::landing::{Landing, ResponseMode};
-use services::oidc::response_type::ResponseType;
+use services::oidc::authorize::{self, Begun, Refused, Requested};
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
@@ -285,39 +283,17 @@ async fn start(
         }
         // Nothing was written, so nothing is committed. Rolling back is what
         // makes a refused start leave no half opened login behind.
-        Err(Refusal::Unshowable(error)) => {
+        Err(Refused::Shown(error)) => {
             noted_refusal(error, asked.client_id.as_deref(), "shown");
             shown(error, "no login can start here")
         }
-        Err(Refusal::Redirect(error)) => {
+        // Where it goes was decided with the request as it was read: never
+        // the raw query, whose redirect nobody checked.
+        Err(Refused::Sent { error, landing }) => {
             noted_refusal(error, asked.client_id.as_deref(), "sent");
-            // The refusal travels the way the request asked, and a mode this
-            // build does not know is one it cannot answer in: those are told
-            // as a query, which is the mode a request naming none would get.
-            answering::answer(
-                &Landing::new(
-                    asked.redirect_uri.as_deref().unwrap_or_default(),
-                    refused_in(&asked),
-                )
-                .carrying("error", error)
-                .carrying_any("state", asked.state.as_deref())
-                // RFC 9207 again: a refusal is an answer, and a client must
-                // be able to tell whose it is.
-                .carrying("iss", origin.issuer(&context.realm_id)),
-            )
+            answering::answer(&landing)
         }
     }
-}
-
-/// How a refusal travels: the way the answer would have. A request whose
-/// response was going in a fragment is refused in one, or a client reading
-/// there never learns it was refused.
-fn refused_in(asked: &Asked) -> ResponseMode {
-    let named = asked.response_mode.as_deref().or_else(|| {
-        ResponseType::read(asked.response_type.as_deref().unwrap_or_default())
-            .map(ResponseType::default_mode)
-    });
-    ResponseMode::read(named).unwrap_or_default()
 }
 
 /// The refusal, on the record, with the client that asked and where the
@@ -335,12 +311,11 @@ fn noted_refusal(error: &str, client_id: Option<&str>, delivered: &str) {
 
 /// A refusal the user sees. The client is not established, or the redirect is
 /// not one this realm registered, so sending it onward is the open redirector.
+/// A browser gets a page, anything else the JSON.
 ///
 /// Still RFC 6749 §4.1.2.1's shape and its code set: the party reading this is
 /// not the client, but the codes are the vocabulary the endpoint has, and
 /// inventing a second one here would be a second thing to learn.
-/// A refusal with nowhere to go: no redirect was trustworthy, so whoever asked
-/// is told where they stand. A browser gets a page, anything else the JSON.
 fn shown(request: &HttpRequest, error: &'static str, description: &str) -> HttpResponse {
     if page::wants_page(request) {
         return page::notice(

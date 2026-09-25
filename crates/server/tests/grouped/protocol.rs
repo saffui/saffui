@@ -5599,20 +5599,23 @@ async fn a_signed_request_object_governs_the_request() {
             disagreeing.as_str(),
         ),
     ] {
+        // Refused at the redirect carried beside the object, which the client
+        // registered: the object's own is as unread as the rest of it.
         let (status, landing, _) = authorize_with_cookies(
             &plane,
             &[
                 ("client_id", support::CONFIDENTIAL),
                 ("response_type", "code"),
                 ("scope", "openid"),
+                ("redirect_uri", REDIRECT),
                 ("request", raw),
             ],
         )
         .await;
         assert_eq!(status, StatusCode::FOUND, "{label}");
         assert!(
-            landing.contains("error=invalid_request_object"),
-            "{label} was not refused: {landing}"
+            landing.starts_with(REDIRECT) && landing.contains("error=invalid_request_object"),
+            "{label} was not refused at the registered redirect: {landing}"
         );
     }
 
@@ -5623,13 +5626,89 @@ async fn a_signed_request_object_governs_the_request() {
             ("client_id", support::OTHER),
             ("response_type", "code"),
             ("scope", "openid"),
+            ("redirect_uri", REDIRECT),
             ("request", signed.as_str()),
         ],
     )
     .await;
     assert!(
-        landing.contains("error=request_not_supported"),
+        landing.starts_with(REDIRECT) && landing.contains("error=request_not_supported"),
         "an unregistered client was allowed an object: {landing}"
+    );
+}
+
+/// An object that cannot be read makes its own redirect as unbelievable as the
+/// rest of it, and a redirect beside it that the client never registered is no
+/// better: the refusal is shown, never sent there. Sending it would make this
+/// endpoint a redirector for anybody's link.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_refusal_is_never_sent_where_the_client_did_not_register() {
+    let plane = Plane::with_actions(&[]).await;
+    for client_id in [support::CONFIDENTIAL, support::OTHER] {
+        let (status, landing, _) = authorize_with_cookies(
+            &plane,
+            &[
+                ("client_id", client_id),
+                ("response_type", "code"),
+                ("scope", "openid"),
+                ("redirect_uri", "https://elsewhere.example/landing"),
+                ("request", "not.an.object"),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{client_id}: {landing}");
+        assert!(
+            landing.is_empty(),
+            "{client_id} was sent elsewhere: {landing}"
+        );
+    }
+}
+
+/// A pushed request refused at the authorization endpoint is refused at the
+/// redirect it pushed, with the state it pushed. The browser's own query holds
+/// the reference and nothing else, so a refusal sent there reaches nobody.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_pushed_request_is_refused_at_the_redirect_it_named() {
+    let plane = Plane::with_actions(&[]).await;
+    let me = Some((support::CONFIDENTIAL, support::CLIENT_SECRET));
+    let (status, told) = asking_at(
+        &plane,
+        "par",
+        &[
+            ("response_type", "code"),
+            ("client_id", support::CONFIDENTIAL),
+            ("redirect_uri", REDIRECT),
+            // Without `openid`: the push takes it, the authorization refuses it.
+            ("scope", "profile"),
+            ("state", "pushed-state"),
+        ],
+        me,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+    let handle = told["request_uri"]
+        .as_str()
+        .expect("a reference")
+        .to_owned();
+
+    let (status, landing, _) = authorize_with_cookies(
+        &plane,
+        &[
+            ("client_id", support::CONFIDENTIAL),
+            ("request_uri", handle.as_str()),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FOUND, "{landing}");
+    assert!(
+        landing.starts_with(REDIRECT) && landing.contains("error=invalid_scope"),
+        "refused somewhere other than the pushed redirect: {landing}"
+    );
+    assert!(
+        landing.contains("state=pushed-state"),
+        "the pushed state was lost: {landing}"
     );
 }
 

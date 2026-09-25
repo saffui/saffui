@@ -245,12 +245,6 @@ pub async fn close(transaction: &UnitOfWork, session_id: &str) -> StoreResult<bo
     Ok(true)
 }
 
-/// Remove the logins that have run out, and say how many went. Their client
-/// sessions go with them, by the cascade.
-///
-/// A login with no expiry stays: absent means opened without one, not ended at
-/// the epoch. So does one an offline grant still hangs off, since the client
-/// sessions cascade and taking the login would take the grant with it.
 /// End every login this person holds, and every grant hanging off them.
 ///
 /// Offline grants go too. A reset because somebody else knows the password
@@ -332,6 +326,12 @@ pub async fn drop_expired_client_sessions(
         .map_err(|_| StoreError::Backend)
 }
 
+/// Remove the logins that have run out, and say how many went. Their client
+/// sessions go with them, by the cascade.
+///
+/// A login with no expiry stays: absent means opened without one, not ended at
+/// the epoch. So does one an offline grant still hangs off, since the client
+/// sessions cascade and taking the login would take the grant with it.
 pub async fn drop_expired_sessions(
     transaction: &UnitOfWork,
     now: chrono::DateTime<chrono::Utc>,

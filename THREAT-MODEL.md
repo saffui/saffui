@@ -113,7 +113,7 @@ The data plane on `127.0.0.1:8080` by default and the operations port on
 `127.0.0.1:8081` by default, bound separately so a probe is never reachable from
 wherever the data plane is published
 (`crates/saffui/src/main.rs:40`, `crates/saffui/src/main.rs:44`,
-`crates/server/src/api/config.rs:521`).
+`crates/server/src/api/config.rs:541`).
 
 Request bodies are bounded explicitly rather than by whatever a dependency
 defaults to: 8 KiB on the protocol doors, 8 KiB on the account plane, 512 KiB
@@ -253,6 +253,7 @@ answers it, or the word that says nothing does.
 | T-EDGE-4 | The server made to fetch inside its own network on somebody's say so | TA-3, TA-4 | One builder for every outbound HTTP call, scheme by policy and address by resolver, no redirect followed (`crates/outbound/src/egress.rs:104`), including the sinks a client's own registration names (`crates/server/src/api/rest/endpoints/protocol/backchannel.rs:20`, `crates/server/src/api/rest/endpoints/protocol/ciba.rs:579`); the relay a realm names for its mail is weighed under the same policy before it is dialled, the relay probe included (`crates/outbound/src/smtp.rs:164`) |
 | T-EDGE-5 | A relay or a gateway a realm names made to hold the server: a line that never ends, a conversation that never does, or a slow one keeping a database connection while it lasts | TA-3 | One deadline for the whole conversation with a relay, and a bound on each line and each reply it speaks (`crates/outbound/src/smtp.rs:28`, `:433`, `:424`); a call to a gateway bounded as a whole (`crates/outbound/src/egress.rs:107`); the doors that test a relay or a gateway give their database connection back before they dial (`crates/server/src/api/rest/endpoints/admin/mail.rs:85`, `:256`, `crates/server/src/api/rest/endpoints/admin/sms.rs:75`) |
 | T-EDGE-6 | A reply slipped in before TLS starts, or a letter ended early so that a second rides behind it | TA-6, TA-3 | Nothing but EHLO and STARTTLS is said before TLS, and a relay that does not offer it is left (`crates/outbound/src/smtp.rs:135`); bytes that came with the acceptance of STARTTLS end the conversation (`:518`); a command never carries a line break (`:475`), and DATA ends every line with CRLF whatever ended it and doubles a leading dot, so a realm's own wording cannot end a letter early (`:612`) |
+| T-EDGE-7 | A secret sent in the clear to a door mounted beside the protocol plane, a collector's bearer, a USSD gateway's secret or an agent's token, or a body read at length before any of them is checked | TA-6, TA-1 | The collector's poll, the gateway's callback and the MCP door answer to the realm's word on plain connections as the protocol plane does, judged before the body is read, and each states how much it reads before authenticating (`crates/server/src/api/config.rs:141`, `:150`, `:159`, `:58`) |
 
 ### The sign in door
 

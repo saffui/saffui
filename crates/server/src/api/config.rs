@@ -53,6 +53,10 @@ const ACCOUNT_BODY: usize = 8 * 1024;
 /// of up to the 256 KiB a message may hold, a third more once encoded.
 const SAML_BODY: usize = 512 * 1024;
 
+/// How much JSON a collecting receiver may send when it polls: the
+/// acknowledgements and the errors for one batch of at most a hundred events.
+const SSF_POLL_BODY: usize = 64 * 1024;
+
 /// Everything the planes need to answer.
 #[derive(Clone)]
 pub struct Plane {
@@ -128,19 +132,35 @@ pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone +
                 web::resource("/realms/{realm}/.well-known/ssf-configuration")
                     .route(web::get().to(discovery::ssf_configuration)),
             )
+            // Each of the next three doors takes a secret, so each answers to
+            // the realm's word on plain connections before its body is read,
+            // and states how much of a body it reads before authenticating.
+            //
             // Where a collecting receiver comes for its events, RFC 8936.
-            .service(web::resource("/realms/{realm}/ssf/poll").route(web::post().to(ssf::poll)))
+            .service(
+                web::resource("/realms/{realm}/ssf/poll")
+                    .wrap(crate::middleware::transport::SecuredTransport)
+                    .app_data(web::JsonConfig::default().limit(SSF_POLL_BODY))
+                    .route(web::post().to(ssf::poll)),
+            )
             // Where a USSD gateway's callback lands: the person is the
             // dialling number, the gateway proves itself with the realm's
             // secret, and the answer is a CON or END screen.
             .service(
                 web::resource("/realms/{realm}/ussd/callback")
+                    .wrap(crate::middleware::transport::SecuredTransport)
+                    .app_data(web::FormConfig::default().limit(PROTOCOL_BODY))
                     .route(web::post().to(ussd::callback)),
             )
             // The native MCP door: an agent obtains and attenuates its
             // capability tokens over the protocol it already speaks. The
             // whole door answers to the realm's agent switch.
-            .service(web::resource("/realms/{realm}/mcp").route(web::post().to(mcp::serve)))
+            .service(
+                web::resource("/realms/{realm}/mcp")
+                    .wrap(crate::middleware::transport::SecuredTransport)
+                    .app_data(web::JsonConfig::default().limit(PROTOCOL_BODY))
+                    .route(web::post().to(mcp::serve)),
+            )
             // The same document at the name RFC 8414 §3.1 gives it: the
             // well-known segment goes after the host and the issuer's path
             // after that, so a client that reads OAuth metadata and one that

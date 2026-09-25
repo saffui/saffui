@@ -326,3 +326,56 @@ async fn a_signed_request_is_read_under_the_keys_its_client_publishes() {
     );
     handle.stop(false).await;
 }
+
+/// A hint token naming an address two accounts share names neither of them,
+/// as a plain hint does: the request opens as the ghost, on nobody's doorbell.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_hint_token_naming_a_shared_address_names_neither() {
+    let plane = Plane::with_actions(&[]).await;
+    let key = SigningKey::generate("ciba-signer");
+    opted_signing(&plane, &key).await;
+    plane.plant_account_sharing_subject_email().await;
+    plane.open_login_of("twin-login", "ada-twin").await;
+
+    let hinted = hint_token(&key, "email", support::SUBJECT_EMAIL);
+    let request = signed_request(
+        &key,
+        &[
+            ("scope", Value::from("openid")),
+            ("login_hint_token", Value::from(hinted)),
+        ],
+    );
+    let (status, opened) = posted(&plane, &[("request", &request)]).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a shared address was told apart: {opened}"
+    );
+
+    let mut twin_claims = support::account_console_claims();
+    for (named, value) in [("sub", "ada-twin"), ("sid", "twin-login")] {
+        twin_claims
+            .set_claim(named, Some(Value::from(value)))
+            .expect("a claim");
+    }
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    for claims in [support::account_console_claims(), twin_claims] {
+        let response = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!(
+                    "/realms/{REALM}/protocol/openid-connect/bc-pending"
+                ))
+                .insert_header(("authorization", format!("Bearer {}", plane.token(&claims))))
+                .to_request(),
+        )
+        .await;
+        let waiting: Value = test::read_body_json(response).await;
+        assert_eq!(
+            waiting["pending"].as_array().map(Vec::len),
+            Some(0),
+            "an address two accounts share rang one of them: {waiting}"
+        );
+    }
+}

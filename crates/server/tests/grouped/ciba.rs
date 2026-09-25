@@ -855,6 +855,85 @@ async fn a_refusal_an_expiry_and_a_ghost_all_answer_their_own_words() {
     );
 }
 
+/// The binding messages waiting on the doorbell of whoever holds `bearer`.
+async fn waiting_for(plane: &Plane, bearer: &str) -> Vec<String> {
+    let (_, pending) = as_person(
+        plane,
+        actix_web::http::Method::GET,
+        "/bc-pending",
+        bearer,
+        None,
+    )
+    .await;
+    pending["pending"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .filter_map(|entry| entry["binding_message"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// An address names its one holder, and an address two accounts share names
+/// neither, as at the login: the request opens as the ghost an unknown hint
+/// opens, rather than ringing whichever account the store read first.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_address_two_accounts_share_names_neither() {
+    let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
+    opted_in(&plane).await;
+    let ada = ada_bearer(&plane);
+
+    let (status, opened) = posted(
+        &plane,
+        "/bc-authorize",
+        &[
+            ("login_hint", support::SUBJECT_EMAIL),
+            ("binding_message", "held alone"),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    assert!(
+        waiting_for(&plane, &ada)
+            .await
+            .contains(&"held alone".to_owned()),
+        "an address one account holds rang nobody"
+    );
+
+    plane.plant_account_sharing_subject_email().await;
+    open_login_of(&plane, "ada-twin", "twin-login").await;
+    let mut twin_claims = support::account_console_claims();
+    for (named, value) in [("sub", "ada-twin"), ("sid", "twin-login")] {
+        twin_claims
+            .set_claim(named, Some(json!(value)))
+            .expect("a claim");
+    }
+    let twin = plane.token(&twin_claims);
+
+    let (status, opened) = posted(
+        &plane,
+        "/bc-authorize",
+        &[
+            ("login_hint", support::SUBJECT_EMAIL),
+            ("binding_message", "held twice"),
+        ],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a shared address was told apart: {opened}"
+    );
+    for bearer in [&ada, &twin] {
+        assert!(
+            !waiting_for(&plane, bearer)
+                .await
+                .contains(&"held twice".to_owned()),
+            "an address two accounts share rang one of them"
+        );
+    }
+}
+
 async fn opted_ping(plane: &Plane, endpoint: &str) {
     use models::entities::attributes::AttributeValue;
     use store::tenancy::TenantContext;

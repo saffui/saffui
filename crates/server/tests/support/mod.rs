@@ -1148,6 +1148,36 @@ impl Plane {
         transaction.commit().await.unwrap();
     }
 
+    /// A second account holding ada's address, as a realm that lets two
+    /// accounts share one does.
+    #[allow(dead_code, reason = "only the decoupled suite shares an address")]
+    pub async fn plant_account_sharing_subject_email(&self) {
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
+        let sharing = UserCreateModel {
+            user_name: "ada-twin".into(),
+            enabled: true,
+            email: SUBJECT_EMAIL.into(),
+            email_verified: Some(true),
+            phone_number: None,
+            phone_number_verified: None,
+            required_actions: None,
+            not_before: None,
+            user_storage: None,
+            attributes: None,
+            is_service_account: None,
+            service_account_client_link: None,
+        }
+        .into_model(
+            "ada-twin".into(),
+            REALM.into(),
+            AuditableModel::from_creator(TENANT.to_owned(), "root".to_owned()),
+        );
+        store::providers::directory::users::create(&transaction, &sharing)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+    }
+
     /// A realm that counts, with a threshold a test can reach.
     #[allow(dead_code, reason = "only the suites that hammer a password arm it")]
     pub async fn count_logins(&self, max_failures: i32) {

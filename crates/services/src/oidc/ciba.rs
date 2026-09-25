@@ -428,7 +428,7 @@ pub struct Unrecorded;
 
 /// Who the hint names, among the people who may still sign in. Naming nobody
 /// is an answer; only a hint that cannot be read, or a realm that cannot be,
-/// is refused.
+/// is refused. An address two accounts share names neither, as at the login.
 pub async fn read_hinted_person(
     transaction: &UnitOfWork,
     presented: &ClientModel,
@@ -439,7 +439,7 @@ pub async fn read_hinted_person(
     match hint {
         Hint::Named(named) => {
             let found = if named.contains('@') {
-                users::load_by_email(transaction, named).await
+                users::sole_by_email(transaction, named).await
             } else {
                 users::load_by_name(transaction, named).await
             };
@@ -456,7 +456,7 @@ pub async fn read_hinted_person(
             };
             let found = match read_hint_token(presented, algorithm, token)? {
                 Hinted::Subject(subject) => users::load(transaction, &subject).await,
-                Hinted::Email(address) => users::load_by_email(transaction, &address).await,
+                Hinted::Email(address) => users::sole_by_email(transaction, &address).await,
             };
             Ok(found.map_err(|_| unreadable())?.filter(|held| held.enabled))
         }

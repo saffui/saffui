@@ -29,8 +29,17 @@ pub async fn tell(
     egress: web::Data<config::serving::Egress>,
 ) -> HttpResponse {
     let now = Utc::now();
-    let Some(bearer) = presented(&request, body.as_deref()) else {
+    let Some((bearer, scheme)) = presented(&request, body.as_deref()) else {
         return challenged("a bearer token is required");
+    };
+    // RFC 9449 §7.1: a caller speaking DPoP is refused in DPoP's own words.
+    let speaks_dpop = scheme == userinfo::Scheme::Dpop || request.headers().contains_key("dpop");
+    let refused = |description: &str| {
+        if speaks_dpop {
+            challenged_dpop("invalid_token", description)
+        } else {
+            challenged(description)
+        }
     };
     // Answered as an unacceptable token, not as a missing realm: which realms
     // exist is not something a caller holding no valid token gets to map.
@@ -62,13 +71,13 @@ pub async fn tell(
     // §4.3: one proof and exactly one. Reading the first of two would verify
     // one header while the other rode along unexamined.
     if request.headers().get_all("dpop").count() > 1 {
-        return challenged("one proof, exactly");
+        return challenged_dpop("invalid_dpop_proof", "one proof, exactly");
     }
     let proven = match request.headers().get("dpop") {
         None => None,
         Some(proof) => {
             let Ok(proof) = proof.to_str() else {
-                return challenged("the proof could not be read");
+                return challenged_dpop("invalid_dpop_proof", "the proof could not be read");
             };
             match services::client::dpop::proven(
                 &transaction,
@@ -88,7 +97,12 @@ pub async fn tell(
             .await
             {
                 Ok(proven) => Some(proven),
-                Err(_) => return challenged("the proof does not bind this request"),
+                Err(_) => {
+                    return challenged_dpop(
+                        "invalid_dpop_proof",
+                        "the proof does not bind this request",
+                    );
+                }
             }
         }
     };
@@ -113,6 +127,7 @@ pub async fn tell(
         &transaction,
         &keys,
         &bearer,
+        scheme,
         services::token::Proofs {
             key: proven.as_ref(),
             certificate: certificate.as_deref(),
@@ -192,7 +207,7 @@ pub async fn tell(
         }
         Err(Untold::InvalidToken) => {
             tracing::warn!("userinfo refused");
-            challenged("the token presented is not one this realm accepts")
+            refused("the token presented is not one this realm accepts")
         }
         Err(Untold::Unreadable) => faulted(),
     }
@@ -207,24 +222,25 @@ pub struct Carried {
 /// The header, or the form field RFC 6750 §2.2 also allows, and never both.
 /// The query form is deliberately not read: a token in a URL lands in logs
 /// and history.
-fn presented(request: &HttpRequest, body: Option<&Carried>) -> Option<String> {
+fn presented(request: &HttpRequest, body: Option<&Carried>) -> Option<(String, userinfo::Scheme)> {
     // RFC 9449 §7.1 beside RFC 6750: a bound token arrives under the `DPoP`
     // scheme, an unbound one under `Bearer`, and the scheme is name-matched
-    // the case-insensitive way §11.1 of RFC 9110 reads every scheme. Which
-    // proof the token then needs is the token's `cnf` to say, not the
-    // scheme's.
-    let from_header = basic::bearer(request).or_else(|| {
-        let header = request.headers().get("authorization")?.to_str().ok()?;
-        let (scheme, token) = header.split_once(' ')?;
-        if !scheme.eq_ignore_ascii_case("DPoP") {
-            return None;
-        }
-        let token = token.trim();
-        (!token.is_empty()).then(|| token.to_owned())
-    });
+    // the case-insensitive way §11.1 of RFC 9110 reads every scheme. The
+    // scheme is kept, since it has to agree with what the token is.
+    let from_header = basic::bearer(request)
+        .map(|token| (token, userinfo::Scheme::Bearer))
+        .or_else(|| {
+            let header = request.headers().get("authorization")?.to_str().ok()?;
+            let (scheme, token) = header.split_once(' ')?;
+            if !scheme.eq_ignore_ascii_case("DPoP") {
+                return None;
+            }
+            let token = token.trim();
+            (!token.is_empty()).then(|| (token.to_owned(), userinfo::Scheme::Dpop))
+        });
     match (from_header, body.and_then(|form| form.access_token.clone())) {
         (Some(header), None) => Some(header),
-        (None, Some(field)) if !field.is_empty() => Some(field),
+        (None, Some(field)) if !field.is_empty() => Some((field, userinfo::Scheme::Bearer)),
         // Two tokens is one more than a request may carry: §2 forbids it, and
         // picking one would let the other ride along unexamined.
         _ => None,
@@ -241,6 +257,23 @@ fn challenged(description: &str) -> HttpResponse {
         ))
         .json(json!({
             "error": "invalid_token",
+            "error_description": description,
+        }))
+}
+
+/// RFC 9449 §7.1: the same refusal in DPoP's words, naming the algorithms a
+/// proof may be signed with.
+fn challenged_dpop(error: &str, description: &str) -> HttpResponse {
+    uncached(&mut HttpResponseBuilder::new(StatusCode::UNAUTHORIZED))
+        .insert_header((
+            "WWW-Authenticate",
+            format!(
+                r#"DPoP error="{error}", error_description="{description}", algs="{}""#,
+                services::client::dpop::SIGNING_ALGORITHMS.join(" ")
+            ),
+        ))
+        .json(json!({
+            "error": error,
             "error_description": description,
         }))
 }

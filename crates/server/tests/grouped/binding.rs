@@ -128,7 +128,15 @@ async fn userinfo(plane: &Plane, access: &str, proof: Option<&str>) -> StatusCod
             "/realms/{}/protocol/openid-connect/userinfo",
             support::REALM
         ))
-        .insert_header(("authorization", format!("Bearer {access}")));
+        // RFC 9449 §7.1: a token presented with its proof rides the DPoP
+        // scheme.
+        .insert_header((
+            "authorization",
+            format!(
+                "{} {access}",
+                if proof.is_some() { "DPoP" } else { "Bearer" }
+            ),
+        ));
     if let Some(proof) = proof {
         asked = asked.insert_header(("dpop", proof.to_owned()));
     }
@@ -217,6 +225,75 @@ async fn the_holder_of_the_key_is_let_through() {
 
     let held = key.proof("GET", &at("userinfo"), Some(access), "two", now());
     assert_eq!(userinfo(&plane, access, Some(&held)).await, StatusCode::OK);
+}
+
+/// RFC 9449 §7.2 and §7.1: the scheme has to say what the token is. A token
+/// bound to a key is refused under the bearer scheme even with its proof
+/// beside it, and one bound to nothing is refused under DPoP; either refusal
+/// speaks DPoP, naming the algorithms a proof may be signed with.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_scheme_has_to_say_what_the_token_is() {
+    let plane = Plane::with_actions(&[]).await;
+    let key = SigningKey::generate("holder");
+    let presented = |scheme: &'static str, access: String, proof: String| {
+        let plane = &plane;
+        async move {
+            let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+            let response = test::call_service(
+                &app,
+                test::TestRequest::get()
+                    .uri(&format!(
+                        "/realms/{}/protocol/openid-connect/userinfo",
+                        support::REALM
+                    ))
+                    .insert_header(("authorization", format!("{scheme} {access}")))
+                    .insert_header(("dpop", proof))
+                    .to_request(),
+            )
+            .await;
+            let challenge = response
+                .headers()
+                .get("www-authenticate")
+                .and_then(|held| held.to_str().ok())
+                .unwrap_or_default()
+                .to_owned();
+            (response.status(), challenge)
+        }
+    };
+
+    let proof = key.proof("POST", &at("token"), None, "one", now());
+    let (_, granted) = exchanged(&plane, &code_for(&plane).await, Some(&proof)).await;
+    let bound = granted["access_token"]
+        .as_str()
+        .expect("a bound token")
+        .to_owned();
+    let held = key.proof("GET", &at("userinfo"), Some(&bound), "two", now());
+    let (status, challenge) = presented("Bearer", bound, held).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a token bound to a key was read under the bearer scheme"
+    );
+    assert!(
+        challenge.starts_with("DPoP ")
+            && challenge.contains("algs=\"")
+            && challenge.contains("ES256"),
+        "the refusal does not speak DPoP: {challenge}"
+    );
+
+    let (_, granted) = exchanged(&plane, &code_for(&plane).await, None).await;
+    let unbound = granted["access_token"]
+        .as_str()
+        .expect("a token")
+        .to_owned();
+    let held = key.proof("GET", &at("userinfo"), Some(&unbound), "three", now());
+    let (status, _) = presented("DPoP", unbound, held).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a token bound to no key was read under the DPoP scheme"
+    );
 }
 
 /// A caller that proves nothing still gets what it always got.

@@ -263,6 +263,26 @@ pub fn decide(
     }
 }
 
+/// Whether an authentication that reached `reached` meets what was asked of it
+/// as essential.
+///
+/// OIDC Core §5.5.1.1 has a server that cannot meet an essential `acr` treat
+/// the outcome as a failed authentication, never answer at a lower level. A
+/// voluntary request is met whatever was reached; an essential one naming
+/// nothing this realm maps is met by nothing.
+pub fn meets_essential(
+    request: &AuthContextRequest,
+    map: &AcrLoaMap,
+    reached: Option<i32>,
+) -> bool {
+    if request.requirement != AcrRequirement::Essential {
+        return true;
+    }
+    request
+        .required_loa(map)
+        .is_some_and(|needed| reached.is_some_and(|loa| loa >= needed))
+}
+
 /// The `acr` claim to put in a token, for what was actually achieved.
 ///
 /// The realm's strongest name at or below the achieved level, never the
@@ -317,6 +337,33 @@ mod tests {
             None,
             "below every mapped level, omitted rather than guessed"
         );
+    }
+
+    /// An essential `acr` is met only at its level or above, and by nothing when
+    /// the realm maps none of it; a voluntary one is met whatever was reached,
+    /// nothing included.
+    #[test]
+    fn an_essential_context_is_met_only_at_its_level() {
+        let map = realm_map();
+        let essential =
+            AuthContextRequest::none().with_acr_values("mfa", AcrRequirement::Essential);
+
+        assert!(!meets_essential(&essential, &map, Some(1)));
+        assert!(meets_essential(&essential, &map, Some(2)));
+        assert!(meets_essential(&essential, &map, Some(3)));
+        assert!(
+            !meets_essential(&essential, &map, None),
+            "a login reaching no level met an essential one"
+        );
+
+        let unmapped =
+            AuthContextRequest::none().with_acr_values("platinum", AcrRequirement::Essential);
+        assert!(!meets_essential(&unmapped, &map, Some(99)));
+
+        let voluntary =
+            AuthContextRequest::none().with_acr_values("hardware", AcrRequirement::Voluntary);
+        assert!(meets_essential(&voluntary, &map, Some(1)));
+        assert!(meets_essential(&voluntary, &map, None));
     }
 
     /// `acr_values` is ordered by preference and any of them is acceptable, so

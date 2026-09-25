@@ -1,8 +1,10 @@
 use chrono::{DateTime, Duration, Utc};
 use crypto::provider::CryptoProvider;
 use data_encoding::HEXLOWER;
-use models::entities::acr::{self, AchievedAuth};
+use models::claims_request::ClaimsRequest;
+use models::entities::acr::{self, AchievedAuth, AcrLoaMap, AcrRequirement, AuthContextRequest};
 use models::entities::oidc::AuthorizationCode;
+use models::entities::realm::RealmModel;
 use serde_json::Value;
 use store::providers::protocol::{login, oidc};
 use store::tenancy::{TenantContext, UnitOfWork};
@@ -261,6 +263,17 @@ pub async fn landed(
             return Err(Unanswerable::Unreadable);
         }
     };
+    // OIDC Core §5.5.1.1: an `acr` the request named as essential and this
+    // login did not reach is a failed authentication, told to the client and
+    // never answered at a lower level. The person is signed in all the same;
+    // it is the client's request that could not be met.
+    if !reached_what_was_essential(notes, realm, admitted.reached) {
+        return Ok(refused(
+            &admitted.login,
+            "unmet_authentication_requirements",
+            issuer,
+        ));
+    }
 
     // A login opened by a typed device code, RFC 8628 §3.3: its whole answer
     // is the row it approves. The device is polling for that row, so nothing
@@ -344,6 +357,30 @@ pub async fn landed(
         now,
     )
     .await
+}
+
+/// Whether the login reached every `acr` its request named as essential. A
+/// request naming none, or naming them as a hint, asked nothing of it.
+fn reached_what_was_essential(notes: &Value, realm: &RealmModel, reached: Option<i32>) -> bool {
+    let Some((named, true)) = notes
+        .get("claims")
+        .filter(|asked| asked.is_object())
+        .and_then(|asked| ClaimsRequest::from_value(asked).contexts_asked())
+    else {
+        return true;
+    };
+    let asked = AuthContextRequest {
+        acr_values: named,
+        requirement: AcrRequirement::Essential,
+        max_age: None,
+        prompt_login: false,
+    };
+    let unmapped = AcrLoaMap::new();
+    acr::meets_essential(
+        &asked,
+        realm.acr_loa_map.as_ref().unwrap_or(&unmapped),
+        reached,
+    )
 }
 
 /// Where the browser goes when the login ended without establishing anybody.

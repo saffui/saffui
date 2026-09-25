@@ -4693,6 +4693,54 @@ async fn an_essential_context_the_realm_cannot_reach_fails_the_request() {
     );
 }
 
+/// OIDC Core §5.5.1.1: an essential `acr` the realm maps but the login does not
+/// reach fails the login, told to the client and never answered at a lower
+/// level. The realm's own flow asks for a password alone, so an essential
+/// second factor is out of its reach while an essential password is met.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_essential_context_the_login_does_not_reach_fails_it() {
+    let plane = Plane::with_actions(&[]).await;
+    for (asked, met) in [(support::STRONG_ACR, false), (support::PASSWORD_ACR, true)] {
+        let mut owned = started(support::CONFIDENTIAL);
+        owned.push((
+            "claims",
+            format!(r#"{{"id_token": {{"acr": {{"essential": true, "values": ["{asked}"]}}}}}}"#),
+        ));
+        let (status, location, opened) = authorize_with_cookies(&plane, &as_pairs(&owned)).await;
+        assert_eq!(status, StatusCode::FOUND, "{asked}");
+        assert!(
+            location.starts_with("https://login.test"),
+            "{asked}: no login started: {location}"
+        );
+        let binding = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+        let (status, told, _) = login_step(
+            &plane,
+            Some(&binding),
+            serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{asked}: {told}");
+        let landing = told["redirect_to"].as_str().expect("a landing");
+        assert!(landing.starts_with(REDIRECT), "{asked}: {landing}");
+        if met {
+            assert_eq!(told["status"], "admitted", "{asked}: {told}");
+            assert!(landing.contains("code="), "{asked}: {landing}");
+        } else {
+            assert_eq!(
+                told["status"], "sent_back",
+                "a login short of an essential context was admitted: {told}"
+            );
+            assert!(
+                landing.contains("error=unmet_authentication_requirements")
+                    && landing.contains("state=opaque-state")
+                    && !landing.contains("code="),
+                "{landing}"
+            );
+        }
+    }
+}
+
 /// OIDC Core §5.1.1: the `address` scope releases one object, of whichever
 /// components the realm holds, as strings. Asked for by scope, and by name.
 #[tokio::test]

@@ -827,6 +827,75 @@ async fn a_client_without_a_root_cannot_ask_for_capabilities() {
     assert_eq!(told["error"], "unauthorized_client", "{told}");
 }
 
+/// A policy named in part, or with a part in a shape nobody reads, is a
+/// policy nobody can answer: the exchange is refused rather than let through
+/// unasked.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_policy_named_in_part_refuses_the_exchange() {
+    use models::entities::attributes::AttributeValue;
+    use store::tenancy::TenantContext;
+
+    let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
+    opted_in(&plane, support::CONFIDENTIAL).await;
+    let minted = subject_tokens(&plane, "openid").await;
+    let subject_token = minted["access_token"].as_str().expect("an access token");
+    let text = |held: &str| AttributeValue::Str(held.to_owned());
+
+    for (label, named) in [
+        (
+            "one part of three",
+            vec![("token.exchange.policy_server", text(support::CONFIDENTIAL))],
+        ),
+        (
+            "a part in a shape nobody reads",
+            vec![
+                ("token.exchange.policy_server", text(support::CONFIDENTIAL)),
+                ("token.exchange.policy_resource", text("exchange")),
+                ("token.exchange.policy_scope", AttributeValue::Bool(true)),
+            ],
+        ),
+    ] {
+        let transaction = plane
+            .scoped(&TenantContext::new(support::TENANT, REALM))
+            .await;
+        let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
+            .await
+            .unwrap()
+            .expect("the client");
+        let bag = client.configs.get_or_insert_with(Default::default);
+        for key in [
+            "token.exchange.policy_server",
+            "token.exchange.policy_resource",
+            "token.exchange.policy_scope",
+        ] {
+            bag.remove(key);
+        }
+        for (key, value) in named {
+            bag.insert(key.to_owned(), value);
+        }
+        assert!(
+            store::providers::clients::update(&transaction, &client)
+                .await
+                .unwrap()
+        );
+        transaction.commit().await.unwrap();
+
+        let (status, told) = asking(
+            &plane,
+            &[
+                ("grant_type", EXCHANGE),
+                ("subject_token", subject_token),
+                ("subject_token_type", ACCESS_TYPE),
+            ],
+            Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{label}: {told}");
+        assert_eq!(told["error"], "unauthorized_client", "{label}: {told}");
+    }
+}
+
 /// Closing the exchange for a realm stops the door and the advertisement
 /// together.
 ///

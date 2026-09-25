@@ -1636,6 +1636,14 @@ pub const EXCHANGE_FLAG: &str = "token.exchange.enabled";
 /// spread over a list. Absent means any; the client itself always stands.
 pub const EXCHANGE_AUDIENCES: &str = "token.exchange.audiences";
 
+/// The permission an exchange by this client is decided against: the
+/// resource server, the resource and the scope, all three or none.
+const EXCHANGE_POLICY: [&str; 3] = [
+    "token.exchange.policy_server",
+    "token.exchange.policy_resource",
+    "token.exchange.policy_scope",
+];
+
 /// The capability root an agent client holds, space-separated tool names or
 /// prefixes ending in `*`. Its presence is what makes a client an agent:
 /// only a bag holding one can mint capability tokens.
@@ -1814,12 +1822,21 @@ pub async fn token_exchange(
 
     // The operator's fine policy, when the client bag names one: the engine
     // that already answers permission questions answers this one, in the
-    // subject's name, journalled like every decision it makes.
-    if let (Some(server), Some(resource), Some(scope)) = (
-        exchange_policy(client, "token.exchange.policy_server"),
-        exchange_policy(client, "token.exchange.policy_resource"),
-        exchange_policy(client, "token.exchange.policy_scope"),
-    ) {
+    // subject's name, journalled like every decision it makes. A policy named
+    // in part, or in a shape nobody reads, is one nobody can answer, and
+    // refuses rather than lets the exchange through unasked.
+    let [server, resource, scope] = EXCHANGE_POLICY.map(|key| exchange_policy(client, key));
+    let named = EXCHANGE_POLICY.iter().any(|key| {
+        client
+            .configs
+            .as_ref()
+            .and_then(|bag| bag.get(*key))
+            .is_some_and(|held| held.as_str().is_none_or(|text| !text.trim().is_empty()))
+    });
+    if named && (server.is_none() || resource.is_none() || scope.is_none()) {
+        return Err(Ungranted::Unauthorized);
+    }
+    if let (Some(server), Some(resource), Some(scope)) = (server, resource, scope) {
         let Some(journal) = journal else {
             return Err(Ungranted::Unreadable);
         };

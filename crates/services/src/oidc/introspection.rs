@@ -72,11 +72,21 @@ pub async fn introspect(
     if let Some(party) = party {
         told.insert("client_id".into(), json!(party));
     }
+    // RFC 9449 §6.2: an access token bound to a key is a DPoP token, and a
+    // resource server reading `Bearer` would take it as one anybody may show.
     if kind == Some(Kind::Access.claimed()) {
-        told.insert("token_type".into(), json!("Bearer"));
+        let bound_to_a_key = verified
+            .claims
+            .get("cnf")
+            .is_some_and(|held| held.get("jkt").is_some());
+        let named = if bound_to_a_key { "DPoP" } else { "Bearer" };
+        told.insert("token_type".into(), json!(named));
     }
+    // The binding travels whole, RFC 9449 §6.2 and RFC 8705 §3.2: this door
+    // verifies a token for whoever asks and cannot demand its proof, so the
+    // resource server holding the proof is the one that has to compare.
     for named in [
-        "scope", "sub", "aud", "iss", "exp", "iat", "nbf", "jti", "sid", "act", "cap",
+        "scope", "sub", "aud", "iss", "exp", "iat", "nbf", "jti", "sid", "act", "cap", "cnf",
     ] {
         if let Some(value) = verified.claims.get(named) {
             told.insert(named.into(), value.clone());

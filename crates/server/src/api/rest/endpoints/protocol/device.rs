@@ -7,9 +7,11 @@ use store::tenancy::{RealmNamed, Tenancy};
 
 use config::serving::LoginUi;
 
+use crate::api::provenance::read_provenance;
 use crate::api::rest::endpoints::protocol::dto::{Denied, answer_unavailable, uncached};
 use crate::api::rest::endpoints::protocol::{binding, caller, i18n, page};
 use outbound::Sealing;
+use services::oidc::device::Unverifiable;
 
 /// How long the login a typed code opens may sit half finished; the cookie
 /// lives as long as the row.
@@ -148,13 +150,14 @@ pub struct Typed {
 
 /// §3.3, the typed code. A live one turns into an ordinary login for the
 /// device's client, answered on the login page; anything else lands back on
-/// the device page saying only that the code does not stand.
+/// the device page saying only that the code does not stand, or that the
+/// address typing it has missed too often to try again yet.
 #[allow(
     clippy::too_many_arguments,
     reason = "each is a distinct fact about one request"
 )]
 pub async fn verify(
-    _request: HttpRequest,
+    request: HttpRequest,
     realm: web::Path<String>,
     body: Option<web::Form<Typed>>,
     tenancy: web::Data<Tenancy>,
@@ -167,10 +170,8 @@ pub async fn verify(
         .map(web::Form::into_inner)
         .and_then(|body| body.user_code)
         .unwrap_or_default();
-    let back = format!(
-        "/realms/{}/protocol/openid-connect/device#no-such-code",
-        realm.as_str()
-    );
+    let page_at = format!("/realms/{}/protocol/openid-connect/device", realm.as_str());
+    let back = format!("{page_at}#no-such-code");
     let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
         Ok(context) => context,
         Err(StoreError::Unavailable) => return page::notice_unavailable(),
@@ -185,13 +186,26 @@ pub async fn verify(
         &transaction,
         sealing.provider.as_ref(),
         &context.realm_id,
+        read_provenance(&request).address.as_deref(),
         &typed,
         now,
     )
     .await
     {
         Ok(opened) => opened,
-        Err(_) => return sent_back(&back),
+        // The count is the refusal: rolled back, a wrong guess would cost
+        // nothing and the address would never be turned away.
+        Err(Unverifiable::NoSuchCode) => {
+            if transaction.commit().await.is_err() {
+                return page::notice_unavailable();
+            }
+            return sent_back(&back);
+        }
+        Err(Unverifiable::Throttled { until }) => {
+            tracing::warn!(until, "a device code typed from an address turned away");
+            return sent_back(&format!("{page_at}#throttled"));
+        }
+        Err(Unverifiable::Unreadable) => return sent_back(&back),
     };
     if transaction.commit().await.is_err() {
         return sent_back(&back);

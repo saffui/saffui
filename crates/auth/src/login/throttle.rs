@@ -6,7 +6,9 @@
 //! address shuts out that address and nobody else, which is why it is on in a
 //! stock realm while the lockout per person is not. A browser that proves it
 //! signed in under the typed name before is counted in place of its address,
-//! so the people behind one address are not turned away together.
+//! so the people behind one address are not turned away together. The short
+//! codes typed at the device page are counted per address too, under a key of
+//! their own.
 //!
 //! Every refusal counts, whether or not the answer was looked at, and whether
 //! or not anybody holds the name: a count that moved only for names somebody
@@ -31,6 +33,10 @@ const ADDRESS_ALONE: &str = "";
 
 /// How much of an address that is not one is kept as its key.
 const UNREAD_ADDRESS_LIMIT: usize = 64;
+
+/// What the short codes typed at the device page are counted under, beside the
+/// address's own count. Never a name's key: a name is counted as hex.
+const USER_CODES: &str = "user-code";
 
 /// What a device's count is kept under, before its identifier. Capitalised:
 /// every address is counted in lowercase, so none is ever counted as a device.
@@ -103,6 +109,13 @@ impl Knock {
             named: Some(counted.to_owned()).filter(|held| !held.is_empty()),
             on_device: false,
         }
+    }
+
+    /// A short code typed from `address` at the device page, RFC 8628 §5.1.
+    /// Its misses fill a count of their own, so a guesser is held long before
+    /// the address is.
+    pub fn typing_user_code(address: Option<&str>) -> Knock {
+        Knock::counted_as(address, USER_CODES)
     }
 
     /// The digest the typed name is counted under, when a name was typed.
@@ -355,6 +368,14 @@ mod tests {
         let nameless = Knock::counted_as(Some("203.0.113.7"), "").on_device(&device);
         assert!(!nameless.is_on_device());
         assert_eq!(nameless.source.as_deref(), Some("203.0.113.7"));
+    }
+
+    /// The codes typed at the device page share no count with any name.
+    #[test]
+    fn user_codes_are_counted_apart_from_every_name() {
+        let knock = Knock::typing_user_code(Some("203.0.113.7"));
+        assert_eq!(knock.keys(), [ADDRESS_ALONE, USER_CODES]);
+        assert!(HEXLOWER.decode(USER_CODES.as_bytes()).is_err());
     }
 
     #[test]

@@ -161,6 +161,30 @@ async fn a_gateway_proves_itself_or_hears_nothing() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
+/// Past its ceiling a callback is not read: the gateway is answered as one
+/// that sent no screen at all.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_callback_past_its_ceiling_is_not_read() {
+    let plane = Plane::with_actions(&[]).await;
+    arranged(&plane).await;
+    let (status, _) = dialled(&plane, Some(SECRET), "s1", "+22890123456", "").await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = dialled(
+        &plane,
+        Some(SECRET),
+        "s1",
+        "+22890123456",
+        &"1".repeat(9 * 1024),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a callback past its ceiling was read"
+    );
+}
+
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn an_unknown_number_hears_the_empty_doorbell_exactly() {

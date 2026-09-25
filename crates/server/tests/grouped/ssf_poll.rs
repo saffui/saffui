@@ -190,6 +190,22 @@ async fn a_collector_takes_its_events_and_acknowledges_them() {
         Some(1),
         "{again}"
     );
+    // Past its ceiling a poll is read as one that carried nothing: whatever
+    // it acknowledged is still waiting.
+    let (status, unread) = asked(
+        &plane,
+        Method::POST,
+        &format!("/realms/{REALM}/ssf/poll"),
+        "collector-secret",
+        Some(json!({ "ack": [jti], "padding": "p".repeat(64 * 1024) })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{unread}");
+    assert_eq!(
+        unread["sets"].as_object().map(serde_json::Map::len),
+        Some(1),
+        "a poll past its ceiling was read: {unread}"
+    );
     let (status, emptied) = asked(
         &plane,
         Method::POST,

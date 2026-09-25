@@ -6885,6 +6885,80 @@ async fn a_realm_that_insists_on_https_turns_the_plain_door_away() {
     .await;
 }
 
+/// The doors mounted beside the protocol plane that take a secret keep the
+/// realm's word on plain connections too: the collector's poll, the USSD
+/// gateway's callback and the MCP door turn a plain request away before its
+/// body is read, and answer a vouched https one as they always did. The MCP
+/// door reads no more of a body than it states.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn every_door_taking_a_secret_keeps_the_realms_https_rule() {
+    let plane = Plane::with_actions(&[]).await;
+    let mut behind_proxy = mounted(&plane);
+    behind_proxy.hops = config::proxying::Proxying::behind_peers(
+        1,
+        config::proxying::ProxyHeader::XForwardedFor,
+        vec![config::proxying::Peer::parse("127.0.0.1").expect("an address")],
+    )
+    .saying_the_scheme_in("x-forwarded-proto");
+    let app = test::init_service(App::new().configure(register(&behind_proxy))).await;
+    let proxied = std::net::SocketAddr::from(([127, 0, 0, 1], 34567));
+    reshape_realm(&plane, |realm| {
+        realm.ssl_enforcement = Some(models::entities::realm::SslEnforcement::Always);
+    })
+    .await;
+
+    for door in ["ssf/poll", "ussd/callback", "mcp"] {
+        let uri = format!("/realms/{}/{door}", support::REALM);
+        let posted = |scheme: Option<&'static str>| {
+            let mut request = test::TestRequest::post()
+                .uri(&uri)
+                .peer_addr(proxied)
+                .insert_header(("authorization", "Bearer a-secret-in-the-clear"))
+                .set_json(serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize" }));
+            if let Some(scheme) = scheme {
+                request = request.insert_header(("x-forwarded-proto", scheme));
+            }
+            request.to_request()
+        };
+        let response = test::call_service(&app, posted(None)).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "{door}: a plain request was answered"
+        );
+        let said: serde_json::Value = test::read_body_json(response).await;
+        assert_eq!(
+            said["error_description"], "this realm is served over https",
+            "{door}"
+        );
+        let response = test::call_service(&app, posted(Some("https"))).await;
+        assert_ne!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "{door}: a vouched https request was turned away"
+        );
+    }
+
+    let oversized = test::TestRequest::post()
+        .uri(&format!("/realms/{}/mcp", support::REALM))
+        .peer_addr(proxied)
+        .insert_header(("x-forwarded-proto", "https"))
+        .set_json(serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "m".repeat(9 * 1024) }))
+        .to_request();
+    let response = test::call_service(&app, oversized).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "the MCP door read past its ceiling"
+    );
+
+    reshape_realm(&plane, |realm| {
+        realm.ssl_enforcement = None;
+    })
+    .await;
+}
+
 /// The instruction to change a password finally instructs, and a stale one
 /// attaches it by itself.
 ///

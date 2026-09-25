@@ -1050,7 +1050,10 @@ pub async fn ciba(
         access_token: access.token,
         expires_in: lifespan.num_seconds(),
         scope,
-        id_token: id_token.map(|held| held.token),
+        id_token: id_token
+            .map(|held| crate::oidc::encryption::identity_for(client, held.token))
+            .transpose()
+            .map_err(|_| Unpolled::Backend)?,
         refresh_token: Some(refresh.token),
     })
 }
@@ -1259,13 +1262,21 @@ pub async fn device_code(
     )
     .await
     .map_err(|_| Unpolled::Backend)?;
+    if offline {
+        make_room_for_offline(transaction, within.realm, &person.user_id, now)
+            .await
+            .map_err(|_| Unpolled::Backend)?;
+    }
 
     Ok(Granted {
         issued_token_type: None,
         access_token: access.token,
         expires_in: lifespan.num_seconds(),
         scope,
-        id_token: id_token.map(|held| held.token),
+        id_token: id_token
+            .map(|held| crate::oidc::encryption::identity_for(client, held.token))
+            .transpose()
+            .map_err(|_| Unpolled::Backend)?,
         refresh_token: Some(refresh.token),
     })
 }

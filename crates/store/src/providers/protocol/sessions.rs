@@ -93,6 +93,29 @@ pub async fn load(
         .map(read_session))
 }
 
+/// One session by identifier, while the person it belongs to is switched on.
+/// Read in the same statement as the session, so it costs no second trip.
+pub async fn load_if_person_enabled(
+    transaction: &UnitOfWork,
+    session_id: &str,
+) -> StoreResult<Option<UserSessionModel>> {
+    let columns = SESSION_COLUMNS
+        .split(", ")
+        .map(|column| format!("s.{column}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let statement = format!(
+        "SELECT {columns} FROM user_sessions s \
+         JOIN users u USING (tenant, realm_id, user_id) \
+         WHERE s.session_id = $1 AND u.enabled"
+    );
+    Ok(transaction
+        .query_opt(statement.as_str(), &[&session_id])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .map(read_session))
+}
+
 /// Every session a user holds, newest first.
 pub async fn load_for_user(
     transaction: &UnitOfWork,
@@ -222,12 +245,6 @@ pub async fn close(transaction: &UnitOfWork, session_id: &str) -> StoreResult<bo
     Ok(true)
 }
 
-/// Remove the logins that have run out, and say how many went. Their client
-/// sessions go with them, by the cascade.
-///
-/// A login with no expiry stays: absent means opened without one, not ended at
-/// the epoch. So does one an offline grant still hangs off, since the client
-/// sessions cascade and taking the login would take the grant with it.
 /// End every login this person holds, and every grant hanging off them.
 ///
 /// Offline grants go too. A reset because somebody else knows the password
@@ -309,6 +326,12 @@ pub async fn drop_expired_client_sessions(
         .map_err(|_| StoreError::Backend)
 }
 
+/// Remove the logins that have run out, and say how many went. Their client
+/// sessions go with them, by the cascade.
+///
+/// A login with no expiry stays: absent means opened without one, not ended at
+/// the epoch. So does one an offline grant still hangs off, since the client
+/// sessions cascade and taking the login would take the grant with it.
 pub async fn drop_expired_sessions(
     transaction: &UnitOfWork,
     now: chrono::DateTime<chrono::Utc>,

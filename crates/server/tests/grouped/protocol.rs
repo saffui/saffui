@@ -1045,6 +1045,53 @@ async fn an_account_switched_off_renews_nothing() {
     );
 }
 
+/// A person switched off stands behind none of the logins she holds, however
+/// she was switched off: here where her row lives, with every login left
+/// standing, the way an operator's own hand in the database or a writer that
+/// forgets would leave it. Her browser's login mints no code, a code minted
+/// from it before is not spendable, and a token minted before is inactive.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_person_switched_off_stands_behind_none_of_her_logins() {
+    let plane = Plane::with_actions(&[]).await;
+    let owned = started(support::CONFIDENTIAL);
+    let asked = as_pairs(&owned);
+    let me = Some((support::CONFIDENTIAL, support::CLIENT_SECRET));
+    let code = plane
+        .mint_code(support::CONFIDENTIAL, REDIRECT, "openid", None)
+        .await;
+    let granted = spend_a_code(&plane, "openid").await;
+    let access = granted["access_token"].as_str().expect("an access token");
+    let (_, told) = asking_at(&plane, "introspect", &[("token", access)], me).await;
+    assert_eq!(told["active"], true, "the token was dead before: {told}");
+
+    plane.disable_subject().await;
+    assert!(
+        plane.session_exists(support::SESSION).await,
+        "the login went, so what follows proves nothing"
+    );
+
+    let (_, landing) = authorize_signed_in(&plane, &asked, support::SESSION).await;
+    assert_eq!(
+        landing, "https://login.test",
+        "the login she held minted a code: {landing}"
+    );
+    let (_, told) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        me,
+    )
+    .await;
+    assert_eq!(told["error"], "invalid_grant", "{told}");
+    let (_, told) = asking_at(&plane, "introspect", &[("token", access)], me).await;
+    assert_eq!(told["active"], false, "{told}");
+}
+
 /// Spend a code and return what came back, so a renewal test starts from a real
 /// token rather than one a test built.
 async fn spend_a_code(plane: &Plane, scope: &str) -> serde_json::Value {

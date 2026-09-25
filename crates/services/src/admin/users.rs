@@ -145,6 +145,7 @@ pub async fn update(
     spec: &Spec,
 ) -> Result<UserModel, Uncreatable> {
     let mut user = get(transaction, user_id).await?;
+    let was_enabled = user.enabled;
     if let Some(renamed) = spec
         .user_name
         .as_deref()
@@ -185,7 +186,7 @@ pub async fn update(
         user.required_actions = Some(actions.clone());
     }
     apply_attributes(&mut user, spec);
-    users::update(transaction, &user)
+    crate::directory::keep_person(transaction, &user, was_enabled)
         .await
         .map_err(|why| match why {
             StoreError::AlreadyExists => Uncreatable::AlreadyExists,

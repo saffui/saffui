@@ -1728,6 +1728,16 @@ impl Plane {
             .is_some()
     }
 
+    /// How many logins a person holds in the planted realm.
+    #[allow(dead_code, reason = "only the suites switching a person off ask")]
+    pub async fn logins_held_by(&self, user_id: &str) -> usize {
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
+        sessions::load_for_user(&transaction, user_id)
+            .await
+            .expect("the session table")
+            .len()
+    }
+
     /// A realm with a signing key, a role carrying exactly these actions, and a
     /// user holding it.
     pub async fn with_actions(held: &[AdminAction]) -> Self {

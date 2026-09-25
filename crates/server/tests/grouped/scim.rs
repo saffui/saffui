@@ -158,6 +158,10 @@ async fn a_provisioner_runs_a_whole_day() {
         StatusCode::OK,
         "the provisioned password did not open the door"
     );
+    assert!(
+        plane.logins_held_by(&id).await > 0,
+        "the sign-in opened no login"
+    );
 
     // Uniqueness speaks the protocol's word.
     let (status, told) = asked(
@@ -200,6 +204,11 @@ async fn a_provisioner_runs_a_whole_day() {
     .await;
     assert_eq!(status, StatusCode::OK, "{told}");
     assert_eq!(told["active"], false, "{told}");
+    assert_eq!(
+        plane.logins_held_by(&id).await,
+        0,
+        "deactivated, she kept a login"
+    );
     let cookie = opened_login(&plane).await;
     assert_eq!(
         answered(&plane, &cookie, "grace", "a-password-of-decent-length").await,

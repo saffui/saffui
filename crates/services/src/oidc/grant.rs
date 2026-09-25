@@ -450,8 +450,10 @@ pub async fn authorization_code(
     }
 
     // A code outlives nothing. Logging out between authorizing and redeeming
-    // would leave these tokens naming a session no gate can find.
-    let login = sessions::load(transaction, &code.session_id)
+    // would leave these tokens naming a session no gate can find, and a person
+    // switched off meanwhile would be handed tokens for a login that stands for
+    // nothing.
+    let login = sessions::load_if_person_enabled(transaction, &code.session_id)
         .await
         .map_err(|_| Ungranted::Unreadable)?
         .filter(|login| login.state == UserSessionState::LoggedIn)

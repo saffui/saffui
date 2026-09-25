@@ -129,7 +129,7 @@ pub async fn sync_shadows(
                     .attributes
                     .get_or_insert_with(Default::default)
                     .insert(SUSPENDED_BY_SYNC.to_owned(), AttributeValue::Bool(true));
-                users::update(transaction, &shadow)
+                crate::directory::keep_person(transaction, &shadow, true)
                     .await
                     .map_err(|_| Unsynced)?;
                 outcome.suspended += 1;

@@ -183,10 +183,7 @@ impl From<models::entities::client::ClientModel> for ClientBrief {
             description: client.description,
             client_uri: client.client_uri,
             device_grant: services::oidc::device::allows_device(&held),
-            token_exchange: matches!(
-                bag(&held, services::oidc::grant::EXCHANGE_FLAG).as_deref(),
-                Some("true")
-            ),
+            token_exchange: services::oidc::grant::allows_exchange(&held),
             ciba_delivery: match services::oidc::ciba::delivery_of(&held) {
                 Some(services::oidc::ciba::Delivery::Poll) => "poll".to_owned(),
                 Some(services::oidc::ciba::Delivery::Ping { .. }) => "ping".to_owned(),

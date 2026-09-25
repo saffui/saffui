@@ -161,6 +161,42 @@ pub fn read_signed_request(
     Ok(payload.claims_set().clone())
 }
 
+/// Spend a signed request's identifier, CIBA §7.1.1: a request is presented
+/// once. Kept where the client's own assertions are spent, since both are
+/// tokens it signed and an identifier names one token of its issuer.
+pub async fn spend_signed_request(
+    transaction: &UnitOfWork,
+    provider: &dyn crypto::provider::CryptoProvider,
+    client: &ClientModel,
+    inside: &serde_json::Map<String, Value>,
+) -> Result<(), Unopened> {
+    let jti = inside
+        .get("jti")
+        .and_then(Value::as_str)
+        .filter(|held| !held.is_empty())
+        .ok_or(Unopened::invalid("the request carries no identifier"))?;
+    let expires_at = inside
+        .get("exp")
+        .and_then(Value::as_i64)
+        .and_then(|exp| DateTime::from_timestamp(exp, 0))
+        .ok_or(Unopened::invalid("the request is outside its own window"))?;
+    let hashed = provider
+        .digest()
+        .hash(crypto::provider::HashAlg::Sha256, jti.as_bytes())
+        .map_err(|_| Unopened::invalid("the request could not be read"))?;
+    let fresh = store::providers::protocol::oidc::claim_assertion(
+        transaction,
+        &client.client_id,
+        &data_encoding::BASE64URL_NOPAD.encode(&hashed),
+        expires_at,
+    )
+    .await
+    .map_err(|_| Unopened::invalid("the request could not be read"))?;
+    fresh
+        .then_some(())
+        .ok_or(Unopened::invalid("the request was presented before"))
+}
+
 pub fn delivery_of(client: &ClientModel) -> Option<Delivery> {
     let held = |key: &str| {
         client

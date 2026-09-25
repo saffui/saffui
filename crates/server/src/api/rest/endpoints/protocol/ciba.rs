@@ -139,6 +139,7 @@ pub async fn open(
     // one that is not registered may not present one. The parameters then
     // come from inside the token alone.
     let mut asked = asked.into_inner();
+    let mut spent = false;
     match (
         ciba::signing_alg_of(&presented),
         asked.request.as_deref().map(str::to_owned),
@@ -167,6 +168,17 @@ pub async fn open(
                         return told(StatusCode::BAD_REQUEST, refused.error, refused.detail);
                     }
                 };
+            if let Err(refused) = ciba::spend_signed_request(
+                &transaction,
+                sealing.provider.as_ref(),
+                &presented,
+                &inside,
+            )
+            .await
+            {
+                return told(StatusCode::BAD_REQUEST, refused.error, refused.detail);
+            }
+            spent = true;
             let text = |named: &str| {
                 inside
                     .get(named)
@@ -193,6 +205,28 @@ pub async fn open(
             };
         }
     }
+
+    // The identifier spent above has to outlive whatever this request then
+    // decides: rolled back with a refusal, the same request would present
+    // again for as long as its window lasts.
+    let transaction = if spent {
+        if transaction.commit().await.is_err() {
+            return answer_unavailable();
+        }
+        match tenancy.begin(&context).await {
+            Ok(fresh) => fresh,
+            Err(StoreError::Unavailable) => return answer_unavailable(),
+            Err(_) => {
+                return told(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "the request could not be read",
+                );
+            }
+        }
+    } else {
+        transaction
+    };
 
     let notification_token = match ciba::read_notification_token(
         &delivery,

@@ -95,12 +95,14 @@ async fn posted_through(
 }
 
 fn signed_request(key: &SigningKey, claims: &[(&str, Value)]) -> String {
+    static DRAWN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let now = Utc::now().timestamp();
+    let drawn = DRAWN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let mut payload = JwtPayload::new();
     for (named, value) in [
         ("iss", Value::from(support::CONFIDENTIAL)),
         ("aud", Value::from(support::origin().issuer(REALM))),
-        ("jti", Value::from(format!("jti-{now}-{}", claims.len()))),
+        ("jti", Value::from(format!("jti-{now}-{drawn}"))),
         ("iat", Value::from(now)),
         ("nbf", Value::from(now)),
         ("exp", Value::from(now + 120)),
@@ -117,6 +119,53 @@ fn hint_token(key: &SigningKey, named: &str, value: &str) -> String {
     let mut payload = JwtPayload::new();
     payload.set_claim(named, Some(Value::from(value))).unwrap();
     key.sign(&payload, &key.kid)
+}
+
+/// A signed request is presented once, CIBA §7.1.1: the same request again is
+/// refused, and one refused after its identifier was spent stays spent.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_signed_request_is_presented_once() {
+    let plane = Plane::with_actions(&[]).await;
+    let key = SigningKey::generate("ciba-signer");
+    opted_signing(&plane, &key).await;
+
+    let request = signed_request(
+        &key,
+        &[
+            ("scope", Value::from("openid")),
+            ("login_hint", Value::from(support::SUBJECT)),
+        ],
+    );
+    let (status, opened) = posted(&plane, &[("request", &request)]).await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    let (status, told) = posted(&plane, &[("request", &request)]).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a signed request was taken twice: {told}"
+    );
+    assert_eq!(
+        told["error_description"], "the request was presented before",
+        "{told}"
+    );
+
+    // Refused for what it asks, after its identifier was read: still spent.
+    let refused = signed_request(
+        &key,
+        &[
+            ("scope", Value::from("openid")),
+            ("login_hint", Value::from(support::SUBJECT)),
+            ("requested_expiry", Value::from("not a number")),
+        ],
+    );
+    let (status, first) = posted(&plane, &[("request", &refused)]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{first}");
+    let (_, again) = posted(&plane, &[("request", &refused)]).await;
+    assert_eq!(
+        again["error_description"], "the request was presented before",
+        "a request refused after its identifier was spent was read again: {again}"
+    );
 }
 
 /// A registered signer speaks only in signatures: the bare form is refused,

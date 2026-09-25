@@ -225,6 +225,45 @@ async fn a_token_is_exchanged_for_delegation() {
     assert_eq!(told["error"], "invalid_request");
 }
 
+/// What an exchange mints lives no longer than the token it was shown:
+/// acting for somebody is bounded by their token, so exchanging again and
+/// again cannot keep an ending grant alive.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_exchange_never_outlives_the_token_it_was_shown() {
+    let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
+    opted_in(&plane, support::CONFIDENTIAL).await;
+    let minted = subject_tokens(&plane, "openid").await;
+    let original = plane
+        .claims_of(minted["access_token"].as_str().expect("an access token"))
+        .await;
+    let ending = chrono::Utc::now().timestamp() + 30;
+    let subject_token = resigned_with(&plane, &original, &[("exp", serde_json::json!(ending))]);
+
+    let (status, told) = asking(
+        &plane,
+        &[
+            ("grant_type", EXCHANGE),
+            ("subject_token", &subject_token),
+            ("subject_token_type", ACCESS_TYPE),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert!(
+        told["expires_in"].as_i64().expect("a lifespan") <= 30,
+        "the answer promises more than the token shown had left: {told}"
+    );
+    let exchanged = plane
+        .claims_of(told["access_token"].as_str().expect("a token"))
+        .await;
+    assert!(
+        exchanged["exp"].as_i64().expect("an expiry") <= ending,
+        "the exchanged token outlives the one it was shown: {exchanged}"
+    );
+}
+
 /// A public client cannot exchange, opted in or not: acting for somebody is
 /// a confidential power.
 #[tokio::test]

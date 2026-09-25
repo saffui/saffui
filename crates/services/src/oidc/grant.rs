@@ -1974,6 +1974,20 @@ pub async fn token_exchange(
     } else {
         ceiling
     });
+    // Bounded by the token shown, never extended by it: exchanging again and
+    // again cannot keep alive a grant whose own token is ending.
+    let left = verified
+        .claims
+        .get("exp")
+        .and_then(|held| {
+            held.as_i64()
+                .or_else(|| held.as_f64().map(|seconds| seconds.trunc() as i64))
+        })
+        .map(|expires_at| Duration::seconds(expires_at - now.timestamp()));
+    let lifespan = left.map_or(lifespan, |left| lifespan.min(left));
+    if lifespan <= Duration::zero() {
+        return Err(Ungranted::InvalidGrant);
+    }
     let key = preferred_key(transaction, signing, SignAlg::Es256).await?;
 
     // The subject as the minted token's consumer will know them: the

@@ -172,6 +172,9 @@ pub enum Ungranted {
     /// answer is not only a refusal: the session is gone.
     #[error("a rotated refresh token was presented again")]
     Replayed,
+    /// A renewal asking for more than was granted, RFC 6749 §6.
+    #[error("the scope asked for was never granted")]
+    InvalidScope,
 }
 
 /// A client acting for itself, RFC 6749 §4.4.
@@ -1292,6 +1295,9 @@ pub struct Renewing<'a> {
     /// What this caller proved on the way in. A refresh token bound to a key
     /// renews only for the caller that proves it again, RFC 9449 §5.
     pub proofs: crate::token::Proofs<'a>,
+    /// What the renewal asks for, RFC 6749 §6: at most what was granted, and
+    /// the whole grant when it names nothing.
+    pub scope: Option<&'a str>,
 }
 
 /// Renewing without the user, RFC 6749 §6.
@@ -1429,7 +1435,24 @@ pub async fn refresh_token(
     if renewal <= Duration::zero() {
         return Err(Ungranted::InvalidGrant);
     }
-    let scope = verified.scope.clone();
+    // RFC 6749 §6: a renewal may ask for less than was granted, never more.
+    // What it is handed carries what it asked for; the successor it renews
+    // with next keeps the whole grant.
+    let granted = verified.scope.clone();
+    let scope = match renewing
+        .scope
+        .map(str::trim)
+        .filter(|asked| !asked.is_empty())
+    {
+        None => granted.clone(),
+        Some(asked) => {
+            let held: Vec<&str> = granted.split_whitespace().collect();
+            if asked.split_whitespace().any(|named| !held.contains(&named)) {
+                return Err(Ungranted::InvalidScope);
+            }
+            asked.split_whitespace().collect::<Vec<_>>().join(" ")
+        }
+    };
     let key = preferred_key(transaction, signing, SignAlg::Es256).await?;
     let identity_key = identity_key_for(transaction, signing, client).await?;
     let overlay =
@@ -1466,7 +1489,11 @@ pub async fn refresh_token(
             audiences: vec![client.client_id.clone()],
             party: &client.client_id,
             session_id,
-            scope: &scope,
+            scope: if kind == Kind::Refresh {
+                &granted
+            } else {
+                &scope
+            },
             lifespan: life,
             now,
             extra: serde_json::Map::new(),

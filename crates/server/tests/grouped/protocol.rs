@@ -861,6 +861,74 @@ async fn a_refresh_token_renews_and_is_replaced_by_the_one_it_hands_back() {
     );
 }
 
+/// RFC 6749 §6: a renewal may ask for less than was granted, and gets that; the
+/// token it hands back to renew with keeps the whole grant. Asking for more
+/// than was granted is refused as the scope it is, and spends nothing.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_renewal_asks_for_no_more_than_was_granted() {
+    let plane = Plane::with_actions(&[]).await;
+    let first = spend_a_code(&plane, "openid profile").await;
+    let renewed_asking = |refresh_token: String, scope: &'static str| {
+        let plane = &plane;
+        async move {
+            asking(
+                plane,
+                support::REALM,
+                &[
+                    ("grant_type", "refresh_token"),
+                    ("refresh_token", refresh_token.as_str()),
+                    ("scope", scope),
+                ],
+                Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+            )
+            .await
+        }
+    };
+
+    let (status, narrowed) = renewed_asking(
+        first["refresh_token"]
+            .as_str()
+            .expect("a refresh token")
+            .to_owned(),
+        "openid",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{narrowed}");
+    assert_eq!(
+        narrowed["scope"], "openid",
+        "the renewal handed back more than it asked for: {narrowed}"
+    );
+    assert_eq!(
+        plane
+            .claims_of(narrowed["access_token"].as_str().expect("an access token"))
+            .await["scope"],
+        "openid"
+    );
+    let successor = narrowed["refresh_token"]
+        .as_str()
+        .expect("a successor")
+        .to_owned();
+    assert_eq!(
+        plane.claims_of(&successor).await["scope"],
+        "openid profile",
+        "the token to renew with lost part of the grant"
+    );
+
+    let (status, told) = renewed_asking(successor.clone(), "openid profile email").await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a renewal asking for more than was granted was not refused: {told}"
+    );
+    assert_eq!(told["error"], "invalid_scope", "{told}");
+    assert_eq!(
+        renew(&plane, &successor).await.0,
+        StatusCode::OK,
+        "a refused renewal spent the token it presented"
+    );
+}
+
 /// A token two rotations back is neither the one the session holds nor the one
 /// it just replaced, so it is a replay. The family ends; the login does not,
 /// because ending it would sign the user out of every other client and make one

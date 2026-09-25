@@ -43,7 +43,12 @@ pub async fn people_matching(
                 .map_err(|_| Refusal::unreadable());
         }
         Some(Matched::UserName(name)) => users::load_by_name(transaction, &name).await,
-        Some(Matched::Email(address)) => users::load_by_email(transaction, &address).await,
+        // An address two people share names both of them.
+        Some(Matched::Email(address)) => {
+            return users::all_by_email(transaction, &address)
+                .await
+                .map_err(|_| Refusal::unreadable());
+        }
         Some(Matched::ExternalId(external)) => {
             users::load_by_attribute(transaction, EXTERNAL_ID, &external).await
         }

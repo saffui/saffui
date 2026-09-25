@@ -360,6 +360,33 @@ async fn a_provisioner_runs_a_whole_day() {
     );
 }
 
+/// A filter on an address answers with every account holding it: one two
+/// accounts share names both, never whichever the store read first.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_address_filter_answers_every_holder() {
+    let plane = Plane::with_actions(&[AdminAction::ScimRead]).await;
+    let bearer = plane.token(&support::claims());
+    plane.plant_account_sharing_subject_email().await;
+
+    let (status, found) = asked(
+        &plane,
+        Method::GET,
+        &format!(
+            "/realms/{REALM}/scim/v2/Users?filter=emails.value%20eq%20%22{}%22",
+            support::SUBJECT_EMAIL.replace('@', "%40")
+        ),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{found}");
+    assert_eq!(
+        found["totalResults"], 2,
+        "an address two accounts share answered for one of them: {found}"
+    );
+}
+
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn the_scim_door_needs_its_own_capability() {

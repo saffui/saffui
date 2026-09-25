@@ -57,7 +57,7 @@ pub async fn create(
     check_name(user_name)?;
     if let Some(email) = &spec.email {
         check_mail(email)?;
-        check_unclaimed(transaction, email, None).await?;
+        check_unclaimed(transaction, email).await?;
     }
     let email = spec.email.clone().unwrap_or_default();
     let mut user = UserCreateModel {
@@ -164,8 +164,8 @@ pub async fn update(
     }
     if let Some(email) = &spec.email {
         check_mail(email)?;
-        check_unclaimed(transaction, email, Some(user_id)).await?;
         if *email != user.email {
+            check_unclaimed(transaction, email).await?;
             user.email = email.clone();
             // The address moved, so whatever was verified was the old one: only a
             // declaration in the same update keeps the new one verified.
@@ -355,14 +355,11 @@ pub async fn identified(transaction: &UnitOfWork, spelled: &str) -> Result<UserM
         .ok_or(Uncreatable::NotFound)
 }
 
-/// Refuse an address another account already holds, unless the realm said
-/// sharing is allowed. The guard lives at this door and not in the schema:
-/// the permission is per realm, and a table constraint cannot be.
-async fn check_unclaimed(
-    transaction: &UnitOfWork,
-    email: &str,
-    but: Option<&str>,
-) -> Result<(), Uncreatable> {
+/// Refuse an address an account already holds, unless the realm said sharing
+/// is allowed; asked only of an address a person is being given. The guard
+/// lives at this door and not in the schema: the permission is per realm, and a
+/// table constraint cannot be.
+async fn check_unclaimed(transaction: &UnitOfWork, email: &str) -> Result<(), Uncreatable> {
     if email.is_empty() {
         return Ok(());
     }
@@ -374,15 +371,13 @@ async fn check_unclaimed(
     if sharing {
         return Ok(());
     }
-    match users::load_by_email(transaction, email)
+    if users::email_taken(transaction, email)
         .await
         .map_err(|_| Uncreatable::Unwritable)?
     {
-        Some(held) if but != Some(held.user_id.as_str()) => {
-            Err(Uncreatable::Invalid("an account already uses this address"))
-        }
-        _ => Ok(()),
+        return Err(Uncreatable::Invalid("an account already uses this address"));
     }
+    Ok(())
 }
 
 /// An address is either absent or the shape of one. Emptiness is absence:

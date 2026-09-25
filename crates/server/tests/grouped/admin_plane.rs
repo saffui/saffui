@@ -1335,6 +1335,45 @@ async fn a_person_is_created_signs_in_and_is_retired_over_the_plane() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+/// An address is weighed when a person is given it, never when they keep it:
+/// in a realm that lets no two accounts share one, a person whose address a
+/// second account already holds is still edited, and nobody new is given it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_person_keeps_an_address_a_second_account_shares() {
+    let plane = Plane::with_actions(&[AdminAction::UserRead, AdminAction::UserWrite]).await;
+    let bearer = plane.token(&claims());
+    plane.plant_account_sharing_subject_email().await;
+
+    let (status, told) = written(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/users/{SUBJECT}"),
+        &bearer,
+        serde_json::json!({ "email": support::SUBJECT_EMAIL, "given_name": "Augusta" }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a person keeping their own address was refused: {told}"
+    );
+
+    let (status, told) = written(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/users"),
+        &bearer,
+        serde_json::json!({ "user_name": "grace", "email": support::SUBJECT_EMAIL }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "an address already held was given to somebody new: {told}"
+    );
+}
+
 /// Reading people is not writing them: the table charges the two apart.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]

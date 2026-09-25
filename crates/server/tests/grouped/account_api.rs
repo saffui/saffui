@@ -11,7 +11,6 @@ use server::api::config::{Plane as Mounted, register};
 use services::account::api::{ACCOUNT_CONSOLE, compose_account_console_redirect};
 use std::path::Path;
 use std::process::Command;
-use std::time::SystemTime;
 use store::tenancy::TenantContext;
 
 const REALM: &str = support::REALM;
@@ -53,20 +52,6 @@ fn me() -> String {
 
 fn recent_sign_in() -> String {
     format!("/realms/{REALM}/account-api/v1/me/recent-sign-in")
-}
-
-/// A token the account console obtained for the planted login.
-fn account_claims() -> JwtPayload {
-    let mut payload = support::claims();
-    payload.set_audience(vec![ACCOUNT_CONSOLE]);
-    payload
-        .set_claim("azp", Some(json!(ACCOUNT_CONSOLE)))
-        .expect("an authorized party claim");
-    payload
-        .set_claim("scope", Some(json!("openid account")))
-        .expect("a scope claim");
-    payload.set_issued_at(&SystemTime::now());
-    payload
 }
 
 fn with_claim(mut payload: JwtPayload, name: &str, value: Option<Value>) -> JwtPayload {
@@ -277,7 +262,7 @@ async fn plant_recovery_codes(plane: &Plane) {
 async fn only_a_token_the_account_console_obtained_reaches_the_account_api() {
     let plane = Plane::with_actions(&[]).await;
     let another_audience = {
-        let mut payload = account_claims();
+        let mut payload = support::account_console_claims();
         payload.set_audience(vec![support::CONFIDENTIAL]);
         payload
     };
@@ -285,15 +270,19 @@ async fn only_a_token_the_account_console_obtained_reaches_the_account_api() {
         None,
         Some(plane.token(&support::claims())),
         Some(plane.token(&with_claim(
-            account_claims(),
+            support::account_console_claims(),
             "azp",
             Some(json!(support::CONFIDENTIAL)),
         ))),
         Some(plane.token(&another_audience)),
-        Some(plane.token(&with_claim(account_claims(), "typ", Some(json!("Refresh"))))),
-        Some(plane.token(&with_claim(account_claims(), "sid", None))),
         Some(plane.token(&with_claim(
-            account_claims(),
+            support::account_console_claims(),
+            "typ",
+            Some(json!("Refresh")),
+        ))),
+        Some(plane.token(&with_claim(support::account_console_claims(), "sid", None))),
+        Some(plane.token(&with_claim(
+            support::account_console_claims(),
             "cnf",
             Some(json!({ "jkt": "a-key-nobody-proved" })),
         ))),
@@ -305,14 +294,14 @@ async fn only_a_token_the_account_console_obtained_reaches_the_account_api() {
         assert_eq!(told["error_code"], "unauthorized", "{told}");
     }
 
-    let bearer = plane.token(&account_claims());
+    let bearer = plane.token(&support::account_console_claims());
     let (status, challenge, told) =
         asked(&plane, "/realms/elsewhere/account-api/v1/me", Some(&bearer)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
     assert_eq!(challenge, INVALID_TOKEN, "{told}");
 
     let unscoped = plane.token(&with_claim(
-        account_claims(),
+        support::account_console_claims(),
         "scope",
         Some(json!("openid")),
     ));
@@ -334,9 +323,9 @@ async fn only_a_token_the_account_console_obtained_reaches_the_account_api() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_login_that_ended_no_longer_reaches_the_account_api() {
     let plane = Plane::with_actions(&[]).await;
-    let bearer = plane.token(&account_claims());
+    let bearer = plane.token(&support::account_console_claims());
     let offline = plane.token(&with_claim(
-        account_claims(),
+        support::account_console_claims(),
         "scope",
         Some(json!("openid account offline_access")),
     ));
@@ -360,7 +349,7 @@ async fn a_login_that_ended_no_longer_reaches_the_account_api() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn the_account_api_answers_for_the_person_the_login_belongs_to() {
     let plane = Plane::with_actions(&[]).await;
-    let mut pairwise = account_claims();
+    let mut pairwise = support::account_console_claims();
     pairwise.set_subject("f7c3e2a9-pairwise");
     let bearer = plane.token(&pairwise);
     let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
@@ -408,7 +397,7 @@ async fn the_account_api_answers_for_the_person_the_login_belongs_to() {
 async fn a_sign_in_too_old_or_too_weak_is_asked_to_step_up() {
     let plane = Plane::with_actions(&[]).await;
     provision_account_console(&plane).await;
-    let bearer = plane.token(&account_claims());
+    let bearer = plane.token(&support::account_console_claims());
     let now = chrono::Utc::now().timestamp();
     let step_up = |acr: &str| {
         format!(
@@ -465,7 +454,7 @@ fn changed_to(current: &str, replacement: &str) -> Option<Value> {
 async fn a_password_changes_from_a_recent_strong_sign_in_on_proof_of_the_current_one() {
     let plane = Plane::with_actions(&[]).await;
     provision_account_console(&plane).await;
-    let bearer = plane.token(&account_claims());
+    let bearer = plane.token(&support::account_console_claims());
     open_login_elsewhere(&plane).await;
 
     let (status, challenge, told) = sent(
@@ -571,7 +560,7 @@ async fn a_wrong_current_password_counts_against_the_lock() {
     let plane = Plane::with_actions(&[]).await;
     plane.count_logins(2).await;
     provision_account_console(&plane).await;
-    let bearer = plane.token(&account_claims());
+    let bearer = plane.token(&support::account_console_claims());
     prove_sign_in_reaching(&plane, chrono::Utc::now().timestamp(), 1).await;
 
     for attempt in 1..=2 {
@@ -627,7 +616,7 @@ async fn a_current_password_guessed_from_one_address_is_turned_away() {
         })
         .await;
     provision_account_console(&plane).await;
-    let bearer = plane.token(&account_claims());
+    let bearer = plane.token(&support::account_console_claims());
     prove_sign_in_reaching(&plane, chrono::Utc::now().timestamp(), 1).await;
 
     let mut heard = Vec::new();
@@ -684,7 +673,7 @@ async fn a_current_password_guessed_from_one_address_is_turned_away() {
 async fn a_person_lists_and_removes_their_factors_from_a_recent_strong_sign_in() {
     let plane = Plane::with_actions(&[]).await;
     provision_account_console(&plane).await;
-    let bearer = plane.token(&account_claims());
+    let bearer = plane.token(&support::account_console_claims());
     plant_key(&plane, b"key-one").await;
     plant_recovery_codes(&plane).await;
 
@@ -795,7 +784,7 @@ async fn a_person_lists_and_removes_their_factors_from_a_recent_strong_sign_in()
 async fn a_factor_goes_only_from_a_sign_in_as_strong_as_the_console_flow_allows() {
     let plane = Plane::with_actions(&[]).await;
     provision_account_console(&plane).await;
-    let bearer = plane.token(&account_claims());
+    let bearer = plane.token(&support::account_console_claims());
     plane
         .bind_browser_flow(ACCOUNT_CONSOLE, support::STRONG_FLOW)
         .await;
@@ -984,7 +973,7 @@ fn listening_client() -> (String, std::sync::mpsc::Receiver<String>) {
 async fn a_person_sees_the_logins_that_still_stand_and_what_applications_hold() {
     let plane = Plane::with_actions(&[]).await;
     provision_account_console(&plane).await;
-    let bearer = plane.token(&account_claims());
+    let bearer = plane.token(&support::account_console_claims());
     let now = chrono::Utc::now().timestamp();
     open_login(
         &plane,
@@ -1124,7 +1113,7 @@ async fn a_person_sees_the_logins_that_still_stand_and_what_applications_hold() 
 async fn a_person_ends_one_of_their_logins_and_its_applications_are_told() {
     let plane = Plane::with_actions(&[]).await;
     provision_account_console(&plane).await;
-    let bearer = plane.token(&account_claims());
+    let bearer = plane.token(&support::account_console_claims());
     open_login(
         &plane,
         ELSEWHERE,
@@ -1224,7 +1213,7 @@ async fn a_person_ends_one_of_their_logins_and_its_applications_are_told() {
 async fn a_person_ends_every_other_login_and_keeps_the_one_they_ride() {
     let plane = Plane::with_actions(&[]).await;
     provision_account_console(&plane).await;
-    let bearer = plane.token(&account_claims());
+    let bearer = plane.token(&support::account_console_claims());
     open_login(
         &plane,
         ELSEWHERE,
@@ -1296,7 +1285,7 @@ async fn a_person_ends_every_other_login_and_keeps_the_one_they_ride() {
 async fn a_person_takes_back_what_one_application_got_from_a_login() {
     let plane = Plane::with_actions(&[]).await;
     provision_account_console(&plane).await;
-    let bearer = plane.token(&account_claims());
+    let bearer = plane.token(&support::account_console_claims());
     open_login(
         &plane,
         ELSEWHERE,
@@ -1385,7 +1374,7 @@ async fn a_person_takes_back_what_one_application_got_from_a_login() {
 async fn ending_the_login_the_request_rides_signs_the_console_out() {
     let plane = Plane::with_actions(&[]).await;
     provision_account_console(&plane).await;
-    let bearer = plane.token(&account_claims());
+    let bearer = plane.token(&support::account_console_claims());
 
     let (status, _, told) = sent(
         &plane,
@@ -1448,7 +1437,7 @@ async fn the_account_console_contract_holds_against_a_live_server() {
         false,
     )
     .await;
-    let bearer = plane.token(&account_claims());
+    let bearer = plane.token(&support::account_console_claims());
 
     let served = mounted(&plane);
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
@@ -1660,7 +1649,7 @@ fn read_logout_claims(heard: &std::sync::mpsc::Receiver<String>) -> Value {
 async fn a_person_sees_the_applications_that_hold_something_of_theirs() {
     let plane = Plane::with_actions(&[]).await;
     provision_account_console(&plane).await;
-    let bearer = plane.token(&account_claims());
+    let bearer = plane.token(&support::account_console_claims());
     open_login(
         &plane,
         ELSEWHERE,
@@ -1770,7 +1759,7 @@ async fn a_person_sees_the_applications_that_hold_something_of_theirs() {
 async fn a_person_withdraws_a_consent_and_the_application_keeps_what_it_holds() {
     let plane = Plane::with_actions(&[]).await;
     provision_account_console(&plane).await;
-    let bearer = plane.token(&account_claims());
+    let bearer = plane.token(&support::account_console_claims());
     keep_consent(&plane, support::SUBJECT, support::CONFIDENTIAL, &["openid"]).await;
     plant_grant(
         &plane,
@@ -1829,7 +1818,7 @@ async fn a_person_withdraws_a_consent_and_the_application_keeps_what_it_holds() 
 async fn a_person_takes_back_an_applications_access_from_every_login_and_it_is_told() {
     let plane = Plane::with_actions(&[]).await;
     provision_account_console(&plane).await;
-    let bearer = plane.token(&account_claims());
+    let bearer = plane.token(&support::account_console_claims());
     open_login(
         &plane,
         ELSEWHERE,

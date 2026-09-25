@@ -12,9 +12,8 @@ use commons::error::ErrorCode;
 use commons::http::ApiError;
 use config::serving::PublicOrigin;
 use services::account::api::{
-    ACCOUNT_SCOPE, AccountCaller, NotAdmitted, StepUp, establish_account_caller,
+    ACCOUNT_SCOPE, AccountCaller, NotAdmitted, StepUp, admit_account_bearer,
 };
-use services::token::{Binding, Proofs};
 
 use crate::api::rest::endpoints::protocol::dto::uncached;
 use crate::middleware::bearer::{bearer, unverified_issuer};
@@ -214,35 +213,19 @@ async fn establish(
         .begin(&context)
         .await
         .map_err(AccountRefusal::for_unopened_work)?;
-    let keys = services::realm::published_keys(&transaction)
-        .await
-        .map_err(|_| AccountRefusal::Failed)?;
     // A token bound to a key or a certificate is refused, as on the admin plane:
     // the console proves neither.
-    let verified = services::token::verify_presented(
-        &transaction,
-        &keys,
-        &bearer,
-        Binding::Presented(Proofs::none()),
-        now,
-    )
-    .await
-    .map_err(|why| match why {
-        services::token::Refused::Unestablished => {
-            tracing::warn!(reason = %why, "an account API caller could not be established");
-            AccountRefusal::Failed
-        }
-        _ => AccountRefusal::InvalidToken,
-    })?;
-
-    establish_account_caller(&transaction, context, &verified, now)
+    admit_account_bearer(&transaction, context, &bearer, now)
         .await
         .map_err(|why| {
-            tracing::warn!(reason = %why, "an account API request was refused");
+            if why != NotAdmitted::Unverified {
+                tracing::warn!(reason = %why, "an account API request was refused");
+            }
             match why {
                 NotAdmitted::MissingScope => AccountRefusal::InsufficientScope,
                 NotAdmitted::Backend => AccountRefusal::Failed,
-                NotAdmitted::NotForAccountConsole
+                NotAdmitted::Unverified
+                | NotAdmitted::NotForAccountConsole
                 | NotAdmitted::LoggedOut
                 | NotAdmitted::Withdrawn => AccountRefusal::InvalidToken,
             }

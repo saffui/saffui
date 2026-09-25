@@ -173,30 +173,9 @@ async fn a_signing_client_is_held_to_its_signature() {
     assert_eq!(status, StatusCode::OK, "{opened}");
     assert!(opened["auth_req_id"].is_string(), "{opened}");
 
-    // Ada sees the request: the hint token reached the same doorbell.
-    let bearer = {
-        let code = plane
-            .mint_code(support::CONFIDENTIAL, support::REDIRECT, "openid", None)
-            .await;
-        let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
-        let encoded = data_encoding::BASE64
-            .encode(format!("{}:{}", support::CONFIDENTIAL, support::CLIENT_SECRET).as_bytes());
-        let response = test::call_service(
-            &app,
-            test::TestRequest::post()
-                .uri(&format!("/realms/{REALM}/protocol/openid-connect/token"))
-                .insert_header(("authorization", format!("Basic {encoded}")))
-                .set_form([
-                    ("grant_type", "authorization_code"),
-                    ("code", &code),
-                    ("redirect_uri", support::REDIRECT),
-                ])
-                .to_request(),
-        )
-        .await;
-        let body: Value = test::read_body_json(response).await;
-        body["access_token"].as_str().expect("a token").to_owned()
-    };
+    // Ada sees the request on her account console: the hint token reached
+    // the same doorbell.
+    let bearer = plane.token(&support::account_console_claims());
     let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
     let response = test::call_service(
         &app,

@@ -4,6 +4,7 @@ use super::support::Plane;
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
 use config::serving::Egress;
+use crypto::jose::jwt::JwtPayload;
 use data_encoding::BASE64;
 use models::entities::authz::AdminAction;
 use serde_json::{Value, json};
@@ -109,8 +110,46 @@ async fn opted_in(plane: &Plane) {
     transaction.commit().await.unwrap();
 }
 
+/// What ada's account console holds: the one bearer her doorbell answers to.
 fn ada_bearer(plane: &Plane) -> String {
-    plane.token(&support::claims())
+    plane.token(&support::account_console_claims())
+}
+
+/// A login of `user_id`'s own, open in this realm under `session_id`.
+async fn open_login_of(plane: &Plane, user_id: &str, session_id: &str) {
+    use models::sessions::records::{UserSessionModel, UserSessionState};
+    use store::tenancy::TenantContext;
+    let transaction = plane
+        .scoped(&TenantContext::new(support::TENANT, REALM))
+        .await;
+    store::providers::protocol::sessions::open(
+        &transaction,
+        &UserSessionModel {
+            browser_state: None,
+            tenant: support::TENANT.into(),
+            session_id: session_id.into(),
+            realm_id: REALM.into(),
+            user_id: user_id.into(),
+            login_username: user_id.into(),
+            broker_session_id: None,
+            broker_user_id: None,
+            auth_method: None,
+            ip_address: None,
+            user_agent: None,
+            started_at: chrono::Utc::now().timestamp(),
+            auth_time: None,
+            loa: None,
+            expiration: None,
+            state: UserSessionState::LoggedIn,
+            remember_me: None,
+            last_session_refresh: None,
+            is_offline: None,
+            notes: None,
+        },
+    )
+    .await
+    .expect("a login");
+    transaction.commit().await.expect("the login kept");
 }
 
 #[tokio::test]
@@ -190,11 +229,16 @@ async fn a_counter_signs_ada_in_from_her_own_device() {
     assert_eq!(shown["binding_message"], "Virement 240 EUR - code 7G2");
     let handle = shown["request"].as_str().expect("a handle").to_owned();
 
-    // Grace cannot decide ada's request: the refusal wears one face.
+    // Grace cannot decide ada's request from her own console: the refusal
+    // wears one face.
     plane.plant_shadow("grace", "any-password-here").await;
+    open_login_of(&plane, "grace", "session-grace").await;
     let grace = {
-        let mut payload = support::claims();
+        let mut payload = support::account_console_claims();
         payload.set_subject("grace");
+        payload
+            .set_claim("sid", Some(json!("session-grace")))
+            .expect("a session claim");
         plane.token(&payload)
     };
     let (status, told) = as_person(
@@ -249,6 +293,129 @@ async fn a_counter_signs_ada_in_from_her_own_device() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
     assert_eq!(told["error"], "invalid_grant", "{told}");
+}
+
+/// Only the person decides, signed in on this realm or through her account
+/// console. Every other token naming her is refused at both doors, whoever
+/// holds it: the client that opened the request, which would otherwise approve
+/// what it asked for itself, another client, a refresh or an identity token,
+/// one bound to a key nobody proved, or an event told about her. The request
+/// stays hers to answer.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_client_cannot_answer_the_doorbell_for_the_person() {
+    let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
+    opted_in(&plane).await;
+    let (status, opened) = posted(
+        &plane,
+        "/bc-authorize",
+        &[
+            ("scope", "openid offline_access"),
+            ("login_hint", support::SUBJECT),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    let auth_req_id = opened["auth_req_id"]
+        .as_str()
+        .expect("a request id")
+        .to_owned();
+    let (_, pending) = as_person(
+        &plane,
+        actix_web::http::Method::GET,
+        "/bc-pending",
+        &ada_bearer(&plane),
+        None,
+    )
+    .await;
+    let handle = pending["pending"][0]["request"]
+        .as_str()
+        .expect("a handle")
+        .to_owned();
+
+    let console = support::account_console_claims();
+    let with = |mut payload: JwtPayload, name: &str, value: Option<Value>| {
+        payload.set_claim(name, value).expect("a claim");
+        payload
+    };
+    let the_clients_own = {
+        let mut payload = with(console.clone(), "azp", Some(json!(support::CONFIDENTIAL)));
+        payload.set_audience(vec![support::CONFIDENTIAL]);
+        payload
+    };
+    let an_event = {
+        let mut payload = JwtPayload::new();
+        payload.set_issuer(support::origin().issuer(REALM));
+        payload.set_subject(support::SUBJECT);
+        payload.set_audience(vec!["https://receiver.example"]);
+        payload
+            .set_expires_at(&(std::time::SystemTime::now() + std::time::Duration::from_secs(600)));
+        with(
+            payload,
+            "events",
+            Some(json!({
+                "https://schemas.openid.net/secevent/caep/event-type/session-revoked": {}
+            })),
+        )
+    };
+    let refused = [
+        ("the requesting client's own token", the_clients_own),
+        ("another client's token", support::claims()),
+        (
+            "a refresh token",
+            with(console.clone(), "typ", Some(json!("Refresh"))),
+        ),
+        ("an identity token", with(console.clone(), "typ", None)),
+        (
+            "a token bound to a key nobody proved",
+            with(
+                console.clone(),
+                "cnf",
+                Some(json!({ "jkt": "a-key-nobody-proved" })),
+            ),
+        ),
+        ("an event told about her", an_event),
+    ];
+    for (label, payload) in refused {
+        let bearer = plane.token(&payload);
+        let (status, told) = as_person(
+            &plane,
+            actix_web::http::Method::GET,
+            "/bc-pending",
+            &bearer,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{label} listed: {told}");
+        let (status, told) = as_person(
+            &plane,
+            actix_web::http::Method::POST,
+            "/bc-decide",
+            &bearer,
+            Some(json!({ "request": handle, "decision": "approve" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{label} decided: {told}");
+    }
+
+    // Nothing was decided: the client is still told to wait, and the request
+    // is still hers to answer.
+    let (_, told) = posted(
+        &plane,
+        "/token",
+        &[("grant_type", GRANT), ("auth_req_id", &auth_req_id)],
+    )
+    .await;
+    assert_eq!(told["error"], "authorization_pending", "{told}");
+    let (status, told) = as_person(
+        &plane,
+        actix_web::http::Method::POST,
+        "/bc-decide",
+        &ada_bearer(&plane),
+        Some(json!({ "request": handle, "decision": "deny" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
 }
 
 /// Open a request for ada, have her approve it, and collect what the poll

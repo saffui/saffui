@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::json;
 use services::oidc::ciba;
 use store::error::StoreError;
-use store::tenancy::{RealmNamed, Tenancy, UnitOfWork};
+use store::tenancy::{RealmNamed, Tenancy, TenantContext, UnitOfWork};
 
 use services::client;
 
@@ -340,57 +340,55 @@ fn drawn_request_id(provider: &dyn crypto::provider::CryptoProvider) -> Option<S
     Some(data_encoding::BASE64URL_NOPAD.encode(&bytes))
 }
 
-/// The person behind a bearer token, resolved the way the exchange resolves
-/// its subject: verified against this realm's keys, un-pairwised through the
-/// presenting client, and still enabled.
+/// Nobody the doorbell answers to: no sign-in on this realm, and no token its
+/// account console obtained.
+fn told_nobody_decides() -> HttpResponse {
+    told(
+        StatusCode::UNAUTHORIZED,
+        "invalid_token",
+        "a sign-in on this realm, or its account console, decides here",
+    )
+}
+
+/// The person behind a bearer token: one the realm's account console
+/// obtained, admitted as the account API admits it.
 async fn bearer_person(
     request: &HttpRequest,
     transaction: &UnitOfWork,
+    tenant: &TenantContext,
     now: chrono::DateTime<Utc>,
-) -> Result<models::entities::user::UserModel, HttpResponse> {
-    let refused = || {
-        told(
-            StatusCode::UNAUTHORIZED,
-            "invalid_token",
-            "a bearer token of this realm decides here",
-        )
-    };
+) -> Result<String, HttpResponse> {
     let bearer = request
         .headers()
         .get("authorization")
         .and_then(|held| held.to_str().ok())
         .and_then(|held| held.strip_prefix("Bearer "))
-        .ok_or_else(refused)?;
-    ciba::read_person_behind_bearer(transaction, bearer, now)
+        .ok_or_else(told_nobody_decides)?;
+    ciba::read_person_behind_bearer(transaction, tenant.clone(), bearer, now)
         .await
-        .ok_or_else(refused)
+        .ok_or_else(told_nobody_decides)
 }
 
-/// The person asking: a bearer token, or the browser's own live login. The
-/// cookie is `SameSite=Lax` and the deciding body is JSON, so a cross-site
-/// page can neither attach the one nor send the other; what remains is the
-/// signed-in person on this realm's own pages, which is who a doorbell is
-/// for.
+/// The person asking: the account console's bearer token, or the browser's
+/// own live login. The cookie is `SameSite=Lax` and the deciding body is
+/// JSON, so a cross-site page can neither attach the one nor send the other;
+/// what remains is the signed-in person on this realm's own pages, which is
+/// who a doorbell is for.
 async fn asking_person(
     request: &HttpRequest,
     transaction: &UnitOfWork,
+    tenant: &TenantContext,
     now: chrono::DateTime<Utc>,
-) -> Result<models::entities::user::UserModel, HttpResponse> {
+) -> Result<String, HttpResponse> {
     if request.headers().get("authorization").is_some() {
-        return bearer_person(request, transaction, now).await;
+        return bearer_person(request, transaction, tenant, now).await;
     }
-    let refused = || {
-        told(
-            StatusCode::UNAUTHORIZED,
-            "invalid_token",
-            "a bearer token of this realm decides here",
-        )
-    };
-    let session_id =
-        super::binding::read(request, super::binding::SSO_SESSION).ok_or_else(refused)?;
+    let session_id = super::binding::read(request, super::binding::SSO_SESSION)
+        .ok_or_else(told_nobody_decides)?;
     ciba::read_signed_in_person(transaction, &session_id, now)
         .await
-        .ok_or_else(refused)
+        .map(|person| person.user_id)
+        .ok_or_else(told_nobody_decides)
 }
 
 pub async fn pending(
@@ -404,13 +402,7 @@ pub async fn pending(
         Err(StoreError::Unavailable) => {
             return answer_unavailable();
         }
-        Err(_) => {
-            return told(
-                StatusCode::UNAUTHORIZED,
-                "invalid_token",
-                "a bearer token of this realm decides here",
-            );
-        }
+        Err(_) => return told_nobody_decides(),
     };
     let transaction = match tenancy.begin(&context).await {
         Ok(transaction) => transaction,
@@ -423,11 +415,11 @@ pub async fn pending(
             );
         }
     };
-    let person = match asking_person(&request, &transaction, now).await {
-        Ok(person) => person,
+    let user_id = match asking_person(&request, &transaction, &context, now).await {
+        Ok(user_id) => user_id,
         Err(response) => return response,
     };
-    let Ok(standing) = ciba::read_pending_requests(&transaction, &person.user_id, now).await else {
+    let Ok(standing) = ciba::read_pending_requests(&transaction, &user_id, now).await else {
         return told(
             StatusCode::BAD_REQUEST,
             "invalid_request",
@@ -492,13 +484,7 @@ pub async fn decide(
         Err(StoreError::Unavailable) => {
             return answer_unavailable();
         }
-        Err(_) => {
-            return told(
-                StatusCode::UNAUTHORIZED,
-                "invalid_token",
-                "a bearer token of this realm decides here",
-            );
-        }
+        Err(_) => return told_nobody_decides(),
     };
     let transaction = match tenancy.begin(&context).await {
         Ok(transaction) => transaction,
@@ -511,11 +497,11 @@ pub async fn decide(
             );
         }
     };
-    let person = match asking_person(&request, &transaction, now).await {
-        Ok(person) => person,
+    let user_id = match asking_person(&request, &transaction, &context, now).await {
+        Ok(user_id) => user_id,
         Err(response) => return response,
     };
-    let landed = ciba::decide_request(&transaction, &digest, &person.user_id, approved, now).await;
+    let landed = ciba::decide_request(&transaction, &digest, &user_id, approved, now).await;
     match landed {
         Ok(Some(decided)) => {
             // Opened before the commit so a sealed id is never left behind

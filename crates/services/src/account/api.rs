@@ -17,7 +17,7 @@ use crate::account::{
 use crate::context::minted_at;
 use crate::oidc::grant::Signing;
 use crate::oidc::logout::{Notice, notice_for_client, notices_for};
-use crate::token::Verified;
+use crate::token::{Binding, Proofs, Refused, Verified};
 
 /// The one client whose tokens reach the account API: the realm's account console.
 pub const ACCOUNT_CONSOLE: &str = "account-console";
@@ -40,6 +40,10 @@ pub struct AccountCaller {
 /// Why a token does not reach the account API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum NotAdmitted {
+    /// Not signed by this realm, out of its window, withdrawn, or bound to a
+    /// key or a certificate nobody proved.
+    #[error("the token does not verify for a caller proving nothing")]
+    Unverified,
     #[error("the token is not an access token the account console obtained")]
     NotForAccountConsole,
     #[error("the token does not carry the account scope")]
@@ -166,6 +170,33 @@ pub async fn establish_account_caller(
         session_id: session.session_id,
         now,
     })
+}
+
+/// Admit a bearer token the way every door speaking for a person does: verified
+/// for a caller who proves nothing, so a token bound to a key or a certificate is
+/// refused, then held to what the account console obtains.
+pub async fn admit_account_bearer(
+    transaction: &UnitOfWork,
+    tenant: TenantContext,
+    bearer: &str,
+    now: DateTime<Utc>,
+) -> Result<AccountCaller, NotAdmitted> {
+    let keys = crate::realm::published_keys(transaction)
+        .await
+        .map_err(|_| NotAdmitted::Backend)?;
+    let verified = crate::token::verify_presented(
+        transaction,
+        &keys,
+        bearer,
+        Binding::Presented(Proofs::none()),
+        now,
+    )
+    .await
+    .map_err(|why| match why {
+        Refused::Unestablished => NotAdmitted::Backend,
+        _ => NotAdmitted::Unverified,
+    })?;
+    establish_account_caller(transaction, tenant, &verified, now).await
 }
 
 /// What a login still has to prove before a sensitive change, if anything.

@@ -787,6 +787,23 @@ pub fn claims() -> JwtPayload {
     payload
 }
 
+/// A token the realm's account console obtained for the planted login: the one
+/// bearer the doors speaking for a person answer to.
+#[allow(dead_code, reason = "only the suites speaking for a person ask")]
+pub fn account_console_claims() -> JwtPayload {
+    let console = services::account::api::ACCOUNT_CONSOLE;
+    let mut payload = claims();
+    payload.set_audience(vec![console]);
+    payload
+        .set_claim("azp", Some(serde_json::json!(console)))
+        .expect("an authorized party claim");
+    payload
+        .set_claim("scope", Some(serde_json::json!("openid account")))
+        .expect("a scope claim");
+    payload.set_issued_at(&SystemTime::now());
+    payload
+}
+
 /// A migrated database with a realm that signs, and a turn on it.
 pub struct Plane {
     #[allow(dead_code, reason = "only the sweep builds a node of its own")]

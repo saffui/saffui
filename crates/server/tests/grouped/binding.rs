@@ -249,6 +249,85 @@ async fn a_proof_is_accepted_once() {
     assert_eq!(told["error"], "invalid_dpop_proof", "{told}");
 }
 
+/// A proof spent on a request that is then refused stays spent: presented
+/// again, it is the replay §11.1 stops, however the first request ended. At
+/// the token endpoint the refusal is an exchange naming no code; at the push,
+/// a request naming one key while proving another.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_proof_spent_on_a_refused_request_stays_spent() {
+    let plane = Plane::with_actions(&[]).await;
+    let key = SigningKey::generate("holder");
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+
+    let proof = key.proof("POST", &at("token"), None, "refused-first", now());
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/token",
+                support::REALM
+            ))
+            .insert_header(("dpop", proof.clone()))
+            .set_form([
+                ("grant_type", "authorization_code"),
+                ("redirect_uri", REDIRECT),
+                ("client_id", support::CONFIDENTIAL),
+                ("client_secret", support::CLIENT_SECRET),
+            ])
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let (status, told) = exchanged(&plane, &code_for(&plane).await, Some(&proof)).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a proof spent on a refused exchange was taken again: {told}"
+    );
+    assert_eq!(told["error"], "invalid_dpop_proof", "{told}");
+
+    let pushed = |proof: String, naming: Option<&'static str>| {
+        let app = &app;
+        async move {
+            let mut form = vec![
+                ("client_id", support::CONFIDENTIAL),
+                ("client_secret", support::CLIENT_SECRET),
+                ("response_type", "code"),
+                ("redirect_uri", REDIRECT),
+                ("scope", "openid"),
+            ];
+            if let Some(named) = naming {
+                form.push(("dpop_jkt", named));
+            }
+            let response = test::call_service(
+                app,
+                test::TestRequest::post()
+                    .uri(&format!(
+                        "/realms/{}/protocol/openid-connect/par",
+                        support::REALM
+                    ))
+                    .insert_header(("dpop", proof))
+                    .set_form(form)
+                    .to_request(),
+            )
+            .await;
+            let status = response.status();
+            (status, test::read_body_json::<Value, _>(response).await)
+        }
+    };
+    let proof = key.proof("POST", &at("par"), None, "pushed-first", now());
+    let (status, told) = pushed(proof.clone(), Some("another-key-altogether")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+    let (status, told) = pushed(proof, None).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a proof spent on a refused push was taken again: {told}"
+    );
+    assert_eq!(told["error"], "invalid_dpop_proof", "{told}");
+}
+
 /// §4.3: a proof made for one call does not bind another.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]

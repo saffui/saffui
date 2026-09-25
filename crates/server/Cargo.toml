@@ -48,9 +48,6 @@ opentelemetry_sdk = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true, optional = true }
 tracing-opentelemetry = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
-lettre = { workspace = true }
-openssl = { workspace = true }
-async-trait = { workspace = true }
 tonic = { version = "0.14.6", optional = true }
 tonic-prost = { version = "0.14.6", optional = true }
 prost = { version = "0.14.4", optional = true }
@@ -89,6 +86,8 @@ otel = [
 ]
 
 [dev-dependencies]
+# The fake senders a suite reads back implement the delivery ports.
+async-trait = { workspace = true }
 # The scheduled passes, run by the suites that watch what they deliver.
 scheduler = { workspace = true }
 deadpool-postgres = { workspace = true }

@@ -1836,20 +1836,14 @@ version = "0.11.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2c646bd5cc763b1087b15493e29a64be6147ba8f19342004fa52048ee596eae"
 dependencies = [
- "base64 0.23.1",
  "email-encoding",
  "email_address",
  "fastrand",
  "httpdate",
  "idna",
  "mime",
- "native-tls",
  "nom 8.0.0",
- "percent-encoding",
  "quoted_printable",
- "socket2",
- "tokio",
- "url",
 ]
 
 [[package]]
@@ -2294,17 +2288,23 @@ dependencies = [
 name = "outbound"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "auth",
  "chrono",
  "config",
  "crypto",
  "data-encoding",
  "ldap3",
+ "lettre",
  "models",
+ "openssl",
+ "serde",
  "serde_json",
  "services",
  "store",
+ "thiserror 2.0.20",
  "tokio",
+ "tokio-openssl",
  "tracing",
  "ureq",
 ]
@@ -3224,7 +3224,6 @@ dependencies = [
  "include_dir",
  "ldap3",
  "ldapfront",
- "lettre",
  "models",
  "openssl",
  "opentelemetry",

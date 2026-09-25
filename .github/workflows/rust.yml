@@ -243,6 +243,9 @@ jobs:
       SAFFUI_TEST_PG_TLS_CERTS: /tmp/pgtls
       SAFFUI_TEST_KRB5: SAFFUI.TEST
       KRB5_KTNAME: /tmp/http.keytab
+      SAFFUI_TEST_SMTP: "localhost:1025"
+      SAFFUI_TEST_SMTP_API: "http://localhost:8025"
+      SAFFUI_TEST_SMTP_CA: /tmp/relay/ca.pem
     services:
       postgres:
         image: postgres:17-alpine
@@ -329,6 +332,52 @@ jobs:
           if [ -z "$ready" ]; then
             echo "the TLS server did not come up:" >&2
             docker logs saffui-pg-tls >&2 || true
+            exit 1
+          fi
+
+      # A mail relay this build did not write, requiring STARTTLS under a
+      # certificate from an authority minted here. Not a service, for the TLS
+      # server's reason: the certificate has to exist before the relay starts.
+      - name: start a mail relay
+        run: |
+          mkdir -p /tmp/relay
+          cd /tmp/relay
+          openssl req -x509 -new -nodes -days 1 -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
+            -subj "/CN=saffui test authority" -keyout ca.key -out ca.pem
+          openssl req -new -nodes -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
+            -subj "/CN=localhost" -keyout relay.key -out relay.csr
+          printf 'subjectAltName=DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n' > relay.ext
+          openssl x509 -req -in relay.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 1 \
+            -extfile relay.ext -out relay.pem
+          # The relay reads its key as a user of its own.
+          chmod 644 relay.key
+          docker run -d --name saffui-mailpit -p 1025:1025 -p 8025:8025 \
+            -v /tmp/relay:/certs:ro axllent/mailpit:v1.27 \
+            --smtp-tls-cert /certs/relay.pem --smtp-tls-key /certs/relay.key \
+            --smtp-require-starttls --smtp-auth-accept-any
+          ready=""
+          for _ in $(seq 1 30); do
+            if curl -fsS http://localhost:8025/api/v1/info >/dev/null 2>&1; then
+              ready=yes
+              break
+            fi
+            sleep 1
+          done
+          if [ -z "$ready" ]; then
+            echo "the mail relay did not come up:" >&2
+            docker logs saffui-mailpit >&2 || true
+            exit 1
+          fi
+
+      # Checked like the pooler's: a relay test that found no relay returns
+      # early and reads as a pass.
+      - name: test the mail road against a real relay
+        run: |
+          set -o pipefail
+          cargo test -p outbound --test relay -- --include-ignored --nocapture 2>&1 \
+            | tee "$RUNNER_TEMP/relay.log"
+          if grep -q "there is no relay to send through" "$RUNNER_TEMP/relay.log"; then
+            echo "the relay tests found no relay; the job proved nothing." >&2
             exit 1
           fi
 

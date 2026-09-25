@@ -45,7 +45,7 @@ impl Resolver for Outward {
 }
 
 /// Whether this address is somewhere other than the deployment itself.
-fn reaches_outward(address: IpAddr) -> bool {
+pub(crate) fn reaches_outward(address: IpAddr) -> bool {
     match address {
         IpAddr::V4(held) => {
             !held.is_loopback()

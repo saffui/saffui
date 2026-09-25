@@ -5779,6 +5779,32 @@ async fn a_signed_request_object_governs_the_request() {
             .set_claim("response_type", Some(serde_json::json!("token")))
             .expect("a claim");
     });
+    let elsewhere_among_several = object(&|payload| {
+        payload
+            .set_claim(
+                "aud",
+                Some(serde_json::json!([
+                    "https://elsewhere.example",
+                    "https://another.example"
+                ])),
+            )
+            .expect("a claim");
+    });
+    let expired_with_a_fraction = object(&|payload| {
+        payload
+            .set_claim(
+                "exp",
+                Some(serde_json::json!(
+                    chrono::Utc::now().timestamp() as f64 - 3_600.5
+                )),
+            )
+            .expect("a claim");
+    });
+    let named_by_a_number = object(&|payload| {
+        payload
+            .set_claim("client_id", Some(serde_json::json!(42)))
+            .expect("a claim");
+    });
     for (label, raw) in [
         ("a forged signature", forged.as_str()),
         ("an object for another issuer", elsewhere.as_str()),
@@ -5787,6 +5813,15 @@ async fn a_signed_request_object_governs_the_request() {
             "a response_type that disagrees with the query",
             disagreeing.as_str(),
         ),
+        (
+            "an audience of several without this issuer",
+            elsewhere_among_several.as_str(),
+        ),
+        (
+            "an expiry long past, spelled with a fraction",
+            expired_with_a_fraction.as_str(),
+        ),
+        ("a client id that is no name", named_by_a_number.as_str()),
     ] {
         // Refused at the redirect carried beside the object, which the client
         // registered: the object's own is as unread as the rest of it.
@@ -5807,6 +5842,39 @@ async fn a_signed_request_object_governs_the_request() {
             "{label} was not refused at the registered redirect: {landing}"
         );
     }
+
+    // An audience of several that counts this issuer among them is this
+    // issuer's object.
+    let among_several = object(&|payload| {
+        payload
+            .set_claim(
+                "aud",
+                Some(serde_json::json!([
+                    "https://elsewhere.example",
+                    support::origin().issuer(support::REALM)
+                ])),
+            )
+            .expect("a claim");
+    });
+    let (status, landing, _) = authorize_with_cookies(
+        &plane,
+        &[
+            ("client_id", support::CONFIDENTIAL),
+            ("response_type", "code"),
+            ("scope", "openid"),
+            ("request", among_several.as_str()),
+        ],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FOUND,
+        "an audience naming this issuer among others was refused: {landing}"
+    );
+    assert!(
+        !landing.contains("error="),
+        "an audience naming this issuer among others was refused: {landing}"
+    );
 
     // A client that registered nothing cannot sign one.
     let (_, landing, _) = authorize_with_cookies(

@@ -113,29 +113,38 @@ pub fn read(
         .map_err(|_| Unreadable::BadSignature)?
         .0;
 
-    let claim = |named: &str| payload.claim(named).and_then(Value::as_str);
     // §6.1: the object is made for this client, at this issuer. Enforced where
     // stated rather than required, since §6 leaves them optional and a client
-    // that omits one has not thereby made an object for somebody else.
-    if let Some(named) = claim("iss")
-        && named != client.client_id
+    // that omits one has not thereby made an object for somebody else. A claim
+    // stated in a shape nobody reads as a name names nothing here, and an
+    // audience of several has to count this issuer among them.
+    let names = |named: &str, wanted: &str| match payload.claim(named) {
+        None => true,
+        Some(Value::String(held)) => held == wanted,
+        Some(_) => false,
+    };
+    let addressed_here = match payload.claim("aud") {
+        None => true,
+        Some(Value::String(held)) => held == issuer,
+        Some(Value::Array(held)) => held.iter().any(|one| one.as_str() == Some(issuer)),
+        Some(_) => false,
+    };
+    if !names("iss", &client.client_id) || !names("client_id", &client.client_id) || !addressed_here
     {
         return Err(Unreadable::Misbound);
     }
-    if let Some(named) = claim("aud")
-        && named != issuer
-    {
-        return Err(Unreadable::Misbound);
-    }
-    if let Some(named) = claim("client_id")
-        && named != client.client_id
-    {
-        return Err(Unreadable::Misbound);
-    }
-    let second = |named: &str| payload.claim(named).and_then(Value::as_i64);
+    // A NumericDate may carry a fraction, RFC 7519 §2, and one that does is
+    // still a date to hold the object to.
+    let second = |named: &str| match payload.claim(named) {
+        None => Ok(None),
+        Some(held) => held
+            .as_f64()
+            .map(|seconds| Some(seconds.trunc() as i64))
+            .ok_or(Unreadable::Malformed),
+    };
     let instant = now.timestamp();
-    if second("exp").is_some_and(|exp| instant > exp + SKEW)
-        || second("nbf").is_some_and(|nbf| instant + SKEW < nbf)
+    if second("exp")?.is_some_and(|exp| instant > exp + SKEW)
+        || second("nbf")?.is_some_and(|nbf| instant + SKEW < nbf)
     {
         return Err(Unreadable::OutsideWindow);
     }

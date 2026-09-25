@@ -1184,19 +1184,7 @@ async fn a_person_ends_one_of_their_logins_and_its_applications_are_told() {
         grants_of(&plane, ELSEWHERE).await.is_empty(),
         "an offline grant outlived its login"
     );
-    let posted = heard
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("the application was not told");
-    let token = posted
-        .strip_prefix("logout_token=")
-        .expect("a logout token");
-    let payload = token.split('.').nth(1).expect("a payload");
-    let claims: Value = serde_json::from_slice(
-        &data_encoding::BASE64URL_NOPAD
-            .decode(payload.as_bytes())
-            .expect("base64url"),
-    )
-    .expect("claims");
+    let claims = read_logout_claims(&plane, &heard).await;
     assert_eq!(claims["sid"], ELSEWHERE, "{claims}");
     assert!(
         login_stands(&plane, support::SESSION).await,
@@ -1338,7 +1326,7 @@ async fn a_person_takes_back_what_one_application_got_from_a_login() {
         login_stands(&plane, ELSEWHERE).await,
         "the login went with one grant"
     );
-    let told_of = read_logout_claims(&heard);
+    let told_of = read_logout_claims(&plane, &heard).await;
     assert_eq!(told_of["sid"], ELSEWHERE, "{told_of}");
     assert_eq!(grants_of(&plane, ELSEWHERE).await, [support::PUBLIC]);
 
@@ -1623,8 +1611,16 @@ async fn reshape_client(
     transaction.commit().await.expect("the client kept");
 }
 
-/// The claims of the logout token an application was posted.
-fn read_logout_claims(heard: &std::sync::mpsc::Receiver<String>) -> Value {
+/// The claims of the logout token an application was posted by the outbox pass
+/// that ran first.
+async fn read_logout_claims(plane: &Plane, heard: &std::sync::mpsc::Receiver<String>) -> Value {
+    scheduler::jobs::deliver_every_realm(
+        &plane.tenancy(),
+        &support::sealing(),
+        &support::origin(),
+        1,
+    )
+    .await;
     let posted = heard
         .recv_timeout(std::time::Duration::from_secs(10))
         .expect("the application was not told");
@@ -1884,7 +1880,7 @@ async fn a_person_takes_back_an_applications_access_from_every_login_and_it_is_t
         "{told}"
     );
     assert_eq!(grants_of(&plane, ELSEWHERE).await, [support::PUBLIC]);
-    let told_of = read_logout_claims(&heard);
+    let told_of = read_logout_claims(&plane, &heard).await;
     assert_eq!(told_of["sid"], ELSEWHERE, "{told_of}");
     assert!(
         login_stands(&plane, ELSEWHERE).await,

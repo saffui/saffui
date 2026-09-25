@@ -1,6 +1,7 @@
 //! What the outbox pushes, and to whom: SCIM connectors, receivers of security
-//! events and webhooks, each reached under the egress policy, and the proof an
-//! operator asks of one of them.
+//! events and webhooks, and the clients an ended login owes a logout notice,
+//! each reached under the egress policy, and the proof an operator asks of one
+//! of them.
 
 use config::serving::Egress;
 use services::messaging::outbox;
@@ -176,6 +177,24 @@ fn far_side_agent(egress: Egress) -> ureq::Agent {
         ureq::unversioned::transport::DefaultConnector::new(),
         Outward(DefaultResolver::default(), egress),
     )
+}
+
+/// Hand one logout token to the address a client registered, Back-Channel
+/// Logout 1.0: a form post carrying the token, acknowledged with a success.
+pub async fn push_logout_token(uri: &str, token: &str, egress: Egress) -> bool {
+    let uri = uri.to_owned();
+    let token = token.to_owned();
+    tokio::task::spawn_blocking(move || {
+        if !may_dial(&uri, egress) {
+            return false;
+        }
+        far_side_agent(egress)
+            .post(&uri)
+            .send_form([("logout_token", token.as_str())])
+            .is_ok()
+    })
+    .await
+    .unwrap_or(false)
 }
 
 /// Hand one Security Event Token to one receiver, RFC 8935: a POST whose

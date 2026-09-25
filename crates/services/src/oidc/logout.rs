@@ -3,7 +3,8 @@ use models::entities::keys::RealmSigningKeyView;
 use models::sessions::records::UserSessionState;
 use serde_json::Value;
 use store::providers::clients;
-use store::providers::protocol::sessions;
+use store::providers::events::notices::Settled;
+use store::providers::protocol::{logout_notices, sessions};
 use store::tenancy::UnitOfWork;
 
 use crate::token;
@@ -238,33 +239,31 @@ pub async fn notices_for(
     tracing::debug!(session = %session_id, clients = party_ids.len(), "clients of the login");
     let mut notices = Vec::new();
     for client_id in party_ids {
-        notices.extend(mint_notice(transaction, signing, issuer, &session, &client_id, now).await);
+        notices.extend(
+            mint_notice(
+                transaction,
+                signing,
+                issuer,
+                &session.user_id,
+                &session.session_id,
+                &client_id,
+                now,
+            )
+            .await,
+        );
     }
     notices
 }
 
-/// The notice for one client of a login, when it registered where to be told: for an
-/// application whose grant alone is taken back while the login goes on.
-pub async fn notice_for_client(
-    transaction: &UnitOfWork,
-    signing: &crate::oidc::grant::Signing<'_>,
-    issuer: &str,
-    session_id: &str,
-    client_id: &str,
-    now: DateTime<Utc>,
-) -> Option<Notice> {
-    let Ok(Some(session)) = sessions::load(transaction, session_id).await else {
-        tracing::warn!(session = %session_id, "no login to tell anybody about");
-        return None;
-    };
-    mint_notice(transaction, signing, issuer, &session, client_id, now).await
-}
-
+/// The notice for one client of a login, when it registered where to be told.
+/// Named by the person and the login rather than read off the login's row, so a
+/// notice owed by a login already gone is minted all the same.
 async fn mint_notice(
     transaction: &UnitOfWork,
     signing: &crate::oidc::grant::Signing<'_>,
     issuer: &str,
-    session: &models::sessions::records::UserSessionModel,
+    user_id: &str,
+    session_id: &str,
     client_id: &str,
     now: DateTime<Utc>,
 ) -> Option<Notice> {
@@ -293,13 +292,8 @@ async fn mint_notice(
     // the real identifier the moment anybody logged out. Refusing to tell it
     // at all is better than telling it that: the notice is dropped and said
     // out loud, the way an unreadable client or a missing key is.
-    let Ok(subject) = crate::oidc::pairwise::subject_for(
-        transaction,
-        signing.provider,
-        &client,
-        &session.user_id,
-    )
-    .await
+    let Ok(subject) =
+        crate::oidc::pairwise::subject_for(transaction, signing.provider, &client, user_id).await
     else {
         tracing::warn!(%client_id, "no subject to name this client's person by");
         return None;
@@ -321,7 +315,7 @@ async fn mint_notice(
             subject: &subject,
             audiences: vec![client_id.to_owned()],
             party: client_id,
-            session_id: &session.session_id,
+            session_id,
             scope: "",
             lifespan: chrono::Duration::seconds(NOTICE_LIFESPAN),
             now,
@@ -350,6 +344,106 @@ pub async fn read_brokered_sessions(
     sessions::brokered(transaction, provider_alias, external_user_id)
         .await
         .map_err(|_| crate::realm::Unreadable)
+}
+
+/// The logout notices could not be read or settled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("the logout notices could not be read or settled")]
+pub struct Untold;
+
+/// A logout notice owed, claimed and minted, ready to go out once the claiming
+/// transaction has committed.
+pub struct DueLogoutNotice {
+    pub session_id: String,
+    pub client_id: String,
+    /// Counting the attempt this claim makes.
+    pub attempts: i32,
+    pub notice: Notice,
+}
+
+/// How one claimed notice went.
+pub struct AttemptedLogoutNotice {
+    pub session_id: String,
+    pub client_id: String,
+    pub attempts: i32,
+    pub went_out: bool,
+}
+
+/// Claim up to `ceiling` of the logout notices ended logins owe, as a lease that
+/// pushes each one's next attempt out by `backoff_seconds` per attempt made.
+pub async fn claim_due_logout_notices(
+    transaction: &UnitOfWork,
+    ceiling: i64,
+    backoff_seconds: i64,
+) -> Result<Vec<logout_notices::OwedNotice>, Untold> {
+    logout_notices::claim_due(transaction, ceiling, backoff_seconds)
+        .await
+        .map_err(|_| Untold)
+}
+
+/// Mint each claimed notice for its client. One that can never go out, its
+/// client gone or no longer registered to hear, or nothing to sign or name the
+/// person with, is settled as skipped here, in the claiming transaction.
+pub async fn compose_owed_logout_notices(
+    transaction: &UnitOfWork,
+    signing: &crate::oidc::grant::Signing<'_>,
+    issuer: &str,
+    claimed: Vec<logout_notices::OwedNotice>,
+    now: DateTime<Utc>,
+) -> Result<Vec<DueLogoutNotice>, Untold> {
+    let mut due = Vec::with_capacity(claimed.len());
+    for owed in claimed {
+        let minted = mint_notice(
+            transaction,
+            signing,
+            issuer,
+            &owed.user_id,
+            &owed.session_id,
+            &owed.client_id,
+            now,
+        )
+        .await;
+        match minted {
+            Some(notice) => due.push(DueLogoutNotice {
+                session_id: owed.session_id,
+                client_id: owed.client_id,
+                attempts: owed.attempts,
+                notice,
+            }),
+            None => logout_notices::settle(
+                transaction,
+                &owed.session_id,
+                &owed.client_id,
+                Settled::Skipped,
+            )
+            .await
+            .map_err(|_| Untold)?,
+        }
+    }
+    Ok(due)
+}
+
+/// Put away each attempted notice as its attempt decided: sent, given up on
+/// once its attempts ran out, or left owed for the next pass.
+pub async fn settle_logout_attempts(
+    transaction: &UnitOfWork,
+    attempted: &[AttemptedLogoutNotice],
+) -> Result<(), Untold> {
+    for attempt in attempted {
+        if let Some(settled) =
+            crate::messaging::notices::settle_attempt(attempt.went_out, attempt.attempts)
+        {
+            logout_notices::settle(
+                transaction,
+                &attempt.session_id,
+                &attempt.client_id,
+                settled,
+            )
+            .await
+            .map_err(|_| Untold)?;
+        }
+    }
+    Ok(())
 }
 
 /// End the logins an upstream's logout names. Every client of each login is told

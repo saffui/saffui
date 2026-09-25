@@ -15,8 +15,6 @@ use crate::account::{
     Unremoved, change_own_password, own_factors, read_sign_in_standing, remove_own_factor,
 };
 use crate::context::minted_at;
-use crate::oidc::grant::Signing;
-use crate::oidc::logout::{Notice, notice_for_client, notices_for};
 use crate::token::{Binding, Proofs, Refused, Verified};
 
 /// The one client whose tokens reach the account API: the realm's account console.
@@ -480,124 +478,74 @@ pub enum Unended {
 }
 
 /// End one of the caller's logins and everything its applications got from it,
-/// offline grants included, and hand back the logout notices they are owed.
-///
-/// The notices are minted while the login can still be read, and sent by the caller
-/// once the ending has committed, the way a logout does it. Named through the
-/// caller, so an identifier from somebody else's listing reaches nothing.
+/// offline grants included. The applications registered to hear of it are owed a
+/// logout notice, sent by the outbox pass once the ending has committed. Named
+/// through the caller, so an identifier from somebody else's listing reaches nothing.
 pub async fn end_caller_login(
     transaction: &UnitOfWork,
     caller: &AccountCaller,
-    signing: Option<&Signing<'_>>,
-    issuer: &str,
     session_id: &str,
-) -> Result<Vec<Notice>, Unended> {
+) -> Result<(), Unended> {
     let held = sessions::load(transaction, session_id)
         .await
         .map_err(|_| Unended::Backend)?
         .filter(|session| session.user_id == caller.user_id)
         .ok_or(Unended::NotFound)?;
-    let notices = match signing {
-        Some(signing) => {
-            notices_for(transaction, signing, issuer, &held.session_id, caller.now).await
-        }
-        None => Vec::new(),
-    };
     sessions::close(transaction, &held.session_id)
         .await
         .map_err(|_| Unended::Backend)?;
-    Ok(notices)
+    Ok(())
 }
 
 /// End every login of the caller's but the one the request rides, with what their
-/// applications got from them, and hand back how many ended and the logout notices
-/// their applications are owed.
+/// applications got from them, and say how many ended. Their applications are owed
+/// a logout notice each, as for one login.
 pub async fn end_caller_other_logins(
     transaction: &UnitOfWork,
     caller: &AccountCaller,
-    signing: Option<&Signing<'_>>,
-    issuer: &str,
-) -> Result<(usize, Vec<Notice>), Unended> {
-    let mut notices = Vec::new();
-    if let Some(signing) = signing {
-        let logins = sessions::load_for_user(transaction, &caller.user_id)
-            .await
-            .map_err(|_| Unended::Backend)?;
-        for session in logins
-            .iter()
-            .filter(|session| session.session_id != caller.session_id)
-        {
-            notices.extend(
-                notices_for(
-                    transaction,
-                    signing,
-                    issuer,
-                    &session.session_id,
-                    caller.now,
-                )
-                .await,
-            );
-        }
-    }
-    let ended = sessions::end_others_of_user(transaction, &caller.user_id, &caller.session_id)
+) -> Result<usize, Unended> {
+    sessions::end_others_of_user(transaction, &caller.user_id, &caller.session_id)
         .await
-        .map_err(|_| Unended::Backend)?;
-    Ok((ended, notices))
+        .map_err(|_| Unended::Backend)
 }
 
 /// Take back what one application got from one of the caller's logins, leaving the
-/// login and every other application alone, and hand back the logout notice the
-/// application is owed for that login.
+/// login and every other application alone.
 pub async fn revoke_caller_grant(
     transaction: &UnitOfWork,
     caller: &AccountCaller,
-    signing: Option<&Signing<'_>>,
-    issuer: &str,
     session_id: &str,
     client_id: &str,
-) -> Result<Vec<Notice>, Unended> {
+) -> Result<(), Unended> {
     sessions::load(transaction, session_id)
         .await
         .map_err(|_| Unended::Backend)?
         .filter(|session| session.user_id == caller.user_id)
         .ok_or(Unended::NotFound)?;
-    take_back_grant(transaction, caller, signing, issuer, session_id, client_id)
+    take_back_grant(transaction, session_id, client_id)
         .await?
+        .then_some(())
         .ok_or(Unended::NoSuchGrant)
 }
 
-/// Take back one application's grant from one login, with the notice it is owed when it
-/// registered where to be told; None when it held nothing there. The notice names the
-/// login, which reads the same after the grant is gone.
+/// Take back one application's grant from one login, owing it the logout notice for
+/// that login when it registered where to be told; false when it held nothing there.
+/// Owed first, while the grant still says the application took part.
 async fn take_back_grant(
     transaction: &UnitOfWork,
-    caller: &AccountCaller,
-    signing: Option<&Signing<'_>>,
-    issuer: &str,
     session_id: &str,
     client_id: &str,
-) -> Result<Option<Vec<Notice>>, Unended> {
-    let taken = sessions::close_client_session_of(transaction, session_id, client_id)
+) -> Result<bool, Unended> {
+    store::providers::protocol::logout_notices::owe_for_client_of_login(
+        transaction,
+        session_id,
+        client_id,
+    )
+    .await
+    .map_err(|_| Unended::Backend)?;
+    sessions::close_client_session_of(transaction, session_id, client_id)
         .await
-        .map_err(|_| Unended::Backend)?;
-    if !taken {
-        return Ok(None);
-    }
-    let notice = match signing {
-        Some(signing) => {
-            notice_for_client(
-                transaction,
-                signing,
-                issuer,
-                session_id,
-                client_id,
-                caller.now,
-            )
-            .await
-        }
-        None => None,
-    };
-    Ok(Some(notice.into_iter().collect()))
+        .map_err(|_| Unended::Backend)
 }
 
 /// The applications the realm keeps for itself, which the account API neither lists nor
@@ -756,17 +704,15 @@ pub async fn withdraw_caller_consent(
 }
 
 /// Take back everything one application got from any of the caller's logins, offline
-/// grants included, and hand back how many grants went and the notices the application
-/// is owed, one for each login it was signed in through. A console of the realm's is
-/// not taken back here: ending the login is how it goes.
+/// grants included, and say how many grants went; the application is owed a logout
+/// notice for each login it was signed in through. A console of the realm's is not
+/// taken back here: ending the login is how it goes.
 pub async fn take_back_caller_access(
     transaction: &UnitOfWork,
     caller: &AccountCaller,
-    signing: Option<&Signing<'_>>,
-    issuer: &str,
     client_id: &str,
     consoles: &[String],
-) -> Result<(usize, Vec<Notice>), Unended> {
+) -> Result<usize, Unended> {
     if consoles.iter().any(|console| console == client_id) {
         return Err(Unended::NoSuchGrant);
     }
@@ -774,26 +720,15 @@ pub async fn take_back_caller_access(
         .await
         .map_err(|_| Unended::Backend)?;
     let mut taken = 0;
-    let mut notices = Vec::new();
     for login in &logins {
-        if let Some(told) = take_back_grant(
-            transaction,
-            caller,
-            signing,
-            issuer,
-            &login.session_id,
-            client_id,
-        )
-        .await?
-        {
+        if take_back_grant(transaction, &login.session_id, client_id).await? {
             taken += 1;
-            notices.extend(told);
         }
     }
     if taken == 0 {
         return Err(Unended::NoSuchGrant);
     }
-    Ok((taken, notices))
+    Ok(taken)
 }
 
 #[cfg(test)]

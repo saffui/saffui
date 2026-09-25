@@ -20,6 +20,8 @@ mod hosted;
 mod hybrid;
 #[path = "grouped/login_script.rs"]
 mod login_script;
+#[path = "grouped/logout_notices.rs"]
+mod logout_notices;
 #[path = "grouped/mailed.rs"]
 mod mailed;
 #[path = "grouped/notices.rs"]

@@ -159,13 +159,16 @@ pub async fn load_for_realm(
         .collect())
 }
 
-/// End every session of this realm, saying how many went.
+/// End every session of this realm, saying how many went, and owe their clients
+/// a logout notice.
 ///
-/// The blunt half of a breach answer. It closes what is open; the tokens
-/// already handed out are answered by the realm's cut, and neither lever is the
-/// other's substitute: this one frees nothing already minted, and the cut ends
-/// no session that would otherwise keep renewing.
+/// The blunt half of a breach answer. It closes what is open, and a token
+/// naming a login that is gone stops at every door that asks after it; a
+/// resource server that checks tokens itself asks nothing, and only the realm's
+/// cut reaches it. Neither lever is the other's substitute: the cut ends no
+/// session that would otherwise keep renewing.
 pub async fn end_all_of_realm(transaction: &UnitOfWork, realm_id: &str) -> StoreResult<u64> {
+    crate::providers::protocol::logout_notices::owe_for_every_login(transaction, realm_id).await?;
     transaction
         .execute(
             "DELETE FROM user_sessions WHERE realm_id = $1",
@@ -222,8 +225,10 @@ pub async fn set_state(
     Ok(changed > 0)
 }
 
-/// End a session, and everything a client got out of it.
+/// End a session, and everything a client got out of it. Its clients are owed a
+/// logout notice, noted while the session can still say who they are.
 pub async fn close(transaction: &UnitOfWork, session_id: &str) -> StoreResult<bool> {
+    crate::providers::protocol::logout_notices::owe_for_login(transaction, session_id).await?;
     let removed = transaction
         .query(
             "DELETE FROM user_sessions WHERE session_id = $1 RETURNING user_id",
@@ -245,12 +250,15 @@ pub async fn close(transaction: &UnitOfWork, session_id: &str) -> StoreResult<bo
     Ok(true)
 }
 
-/// End every login this person holds, and every grant hanging off them.
+/// End every login this person holds, and every grant hanging off them, and owe
+/// their clients a logout notice.
 ///
 /// Offline grants go too. A reset because somebody else knows the password
 /// that leaves their offline grant alive leaves them signed in through the
 /// very reset meant to shut them out.
 pub async fn end_all_of_user(transaction: &UnitOfWork, user_id: &str) -> StoreResult<u64> {
+    crate::providers::protocol::logout_notices::owe_for_logins_of(transaction, user_id, None)
+        .await?;
     transaction
         .execute(
             "DELETE FROM client_sessions WHERE user_id = $1",
@@ -285,6 +293,12 @@ pub async fn end_others_of_user(
     user_id: &str,
     kept_session_id: &str,
 ) -> StoreResult<usize> {
+    crate::providers::protocol::logout_notices::owe_for_logins_of(
+        transaction,
+        user_id,
+        Some(kept_session_id),
+    )
+    .await?;
     let ended = transaction
         .query(
             "DELETE FROM user_sessions WHERE user_id = $1 AND session_id <> $2 \

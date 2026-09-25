@@ -649,6 +649,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V107__source_throttle.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 108,
+            name: "logout_notices",
+            sql: include_str!("../migrations/V108__logout_notices.sql"),
+            transactional: true,
+        }),
     ]
 }
 

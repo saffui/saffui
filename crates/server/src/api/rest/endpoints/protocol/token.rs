@@ -309,6 +309,7 @@ pub async fn ask(
                         key: proven.as_ref(),
                         certificate: certified_by.as_deref(),
                     },
+                    scope: asked.scope.as_deref(),
                 },
                 now,
             )
@@ -571,6 +572,9 @@ fn ungranted(why: Ungranted) -> HttpResponse {
         // whoever presented a token they should not have.
         Ungranted::InvalidGrant | Ungranted::Replayed => {
             Denied::InvalidGrant.answer("the grant presented was not honoured")
+        }
+        Ungranted::InvalidScope => {
+            Denied::InvalidScope.answer("the scope asked for was never granted")
         }
         _ => Denied::InvalidRequest.answer("the grant could not be performed"),
     }

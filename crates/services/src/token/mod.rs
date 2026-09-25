@@ -133,9 +133,6 @@ pub fn verify_signature_and_window(
     Ok(established(payload))
 }
 
-/// The whole gate: signature, window, and whether it was withdrawn.
-///
-/// What every caller presenting a bearer should ask for.
 /// What the caller can say about the key a token is bound to.
 ///
 /// Named at every call rather than passed as an option, because the two cases
@@ -175,6 +172,9 @@ impl<'a> Proofs<'a> {
     }
 }
 
+/// The whole gate: signature, window, and whether it was withdrawn.
+///
+/// What every caller presenting a bearer should ask for.
 pub async fn verify_presented(
     transaction: &UnitOfWork,
     keys: &[RealmSigningKeyView],

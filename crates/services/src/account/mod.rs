@@ -6,13 +6,15 @@ pub mod privacy;
 pub mod recovery;
 pub mod signup;
 
-use auth::login::authenticator::Authenticator;
+use auth::login::authenticator::{Authenticator, reached_level};
 use auth::login::{lockout, throttle};
 use auth::password::{self, Compared, Unkept};
 use chrono::{DateTime, Utc};
 use crypto::provider::CryptoProvider;
 use models::entities::acr::AcrLoaMap;
-use models::entities::auth::{AuthenticationExecutionModel, ExecutionStep};
+use models::entities::auth::{
+    AuthenticationExecutionModel, AuthenticatorRequirement, ExecutionStep,
+};
 use models::entities::credentials::{CredentialModel, CredentialType};
 use models::entities::realm::RealmModel;
 use models::entities::user::{RequiredAction, UserModel, UserStorage};
@@ -455,22 +457,46 @@ impl Holdings {
 
 /// The strongest level a sign-in through these steps lets this person reach,
 /// counting only the enabled steps they can answer; nothing where none maps.
+///
+/// Weighed the way a login passes them: every required step, and one way in
+/// among the alternatives, which settles the others. A code offered as one way
+/// in among several reaches what it reaches alone.
 fn reachable_level(
     levels: &AcrLoaMap,
     steps: &[AuthenticationExecutionModel],
     holds: &Holdings,
 ) -> Option<i32> {
-    steps
+    let answerable: Vec<(Authenticator, AuthenticatorRequirement)> = steps
         .iter()
         .filter(|step| step.is_enabled())
         .filter_map(|step| match &step.step {
-            ExecutionStep::Authenticator { authenticator, .. } => {
-                authenticator.parse::<Authenticator>().ok()
-            }
+            ExecutionStep::Authenticator { authenticator, .. } => authenticator
+                .parse::<Authenticator>()
+                .ok()
+                .map(|parsed| (parsed, step.requirement)),
             ExecutionStep::SubFlow { .. } => None,
         })
-        .filter(|authenticator| holds.can_answer(*authenticator))
-        .filter_map(|authenticator| levels.loa_of(authenticator.context()))
+        .filter(|(authenticator, _)| holds.can_answer(*authenticator))
+        .collect();
+    let required: Vec<Authenticator> = answerable
+        .iter()
+        .filter(|(_, requirement)| *requirement == AuthenticatorRequirement::Required)
+        .map(|(authenticator, _)| *authenticator)
+        .collect();
+    let ways_in: Vec<Authenticator> = answerable
+        .iter()
+        .filter(|(_, requirement)| *requirement == AuthenticatorRequirement::Alternative)
+        .map(|(authenticator, _)| *authenticator)
+        .collect();
+    if ways_in.is_empty() {
+        return reached_level(levels, &required);
+    }
+    ways_in
+        .iter()
+        .filter_map(|way_in| {
+            let passed: Vec<Authenticator> = required.iter().copied().chain([*way_in]).collect();
+            reached_level(levels, &passed)
+        })
         .max()
 }
 
@@ -603,6 +629,9 @@ mod tests {
             Some(1)
         );
 
+        // Ways in settle one another, so a code offered among them reaches
+        // what it reaches alone; beside a required password it is a second
+        // factor, and on its own it is the first.
         let offered = [
             step("magic-link", Alternative),
             step("password", Alternative),
@@ -612,7 +641,25 @@ mod tests {
             verified_phone: true,
             ..Holdings::default()
         };
-        assert_eq!(reachable_level(&levels(), &offered, &with_phone), Some(2));
+        assert_eq!(reachable_level(&levels(), &offered, &with_phone), Some(1));
+        let beside = [
+            step("password", Required),
+            step("sms-otp", Alternative),
+            step("totp", Alternative),
+        ];
+        let with_password_and_phone = Holdings {
+            verified_phone: true,
+            ..with_password
+        };
+        assert_eq!(
+            reachable_level(&levels(), &beside, &with_password_and_phone),
+            Some(2)
+        );
+        let phone_first = [step("sms-otp", Required)];
+        assert_eq!(
+            reachable_level(&levels(), &phone_first, &with_phone),
+            Some(1)
+        );
         assert_eq!(
             reachable_level(&levels(), &offered, &Holdings::default()),
             Some(1)

@@ -1109,7 +1109,11 @@ fn plane(database: &pgcore::database::Database) -> Result<Plane, String> {
         sealing: Sealing::new(
             match config::messaging::Sink::from_env().map_err(|e| e.to_string())? {
                 config::messaging::Sink::None => None,
-                config::messaging::Sink::Smtp => Some(Arc::new(outbound::senders::Smtp)),
+                config::messaging::Sink::Smtp => {
+                    Some(Arc::new(outbound::senders::Smtp::new(egress).map_err(
+                        |why| format!("cannot build a TLS client for mail relays: {why}"),
+                    )?))
+                }
                 config::messaging::Sink::Logged => Some(Arc::new(outbound::senders::Logged)),
                 config::messaging::Sink::Webhook { url } => {
                     Some(Arc::new(outbound::senders::Webhook::new(

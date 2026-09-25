@@ -7,36 +7,43 @@ use auth::messaging::{Deliver, Message, Text, Texter, Undelivered};
 use config::serving::Egress;
 
 use crate::egress::{may_dial, outward_agent};
+use crate::smtp::SmtpClient;
 use crypto::secrecy::ExposeSecret;
+use lettre::Message as Letter;
 use lettre::message::Mailbox;
 use lettre::message::{MultiPart, SinglePart};
-use lettre::transport::smtp::authentication::Credentials;
-use lettre::transport::smtp::client::{Tls, TlsParameters};
-use lettre::{Message as Letter, SmtpTransport, Transport};
 use models::entities::mail::MailSettings;
 use models::entities::sms::SmsSettings;
+use openssl::error::ErrorStack;
 
-/// How long a server gets to take a message.
+/// How long a gateway gets to take a message.
 const PATIENCE: Duration = Duration::from_secs(10);
 
-/// The realm's own SMTP server.
-pub struct Smtp;
+/// The realm's own SMTP server, spoken to by this server's own client, which
+/// holds the conversation to the egress policy and to its bounds.
+pub struct Smtp {
+    client: SmtpClient,
+}
+
+impl Smtp {
+    /// Over a client that trusts the platform's authorities.
+    pub fn new(egress: Egress) -> Result<Smtp, ErrorStack> {
+        Ok(Smtp::through(SmtpClient::new(egress)?))
+    }
+
+    pub fn through(client: SmtpClient) -> Smtp {
+        Smtp { client }
+    }
+}
 
 #[async_trait::async_trait]
 impl Deliver for Smtp {
     async fn send(&self, settings: &MailSettings, message: &Message) -> Result<(), Undelivered> {
         let letter = compose(settings, message)?;
-        let transport = transport(settings)?;
-        // Off the reactor: the library sends on the calling thread, and a slow
-        // server would otherwise hold every other request on this worker.
-        tokio::task::spawn_blocking(move || transport.send(&letter))
-            .await
-            .map_err(|_| Undelivered::Refused)?
-            .map(|_| ())
-            .map_err(|why| {
-                tracing::warn!(why = %why, "a message was not sent");
-                Undelivered::Refused
-            })
+        self.client.send(settings, &letter).await.map_err(|why| {
+            tracing::warn!(why = %why, "a message was not sent");
+            Undelivered::Refused
+        })
     }
 }
 
@@ -65,28 +72,6 @@ fn compose(settings: &MailSettings, message: &Message) -> Result<Letter, Undeliv
                 .singlepart(SinglePart::html(message.html.clone())),
         )
         .map_err(|_| Undelivered::Refused)
-}
-
-/// Always over TLS. Implicit wraps the socket from the first byte; otherwise
-/// the connection is upgraded and a server that will not upgrade is refused
-/// rather than fallen back to, which is how a password reaches the wire.
-fn transport(settings: &MailSettings) -> Result<SmtpTransport, Undelivered> {
-    let parameters = TlsParameters::new(settings.host.clone()).map_err(|_| Undelivered::Refused)?;
-    let mut building = SmtpTransport::builder_dangerous(&settings.host)
-        .port(settings.port)
-        .timeout(Some(PATIENCE))
-        .tls(if settings.implicit_tls {
-            Tls::Wrapper(parameters)
-        } else {
-            Tls::Required(parameters)
-        });
-    if let Some(held) = &settings.credentials {
-        building = building.credentials(Credentials::new(
-            held.username.clone(),
-            held.password.expose_secret().clone(),
-        ));
-    }
-    Ok(building.build())
 }
 
 /// A gateway of the deployment's own, told over HTTP.

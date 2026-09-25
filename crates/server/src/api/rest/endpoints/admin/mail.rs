@@ -53,6 +53,7 @@ pub async fn send_test(
     admin: web::ReqData<Admin>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<outbound::Sealing>,
+    egress: web::Data<config::serving::Egress>,
     path: web::Path<String>,
     body: web::Json<TestAsked>,
 ) -> Result<HttpResponse, ApiError> {
@@ -98,7 +99,8 @@ pub async fn send_test(
     // This drives the whole dialogue, connect, TLS, auth, delivery, so a
     // green answer means the settings on screen actually carry mail.
     use auth::messaging::Deliver;
-    outbound::senders::Smtp
+    outbound::senders::Smtp::new(**egress)
+        .map_err(|_| internal())?
         .send(&settings, &message)
         .await
         .map_err(|_| {
@@ -231,6 +233,7 @@ pub async fn look_at_relay(
     admin: web::ReqData<Admin>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
+    egress: web::Data<config::serving::Egress>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
@@ -252,14 +255,8 @@ pub async fn look_at_relay(
     // Given back before the relay is dialled, as for the test send.
     drop(transaction);
 
-    // Off the reactor: this holds a socket open for as long as the relay takes
-    // to answer, and a slow one would otherwise hold every other request on
-    // this worker.
-    let report =
-        tokio::task::spawn_blocking(move || outbound::smtp_probe::look_at_relay(&settings))
-            .await
-            .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
-    Ok(HttpResponse::Ok().json(report))
+    let client = outbound::smtp::SmtpClient::new(**egress).map_err(|_| internal())?;
+    Ok(HttpResponse::Ok().json(client.look_at(&settings).await))
 }
 
 /// What this realm tried to send lately and could not.

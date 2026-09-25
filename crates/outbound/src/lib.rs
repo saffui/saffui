@@ -8,6 +8,7 @@ pub mod egress;
 pub mod pushes;
 mod sealing;
 pub mod senders;
+pub mod smtp;
 pub mod smtp_probe;
 
 pub use sealing::Sealing;

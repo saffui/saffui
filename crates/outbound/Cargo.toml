@@ -24,14 +24,16 @@ async-trait = { workspace = true }
 data-encoding = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["net", "io-util", "time"] }
 tracing = { workspace = true }
 # Reaching out: blocking and small, run off the async threads.
 ureq = { version = "3", default-features = false, features = ["native-tls"] }
-# Letters composed and sent to the realm's relay.
+# Letters composed; the relay is spoken to by this crate's own client.
 lettre = { workspace = true }
-# The relay probe's own handshake.
+# The relay's TLS, from the first byte or after STARTTLS.
 openssl = { workspace = true }
+tokio-openssl = { workspace = true }
 # The LDAP client lives here and nowhere else: the flow engine sees a port,
 # and no other crate links a directory protocol.
 ldap3 = { version = "0.11", default-features = false, features = ["tls-native"] }

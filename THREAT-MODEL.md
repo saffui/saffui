@@ -292,6 +292,7 @@ answers it, or the word that says nothing does.
 | T-ADM-4 | Asking for an entitlement and granting it to yourself | TA-3 | The one who asked cannot decide (`crates/services/src/admin/requests.rs:136`, `:183`) |
 | T-ADM-5 | The record of what an administrator did, rewritten | TA-3, TA-7 | Only the database function writes entries, the chain is serialised, and the plane serves verification and anchors (`crates/store/migrations/V011__audit_chain.sql:130`) |
 | T-ADM-6 | Refused attempts leaving no trace | TA-3 | **Nothing.** A knock the guard turns away is not journalled; it is a log line only (`crates/server/src/middleware/admin_audit.rs:93`) |
+| T-ADM-7 | A realm restored or cloned from a document running on defaults, its password policy, its brakes and its lifespans left behind, or a document written by hand to set what the plane would refuse | TA-3 | The import writes every setting the document carries, and weighs the realm as it landed by the checks a settings edit meets before anything commits, so a refusal leaves no realm behind; the secret a protected registration stands on never travels, and such a realm lands closed to registration (`crates/services/src/admin/portability.rs:1715`, `:1702`, `crates/server/src/api/rest/endpoints/admin/portability.rs:112`, `crates/server/src/api/rest/endpoints/admin/realms.rs:405`) |
 
 ### Tenancy, CJ-2
 

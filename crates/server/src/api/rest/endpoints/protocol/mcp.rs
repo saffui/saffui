@@ -6,11 +6,12 @@
 //! and nothing else: the admin plane is not for sale here, deliberately.
 //! Both tools are a facade over the one exchange the token endpoint
 //! performs, so every guard that holds there holds here: the realm's
-//! switch, the opt-in, the narrowest root, the act chain, the depth bound.
+//! switches, the opt-in, the narrowest root, the act chain, the depth bound.
 //!
 //! The bearer is the whole authentication: an agent's platform-minted
-//! token names its client in `azp`, and that client is who exchanges. A
-//! capability token presented back the same way is an attenuation.
+//! token names its client in `azp`, and that client, while switched on, is
+//! who exchanges. A capability token presented back the same way is an
+//! attenuation.
 
 use actix_web::{HttpRequest, HttpResponse, web};
 use chrono::Utc;
@@ -101,9 +102,16 @@ pub async fn serve(
     let Some(held) = held else {
         return HttpResponse::NotFound().finish();
     };
-    // The whole door answers to the realm's switch, initialize included: a
-    // host learns the truth at the handshake, not at the first mint.
-    if held.agent_exchange_enabled != Some(true) {
+    // The whole door answers to the realm's switches, initialize included: a
+    // host learns the truth at the handshake, not at the first mint. Both
+    // tools are the exchange, so a realm that closed the exchange closed them.
+    if held.agent_exchange_enabled != Some(true)
+        || !crate::api::feature::runs_for_realm(
+            &transaction,
+            commons::feature::Feature::TokenExchange,
+        )
+        .await
+    {
         return refused(id, -32000, "this realm does not mint capability tokens");
     }
 
@@ -228,7 +236,11 @@ pub async fn serve(
                     true,
                 );
             };
-            let Ok(Some(client)) = services::client::read_client(&transaction, &client).await
+            // A client switched off obtains nothing, here as at every door
+            // where it would have to authenticate.
+            let Ok(Some(client)) = services::client::read_client(&transaction, &client)
+                .await
+                .map(|held| held.filter(|client| client.enabled != Some(false)))
             else {
                 return told(
                     id,

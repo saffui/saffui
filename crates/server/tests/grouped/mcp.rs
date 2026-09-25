@@ -403,3 +403,72 @@ async fn a_minted_capability_records_the_trace_it_ran_in() {
         "the mint did not record its decision under the trace it ran in"
     );
 }
+
+fn minting(capabilities: &str) -> Value {
+    rpc(
+        "tools/call",
+        json!({ "name": "capability.mint", "arguments": { "capabilities": capabilities } }),
+    )
+}
+
+/// Both tools are the exchange, so a realm that closed the exchange closed
+/// the door too, at the handshake as at the first mint.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_realm_that_closed_the_exchange_closed_the_door() {
+    let plane = Plane::with_actions(&[]).await;
+    agent_world(&plane, true).await;
+    let subject = subject_token(&plane).await;
+    {
+        let transaction = plane
+            .scoped(&TenantContext::new(support::TENANT, REALM))
+            .await;
+        services::realm::feature::write_wish(&transaction, "token-exchange", Some(false), "bench")
+            .await
+            .expect("the wish kept");
+        transaction.commit().await.expect("kept");
+    }
+
+    for (asked, bearer) in [
+        (rpc("initialize", json!({})), None),
+        (minting("saffui.user.read"), Some(subject.as_str())),
+    ] {
+        let (status, answer) = called(&plane, asked, bearer).await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        assert_eq!(
+            answer.pointer("/error/message").and_then(Value::as_str),
+            Some("this realm does not mint capability tokens"),
+            "the door stayed open with the exchange closed: {answer}"
+        );
+    }
+}
+
+/// A client switched off exchanges nothing here, as it authenticates nowhere
+/// else, though the tokens it earned before are still in their window.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_switched_off_client_mints_nothing() {
+    let plane = Plane::with_actions(&[]).await;
+    agent_world(&plane, true).await;
+    let subject = subject_token(&plane).await;
+    {
+        let transaction = plane
+            .scoped(&TenantContext::new(support::TENANT, REALM))
+            .await;
+        let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
+            .await
+            .unwrap()
+            .expect("the client");
+        client.enabled = Some(false);
+        store::providers::clients::update(&transaction, &client)
+            .await
+            .unwrap();
+        transaction.commit().await.expect("kept");
+    }
+
+    let (status, answer) = called(&plane, minting("saffui.user.read"), Some(&subject)).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let (is_error, said) = unwrapped(&answer);
+    assert!(is_error, "a switched off client minted: {answer}");
+    assert_eq!(said, "the token names no client to exchange as", "{answer}");
+}

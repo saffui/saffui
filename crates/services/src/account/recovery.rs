@@ -212,7 +212,7 @@ async fn found(transaction: &UnitOfWork, named: &str) -> Result<Option<UserModel
     {
         return Ok(Some(held));
     }
-    users::load_by_email(transaction, named)
+    users::sole_by_email(transaction, named)
         .await
         .map_err(|_| Unrecoverable::Unreadable)
 }

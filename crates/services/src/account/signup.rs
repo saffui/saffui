@@ -101,10 +101,9 @@ pub async fn register_person(
     // so the two answers cost the same time. Where nothing is verified, a
     // page that could not say why it failed would just strand the person.
     if realm.duplicated_email_allowed != Some(true)
-        && users::load_by_email(transaction, email)
+        && users::email_taken(transaction, email)
             .await
             .map_err(|_| Unregistrable::Unwritable)?
-            .is_some()
     {
         if verifying {
             let cost = realm

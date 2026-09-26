@@ -643,11 +643,9 @@ async fn search(
                 .into_iter()
                 .collect()
         }
-        Wanted::Mailed(address) => users::load_by_email(&transaction, &address)
+        Wanted::Mailed(address) => users::all_by_email(&transaction, &address)
             .await
-            .map_err(|_| unavailable())?
-            .into_iter()
-            .collect(),
+            .map_err(|_| unavailable())?,
         Wanted::Everyone => listed(&transaction).await.map_err(|_| unavailable())?,
         Wanted::Sifted(probes) => listed(&transaction)
             .await

@@ -238,6 +238,50 @@ async fn a_name_nobody_holds_is_answered_the_same_way() {
     );
 }
 
+/// An address names its sole holder, as at the sign-in: one account holding it
+/// alone is sent the confirmation.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_address_held_alone_is_sent_the_confirmation() {
+    let plane = Plane::with_actions(&[]).await;
+    open_door(&plane, Jurisdiction::Eu, None).await;
+    arrange_mail(&plane).await;
+    let postbox = Postbox::default();
+
+    assert_eq!(
+        asked(&plane, &postbox, support::SUBJECT_EMAIL, "access").await,
+        StatusCode::ACCEPTED
+    );
+    assert_eq!(
+        postbox.held().len(),
+        1,
+        "an address one account holds was sent no confirmation"
+    );
+}
+
+/// An address two accounts share names neither: it is answered like a name
+/// nobody holds, and no confirmation goes out for whichever the store read
+/// first.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_address_two_accounts_share_is_sent_no_confirmation() {
+    let plane = Plane::with_actions(&[]).await;
+    open_door(&plane, Jurisdiction::Eu, None).await;
+    arrange_mail(&plane).await;
+    plane.plant_account_sharing_subject_email().await;
+    let postbox = Postbox::default();
+
+    assert_eq!(
+        asked(&plane, &postbox, support::SUBJECT_EMAIL, "access").await,
+        StatusCode::ACCEPTED,
+        "a shared address was answered differently"
+    );
+    assert!(
+        postbox.held().is_empty(),
+        "an address two accounts share was sent a confirmation for one of them"
+    );
+}
+
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn asking_twice_inside_the_cooldown_mails_once() {

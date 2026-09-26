@@ -80,16 +80,20 @@ pub async fn load_by_id_or_name(
     load_by_name(transaction, named).await
 }
 
-/// One user by address.
+/// Every user holding this address, by name.
 ///
-/// A realm that allows two users to share an address has no single answer here,
-/// so this takes the first and the caller that permits sharing must not use it
-/// to resolve a login.
-pub async fn load_by_email(
-    transaction: &UnitOfWork,
-    email: &str,
-) -> StoreResult<Option<UserModel>> {
-    one(transaction, "email = $1", email).await
+/// There is no read of one user by address that is not the sole holder's: in a
+/// realm that lets two users share an address, whichever the store returned
+/// first would stand for the other.
+pub async fn all_by_email(transaction: &UnitOfWork, email: &str) -> StoreResult<Vec<UserModel>> {
+    let statement = format!("SELECT {COLUMNS} FROM users WHERE email = $1 ORDER BY user_name ASC");
+    Ok(transaction
+        .query(statement.as_str(), &[&email])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(read)
+        .collect())
 }
 
 /// The one user holding this address, or nothing when nobody or several do.

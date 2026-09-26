@@ -348,7 +348,7 @@ async fn a_user_is_found_by_what_a_login_arrives_with() {
     for found in [
         users::load(&transaction, "ada").await.unwrap(),
         users::load_by_name(&transaction, "ada").await.unwrap(),
-        users::load_by_email(&transaction, "ada@example.test")
+        users::sole_by_email(&transaction, "ada@example.test")
             .await
             .unwrap(),
         users::load_by_phone(&transaction, "+3312345ada")

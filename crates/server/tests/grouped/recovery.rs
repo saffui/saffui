@@ -223,6 +223,49 @@ async fn a_name_nobody_holds_is_answered_the_same_way() {
     );
 }
 
+/// An address names its sole holder, as at the sign-in: one account holding it
+/// alone is sent a link.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_address_held_alone_is_sent_a_link() {
+    let plane = Plane::with_actions(&[]).await;
+    allow_reset(&plane, true).await;
+    arrange_mail(&plane).await;
+    let postbox = Postbox::default();
+
+    assert_eq!(
+        asked_for_link(&plane, &postbox, support::SUBJECT_EMAIL).await,
+        StatusCode::ACCEPTED
+    );
+    assert_eq!(
+        postbox.held().len(),
+        1,
+        "an address one account holds was sent no link"
+    );
+}
+
+/// An address two accounts share names neither: it is answered like a name
+/// nobody holds, and no link goes out for whichever the store read first.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_address_two_accounts_share_is_sent_no_link() {
+    let plane = Plane::with_actions(&[]).await;
+    allow_reset(&plane, true).await;
+    arrange_mail(&plane).await;
+    plane.plant_account_sharing_subject_email().await;
+    let postbox = Postbox::default();
+
+    assert_eq!(
+        asked_for_link(&plane, &postbox, support::SUBJECT_EMAIL).await,
+        StatusCode::ACCEPTED,
+        "a shared address was answered differently"
+    );
+    assert!(
+        postbox.held().is_empty(),
+        "an address two accounts share was sent a link for one of them"
+    );
+}
+
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_realm_that_does_not_offer_it_says_so() {

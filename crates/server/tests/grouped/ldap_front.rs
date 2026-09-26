@@ -224,6 +224,39 @@ async fn a_legacy_client_binds_searches_and_asks_who_it_is() {
     ldap.unbind().await.expect("a clean goodbye");
 }
 
+/// A search by address answers with every person holding it: one two people
+/// share names both, never whichever the store read first.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_search_by_address_answers_every_holder() {
+    let plane = Plane::with_actions(&[]).await;
+    plane.plant_account_sharing_subject_email().await;
+    let port = fronted(&plane, None).await;
+    let mut ldap = dialled(&format!("ldap://127.0.0.1:{port}")).await;
+    let bound = ldap
+        .simple_bind(&subject_dn(), support::PASSWORD)
+        .await
+        .expect("an answer");
+    assert_eq!(bound.rc, 0, "{bound:?}");
+
+    let (by_mail, _) = ldap
+        .search(
+            PEOPLE,
+            Scope::Subtree,
+            &format!("(mail={})", support::SUBJECT_EMAIL),
+            vec!["uid"],
+        )
+        .await
+        .expect("an answer")
+        .success()
+        .expect("the search succeeds");
+    assert_eq!(
+        by_mail.len(),
+        2,
+        "an address two people share answered for one of them"
+    );
+}
+
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn the_door_stays_shut_to_who_it_must() {

@@ -7,12 +7,14 @@ import {
   forgetRegistrationSecret,
   forgetSms,
   forgetUssd,
+  forgetWhatsApp,
   getMail,
   getRealmKeys,
   getRealmSettings,
   getRealmTheme,
   getSms,
   getUssd,
+  getWhatsApp,
   importPartialRealm,
   keepFeatureWish,
   listFeatures,
@@ -29,6 +31,7 @@ import {
   writeRealmTheme,
   writeSms,
   writeUssd,
+  writeWhatsApp,
 } from "@/services/settings";
 import { keepAnswer, REALM } from "./answers";
 
@@ -89,6 +92,18 @@ describe("realm settings", () => {
     await writeUssd(REALM, "a-ussd-secret-of-decent-length");
     await keepAnswer(getUssd, REALM);
     await forgetUssd(REALM);
+  });
+
+  test("keeps a WhatsApp business number, then forgets it", async () => {
+    await writeWhatsApp(REALM, {
+      phone_number_id: "106540352242922",
+      template: "sign_in_code",
+      languages: ["en_US", "fr"],
+      token: "a-system-user-token",
+    });
+    const held = await keepAnswer(getWhatsApp, REALM);
+    expect(held.languages).toEqual(["en_US", "fr"]);
+    await forgetWhatsApp(REALM);
   });
 
   test("lists features, page keys and sign-in events", async () => {

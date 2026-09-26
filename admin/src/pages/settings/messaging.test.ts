@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { mailWrite, previewSms, smsTemplateIsValid, smsWrite } from "./messaging";
+import { mailWrite, previewSms, smsTemplateIsValid, smsWrite, whatsAppWrite } from "./messaging";
 
 describe("message gateway forms", () => {
   test("normalizes addresses without rewriting secrets", () => {
@@ -46,6 +46,27 @@ describe("message gateway forms", () => {
       }).password,
     ).toBeNull();
     expect(smsWrite({ url: "https://sms.example", sender: "IAM", token: "" }).token).toBeNull();
+  });
+});
+
+describe("WhatsApp settings form", () => {
+  test("keeps each language once in the order typed, and a blank token keeps the held one", () => {
+    expect(
+      whatsAppWrite({
+        phone_number_id: " 106540352242922 ",
+        template: " sign_in_code ",
+        languages: " en_US, fr  en_US\npt_BR ",
+        token: "",
+      }),
+    ).toEqual({
+      phone_number_id: "106540352242922",
+      template: "sign_in_code",
+      languages: ["en_US", "fr", "pt_BR"],
+      token: null,
+    });
+    expect(
+      whatsAppWrite({ phone_number_id: "1", template: "t", languages: "fr", token: " a b " }).token,
+    ).toBe(" a b ");
   });
 });
 

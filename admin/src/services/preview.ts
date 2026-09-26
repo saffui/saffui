@@ -518,6 +518,13 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
         delivery_id: "delivery-1", user_id: "0f8a4c31-6b2e-4d59-9c11-2a7f5e8d3b40",
         purpose: "verify_email", recipient: "ada@example.test",
         attempted_at: new Date((NOW - 3600) * 1000).toISOString(), delivered: true, detail: null,
+        channel: "mail",
+      },
+      {
+        delivery_id: "delivery-2", user_id: "0f8a4c31-6b2e-4d59-9c11-2a7f5e8d3b40",
+        purpose: "sms-otp", recipient: "+22890123456",
+        attempted_at: new Date((NOW - 600) * 1000).toISOString(), delivered: true, detail: null,
+        channel: "whatsapp",
       },
     ] });
   }
@@ -1303,6 +1310,9 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
   }
   if (path.endsWith("/ussd")) {
     return answer({ has_secret: true });
+  }
+  if (path.endsWith("/whatsapp")) {
+    return answer({ phone_number_id: "106540352242922", template: "sign_in_code", languages: ["fr", "en_US"] });
   }
   if (path.endsWith("/sms")) {
     return answer({ url: "https://api.orange.tg/v1/sms", sender: "SAFFUI", has_token: false });

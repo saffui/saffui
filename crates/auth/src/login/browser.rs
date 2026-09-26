@@ -234,8 +234,8 @@ pub async fn answer_step(
     // the realm's keyring would be one every other step pays for. WhatsApp is
     // read only where the deployment speaks to Meta, so a deployment that does
     // not pays nothing for it.
-    let (mail, sms, whatsapp) = match sealing {
-        None => (None, None, None),
+    let (mail, sms, whatsapp, sim_swap) = match sealing {
+        None => (None, None, None, None),
         Some(sealing) => (
             store::providers::realms::mail::load(transaction, sealing.ring, sealing.envelope)
                 .await
@@ -245,6 +245,23 @@ pub async fn answer_step(
                 .map_err(|_| Unanswerable::Unreadable)?,
             if whatsapps {
                 store::providers::realms::whatsapp::load(
+                    transaction,
+                    sealing.ring,
+                    sealing.envelope,
+                )
+                .await
+                .map_err(|_| Unanswerable::Unreadable)?
+            } else {
+                None
+            },
+            // Experimental, and off unless the process and the realm run it.
+            if store::providers::realms::realm_features::runs_for_realm(
+                transaction,
+                commons::feature::Feature::SimSwapGuard,
+            )
+            .await
+            {
+                store::providers::realms::sim_swap::load(
                     transaction,
                     sealing.ring,
                     sealing.envelope,
@@ -277,6 +294,7 @@ pub async fn answer_step(
             can_text: texts,
             whatsapp: whatsapp.as_ref(),
             can_whatsapp: whatsapps,
+            sim_swap: sim_swap.as_ref(),
             now,
         }),
         federations,
@@ -360,6 +378,7 @@ pub async fn answer_step(
                     can_text: texts,
                     whatsapp: whatsapp.as_ref(),
                     can_whatsapp: whatsapps,
+                    sim_swap: sim_swap.as_ref(),
                     now,
                 }),
             )

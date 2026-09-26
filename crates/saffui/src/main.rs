@@ -1141,6 +1141,7 @@ fn plane(database: &pgcore::database::Database) -> Result<Plane, String> {
                     Some(Arc::new(outbound::senders::LoggedWhatsApp))
                 }
             },
+            egress,
             provider,
             envelope,
         )

@@ -398,7 +398,16 @@ pub fn sealing_speaking(
 ) -> outbound::Sealing {
     let shared: Arc<dyn CryptoProvider> = Arc::new(provider());
     let envelope = Envelope::new(Arc::clone(&shared), KEK).expect("an envelope");
-    outbound::Sealing::new(sender, texter, whatsapp, shared, envelope).expect("a sealing")
+    // Anywhere, so a suite's stand-in carrier on this machine can be dialled.
+    outbound::Sealing::new(
+        sender,
+        texter,
+        whatsapp,
+        config::serving::Egress::Anywhere,
+        shared,
+        envelope,
+    )
+    .expect("a sealing")
 }
 
 /// What a count keeps of a name typed in `realm_id`, worked out here rather

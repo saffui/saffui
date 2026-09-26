@@ -53,6 +53,29 @@ pub async fn carries_both_ways(transaction: &UnitOfWork) -> bool {
         .unwrap_or(false)
 }
 
+/// Record, where a failed sign-in is recorded, that a code went out without
+/// the carrier's word, because the realm sends on silence.
+pub async fn note_carrier_silence(
+    transaction: &UnitOfWork,
+    user_id: &str,
+    step: &str,
+    recipient: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<(), Unrecorded> {
+    store::providers::events::login_events::record(
+        transaction,
+        now.timestamp(),
+        &store::providers::events::login_events::LoginEventWrite {
+            kind: "sim_swap_unanswered",
+            user_id: Some(user_id),
+            detail: Some(serde_json::json!({ "to": recipient, "step": step, "sent": true })),
+            ..Default::default()
+        },
+    )
+    .await
+    .map_err(|_| Unrecorded)
+}
+
 /// Keep the receipt of one attempt to send, delivered or not.
 pub async fn record_delivery(
     transaction: &UnitOfWork,

@@ -954,6 +954,11 @@ async fn verify_phone_round(
     };
 
     let held = |key: &str| state.and_then(|state| state.get(key));
+    // Held after the carrier's answer, like a ceremony this build cannot run:
+    // the debt stays recorded and the person goes on.
+    if held("held").and_then(Value::as_bool) == Some(true) {
+        return Enrolment::Settled;
+    }
     let sent_before = held("sent").and_then(Value::as_i64).unwrap_or(0);
     // The way the code in flight went, when it went to this same number.
     let by_before = held("by")
@@ -1073,6 +1078,7 @@ async fn verify_phone_round(
                 crate::messaging::tongue_spoken_by(subject),
                 way,
                 carriers,
+                posting.sim_swap,
                 crate::messaging::About {
                     user_id: subject.user_id.clone(),
                     purpose: VERIFY_PHONE.to_owned(),

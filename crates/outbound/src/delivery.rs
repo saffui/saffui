@@ -5,7 +5,9 @@ use auth::messaging::{About, Outgoing, OutgoingText};
 use chrono::Utc;
 use crypto::provider::CryptoProvider;
 use data_encoding::HEXLOWER;
+use models::entities::sim_swap::WhenUnanswered;
 use models::messaging::{Channel, Delivery};
+use services::oidc::sign_in::Held;
 use store::tenancy::{Tenancy, TenantContext};
 
 use crate::Sealing;
@@ -51,24 +53,87 @@ pub async fn deliver(
     delivered
 }
 
+/// Which way a message went, or why a code went nowhere on purpose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sent {
+    By(Channel),
+    Nowhere,
+    /// The carrier's answer held the code before any way was tried.
+    Held(Held),
+}
+
 /// Send a text or a code, and say which way it went, if any went.
 ///
-/// A code to go by WhatsApp is tried there first, and the realm's gateway
-/// carries it when WhatsApp refuses; a text is the gateway's alone. Each
-/// attempt keeps a receipt of its own, the mail rail's rule: a person saying
-/// the code never came otherwise leaves nothing behind that outlives the log.
+/// Where the realm runs the carrier's guard, the carrier is asked first and a
+/// code to a SIM that changed goes nowhere. A code to go by WhatsApp is tried
+/// there first, and the realm's gateway carries it when WhatsApp refuses; a
+/// text is the gateway's alone. Each attempt keeps a receipt of its own, the
+/// mail rail's rule: a person saying the code never came otherwise leaves
+/// nothing behind that outlives the log.
 pub async fn deliver_text(
     sealing: &Sealing,
     tenancy: &Tenancy,
     context: &TenantContext,
     outgoing: OutgoingText,
-) -> Option<Channel> {
+) -> Sent {
     let OutgoingText {
         settings,
         text,
         whatsapp,
+        guard,
         about,
     } = outgoing;
+
+    if let Some(guard) = &guard {
+        let meant = if whatsapp.is_some() {
+            Channel::WhatsApp
+        } else {
+            Channel::Sms
+        };
+        let held = match crate::camara::sim_changed(
+            sealing.provider.as_ref(),
+            guard,
+            &text.to,
+            sealing.egress,
+        )
+        .await
+        {
+            Ok(false) => None,
+            Ok(true) => Some((
+                Held::SimSwapped,
+                format!(
+                    "held: the carrier says the SIM behind this number changed within {} hours",
+                    guard.max_age_hours
+                ),
+            )),
+            Err(why) => {
+                tracing::warn!(to = text.to, why = %why, "the carrier gave no answer about a SIM");
+                match guard.when_unanswered {
+                    WhenUnanswered::Hold => Some((
+                        Held::Unanswered,
+                        format!("held: the carrier gave no answer ({})", why.0),
+                    )),
+                    WhenUnanswered::Send => {
+                        note_silence(tenancy, context, &about, &text.to).await;
+                        None
+                    }
+                }
+            }
+        };
+        if let Some((why, detail)) = held {
+            keep_receipt(
+                sealing,
+                tenancy,
+                context,
+                about,
+                text.to,
+                meant,
+                Some(detail),
+            )
+            .await;
+            return Sent::Held(why);
+        }
+    }
 
     if let Some(code) = &whatsapp {
         let outcome = match sealing.whatsapp.as_deref() {
@@ -93,12 +158,12 @@ pub async fn deliver_text(
         )
         .await;
         if delivered {
-            return Some(Channel::WhatsApp);
+            return Sent::By(Channel::WhatsApp);
         }
     }
     // Nothing behind a refused WhatsApp code, whose receipt is written.
     if whatsapp.is_some() && settings.is_none() {
-        return None;
+        return Sent::Nowhere;
     }
 
     let outcome = match (sealing.texter.as_deref(), settings.as_ref()) {
@@ -126,7 +191,11 @@ pub async fn deliver_text(
         outcome.err(),
     )
     .await;
-    delivered.then_some(Channel::Sms)
+    if delivered {
+        Sent::By(Channel::Sms)
+    } else {
+        Sent::Nowhere
+    }
 }
 
 /// Send whichever kind one step produced, and say which way it went.
@@ -135,11 +204,15 @@ pub async fn deliver_outbound(
     tenancy: &Tenancy,
     context: &TenantContext,
     outbound: auth::messaging::Outbound,
-) -> Option<Channel> {
+) -> Sent {
     match outbound {
-        auth::messaging::Outbound::Mail(outgoing) => deliver(sealing, tenancy, context, outgoing)
-            .await
-            .then_some(Channel::Mail),
+        auth::messaging::Outbound::Mail(outgoing) => {
+            if deliver(sealing, tenancy, context, outgoing).await {
+                Sent::By(Channel::Mail)
+            } else {
+                Sent::Nowhere
+            }
+        }
         auth::messaging::Outbound::Text(outgoing) => {
             deliver_text(sealing, tenancy, context, outgoing).await
         }
@@ -182,6 +255,28 @@ async fn keep_receipt(
         || transaction.commit().await.is_err()
     {
         tracing::warn!("a delivery could not be recorded");
+    }
+}
+
+/// Record, where a failed sign-in is recorded, that a code went out without
+/// the carrier's word because the realm sends on silence.
+async fn note_silence(tenancy: &Tenancy, context: &TenantContext, about: &About, recipient: &str) {
+    let Ok(transaction) = tenancy.begin(context).await else {
+        tracing::warn!("a carrier's silence could not be recorded");
+        return;
+    };
+    if services::messaging::delivery::note_carrier_silence(
+        &transaction,
+        &about.user_id,
+        &about.purpose,
+        recipient,
+        Utc::now(),
+    )
+    .await
+    .is_err()
+        || transaction.commit().await.is_err()
+    {
+        tracing::warn!("a carrier's silence could not be recorded");
     }
 }
 

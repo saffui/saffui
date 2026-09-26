@@ -199,6 +199,8 @@ registry! {
         "Passkeys and roaming authenticators as a factor. Closing it sends people back to what is left.";
     SmsOtp = "sms-otp", Stable, RuntimeOnly, Realm, Weakens, On,
         "A code delivered by the SMS gateway, as a first or second factor. Closing it takes a factor away.";
+    SimSwapGuard = "sim-swap-guard", Experimental, RuntimeOnly, Realm, Weakens, Off,
+        "Ask the carrier, over CAMARA, whether the SIM behind a number changed lately before a code goes to it.";
 }
 
 /// Whether the capabilities this crate itself carries were linked. Only

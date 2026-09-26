@@ -134,7 +134,7 @@ pub async fn disable(transaction: &UnitOfWork, kid: &str) -> Result<(), Unturnab
 /// Exhaustive over the catalogue, like the signer it feeds: an algorithm the
 /// build can sign with must be one the plane can mint for, or rotation is
 /// refused exactly where a key is most wanted.
-fn generate(algorithm: SignAlg) -> Result<(Jwk, Vec<u8>), Unturnable> {
+pub(crate) fn generate(algorithm: SignAlg) -> Result<(Jwk, Vec<u8>), Unturnable> {
     let pair: Box<dyn KeyPair> = match algorithm {
         SignAlg::Rs256 | SignAlg::Rs384 | SignAlg::Rs512 => {
             Box::new(RsaKeyPair::generate(2048).map_err(|_| Unturnable::Backend)?)

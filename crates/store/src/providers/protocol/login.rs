@@ -93,6 +93,27 @@ pub async fn record_step(
     Ok(changed > 0)
 }
 
+/// Mark the step that sent a code as held, so the round played again finds it
+/// failed rather than sending another: the carrier said the SIM behind the
+/// number changed, or gave no answer where the realm holds on silence.
+pub async fn hold_step(
+    transaction: &UnitOfWork,
+    session_id: &str,
+    step: &str,
+) -> StoreResult<bool> {
+    let changed = transaction
+        .execute(
+            "UPDATE auth_sessions \
+             SET notes = jsonb_set(notes, ARRAY[$2::text], \
+                     COALESCE(notes -> $2::text, '{}'::jsonb) || '{\"held\": true}'::jsonb) \
+             WHERE session_id = $1 AND expires_at > now()",
+            &[&session_id, &step],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(changed > 0)
+}
+
 /// Close a login, whether it succeeded or not.
 pub async fn finish(transaction: &UnitOfWork, session_id: &str) -> StoreResult<bool> {
     let removed = transaction

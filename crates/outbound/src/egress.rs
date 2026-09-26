@@ -102,9 +102,21 @@ pub fn may_dial(uri: &str, egress: Egress) -> bool {
 /// of its own over the platform's, and a deployment that added an authority to
 /// its system store would find it ignored.
 pub fn outward_agent(egress: Egress, patience: Duration) -> ureq::Agent {
+    agent(egress, patience, true)
+}
+
+/// The same agent, handing back an answer whatever its status: a server
+/// speaking OAuth says what went wrong in the body of a 400, and a caller that
+/// must tell "not yet" from "no" has to read it.
+pub fn outward_agent_reading_refusals(egress: Egress, patience: Duration) -> ureq::Agent {
+    agent(egress, patience, false)
+}
+
+fn agent(egress: Egress, patience: Duration, status_as_error: bool) -> ureq::Agent {
     ureq::Agent::with_parts(
         ureq::Agent::config_builder()
             .timeout_global(Some(patience))
+            .http_status_as_error(status_as_error)
             // A redirect is a second address nobody registered.
             .max_redirects(0)
             .tls_config(

@@ -1,6 +1,7 @@
 use models::entities::attributes;
 use models::entities::mail::MailSettings;
 use models::entities::realm::RealmModel;
+use models::entities::sim_swap::SimSwapSettings;
 use models::entities::sms::SmsSettings;
 use models::entities::user::{UserModel, profile};
 use models::entities::whatsapp::WhatsAppSettings;
@@ -81,6 +82,9 @@ pub struct OutgoingText {
     pub text: Text,
     /// Tried first, when the code is to go by WhatsApp.
     pub whatsapp: Option<WhatsAppCode>,
+    /// Asked of the carrier before anything goes, where the realm runs the
+    /// guard: whether the SIM behind the number changed lately.
+    pub guard: Option<Box<SimSwapSettings>>,
     /// Who it is for and what it is for, so the attempt can be recorded
     /// against them. Never the body.
     pub about: About,
@@ -1018,6 +1022,7 @@ pub fn code_for_phone(
     reader: Option<&str>,
     way: Channel,
     carriers: CodeCarriers<'_>,
+    guard: Option<&SimSwapSettings>,
     about: About,
 ) -> OutgoingText {
     let whatsapp = carriers
@@ -1039,6 +1044,7 @@ pub fn code_for_phone(
             body: texted_words(realm, kind, code, reader),
         },
         whatsapp,
+        guard: guard.map(|held| Box::new(held.duplicate())),
         about,
     }
 }
@@ -1167,6 +1173,7 @@ mod ways {
             None,
             Channel::WhatsApp,
             both,
+            None,
             about(),
         );
         let leg = by_whatsapp.whatsapp.as_ref().expect("a WhatsApp half");
@@ -1185,6 +1192,7 @@ mod ways {
             None,
             Channel::Sms,
             both,
+            None,
             about(),
         );
         assert!(by_text.whatsapp.is_none(), "a text went by WhatsApp too");

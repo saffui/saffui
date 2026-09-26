@@ -63,3 +63,54 @@ pub async fn offers_recovery_codes(transaction: &UnitOfWork, bound: Option<&str>
     }
     false
 }
+
+/// Why a code went nowhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Held {
+    /// The carrier said the SIM behind the number changed within the realm's
+    /// window.
+    SimSwapped,
+    /// The carrier gave no answer, and the realm holds on silence.
+    Unanswered,
+}
+
+impl Held {
+    fn event(self) -> &'static str {
+        match self {
+            Self::SimSwapped => "sim_swapped",
+            Self::Unanswered => "sim_swap_unanswered",
+        }
+    }
+}
+
+/// Hold a code that was about to go out: void it, mark the step that drew it
+/// so the round played again finds that step failed, and record why where a
+/// failed sign-in is recorded.
+pub async fn hold_code(
+    transaction: &UnitOfWork,
+    auth_session_id: &str,
+    user_id: &str,
+    step: &str,
+    recipient: &str,
+    why: Held,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<(), crate::realm::Unreadable> {
+    store::providers::directory::one_time_tokens::void(transaction, user_id, step)
+        .await
+        .map_err(|_| crate::realm::Unreadable)?;
+    login::hold_step(transaction, auth_session_id, step)
+        .await
+        .map_err(|_| crate::realm::Unreadable)?;
+    store::providers::events::login_events::record(
+        transaction,
+        now.timestamp(),
+        &store::providers::events::login_events::LoginEventWrite {
+            kind: why.event(),
+            user_id: Some(user_id),
+            detail: Some(serde_json::json!({ "to": recipient, "step": step })),
+            ..Default::default()
+        },
+    )
+    .await
+    .map_err(|_| crate::realm::Unreadable)
+}

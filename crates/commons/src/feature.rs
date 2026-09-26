@@ -189,8 +189,8 @@ registry! {
         "Answer USSD sessions opened on an operator short code.";
     Authorization = "authorization", Stable, RuntimeOnly, Realm, Narrows, On,
         "Resources, scopes and policies served to this realm's resource servers.";
-    RebacStore = "rebac-store", Experimental, RuntimeOnly, Realm, Narrows, On,
-        "Relation tuples backing the ReBAC side of the authorization engine.";
+    RebacStore = "rebac-store", Experimental, RuntimeOnly, Realm, Narrows, Off,
+        "Relation tuples and the walks over them: the ReBAC side of the authorization engine, and the sharing of user-managed resources that rides it.";
     Organization = "organization", Preview, RuntimeOnly, Realm, Narrows, On,
         "Group accounts under an organization carrying its own brokers and domains.";
     PhoneFirstLogin = "phone-first-login", Stable, RuntimeOnly, Realm, Narrows, On,
@@ -820,17 +820,45 @@ mod tests {
     /// deployment that upgrades has said nothing about it. If declaring it
     /// turned it off, the upgrade would take away what was working, which is
     /// the one thing a registry must never do to a realm holding real people.
+    /// An experimental capability is the one exception, by what the word
+    /// promises: it is opted into, and the next test holds it to that.
     #[test]
     fn declaring_a_capability_that_already_ran_does_not_take_it_away() {
         let resolved = FeatureSet::resolve("", |_| true).expect("it resolves");
 
         for feature in Feature::ALL.iter().copied() {
-            if feature.spec().reach == Reach::Realm {
+            let spec = feature.spec();
+            if spec.reach == Reach::Realm && spec.lifecycle != Lifecycle::Experimental {
                 assert!(
                     resolved.is_enabled(feature),
                     "{feature:?} is a realm's to close and a silent deployment does not run it"
                 );
             }
         }
+    }
+
+    /// What is experimental runs only where a deployment asked for it.
+    #[test]
+    fn what_is_experimental_is_opted_into() {
+        let resolved = FeatureSet::resolve("", |_| true).expect("it resolves");
+
+        for feature in Feature::ALL.iter().copied() {
+            if feature.spec().lifecycle == Lifecycle::Experimental {
+                assert_eq!(
+                    feature.spec().standing,
+                    Standing::Off,
+                    "{feature:?} is experimental and stands on"
+                );
+                assert!(
+                    !resolved.is_enabled(feature),
+                    "{feature:?} is experimental and a silent deployment runs it"
+                );
+            }
+        }
+        let asked = FeatureSet::resolve("+rebac-store", |_| true).expect("it resolves");
+        assert!(
+            asked.is_enabled(Feature::RebacStore),
+            "asking did not open it"
+        );
     }
 }

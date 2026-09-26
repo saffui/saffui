@@ -1,3 +1,4 @@
+use commons::feature::Feature;
 use crypto::provider::CryptoProvider;
 use models::auditable::AuditableModel;
 use models::entities::authz::AuthzDecisionRecord;
@@ -441,6 +442,9 @@ pub async fn prune_decisions(
 /// Why a share was refused.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Unshareable {
+    /// The realm does not run the relation store a share is written to, so
+    /// the share would be a tuple no walk reads.
+    StoreClosed,
     /// The resource server does not allow its resources to be shared at all.
     ServerHoldsIt,
     /// This resource is not one of the shareable ones.
@@ -484,6 +488,9 @@ pub async fn share_resource(
     with: &store::providers::authorization::rebac::Subject,
     by: &str,
 ) -> Result<(), Unshareable> {
+    if !crate::realm::feature::runs_for_realm(transaction, Feature::RebacStore).await {
+        return Err(Unshareable::StoreClosed);
+    }
     let server = authz_surface::load_server(transaction, server_id)
         .await
         .map_err(|_| Unshareable::Backend)?

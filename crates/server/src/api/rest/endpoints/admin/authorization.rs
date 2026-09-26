@@ -656,6 +656,12 @@ async fn walk_of(
     relation: &str,
     context: &services::context::Context,
 ) -> Option<serde_json::Value> {
+    // A closed store is walked for nobody, a reader of a simulation included.
+    if !crate::api::feature::runs_for_realm(transaction, commons::feature::Feature::RebacStore)
+        .await
+    {
+        return None;
+    }
     let schema = services::authorization::rebac::schema_of(transaction)
         .await
         .ok()?;
@@ -833,6 +839,9 @@ fn unshareable(why: services::admin::authorization::Unshareable) -> ApiError {
             "this resource server does not let its resources be shared".to_owned()
         }
         Unshareable::ResourceHoldsIt => "this resource is not user managed".to_owned(),
+        Unshareable::StoreClosed => {
+            "sharing rides the relation store, which this realm does not run".to_owned()
+        }
         Unshareable::NoSchema(why) => format!("no relation graph is published: {why}"),
         Unshareable::UnknownType(named) => {
             format!("the relation graph does not describe '{named}'")

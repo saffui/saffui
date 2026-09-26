@@ -131,6 +131,14 @@ pub async fn set_wish(
             "this capability is the process's to set, not a realm's",
         ));
     }
+    // A realm moves under the process and never above it, so asking for what
+    // the process does not run would be kept and do nothing.
+    if asked.enabled == Some(true) && !crate::api::config::features().is_enabled(feature) {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            "this process does not run this capability, and a realm cannot open what the process does not run",
+        ));
+    }
 
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))

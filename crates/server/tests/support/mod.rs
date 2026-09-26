@@ -505,6 +505,60 @@ impl auth::messaging::Texter for Textbox {
     }
 }
 
+/// One code as Meta would have been asked to carry it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code, reason = "only the WhatsApp suite speaks it")]
+pub struct WhatsAppCode {
+    pub to: String,
+    pub code: String,
+    pub language: String,
+}
+
+/// Meta, as far as a suite needs it: the codes it was handed, or a refusal.
+#[derive(Default, Clone)]
+#[allow(dead_code, reason = "only the WhatsApp suite speaks it")]
+pub struct WhatsAppBox {
+    held: Arc<std::sync::Mutex<Vec<WhatsAppCode>>>,
+    refuses: bool,
+}
+
+#[allow(dead_code, reason = "only the WhatsApp suite speaks it")]
+impl WhatsAppBox {
+    pub fn held(&self) -> Vec<WhatsAppCode> {
+        self.held.lock().expect("the box").clone()
+    }
+
+    /// One that takes the code and refuses it, the way Meta answers a token
+    /// that lapsed or a template it never approved.
+    pub fn refusing() -> Self {
+        WhatsAppBox {
+            held: Arc::default(),
+            refuses: true,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl auth::messaging::WhatsAppSender for WhatsAppBox {
+    async fn send_code(
+        &self,
+        _settings: &models::entities::whatsapp::WhatsAppSettings,
+        to: &str,
+        code: &str,
+        language: &str,
+    ) -> Result<(), auth::messaging::Undelivered> {
+        if self.refuses {
+            return Err(auth::messaging::Undelivered::Refused);
+        }
+        self.held.lock().expect("the box").push(WhatsAppCode {
+            to: to.to_owned(),
+            code: code.to_owned(),
+            language: language.to_owned(),
+        });
+        Ok(())
+    }
+}
+
 fn envelope() -> Envelope {
     Envelope::new(Arc::new(provider()), KEK).expect("an envelope")
 }

@@ -943,7 +943,7 @@ impl CodeCarriers<'_> {
         self.sms.is_some() && self.whatsapp.is_some()
     }
 
-    fn carries(&self, way: Channel) -> bool {
+    pub fn carries(&self, way: Channel) -> bool {
         match way {
             Channel::Sms => self.sms.is_some(),
             Channel::WhatsApp => self.whatsapp.is_some(),

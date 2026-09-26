@@ -27,7 +27,9 @@ CREATE TABLE realm_whatsapp
     CONSTRAINT realm_whatsapp_realm FOREIGN KEY (tenant, realm_id)
         REFERENCES realms (tenant, realm_id) ON DELETE CASCADE,
     CONSTRAINT whatsapp_number_id_is_digits CHECK (phone_number_id ~ '^[0-9]{1,32}$'),
-    CONSTRAINT whatsapp_template_is_named CHECK (template ~ '^[a-z0-9_]{1,512}$'),
+    CONSTRAINT whatsapp_template_is_named CHECK (
+        template ~ '^[a-z0-9_]+$' AND length(template) <= 512
+    ),
     CONSTRAINT whatsapp_speaks_a_language CHECK (cardinality(languages) > 0)
 );
 

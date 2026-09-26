@@ -633,10 +633,13 @@ async fn sms_otp(
 
     // The other way, asked for once without waiting: a person whose phone
     // has no WhatsApp finds out when the code does not come.
-    let asked = answers.iter().find_map(|answer| match answer {
-        Answer::CodeChannel(way) => Some(*way),
-        _ => None,
-    });
+    let asked = answers
+        .iter()
+        .find_map(|answer| match answer {
+            Answer::CodeChannel(way) => Some(*way),
+            _ => None,
+        })
+        .filter(|way| carriers.carries(*way));
     let switching = !switched_before && asked.is_some_and(|way| Some(way) != by_before);
 
     // One in flight is enough, and a login only causes so many: both answered

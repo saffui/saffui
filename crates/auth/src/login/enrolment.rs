@@ -976,10 +976,8 @@ async fn verify_phone_round(
     };
 
     // The other way, asked for once without waiting, as at the sign-in code.
-    let switching = !switched_before
-        && answers
-            .code_channel
-            .is_some_and(|way| Some(way) != by_before);
+    let asked = answers.code_channel.filter(|way| carriers.carries(*way));
+    let switching = !switched_before && asked.is_some_and(|way| Some(way) != by_before);
 
     // The same three brakes the login code wears: one in flight, only so
     // many per login, and the realm's own day.
@@ -1017,7 +1015,7 @@ async fn verify_phone_round(
         transaction,
         &subject.user_id,
         &texting_to,
-        answers.code_channel,
+        asked,
         carriers,
         posting.now,
     )

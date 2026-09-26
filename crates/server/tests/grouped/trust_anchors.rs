@@ -143,6 +143,39 @@ async fn an_authority_is_deposited_listed_and_withdrawn() {
     assert_eq!(listed["items"], json!([]), "{listed}");
 }
 
+/// Reading the authorities is the realm's read action; depositing and
+/// withdrawing one is its write action.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_reader_lists_the_authorities_and_changes_none() {
+    let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
+    let bearer = plane.token(&support::claims());
+    let anchors = format!("/admin/realms/{REALM}/trust-anchors");
+    let key = RsaKeyPair::generate(2048).expect("an RSA key");
+    let pem = certificate(&key, "Authority", 1, true, UNTIL);
+
+    let (status, listed) = asked(&plane, Method::GET, &anchors, &bearer, None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &anchors,
+        &bearer,
+        Some(deposit_body(&pem)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{told}");
+    let (status, told) = asked(
+        &plane,
+        Method::DELETE,
+        &format!("{anchors}/any"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{told}");
+}
+
 /// What could not serve as an authority is refused in words: no certificate,
 /// several, a leaf, a weak key, an expired one, an unknown purpose.
 #[tokio::test]

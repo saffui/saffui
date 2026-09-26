@@ -254,7 +254,7 @@ pub async fn answer_step(
             } else {
                 None
             },
-            // Experimental, and off unless the process and the realm run it.
+            // Experimental, and off unless the process runs it.
             if store::providers::realms::realm_features::runs_for_realm(
                 transaction,
                 commons::feature::Feature::SimSwapGuard,

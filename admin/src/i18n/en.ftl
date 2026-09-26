@@ -1573,7 +1573,7 @@ whatsapp-test-subject = the WhatsApp test
 sim-swap-title = SIM swap guard
 sim-swap-help = Before a code goes to a phone, the realm asks the carrier over CAMARA whether the SIM behind the number changed lately. A changed SIM holds the code and the flow's other ways in answer; a phone's proof is left owed.
 sim-swap-experimental = experimental
-sim-swap-not-running = Stored, and not running: the process must run sim-swap-guard (SAFFUI_FEATURES=+sim-swap-guard) and the realm must not have closed it on the features page.
+sim-swap-not-running = Stored, and not running: the process must run sim-swap-guard (SAFFUI_FEATURES=+sim-swap-guard).
 sim-swap-client = Client id at the carrier
 sim-swap-client-help = The id the carrier or aggregator gave this realm when it was onboarded.
 sim-swap-authorize = Backchannel authentication endpoint

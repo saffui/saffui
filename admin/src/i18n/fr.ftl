@@ -1573,7 +1573,7 @@ whatsapp-test-subject = le test WhatsApp
 sim-swap-title = Garde SIM swap
 sim-swap-help = Avant qu'un code parte vers un téléphone, le realm demande à l'opérateur, par CAMARA, si la SIM derrière le numéro a changé récemment. Une SIM changée retient le code et les autres entrées du flux répondent ; la preuve d'un numéro reste due.
 sim-swap-experimental = expérimental
-sim-swap-not-running = Enregistré, mais inactif : le processus doit faire tourner sim-swap-guard (SAFFUI_FEATURES=+sim-swap-guard) et le realm ne doit pas l'avoir fermé sur la page des features.
+sim-swap-not-running = Enregistré, mais inactif : le processus doit faire tourner sim-swap-guard (SAFFUI_FEATURES=+sim-swap-guard).
 sim-swap-client = Identifiant client chez l'opérateur
 sim-swap-client-help = L'identifiant que l'opérateur ou l'agrégateur a donné à ce realm lors de son enrôlement.
 sim-swap-authorize = Point d'authentification en arrière-plan

@@ -10,8 +10,8 @@ export interface SimSwapBrief {
   when_unanswered: "send" | "hold";
   kid: string;
   public_jwk: Record<string, unknown>;
-  /// Experimental: stored settings do nothing until the process and the
-  /// realm run the guard.
+  /// Experimental: stored settings do nothing until the process runs the
+  /// guard.
   running: boolean;
 }
 

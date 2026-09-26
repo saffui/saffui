@@ -24,8 +24,8 @@ pub struct SimSwapBrief {
     pub when_unanswered: WhenUnanswered,
     pub kid: String,
     pub public_jwk: serde_json::Value,
-    /// Experimental: stored settings do nothing until the process and the
-    /// realm run the guard.
+    /// Experimental: stored settings do nothing until the process runs the
+    /// guard.
     pub running: bool,
 }
 

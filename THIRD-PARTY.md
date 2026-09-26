@@ -203,6 +203,13 @@ Code meant for the whole crate goes into a module of its own rather than into
    per purpose, the labels kept beside the wrapping one so that a caller names
    a purpose and is never handed the key that wraps. The first purpose keys the
    digest the failure counts keep of each typed name.
+7. `sd_jwt` (2026-09-26, the wallet verifier): selective disclosure for JSON Web
+   Tokens, RFC 9901, written over the vendored JWS layer without touching it:
+   disclosures read and made, presentations verified and assembled, key binding
+   checked and signed. `thumbprint::hash_name` becomes visible to the crate so
+   `_sd_alg` is read against the same table the thumbprints use. The test
+   vectors under `crates/crypto/data/rfc9901/` are the RFC's own examples
+   (Section 5 and Appendix A), extracted from its text unchanged.
 
 ## Before vendoring anything
 

@@ -437,6 +437,7 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
         held("organization", "preview", "realm", "narrows", "Group accounts under an organization carrying its own brokers and domains.", true),
         held("pq-hybrid", "preview", "process", "weakens", "ML-DSA signatures and ML-KEM encapsulation.", false),
         held("rebac-store", "experimental", "realm", "narrows", "Relation tuples and the walks over them: the ReBAC side of the authorization engine, and the sharing of user-managed resources that rides it.", false),
+        held("wallet-verifier", "experimental", "realm", "narrows", "Verify the credentials a person presents from a digital identity wallet, against the authorities the realm trusts.", false),
       ],
     });
   }
@@ -1323,6 +1324,23 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
       public_jwk: { kty: "EC", crv: "P-256", kid: "3kS9aU0LyR7vN2qP8cT4dX1mB6hJ5wE0fG7iK2oZ9sA", alg: "ES256", use: "sig", x: "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU", y: "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0" },
       running: false,
     });
+  }
+  if (/\/trust-anchors\/[^/]+$/.test(path) && method === "DELETE") {
+    return answer(undefined);
+  }
+  if (path.endsWith("/trust-anchors")) {
+    const anchor = {
+      id: "6f1c9e2a4b7d3058a1e2c4f6b8d0a2c4",
+      role: "credential-issuer",
+      subject: "C=TG,O=Agence Nationale d'Identification,CN=PID Issuer CA",
+      key_identifier: "q3vX2mB8cT4dR7nL0pK5sY9wZ1aE6fH3jU2iO8gN4bM",
+      fingerprint: "9b2e4f61c07a58d3e1b6a4c2f8d09e7b5a3c1f2e4d6b8a0c9e7f5d3b1a2c4e6f",
+      not_after: "2031-06-30T23:59:59Z",
+      created_by: "ada",
+      created_at: "2026-09-26T10:12:00Z",
+      certificate: "",
+    };
+    return answer(method === "POST" ? anchor : { running: false, items: [anchor] });
   }
   if (path.endsWith("/whatsapp")) {
     return answer({ phone_number_id: "106540352242922", template: "sign_in_code", languages: ["fr", "en_US"] });

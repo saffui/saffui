@@ -15,6 +15,7 @@ import {
   forgetSimSwap,
   forgetWhatsApp,
   forgetRegistrationSecret,
+  depositTrustAnchor,
   getMail,
   getSms,
   getUssd,
@@ -26,6 +27,7 @@ import {
   previewPartialImport,
   keepFeatureWish,
   listRealmFeatures,
+  listTrustAnchors,
   lookAtRelay,
   readSmsToday,
   readRelayRefusals,
@@ -39,6 +41,7 @@ import {
   writeUssd,
   writeSimSwap,
   writeWhatsApp,
+  withdrawTrustAnchor,
 } from "@/services/settings";
 import type { ImportCollisionPolicy, PartialImportReport } from "@/services/settings";
 import { deleteRealm } from "@/services/realms";
@@ -51,6 +54,7 @@ import type { MailBrief, MailRefusal, RelayReport } from "@/models/mail";
 import type { SmsBrief, SmsToday } from "@/models/sms";
 import type { WhatsAppBrief } from "@/models/whatsapp";
 import type { SimSwapBrief } from "@/models/simSwap";
+import type { TrustAnchorList } from "@/models/trustAnchors";
 import { OTP_DEFAULTS, OWASP_HASHING, SOURCE_THROTTLE_DEFAULTS } from "@/models/realm";
 import type { MailTemplate, PasswordPolicy, RealmSettings, RealmUpdate } from "@/models/realm";
 import type { ExecutionRow } from "@/models/flows";
@@ -85,6 +89,7 @@ const GROUPS = [
   "localization",
   "email",
   "phone",
+  "wallet",
   "features",
 ] as const;
 
@@ -125,6 +130,7 @@ const mail = ref<MailBrief | null>(null);
 const sms = ref<SmsBrief | null>(null);
 const whatsApp = ref<WhatsAppBrief | null>(null);
 const simSwap = ref<SimSwapBrief | null>(null);
+const trustAnchors = ref<TrustAnchorList | null>(null);
 const ussdHeld = ref(false);
 const failed = ref("");
 const exporting = ref(false);
@@ -767,6 +773,7 @@ watch(
       ? (named as Group)
       : "general";
     if (group.value === "features" && !features.value.length) void loadFeatures();
+    if (group.value === "wallet" && !trustAnchors.value) void loadTrustAnchors();
   },
   { immediate: true },
 );
@@ -1013,6 +1020,33 @@ async function removeSimSwap() {
   simSwap.value = null;
 }
 
+async function loadTrustAnchors() {
+  try {
+    trustAnchors.value = await listTrustAnchors(realm.value);
+  } catch (refused) {
+    failed.value = refused instanceof Error ? refused.message : String(refused);
+  }
+}
+
+/// One certificate, PEM encoded, as the authority published it.
+const anchorPem = ref("");
+
+async function depositAnchor() {
+  try {
+    await depositTrustAnchor(realm.value, { role: "credential-issuer", certificate: anchorPem.value });
+  } catch {
+    // The toast carries the server's refusal, and the text stays to be fixed.
+    return;
+  }
+  anchorPem.value = "";
+  await loadTrustAnchors();
+}
+
+async function withdrawAnchor(anchor: string) {
+  await withdrawTrustAnchor(realm.value, anchor);
+  await loadTrustAnchors();
+}
+
 /// Where a carrier that reads a key set finds the realm's public half.
 const simSwapKeysAt = computed(
   () => `/realms/${encodeURIComponent(realm.value)}/protocol/openid-connect/sim-swap-keys`,
@@ -1135,7 +1169,7 @@ async function saveSmsTemplate() {
 
       <template v-if="settings">
         <form
-          v-if="group !== 'email' && group !== 'phone' && group !== 'features'"
+          v-if="group !== 'email' && group !== 'phone' && group !== 'wallet' && group !== 'features'"
           class="mt-4 flex w-full max-w-6xl flex-col gap-4 text-xs"
           @submit.prevent="saveGroup"
           @input="markDirty"
@@ -2516,7 +2550,7 @@ async function saveSmsTemplate() {
             <div class="flex items-center gap-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("sim-swap-title") }} <AppHint name="sim-swap-help" />
               <span class="rounded border border-border px-1.5 py-0.5 text-[10px] tracking-normal normal-case">{{
-                say("sim-swap-experimental")
+                say("settings-experimental")
               }}</span>
             </div>
             <p v-if="simSwap && !simSwap.running" class="text-[11px] leading-5 text-muted">
@@ -2754,6 +2788,65 @@ async function saveSmsTemplate() {
                 @click="removeUssd"
               >
                 {{ say("sms-forget") }}
+              </button>
+            </form>
+          </div>
+        </div>
+
+        <div v-if="group === 'wallet'" class="mt-4 w-full max-w-6xl">
+          <div class="flex w-full flex-col gap-3 rounded-lg border border-border bg-surface p-4 text-xs">
+            <div class="flex items-center gap-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("trust-anchors-title") }} <AppHint name="trust-anchors-help" />
+              <span class="rounded border border-border px-1.5 py-0.5 text-[10px] tracking-normal normal-case">{{
+                say("settings-experimental")
+              }}</span>
+            </div>
+            <p v-if="trustAnchors && !trustAnchors.running" class="text-[11px] leading-5 text-muted">
+              {{ say("trust-anchors-not-running") }}
+            </p>
+            <p v-if="trustAnchors && !trustAnchors.items.length" class="text-[11px] text-faint">
+              {{ say("trust-anchors-empty") }}
+            </p>
+            <ul v-if="trustAnchors?.items.length" class="grid gap-1.5">
+              <li
+                v-for="anchor in trustAnchors.items"
+                :key="anchor.id"
+                class="flex items-start gap-3 rounded-md border border-border bg-surface-2 px-3 py-2"
+              >
+                <div class="min-w-0 flex-1">
+                  <div class="font-mono text-[11.5px] break-all text-ink">{{ anchor.subject }}</div>
+                  <div class="mt-0.5 text-[10.5px] text-muted">
+                    {{ say("trust-anchors-until", { at: stamp(anchor.not_after) }) }}
+                  </div>
+                  <div class="mt-0.5 font-mono text-[10px] break-all text-faint">
+                    SHA-256 {{ anchor.fingerprint }}
+                  </div>
+                  <div v-if="anchor.key_identifier" class="font-mono text-[10px] break-all text-faint">
+                    {{ say("trust-anchors-key-identifier") }} {{ anchor.key_identifier }}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  class="shrink-0 rounded-md border border-border px-3 py-1.5 text-xs text-danger hover:bg-surface"
+                  @click="withdrawAnchor(anchor.id)"
+                >
+                  {{ say("trust-anchors-withdraw") }}
+                </button>
+              </li>
+            </ul>
+            <form class="flex flex-col gap-2" @submit.prevent="depositAnchor">
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("trust-anchors-certificate") }} <AppHint name="trust-anchors-certificate-help" />
+                <textarea
+                  v-model="anchorPem"
+                  rows="6"
+                  class="sf-field mt-1 font-mono"
+                  spellcheck="false"
+                  placeholder="-----BEGIN CERTIFICATE-----"
+                ></textarea>
+              </label>
+              <button type="submit" :disabled="!anchorPem.trim()" class="w-fit sf-button sf-button-primary">
+                {{ say("trust-anchors-deposit") }}
               </button>
             </form>
           </div>

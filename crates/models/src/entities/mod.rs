@@ -17,5 +17,6 @@ pub mod realm;
 pub mod sim_swap;
 pub mod sms;
 pub mod tenant;
+pub mod trust_anchors;
 pub mod user;
 pub mod whatsapp;

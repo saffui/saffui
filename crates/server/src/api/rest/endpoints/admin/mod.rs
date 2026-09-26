@@ -32,6 +32,7 @@ pub mod requests;
 pub mod sessions;
 pub mod sim_swap;
 pub mod sms;
+pub mod trust_anchors;
 pub mod users;
 pub mod ussd;
 pub mod whatsapp;

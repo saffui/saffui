@@ -1,9 +1,11 @@
+use foreign_types::ForeignType;
 use openssl::asn1::Asn1Time;
 use openssl::bn::BigNum;
 use openssl::hash::MessageDigest;
 use openssl::nid::Nid;
 use openssl::pkey::{Id, PKey};
 use openssl::stack::Stack;
+use openssl::x509::extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier};
 use openssl::x509::store::X509StoreBuilder;
 use openssl::x509::verify::{X509VerifyFlags, X509VerifyParam};
 use openssl::x509::{X509, X509Builder, X509Name, X509NameBuilder, X509StoreContext};
@@ -127,6 +129,22 @@ pub enum CertifiedKey {
     Other,
 }
 
+impl CertifiedKey {
+    /// Why this build would not trust the key, in words: RSA under 2048 bits, a
+    /// curve JOSE does not name, or a kind it does not verify. Nothing for a
+    /// key it would.
+    pub fn weakness(self) -> Option<&'static str> {
+        match self {
+            Self::Rsa { bits } if bits < 2048 => Some("RSA below 2048 bits"),
+            Self::Rsa { .. } => None,
+            Self::Ec { curve } => curve
+                .is_none()
+                .then_some("a curve other than P-256, P-384 or P-521"),
+            Self::Other => Some("a key of a kind not verified here"),
+        }
+    }
+}
+
 /// What decides whether a certificate's key is fit to trust.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CertificateFacts {
@@ -140,6 +158,18 @@ pub struct CertificateFacts {
 /// certificates for its keys without storing them. Nothing when a key does not
 /// parse, the issuer is not RSA, the serial is out of bounds or a time does not fit.
 pub fn issue_certificate(issuance: &Issuance<'_>) -> Option<Vec<u8>> {
+    issued(issuance, false)
+}
+
+/// A certificate for an authority: what `issue_certificate` makes, with the
+/// basic constraints of a CA, key usage for signing certificates and
+/// revocation lists, and the subject key identifier certificates issued under
+/// it name it by.
+pub fn issue_authority_certificate(issuance: &Issuance<'_>) -> Option<Vec<u8>> {
+    issued(issuance, true)
+}
+
+fn issued(issuance: &Issuance<'_>, authority: bool) -> Option<Vec<u8>> {
     let issuer = PKey::private_key_from_der(issuance.issuer_key.der()).ok()?;
     if issuer.id() != Id::RSA {
         return None;
@@ -162,6 +192,18 @@ pub fn issue_certificate(issuance: &Issuance<'_>) -> Option<Vec<u8>> {
     builder.set_pubkey(&subject).ok()?;
     builder.set_not_before(&not_before).ok()?;
     builder.set_not_after(&not_after).ok()?;
+    if authority {
+        let mut constraints = BasicConstraints::new();
+        constraints.critical().ca();
+        builder.append_extension(constraints.build().ok()?).ok()?;
+        let mut usage = KeyUsage::new();
+        usage.critical().key_cert_sign().crl_sign();
+        builder.append_extension(usage.build().ok()?).ok()?;
+        let identifier = SubjectKeyIdentifier::new()
+            .build(&builder.x509v3_context(None, None))
+            .ok()?;
+        builder.append_extension(identifier).ok()?;
+    }
     builder.sign(&issuer, MessageDigest::sha256()).ok()?;
     builder.build().to_der().ok()
 }
@@ -297,6 +339,32 @@ fn unverifiable() -> Unanchored {
     Unanchored::Refused("the chain could not be put to OpenSSL".to_owned())
 }
 
+/// The certificates a PEM text carries, in order, as DER. Nothing when it
+/// carries none, or when one of them does not parse.
+pub fn read_pem_certificates(pem: &[u8]) -> Option<Vec<Vec<u8>>> {
+    let certificates = X509::stack_from_pem(pem).ok()?;
+    if certificates.is_empty() {
+        return None;
+    }
+    certificates
+        .iter()
+        .map(|certificate| certificate.to_der().ok())
+        .collect()
+}
+
+/// Whether a certificate is a certification authority's: basic constraints
+/// that say CA, which is what OpenSSL itself asks of any certificate issuing
+/// another, and extensions it could read. False for bytes that are none.
+pub fn is_authority(der: &[u8]) -> bool {
+    let Ok(certificate) = X509::from_der(der) else {
+        return false;
+    };
+    // SAFETY: the pointer is the live certificate held above; the call reads
+    // and caches its extension flags and keeps no reference to it.
+    let flags = unsafe { openssl_sys::X509_get_extension_flags(certificate.as_ptr()) };
+    flags & openssl_sys::EXFLAG_CA != 0 && flags & openssl_sys::EXFLAG_INVALID == 0
+}
+
 /// The subject key identifier a certificate states: how a certificate issued
 /// under it names it (RFC 5280 §4.2.1.2), and how a verifier asks a wallet for
 /// credentials under that authority. Nothing when it states none.
@@ -316,8 +384,8 @@ fn build_common_name(name: &str) -> Option<X509Name> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CertificateFacts, CertifiedKey, Issuance, issue_certificate, public_key_of,
-        read_certificate_facts,
+        CertificateFacts, CertifiedKey, Issuance, is_authority, issue_authority_certificate,
+        issue_certificate, public_key_of, read_certificate_facts, subject_key_identifier,
     };
     use crate::provider::{PrivateKey, PublicKey};
     use openssl::asn1::{Asn1Time, Asn1TimeRef};
@@ -375,6 +443,36 @@ mod tests {
             .diff(time)
             .expect("a difference");
         i64::from(lived.days) * 86_400 + i64::from(lived.secs)
+    }
+
+    /// An authority's certificate is one: basic constraints that say CA, a key
+    /// identifier to be named by, and the same bytes every time; the plain
+    /// issuance of the same key is no authority.
+    #[test]
+    fn an_authority_certificate_is_issued_as_one() {
+        let issuer = rsa_key(2048);
+        let issuer_key = PrivateKey::from_der(issuer.private_key_to_der().expect("PKCS#8"));
+        let subject_key = PublicKey::from_der(issuer.public_key_to_der().expect("SPKI"));
+        let issuance = Issuance {
+            subject_key: &subject_key,
+            subject_name: "Authority",
+            issuer_key: &issuer_key,
+            issuer_name: "Authority",
+            serial: &[1],
+            not_before: 1_789_372_800,
+            not_after: 2_104_992_000,
+        };
+        let authority = issue_authority_certificate(&issuance).expect("a certificate");
+        assert_eq!(
+            issue_authority_certificate(&issuance),
+            Some(authority.clone())
+        );
+        assert!(is_authority(&authority));
+        assert!(subject_key_identifier(&authority).is_some());
+
+        let plain = issue_certificate(&issuance).expect("a certificate");
+        assert!(!is_authority(&plain));
+        assert_eq!(subject_key_identifier(&plain), None);
     }
 
     /// A certificate is issued for the subject's key under the issuer's RSA key with
@@ -489,6 +587,32 @@ mod tests {
         }
     }
 
+    /// A key is weighed by its kind and strength: RSA from 2048 bits and the
+    /// curves JOSE names are trusted, and what is not says why.
+    #[test]
+    fn a_key_is_weighed_by_its_kind_and_strength() {
+        assert_eq!(
+            CertifiedKey::Rsa { bits: 2047 }.weakness(),
+            Some("RSA below 2048 bits")
+        );
+        assert_eq!(CertifiedKey::Rsa { bits: 2048 }.weakness(), None);
+        assert_eq!(
+            CertifiedKey::Ec {
+                curve: Some("P-256")
+            }
+            .weakness(),
+            None
+        );
+        assert_eq!(
+            CertifiedKey::Ec { curve: None }.weakness(),
+            Some("a curve other than P-256, P-384 or P-521")
+        );
+        assert_eq!(
+            CertifiedKey::Other.weakness(),
+            Some("a key of a kind not verified here")
+        );
+    }
+
     /// A certificate tells its key's kind and strength, its curve among those JOSE
     /// names or none, and the end of its validity; bytes that are no certificate tell
     /// nothing.
@@ -588,6 +712,8 @@ mod chains {
         /// Days from `AT`.
         valid: (i64, i64),
         key_identifiers: bool,
+        /// A key usage stated a second time, which OpenSSL reads as malformed.
+        usage_twice: bool,
     }
 
     impl<'a> Issuing<'a> {
@@ -599,6 +725,7 @@ mod chains {
                 path_length: None,
                 valid: (-10, 365),
                 key_identifiers: true,
+                usage_twice: false,
             }
         }
 
@@ -667,6 +794,11 @@ mod chains {
         builder
             .append_extension(usage.build().expect("a usage"))
             .expect("a usage");
+        if asked.usage_twice {
+            builder
+                .append_extension(usage.build().expect("a usage"))
+                .expect("a second usage");
+        }
         if asked.key_identifiers {
             let issuer = asked.issuer.map(|issuer| issuer.certificate.as_ref());
             let subject = SubjectKeyIdentifier::new()
@@ -857,6 +989,45 @@ mod chains {
                 Unanchored::Unreadable
             );
         }
+    }
+
+    /// An authority is told apart from a leaf and from bytes that are no
+    /// certificate at all.
+    #[test]
+    fn an_authority_is_told_apart() {
+        let (root, intermediate, leaf) = hierarchy();
+        assert!(super::is_authority(&root.der()));
+        assert!(super::is_authority(&intermediate.der()));
+        assert!(!super::is_authority(&leaf.der()));
+        assert!(!super::is_authority(b"not a certificate"));
+    }
+
+    /// An authority whose extensions OpenSSL finds malformed is none, whatever
+    /// its basic constraints say.
+    #[test]
+    fn an_authority_with_malformed_extensions_is_none() {
+        let malformed = issue(Issuing {
+            usage_twice: true,
+            ..Issuing::authority("Malformed", None)
+        });
+        assert!(!super::is_authority(&malformed.der()));
+    }
+
+    /// A PEM text gives back every certificate it carries, in order, and a
+    /// text that carries none, or a broken one, gives nothing.
+    #[test]
+    fn a_pem_text_gives_back_what_it_carries() {
+        let (root, intermediate, _) = hierarchy();
+        let mut bundle = root.certificate.to_pem().expect("PEM");
+        bundle.extend(intermediate.certificate.to_pem().expect("PEM"));
+        assert_eq!(
+            super::read_pem_certificates(&bundle),
+            Some(vec![root.der(), intermediate.der()])
+        );
+        assert_eq!(super::read_pem_certificates(b"no certificate here"), None);
+        let broken =
+            b"-----BEGIN CERTIFICATE-----\nbm90IGEgY2VydGlmaWNhdGU=\n-----END CERTIFICATE-----\n";
+        assert_eq!(super::read_pem_certificates(broken), None);
     }
 
     /// The key identifier is the one the certificate states.

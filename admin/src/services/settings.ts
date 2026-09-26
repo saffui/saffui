@@ -4,6 +4,7 @@ import type { MailBrief, MailWrite } from "@/models/mail";
 import type { SmsBrief, SmsWrite } from "@/models/sms";
 import type { WhatsAppBrief, WhatsAppWrite } from "@/models/whatsapp";
 import type { SimSwapBrief, SimSwapWrite } from "@/models/simSwap";
+import type { TrustAnchorBrief, TrustAnchorList, TrustAnchorWrite } from "@/models/trustAnchors";
 import type { RealmKeys } from "@/models/keys";
 import type { RealmSettings, RealmTheme, RealmUpdate } from "@/models/realm";
 
@@ -341,6 +342,28 @@ export async function forgetSimSwap(realm: string): Promise<void> {
   await api<void>(adminPath(realm, "sim-swap"), {
     method: "DELETE",
     subject: say("settings-group-phone"),
+  });
+}
+
+export async function listTrustAnchors(realm: string): Promise<TrustAnchorList> {
+  return api<TrustAnchorList>(adminPath(realm, "trust-anchors"));
+}
+
+export async function depositTrustAnchor(
+  realm: string,
+  asked: TrustAnchorWrite,
+): Promise<TrustAnchorBrief> {
+  return api<TrustAnchorBrief>(adminPath(realm, "trust-anchors"), {
+    method: "POST",
+    json: asked,
+    subject: say("trust-anchors-title"),
+  });
+}
+
+export async function withdrawTrustAnchor(realm: string, anchor: string): Promise<void> {
+  await api<void>(adminPath(realm, `trust-anchors/${encodeURIComponent(anchor)}`), {
+    method: "DELETE",
+    subject: say("trust-anchors-title"),
   });
 }
 

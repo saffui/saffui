@@ -9,6 +9,7 @@ import {
   forgetUssd,
   forgetSimSwap,
   forgetWhatsApp,
+  depositTrustAnchor,
   getMail,
   getRealmKeys,
   getRealmSettings,
@@ -23,6 +24,7 @@ import {
   listPageKeys,
   listRealmFeatures,
   listSignInEvents,
+  listTrustAnchors,
   previewPartialImport,
   readRelayRefusals,
   readSmsToday,
@@ -35,6 +37,7 @@ import {
   writeUssd,
   writeSimSwap,
   writeWhatsApp,
+  withdrawTrustAnchor,
 } from "@/services/settings";
 import { keepAnswer, REALM } from "./answers";
 
@@ -122,6 +125,18 @@ describe("realm settings", () => {
     expect(held.max_age_hours).toBe(72);
     expect(held.public_jwk).not.toHaveProperty("d");
     await forgetSimSwap(REALM);
+  });
+
+  test("trusts an authority, lists it, and withdraws it", async () => {
+    const certificate = process.env.SAFFUI_CONTRACT_AUTHORITY_PEM;
+    expect(certificate, "the server's contract test hands over an authority the crypto crate issued").toBeTruthy();
+    const deposited = await keepAnswer(depositTrustAnchor, REALM, {
+      role: "credential-issuer",
+      certificate: certificate ?? "",
+    });
+    const held = await keepAnswer(listTrustAnchors, REALM);
+    expect(held.items.map((anchor) => anchor.id)).toContain(deposited.id);
+    await withdrawTrustAnchor(REALM, deposited.id);
   });
 
   test("lists features, page keys and sign-in events", async () => {

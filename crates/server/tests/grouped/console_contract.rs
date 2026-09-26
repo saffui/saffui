@@ -124,6 +124,28 @@ fn issue_contract_certificate() -> String {
     data_encoding::BASE64.encode(&certificate)
 }
 
+/// An authority the crypto crate issues for a key it draws, PEM encoded, for
+/// the contract's realm to trust.
+fn issue_contract_authority() -> String {
+    use crypto::jose::jwk::KeyPair;
+    use crypto::jose::jwk::alg::rsa::RsaKeyPair;
+    use crypto::provider::{PrivateKey, PublicKey};
+    use crypto::x509::{Issuance, issue_authority_certificate};
+
+    let key = RsaKeyPair::generate(2048).expect("an RSA key");
+    let certificate = issue_authority_certificate(&Issuance {
+        subject_key: &PublicKey::from_der(key.to_der_public_key()),
+        subject_name: "PID Issuer CA",
+        issuer_key: &PrivateKey::from_der(key.to_der_private_key()),
+        issuer_name: "PID Issuer CA",
+        serial: &[1],
+        not_before: 1_789_372_800,
+        not_after: 2_104_992_000,
+    })
+    .expect("an authority issued by the crypto crate");
+    support::pem_certificate(&certificate)
+}
+
 /// The console's own service calls, run by its contract suite against this
 /// server on a real socket. Its mocked transport tests prove what the console
 /// does with an answer; this proves the server still gives that answer: every
@@ -149,6 +171,7 @@ async fn the_console_contract_holds_against_a_live_server() {
     tokio::spawn(server);
 
     let saml_certificate = issue_contract_certificate();
+    let authority = issue_contract_authority();
     let console = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../admin");
     assert!(
         console.join("node_modules").is_dir(),
@@ -162,6 +185,7 @@ async fn the_console_contract_holds_against_a_live_server() {
             .env("SAFFUI_CONTRACT_TOKEN", bearer)
             .env("SAFFUI_CONTRACT_REALM", support::REALM)
             .env("SAFFUI_CONTRACT_SAML_CERTIFICATE", saml_certificate)
+            .env("SAFFUI_CONTRACT_AUTHORITY_PEM", authority)
             .output()
     })
     .await

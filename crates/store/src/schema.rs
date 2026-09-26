@@ -667,6 +667,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V110__sim_swap.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 111,
+            name: "trust_anchors",
+            sql: include_str!("../migrations/V111__trust_anchors.sql"),
+            transactional: true,
+        }),
     ]
 }
 

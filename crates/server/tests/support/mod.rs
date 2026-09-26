@@ -2944,6 +2944,52 @@ pub fn pkce_pair() -> (String, String) {
     )
 }
 
+/// Commit the rival once another request's write queues behind one of its
+/// locks: the window a check read before a write cannot see into.
+#[allow(dead_code, reason = "only the suites that race two writers use it")]
+pub async fn commit_once_a_write_queues_behind(rival: UnitOfWork) {
+    let queued = async {
+        loop {
+            let behind: i64 = rival
+                .query_one(
+                    "SELECT count(*) FROM pg_locks \
+                     WHERE NOT granted AND pg_backend_pid() = ANY(pg_blocking_pids(pid))",
+                    &[],
+                )
+                .await
+                .expect("the lock table")
+                .get(0);
+            if behind > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), queued)
+        .await
+        .expect("the write never queued behind the rival");
+    rival.commit().await.expect("the rival lands");
+}
+
+/// A certificate as an operator hands one over: PEM, its base64 folded at 64
+/// columns (RFC 7468 §2).
+#[allow(
+    dead_code,
+    reason = "only the suites that deposit an authority write one"
+)]
+pub fn pem_certificate(der: &[u8]) -> String {
+    let body = data_encoding::BASE64.encode(der);
+    let lines: Vec<&str> = body
+        .as_bytes()
+        .chunks(64)
+        .map(|line| std::str::from_utf8(line).expect("ASCII"))
+        .collect();
+    format!(
+        "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+        lines.join("\n")
+    )
+}
+
 /// What `/authorize` actually granted, read off the login it opened. The scope
 /// rides the code into the token, so this is what the request was allowed.
 #[allow(

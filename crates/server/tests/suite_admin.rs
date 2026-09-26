@@ -64,3 +64,5 @@ mod recert;
 mod relation_store;
 #[path = "grouped/sod.rs"]
 mod sod;
+#[path = "grouped/trust_anchors.rs"]
+mod trust_anchors;

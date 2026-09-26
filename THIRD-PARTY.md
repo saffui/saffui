@@ -210,6 +210,12 @@ Code meant for the whole crate goes into a module of its own rather than into
    `_sd_alg` is read against the same table the thumbprints use. The test
    vectors under `crates/crypto/data/rfc9901/` are the RFC's own examples
    (Section 5 and Appendix A), extracted from its text unchanged.
+8. `x509::verify_chain` and `x509::subject_key_identifier` (2026-09-26, the
+   wallet verifier): a chain presented leaf first, as `x5c` carries it, verified
+   up to anchors the caller holds, by OpenSSL's store in strict mode, at an
+   instant passed in rather than the clock's, with an intermediate allowed to
+   be the anchor and the depth bounded; and the key identifier a certificate
+   states, which is how a verifier names an authority to a wallet.
 
 ## Before vendoring anything
 

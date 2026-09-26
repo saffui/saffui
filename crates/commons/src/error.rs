@@ -190,7 +190,7 @@ mod tests {
     /// whoever still sends it.
     #[test]
     fn the_catalogue_has_not_shrunk() {
-        assert_eq!(ErrorCode::ALL.len(), 69);
+        assert_eq!(ErrorCode::ALL.len(), 70);
     }
 
     /// The admin console keys its hints by slug, so a hint under a slug this

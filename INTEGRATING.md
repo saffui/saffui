@@ -811,7 +811,9 @@ nobody, and polls `authorization_pending` until it expires.
 - A text message with a link to `{protocol}/requests`, when they hold a verified
   phone number, the deployment can send text messages, the realm has settings
   for them and no brake holds (5 a number an hour, 250 a realm a day, by
-  default). A held message never refuses the request.
+  default). A held message never refuses the request. It goes by SMS even
+  where the realm sends its codes over WhatsApp, whose templates carry a code
+  and no link.
 - The page `{protocol}/requests` itself, in a browser signed in to the realm: it
   lists what waits, with the client, the scope and the binding message, to
   approve or deny.

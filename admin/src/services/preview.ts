@@ -436,7 +436,7 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
         held("metrics", "stable", "process", "narrows", "Request metrics on the operations port, in the Prometheus text form.", true),
         held("organization", "preview", "realm", "narrows", "Group accounts under an organization carrying its own brokers and domains.", true),
         held("pq-hybrid", "preview", "process", "weakens", "ML-DSA signatures and ML-KEM encapsulation.", false),
-        held("rebac-store", "experimental", "realm", "narrows", "Relation tuples backing the ReBAC side of the authorization engine.", false),
+        held("rebac-store", "experimental", "realm", "narrows", "Relation tuples and the walks over them: the ReBAC side of the authorization engine, and the sharing of user-managed resources that rides it.", false),
       ],
     });
   }

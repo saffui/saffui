@@ -81,6 +81,7 @@ async fn plant_relationship(plane: &Plane) {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_question_over_the_wire_reaches_an_engine_and_is_recorded() {
+    crate::relations::relations_running();
     let plane = Plane::with_actions(&[AdminAction::RealmList]).await;
     plant_relationship(&plane).await;
     let bearer = plane.token(&claims());
@@ -121,6 +122,7 @@ async fn a_question_over_the_wire_reaches_an_engine_and_is_recorded() {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_caller_with_no_edge_is_told_no() {
+    crate::relations::relations_running();
     let plane = Plane::with_actions(&[]).await;
     plant_relationship(&plane).await;
     let bearer = plane.token(&claims());
@@ -149,6 +151,7 @@ async fn a_caller_with_no_edge_is_told_no() {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_caller_may_not_ask_about_an_application_its_token_is_not_for() {
+    crate::relations::relations_running();
     let plane = Plane::with_actions(&[]).await;
     plant_relationship(&plane).await;
     let bearer = plane.token(&claims());
@@ -179,6 +182,7 @@ async fn a_caller_may_not_ask_about_an_application_its_token_is_not_for() {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn the_enforcement_scope_is_guarded() {
+    crate::relations::relations_running();
     let plane = Plane::with_actions(&[]).await;
     plant_relationship(&plane).await;
 

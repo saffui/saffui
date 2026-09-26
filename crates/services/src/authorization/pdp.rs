@@ -1,5 +1,6 @@
 use authz::{Caller, Declared, Evaluable, Membership, Presented, Request, Resolved, Through};
 use chrono::Utc;
+use commons::feature::Feature;
 use models::entities::attributes::AttributesMap;
 use models::entities::authz::{
     AuthzDecisionRecord, Decision, ReportedDecision, ResourceServerModel,
@@ -322,6 +323,10 @@ async fn tested(
 /// The engine next door: neither it nor a policy can overrule the other, since
 /// neither is ever asked the other's question. Every way the walk fails to
 /// reach an answer is `Indeterminate`, never a refusal.
+///
+/// A realm that does not run the relation store walks nothing, whatever the
+/// store still holds: a tuple written before the store was closed is not a
+/// relation the realm runs.
 async fn related(
     transaction: &UnitOfWork,
     context: &Context,
@@ -329,6 +334,19 @@ async fn related(
     object_id: &str,
     relation: &str,
 ) -> Result<Answer, Unanswerable> {
+    if !crate::realm::feature::runs_for_realm(transaction, Feature::RebacStore).await {
+        return Ok(Answer {
+            reported: ReportedDecision::Deny,
+            computed: Decision::Indeterminate,
+            detail: serde_json::json!({
+                "reasons": [{
+                    "reason": "relation-store-closed",
+                    "says": "this realm does not run the relation store",
+                }]
+            }),
+        });
+    }
+
     let schema = match rebac::schema_of(transaction).await {
         Ok(schema) => schema,
         Err(why) => return Ok(unwalkable(&why)),

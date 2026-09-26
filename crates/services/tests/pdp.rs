@@ -14,6 +14,20 @@ use support::Fixture;
 
 const SESSION: &str = "session-1";
 
+/// The relation store is experimental and off unless the process runs it, so
+/// every case in this binary turns it on before anything reads what the
+/// process runs: the first call decides for the whole binary.
+fn relations_running() {
+    commons::feature::install(
+        commons::feature::FeatureSet::resolve("+rebac-store", |_| false)
+            .expect("a set that resolves"),
+    );
+    assert!(
+        commons::feature::installed().is_enabled(commons::feature::Feature::RebacStore),
+        "the process does not run the relation store"
+    );
+}
+
 /// A journal on its own connections, as the running server gives it.
 fn journal(fixture: &Fixture) -> Journal {
     Journal::new(fixture.tenancy())
@@ -160,6 +174,7 @@ async fn caller(transaction: &UnitOfWork) -> Context {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_permission_answers_on_what_the_caller_holds() {
+    relations_running();
     let fixture = Fixture::with_user().await;
     let transaction = fixture.scoped(&tenant()).await;
     plant(&transaction).await;
@@ -220,6 +235,7 @@ async fn a_permission_answers_on_what_the_caller_holds() {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn what_nothing_protects_is_refused_for_its_own_reason() {
+    relations_running();
     let fixture = Fixture::with_user().await;
     let transaction = fixture.scoped(&tenant()).await;
     plant(&transaction).await;
@@ -275,6 +291,7 @@ async fn what_nothing_protects_is_refused_for_its_own_reason() {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn testing_a_policy_reports_what_it_reached() {
+    relations_running();
     let fixture = Fixture::with_user().await;
     let transaction = fixture.scoped(&tenant()).await;
     plant(&transaction).await;
@@ -322,6 +339,7 @@ async fn testing_a_policy_reports_what_it_reached() {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_realm_with_no_schema_cannot_answer() {
+    relations_running();
     let fixture = Fixture::with_user().await;
     let transaction = fixture.scoped(&tenant()).await;
     plant(&transaction).await;
@@ -358,6 +376,7 @@ async fn a_realm_with_no_schema_cannot_answer() {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn every_decision_is_written_down() {
+    relations_running();
     let fixture = Fixture::with_user().await;
     let transaction = fixture.scoped(&tenant()).await;
     plant(&transaction).await;
@@ -419,6 +438,7 @@ async fn every_decision_is_written_down() {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_relationship_question_reaches_the_engine_next_door() {
+    relations_running();
     let fixture = Fixture::with_user().await;
     let transaction = fixture.scoped(&tenant()).await;
     plant(&transaction).await;
@@ -532,6 +552,7 @@ definition document {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_journal_that_cannot_write_does_not_take_the_decision_with_it() {
+    relations_running();
     let fixture = Fixture::with_user().await;
     let transaction = fixture.scoped(&tenant()).await;
     plant(&transaction).await;
@@ -586,5 +607,79 @@ async fn a_journal_that_cannot_write_does_not_take_the_decision_with_it() {
             .await
             .is_ok(),
         "a failed append poisoned the transaction beside it"
+    );
+}
+
+/// A realm that closed the relation store walks nothing, even over a schema
+/// and an edge it still holds, and says why rather than answering no.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_realm_that_closed_the_relation_store_walks_nothing() {
+    relations_running();
+    let fixture = Fixture::with_user().await;
+    let transaction = fixture.scoped(&tenant()).await;
+    plant(&transaction).await;
+
+    let source = "
+definition user {}
+definition document {
+    relation owner: user
+    permission view = owner
+}
+";
+    let compiled = authz::rebac::compile(&authz::rebac::parse(source).unwrap()).unwrap();
+    store::providers::authorization::rebac::put_schema(
+        &transaction,
+        &store::providers::authorization::rebac::StoredSchema {
+            format: authz::rebac::FORMAT as i32,
+            revision: 1,
+            source: source.to_owned(),
+            compiled: serde_json::to_value(&compiled).unwrap(),
+        },
+        Some("root"),
+    )
+    .await
+    .unwrap();
+    let context = caller(&transaction).await;
+    store::providers::authorization::rebac::relate(
+        &transaction,
+        "document",
+        "doc",
+        "owner",
+        &store::providers::authorization::rebac::Subject {
+            subject_type: "user".to_owned(),
+            subject_id: context.principal.id().to_owned(),
+            subject_relation: String::new(),
+        },
+        Some("root"),
+    )
+    .await
+    .unwrap();
+    let asked = || {
+        question(
+            Resource::Relationship {
+                object_type: "document",
+                object_id: "doc",
+                relation: "view",
+            },
+            "view",
+        )
+    };
+    let open = decide(&transaction, &journal(&fixture), &context, asked())
+        .await
+        .unwrap();
+    assert!(open.permitted(), "the edge is not walked to begin with");
+
+    services::realm::feature::write_wish(&transaction, "rebac-store", Some(false), "root")
+        .await
+        .unwrap();
+    let closed = decide(&transaction, &journal(&fixture), &context, asked())
+        .await
+        .unwrap();
+    assert!(!closed.permitted(), "a closed store was walked");
+    assert_eq!(closed.computed, Decision::Indeterminate);
+    assert_eq!(
+        closed.detail["reasons"][0]["reason"],
+        "relation-store-closed"
     );
 }

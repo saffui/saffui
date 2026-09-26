@@ -132,6 +132,7 @@ fn issue_contract_certificate() -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a database (SAFFUI_TEST_PG) and the console's packages (pnpm install)"]
 async fn the_console_contract_holds_against_a_live_server() {
+    crate::relations::relations_running();
     let plane = Plane::with_actions(AdminAction::ALL).await;
     let bearer = plane.token(&support::claims());
     plant_what_the_console_lists(&plane).await;

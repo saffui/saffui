@@ -39,10 +39,16 @@ pub fn client_assertion(
     payload.set_subject(client_id);
     payload.set_audience(vec![endpoint]);
     payload.set_jwt_id(&jti);
-    payload.set_issued_at(&std::time::SystemTime::from(now));
-    payload.set_expires_at(&std::time::SystemTime::from(
-        now + chrono::Duration::seconds(LIFESPAN),
-    ));
+    // Whole seconds, as the realm's own tokens carry them: a fraction is
+    // lawful and still not what every server reads.
+    for (claim, at) in [
+        ("iat", now.timestamp()),
+        ("exp", now.timestamp() + LIFESPAN),
+    ] {
+        payload
+            .set_claim(claim, Some(serde_json::json!(at)))
+            .map_err(|_| Unsigned)?;
+    }
 
     let signer = ES256
         .signer_from_pem(key.private_pem.expose_secret())

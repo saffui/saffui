@@ -44,6 +44,8 @@ mod require_par;
 mod session_management;
 #[path = "grouped/signup.rs"]
 mod signup;
+#[path = "grouped/sim_swap_settings.rs"]
+mod sim_swap_settings;
 #[path = "grouped/sms_login.rs"]
 mod sms_login;
 #[path = "grouped/source_throttle.rs"]

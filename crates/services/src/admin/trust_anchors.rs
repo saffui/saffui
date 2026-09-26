@@ -13,11 +13,17 @@ use store::tenancy::UnitOfWork;
 /// framework names, and a bound on what one verification walks.
 pub const MAX_ANCHORS: i64 = 50;
 
+/// The longest text a deposit is read from. Its certificate then always fits
+/// what the table keeps, and a body of many certificates is never parsed.
+pub const MAX_PEM_BYTES: usize = 16 * 1024;
+
 /// Why an authority was not deposited, or not withdrawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Undepositable {
     #[error("send one certificate, PEM encoded")]
     NotOneCertificate,
+    #[error("send one certificate, PEM encoded, in at most 16 KiB")]
+    TooLarge,
     #[error(
         "this certificate is not a certification authority's: deposit the authority that issued it"
     )]
@@ -58,6 +64,9 @@ pub async fn deposit(
     by: &str,
     now: DateTime<Utc>,
 ) -> Result<TrustAnchor, Undepositable> {
+    if pem.len() > MAX_PEM_BYTES {
+        return Err(Undepositable::TooLarge);
+    }
     let certificates =
         read_pem_certificates(pem.as_bytes()).ok_or(Undepositable::NotOneCertificate)?;
     let [certificate] =

@@ -196,7 +196,8 @@ async fn a_reader_lists_the_authorities_and_changes_none() {
 }
 
 /// What could not serve as an authority is refused in words: no certificate,
-/// several, a leaf, a weak key, an expired one, an unknown purpose.
+/// several, a text too long, a leaf, a weak key, an expired one, an unknown
+/// purpose.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn what_could_not_serve_as_an_authority_is_refused_in_words() {
@@ -215,6 +216,10 @@ async fn what_could_not_serve_as_an_authority_is_refused_in_words() {
                 certificate(&key, "Another", 2, true, UNTIL)
             ),
             "one certificate",
+        ),
+        (
+            format!("{authority}{}", " ".repeat(16 * 1024)),
+            "at most 16 KiB",
         ),
         (
             certificate(&key, "Leaf", 3, false, UNTIL),

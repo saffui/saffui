@@ -194,6 +194,47 @@ impl<'a> Login<'a> {
         let status = response.status();
         (status, test::read_body_json(response).await)
     }
+
+    /// The same round posted as the page's own form, as a browser without its
+    /// script sends it; answered with where the browser is sent.
+    async fn answer_as_a_form(&self, beside: &[(&str, &str)]) -> (StatusCode, String) {
+        let minted = support::page_token_for(self.plane, &self.binding).await;
+        let mut fields: Vec<(&str, &str)> = vec![
+            ("username", support::SUBJECT),
+            ("password", support::PASSWORD),
+            ("page_token", minted.as_str()),
+        ];
+        fields.extend_from_slice(beside);
+        let app = test::init_service(App::new().configure(register(&mounted(
+            self.plane,
+            self.textbox,
+            self.whatsapp,
+        ))))
+        .await;
+        let response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri(&format!(
+                    "/realms/{}/protocol/openid-connect/login",
+                    support::REALM
+                ))
+                .insert_header((
+                    "cookie",
+                    format!("{}={}", support::AUTH_SESSION_COOKIE, self.binding),
+                ))
+                .set_form(fields)
+                .to_request(),
+        )
+        .await;
+        let status = response.status();
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|held| held.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        (status, location)
+    }
 }
 
 /// The six digits a text carried.
@@ -507,4 +548,79 @@ async fn a_phone_is_proven_over_whatsapp() {
         .expect("the users table")
         .expect("the subject");
     assert_eq!(subject.phone_number_verified, Some(true));
+}
+
+/// A browser without the script is sent to the code's panel in the words of
+/// the way it went, and asks for the other way with the panel's own button.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_browser_without_script_is_shown_the_way_and_can_ask_the_other() {
+    let plane = Plane::with_actions(&[]).await;
+    arrange(&plane, true).await;
+    require_code(&plane).await;
+    let (textbox, whatsapp) = (Textbox::default(), WhatsAppBox::default());
+
+    let login = Login::open(&plane, &textbox, Some(&whatsapp)).await;
+    let (status, location) = login.answer_as_a_form(&[]).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert!(location.ends_with("#texted-over-whatsapp"), "{location}");
+
+    let (_, location) = login.answer_as_a_form(&[("code_channel", "sms")]).await;
+    assert!(location.ends_with("#texted"), "{location}");
+    assert_eq!(textbox.held().len(), 1, "the form's ask sent no text");
+}
+
+/// The page offers the other way to a browser without its script only where
+/// the realm and the deployment both carry a code either way, and never
+/// serves its marker for it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_page_offers_the_other_way_only_where_both_are_carried() {
+    let plane = Plane::with_actions(&[]).await;
+    arrange(&plane, true).await;
+    let (textbox, whatsapp) = (Textbox::default(), WhatsAppBox::default());
+    let served = |whatsapp: Option<&WhatsAppBox>| {
+        let (plane, textbox) = (&plane, &textbox);
+        let whatsapp = whatsapp.cloned();
+        async move {
+            let login = Login::open(plane, textbox, whatsapp.as_ref()).await;
+            let app = test::init_service(App::new().configure(register(&mounted(
+                plane,
+                textbox,
+                whatsapp.as_ref(),
+            ))))
+            .await;
+            let response = test::call_service(
+                &app,
+                test::TestRequest::get()
+                    .uri(&format!(
+                        "/realms/{}/protocol/openid-connect/login",
+                        support::REALM
+                    ))
+                    .insert_header((
+                        "cookie",
+                        format!("{}={}", support::AUTH_SESSION_COOKIE, login.binding),
+                    ))
+                    .to_request(),
+            )
+            .await;
+            String::from_utf8(test::read_body(response).await.to_vec()).expect("a page")
+        }
+    };
+
+    let both = served(Some(&whatsapp)).await;
+    assert!(
+        both.contains("<p id=\"texted-ways\" >"),
+        "the other way was hidden"
+    );
+    assert!(
+        both.contains("<p id=\"phone-code-ways\" >"),
+        "the other way was hidden"
+    );
+    let texts_only = served(None).await;
+    assert!(
+        texts_only.contains("<p id=\"texted-ways\" hidden>"),
+        "a way the deployment does not carry was offered"
+    );
+    assert!(!both.contains("{ways}") && !texts_only.contains("{ways}"));
 }

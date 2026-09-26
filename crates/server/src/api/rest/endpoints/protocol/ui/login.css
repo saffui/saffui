@@ -343,6 +343,28 @@ a { color: var(--ink); }
 [hidden], .flash { display: none; }
 /* The fragment names the outcome, and the element it names shows itself. */
 #code:target, #texted:target, #phone:target, #phone-code:target, .flash:target { display: block; }
+/* A code gone over WhatsApp, told without a script: the fragment names the
+   way, and the panel shows itself in that way's words. */
+#texted-over-whatsapp:target ~ #login #texted,
+#phone-code-over-whatsapp:target ~ #login #phone-code { display: block; }
+#texted-over-whatsapp:target ~ #login #texted-note-sms,
+#texted-over-whatsapp:target ~ #login #texted-label-sms,
+#phone-code-over-whatsapp:target ~ #login #phone-code-note-sms,
+#phone-code-over-whatsapp:target ~ #login #phone-code-label-sms { display: none; }
+#texted-over-whatsapp:target ~ #login #texted-note-whatsapp,
+#texted-over-whatsapp:target ~ #login #texted-label-whatsapp,
+#phone-code-over-whatsapp:target ~ #login #phone-code-note-whatsapp,
+#phone-code-over-whatsapp:target ~ #login #phone-code-label-whatsapp { display: inline; }
+#texted-ways, #phone-code-ways { margin: 10px 0 0; font-size: 13px; color: var(--muted); }
+#texted-ways button, #phone-code-ways button {
+  margin: 6px 6px 0 0;
+  padding: 6px 10px;
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 500;
+}
 /* The one line here that reports something going right. Every other flash is
    a refusal and is drawn in the danger colour, frame and ground included, so
    all three are taken back rather than only the text. Neutral rather than a

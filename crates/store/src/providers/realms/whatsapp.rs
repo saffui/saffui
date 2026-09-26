@@ -85,6 +85,20 @@ pub async fn load(
     }))
 }
 
+/// Whether the realm holds both ways a code can go: a business number, and a
+/// gateway behind it.
+pub async fn held_beside_a_gateway(transaction: &UnitOfWork) -> StoreResult<bool> {
+    Ok(transaction
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM realm_whatsapp) \
+                    AND EXISTS (SELECT 1 FROM realm_sms)",
+            &[],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .get(0))
+}
+
 /// Forget how a realm sends over WhatsApp, and say whether there was anything
 /// to forget.
 pub async fn forget(transaction: &UnitOfWork) -> StoreResult<bool> {

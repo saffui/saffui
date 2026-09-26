@@ -453,15 +453,30 @@ pub async fn answer(
                             answer.json(body)
                         }
                         // A key needs the script; a code needs only the
-                        // field; a link followed in the wrong browser needs
-                        // to be told so rather than shown either.
+                        // field, in the panel of the step that sent it and
+                        // in the words of the way it went; a link followed
+                        // in the wrong browser needs to be told so rather
+                        // than shown either.
                         Spoken::Form => shown(
                             &page,
                             match &asks {
                                 Some(asks) if asks.get("wrong_browser").is_some() => {
                                     "wrong-browser"
                                 }
-                                Some(asks) if asks.get("code_sent_to").is_some() => "texted",
+                                Some(asks) if asks.get("code_sent_to").is_some() => {
+                                    let over_whatsapp =
+                                        asks.get("sent_by").and_then(serde_json::Value::as_str)
+                                            == Some("whatsapp");
+                                    match (
+                                        execution_id == auth::login::enrolment::VERIFY_PHONE,
+                                        over_whatsapp,
+                                    ) {
+                                        (true, true) => "phone-code-over-whatsapp",
+                                        (true, false) => "phone-code",
+                                        (false, true) => "texted-over-whatsapp",
+                                        (false, false) => "texted",
+                                    }
+                                }
                                 Some(asks) if asks.get("ask_phone").is_some() => "phone",
                                 Some(_) => "key-needs-script",
                                 None => "code",

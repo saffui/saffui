@@ -347,6 +347,20 @@
     form.phone_register.value = "";
   }
 
+  // Which way a code went, in that way's words, and the other way to ask for
+  // when there is one.
+  function tellWay(panel, asks) {
+    const whatsapp = asks.sent_by === "whatsapp";
+    ["note", "label"].forEach(function (part) {
+      document.getElementById(panel + "-" + part + "-sms").hidden = whatsapp;
+      document.getElementById(panel + "-" + part + "-whatsapp").hidden = !whatsapp;
+    });
+    document.getElementById(panel + "-ways").hidden = !asks.other_way;
+    ["sms", "whatsapp"].forEach(function (way) {
+      document.getElementById(panel + "-by-" + way).hidden = asks.other_way !== way;
+    });
+  }
+
   // The page is served at the URL it posts to, so the realm is never parsed.
   function post() {
     return fetch(location.pathname, {
@@ -372,6 +386,9 @@
     allow.disabled = yes;
     deny.disabled = yes;
     later.disabled = yes;
+    otherWays.forEach(function (ask) {
+      ask.disabled = yes;
+    });
   }
 
   function round() {
@@ -474,12 +491,14 @@
       form.phone.value = "";
       // Written as text: the number is this server's own redaction of it.
       document.getElementById("phone-code-note").textContent = told.asks.code_sent_to || "";
+      tellWay("phone-code", told.asks);
       only("phone-code");
       form.phone_register.focus();
       return;
     }
     if (told.asks && told.asks.code_sent_to) {
       document.getElementById("texted-note").textContent = told.asks.code_sent_to;
+      tellWay("texted", told.asks);
       only("texted");
       form.sms_otp.focus();
       return;
@@ -564,6 +583,23 @@
   deny.addEventListener("click", function () {
     answered.consent = "refused";
     round();
+  });
+
+  // Asking for the other way is a round of its own, beside everything already
+  // answered, and the ask is not carried into the next.
+  const otherWays = [];
+  ["texted", "phone-code"].forEach(function (panel) {
+    ["sms", "whatsapp"].forEach(function (way) {
+      const ask = document.getElementById(panel + "-by-" + way);
+      otherWays.push(ask);
+      ask.addEventListener("click", function (event) {
+        event.preventDefault();
+        answered.code_channel = way;
+        round().then(function () {
+          delete answered.code_channel;
+        });
+      });
+    });
   });
 
   later.addEventListener("click", function () {

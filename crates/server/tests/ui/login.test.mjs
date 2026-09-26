@@ -847,3 +847,77 @@ test("a refusal forgets a phone and the code it was sent", async () => {
   await coded.signIn();
   assert.equal(coded.sent[3].body.phone_register, undefined, "a refused code rode the next attempt");
 });
+
+test("a code gone over WhatsApp is told in its words, the text offered instead", async () => {
+  const page = opened({
+    rounds: [
+      {
+        told: {
+          status: "challenge",
+          execution: "sms-otp",
+          asks: { code_sent_to: "…42", sent_by: "whatsapp", other_way: "sms" },
+        },
+      },
+      { told: { status: "challenge" } },
+      { told: { status: "challenge" } },
+    ],
+  });
+  await page.signIn();
+
+  assert.equal(page.element("texted-note-whatsapp").hidden, false);
+  assert.equal(page.element("texted-note-sms").hidden, true);
+  assert.equal(page.element("texted-label-whatsapp").hidden, false);
+  assert.equal(page.element("texted-label-sms").hidden, true);
+  assert.equal(page.element("texted-ways").hidden, false, "no other way was offered");
+  assert.equal(page.element("texted-by-sms").hidden, false);
+  assert.equal(page.element("texted-by-whatsapp").hidden, true, "the way it went was offered");
+
+  await page.press("texted-by-sms");
+  assert.equal(page.sent[1].body.code_channel, "sms", "the ask never left the page");
+  assert.equal(page.sent[1].body.username, "ada", "the ask went without the rest of the answer");
+  page.form.fire("submit");
+  await page.settle();
+  assert.equal(page.sent[2].body.code_channel, undefined, "the ask rode a round it was not made in");
+});
+
+test("a code gone by text is told in its words, and offers nothing it cannot", async () => {
+  const page = opened({
+    rounds: [
+      {
+        told: {
+          status: "challenge",
+          execution: "sms-otp",
+          asks: { code_sent_to: "…42", sent_by: "sms" },
+        },
+      },
+    ],
+  });
+  await page.signIn();
+
+  assert.equal(page.element("texted-note-sms").hidden, false);
+  assert.equal(page.element("texted-note-whatsapp").hidden, true);
+  assert.equal(page.element("texted-ways").hidden, true, "a way nothing carries was offered");
+});
+
+test("a phone's code gone over WhatsApp is told so, and the text offered", async () => {
+  const page = opened({
+    rounds: [
+      {
+        told: {
+          status: "challenge",
+          execution: "verify-phone",
+          asks: { code_sent_to: "…56", sent_by: "whatsapp", other_way: "sms" },
+        },
+      },
+      { told: { status: "challenge" } },
+    ],
+  });
+  await page.signIn();
+
+  assert.equal(page.element("phone-code").hidden, false);
+  assert.equal(page.element("phone-code-note-whatsapp").hidden, false);
+  assert.equal(page.element("phone-code-label-sms").hidden, true);
+  assert.equal(page.element("phone-code-ways").hidden, false);
+  await page.press("phone-code-by-sms");
+  assert.equal(page.sent[1].body.code_channel, "sms");
+});

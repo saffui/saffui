@@ -6,8 +6,6 @@ mod support;
 mod admin_agents;
 #[path = "grouped/admin_auth_flows.rs"]
 mod admin_auth_flows;
-#[path = "grouped/admin_authz.rs"]
-mod admin_authz;
 #[path = "grouped/admin_branding.rs"]
 mod admin_branding;
 #[path = "grouped/admin_catalogue.rs"]
@@ -36,8 +34,6 @@ mod admin_user_memberships;
 mod carte;
 #[path = "grouped/cli.rs"]
 mod cli;
-#[path = "grouped/console_contract.rs"]
-mod console_contract;
 #[path = "grouped/failing_reads.rs"]
 mod failing_reads;
 #[path = "grouped/health.rs"]
@@ -64,5 +60,7 @@ mod own_account;
 mod realm_boundary;
 #[path = "grouped/recert.rs"]
 mod recert;
+#[path = "grouped/relation_store.rs"]
+mod relation_store;
 #[path = "grouped/sod.rs"]
 mod sod;

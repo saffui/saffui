@@ -10,8 +10,6 @@ mod binding;
 mod brute_force;
 #[path = "grouped/consent.rs"]
 mod consent;
-#[path = "grouped/enforcement.rs"]
-mod enforcement;
 #[path = "grouped/form_post.rs"]
 mod form_post;
 #[path = "grouped/hosted.rs"]

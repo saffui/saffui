@@ -47,7 +47,7 @@ pub fn jwk_thumbprint_uri(
 /// Only the three this crate is sure of. A URI naming a hash under a spelling
 /// nobody registered parses cleanly and resolves to nothing, which is worse
 /// than refusing to build it.
-fn hash_name(alg: HashAlg) -> Option<&'static str> {
+pub(crate) fn hash_name(alg: HashAlg) -> Option<&'static str> {
     match alg {
         HashAlg::Sha256 => Some("sha-256"),
         HashAlg::Sha384 => Some("sha-384"),

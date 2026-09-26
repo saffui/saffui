@@ -22,6 +22,7 @@ pub mod jose;
 pub mod otp;
 pub mod password;
 pub mod provider;
+pub mod sd_jwt;
 pub mod secret;
 pub mod thumbprint;
 pub mod x509;

@@ -1311,6 +1311,19 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
   if (path.endsWith("/ussd")) {
     return answer({ has_secret: true });
   }
+  if (path.endsWith("/sim-swap")) {
+    return answer({
+      client_id: "saffui-main",
+      authorize_url: "https://api.carrier.tg/oauth2/bc-authorize",
+      token_url: "https://api.carrier.tg/oauth2/token",
+      check_url: "https://api.carrier.tg/camara/sim-swap/v2/check",
+      max_age_hours: 72,
+      when_unanswered: "send",
+      kid: "3kS9aU0LyR7vN2qP8cT4dX1mB6hJ5wE0fG7iK2oZ9sA",
+      public_jwk: { kty: "EC", crv: "P-256", kid: "3kS9aU0LyR7vN2qP8cT4dX1mB6hJ5wE0fG7iK2oZ9sA", alg: "ES256", use: "sig", x: "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU", y: "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0" },
+      running: false,
+    });
+  }
   if (path.endsWith("/whatsapp")) {
     return answer({ phone_number_id: "106540352242922", template: "sign_in_code", languages: ["fr", "en_US"] });
   }

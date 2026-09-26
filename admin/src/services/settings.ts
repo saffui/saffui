@@ -3,6 +3,7 @@ import { say } from "@/i18n";
 import type { MailBrief, MailWrite } from "@/models/mail";
 import type { SmsBrief, SmsWrite } from "@/models/sms";
 import type { WhatsAppBrief, WhatsAppWrite } from "@/models/whatsapp";
+import type { SimSwapBrief, SimSwapWrite } from "@/models/simSwap";
 import type { RealmKeys } from "@/models/keys";
 import type { RealmSettings, RealmTheme, RealmUpdate } from "@/models/realm";
 
@@ -321,6 +322,25 @@ export async function sendTestWhatsApp(realm: string, to: string, language: stri
     method: "POST",
     json: { to, language },
     subject: say("whatsapp-test-subject"),
+  });
+}
+
+export async function getSimSwap(realm: string): Promise<SimSwapBrief> {
+  return api<SimSwapBrief>(adminPath(realm, "sim-swap"));
+}
+
+export async function writeSimSwap(realm: string, asked: SimSwapWrite): Promise<void> {
+  await api<unknown>(adminPath(realm, "sim-swap"), {
+    method: "PUT",
+    json: asked,
+    subject: say("settings-group-phone"),
+  });
+}
+
+export async function forgetSimSwap(realm: string): Promise<void> {
+  await api<void>(adminPath(realm, "sim-swap"), {
+    method: "DELETE",
+    subject: say("settings-group-phone"),
   });
 }
 

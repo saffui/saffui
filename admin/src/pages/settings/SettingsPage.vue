@@ -12,11 +12,13 @@ import {
   forgetMail,
   forgetSms,
   forgetUssd,
+  forgetSimSwap,
   forgetWhatsApp,
   forgetRegistrationSecret,
   getMail,
   getSms,
   getUssd,
+  getSimSwap,
   getWhatsApp,
   getRealmSettings,
   exportRealm,
@@ -35,6 +37,7 @@ import {
   writeMail,
   writeSms,
   writeUssd,
+  writeSimSwap,
   writeWhatsApp,
 } from "@/services/settings";
 import type { ImportCollisionPolicy, PartialImportReport } from "@/services/settings";
@@ -47,6 +50,7 @@ import { ApiError } from "@/services/http";
 import type { MailBrief, MailRefusal, RelayReport } from "@/models/mail";
 import type { SmsBrief, SmsToday } from "@/models/sms";
 import type { WhatsAppBrief } from "@/models/whatsapp";
+import type { SimSwapBrief } from "@/models/simSwap";
 import { OTP_DEFAULTS, OWASP_HASHING, SOURCE_THROTTLE_DEFAULTS } from "@/models/realm";
 import type { MailTemplate, PasswordPolicy, RealmSettings, RealmUpdate } from "@/models/realm";
 import type { ExecutionRow } from "@/models/flows";
@@ -58,6 +62,7 @@ import {
   smsPlaceholder,
   smsTemplateIsValid,
   smsWrite,
+  simSwapWrite,
   whatsAppWrite,
 } from "./messaging";
 import { localeMutation, localeSelection, toggleLocale } from "./localizationForm";
@@ -119,6 +124,7 @@ const settings = ref<RealmSettings | null>(null);
 const mail = ref<MailBrief | null>(null);
 const sms = ref<SmsBrief | null>(null);
 const whatsApp = ref<WhatsAppBrief | null>(null);
+const simSwap = ref<SimSwapBrief | null>(null);
 const ussdHeld = ref(false);
 const failed = ref("");
 const exporting = ref(false);
@@ -413,6 +419,11 @@ onMounted(async () => {
     }
     try {
       adoptWhatsApp(await getWhatsApp(realm.value));
+    } catch (refused) {
+      if (!(refused instanceof ApiError && refused.status < 500)) throw refused;
+    }
+    try {
+      adoptSimSwap(await getSimSwap(realm.value));
     } catch (refused) {
       if (!(refused instanceof ApiError && refused.status < 500)) throw refused;
     }
@@ -970,6 +981,42 @@ async function testWhatsApp() {
     // The toast carries the server's refusal.
   }
 }
+
+const simSwapForm = ref({
+  client_id: "",
+  authorize_url: "",
+  token_url: "",
+  check_url: "",
+  max_age_hours: "" as string | number,
+  when_unanswered: "send" as "send" | "hold",
+});
+
+function adoptSimSwap(held: SimSwapBrief) {
+  simSwap.value = held;
+  simSwapForm.value = {
+    client_id: held.client_id,
+    authorize_url: held.authorize_url,
+    token_url: held.token_url,
+    check_url: held.check_url,
+    max_age_hours: held.max_age_hours,
+    when_unanswered: held.when_unanswered,
+  };
+}
+
+async function saveSimSwap() {
+  await writeSimSwap(realm.value, simSwapWrite(simSwapForm.value));
+  adoptSimSwap(await getSimSwap(realm.value));
+}
+
+async function removeSimSwap() {
+  await forgetSimSwap(realm.value);
+  simSwap.value = null;
+}
+
+/// Where a carrier that reads a key set finds the realm's public half.
+const simSwapKeysAt = computed(
+  () => `/realms/${encodeURIComponent(realm.value)}/protocol/openid-connect/sim-swap-keys`,
+);
 
 const ussdSecret = ref("");
 
@@ -2461,6 +2508,92 @@ async function saveSmsTemplate() {
               }}</span>
             </form>
           </div>
+
+          <form
+            class="mt-4 flex w-full flex-col gap-3 rounded-lg border border-border bg-surface p-4 text-xs"
+            @submit.prevent="saveSimSwap"
+          >
+            <div class="flex items-center gap-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("sim-swap-title") }} <AppHint name="sim-swap-help" />
+              <span class="rounded border border-border px-1.5 py-0.5 text-[10px] tracking-normal normal-case">{{
+                say("sim-swap-experimental")
+              }}</span>
+            </div>
+            <p v-if="simSwap && !simSwap.running" class="text-[11px] leading-5 text-muted">
+              {{ say("sim-swap-not-running") }}
+            </p>
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("sim-swap-client") }} <AppHint name="sim-swap-client-help" />
+                <input v-model="simSwapForm.client_id" class="sf-field mt-1 font-mono" spellcheck="false" />
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("sim-swap-authorize") }} <AppHint name="sim-swap-endpoints-help" />
+                <input
+                  v-model="simSwapForm.authorize_url"
+                  class="sf-field mt-1 font-mono"
+                  spellcheck="false"
+                  placeholder="https://carrier.example/bc-authorize"
+                />
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("sim-swap-token") }}
+                <input
+                  v-model="simSwapForm.token_url"
+                  class="sf-field mt-1 font-mono"
+                  spellcheck="false"
+                  placeholder="https://carrier.example/token"
+                />
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("sim-swap-check") }}
+                <input
+                  v-model="simSwapForm.check_url"
+                  class="sf-field mt-1 font-mono"
+                  spellcheck="false"
+                  placeholder="https://carrier.example/sim-swap/v2/check"
+                />
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("sim-swap-window") }} <AppHint name="sim-swap-window-help" />
+                <input
+                  v-model="simSwapForm.max_age_hours"
+                  type="number"
+                  min="1"
+                  max="2400"
+                  class="sf-field mt-1 font-mono"
+                  placeholder="72"
+                />
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("sim-swap-silence") }} <AppHint name="sim-swap-silence-help" />
+                <select v-model="simSwapForm.when_unanswered" class="sf-field mt-1">
+                  <option value="send">{{ say("sim-swap-silence-send") }}</option>
+                  <option value="hold">{{ say("sim-swap-silence-hold") }}</option>
+                </select>
+              </label>
+            </div>
+            <div v-if="simSwap" class="text-[11px] text-muted">
+              {{ say("sim-swap-key") }} <AppHint name="sim-swap-key-help" />
+              <pre class="mt-1 overflow-x-auto rounded-md border border-border bg-surface-2 p-2 font-mono text-[10.5px] text-ink">{{
+                JSON.stringify(simSwap.public_jwk, null, 2)
+              }}</pre>
+              <div class="mt-1 font-mono text-[10.5px] break-all">{{ simSwapKeysAt }}</div>
+            </div>
+            <div class="mt-1 flex items-center gap-2">
+              <button type="submit" class="sf-button sf-button-primary">
+                {{ say("settings-save") }}
+              </button>
+              <button
+                v-if="simSwap"
+                type="button"
+                class="rounded-md border border-border px-3 py-1.5 text-xs text-danger hover:bg-surface-2"
+                @click="removeSimSwap"
+              >
+                {{ say("sms-forget") }}
+              </button>
+            </div>
+          </form>
 
           <div v-if="smsToday" class="mt-6 w-full">
             <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">

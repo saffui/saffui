@@ -670,6 +670,8 @@ mod chains {
         /// Days from `AT`.
         valid: (i64, i64),
         key_identifiers: bool,
+        /// A key usage stated a second time, which OpenSSL reads as malformed.
+        usage_twice: bool,
     }
 
     impl<'a> Issuing<'a> {
@@ -681,6 +683,7 @@ mod chains {
                 path_length: None,
                 valid: (-10, 365),
                 key_identifiers: true,
+                usage_twice: false,
             }
         }
 
@@ -749,6 +752,11 @@ mod chains {
         builder
             .append_extension(usage.build().expect("a usage"))
             .expect("a usage");
+        if asked.usage_twice {
+            builder
+                .append_extension(usage.build().expect("a usage"))
+                .expect("a second usage");
+        }
         if asked.key_identifiers {
             let issuer = asked.issuer.map(|issuer| issuer.certificate.as_ref());
             let subject = SubjectKeyIdentifier::new()
@@ -950,6 +958,17 @@ mod chains {
         assert!(super::is_authority(&intermediate.der()));
         assert!(!super::is_authority(&leaf.der()));
         assert!(!super::is_authority(b"not a certificate"));
+    }
+
+    /// An authority whose extensions OpenSSL finds malformed is none, whatever
+    /// its basic constraints say.
+    #[test]
+    fn an_authority_with_malformed_extensions_is_none() {
+        let malformed = issue(Issuing {
+            usage_twice: true,
+            ..Issuing::authority("Malformed", None)
+        });
+        assert!(!super::is_authority(&malformed.der()));
     }
 
     /// A PEM text gives back every certificate it carries, in order, and a

@@ -398,7 +398,16 @@ pub fn sealing_speaking(
 ) -> outbound::Sealing {
     let shared: Arc<dyn CryptoProvider> = Arc::new(provider());
     let envelope = Envelope::new(Arc::clone(&shared), KEK).expect("an envelope");
-    outbound::Sealing::new(sender, texter, whatsapp, shared, envelope).expect("a sealing")
+    // Anywhere, so a suite's stand-in carrier on this machine can be dialled.
+    outbound::Sealing::new(
+        sender,
+        texter,
+        whatsapp,
+        config::serving::Egress::Anywhere,
+        shared,
+        envelope,
+    )
+    .expect("a sealing")
 }
 
 /// What a count keeps of a name typed in `realm_id`, worked out here rather
@@ -556,6 +565,175 @@ impl auth::messaging::WhatsAppSender for WhatsAppBox {
             language: language.to_owned(),
         });
         Ok(())
+    }
+}
+
+/// What a stand-in carrier says when it is asked about a number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code, reason = "only the carrier suites ask one")]
+pub enum CarrierSays {
+    Unchanged,
+    Changed,
+    /// Not yet at the first poll of its token endpoint, then unchanged.
+    NotYetThenUnchanged,
+    /// Nothing usable: every call is answered 503.
+    Nothing,
+}
+
+/// One request a stand-in carrier heard: the path, the head, the body.
+#[derive(Clone, Debug)]
+#[allow(dead_code, reason = "only the carrier suites ask one")]
+pub struct CarrierHeard {
+    pub path: String,
+    pub head: String,
+    pub body: String,
+}
+
+#[allow(dead_code, reason = "only the carrier suites ask one")]
+impl CarrierHeard {
+    /// The body read as a form, `+` and percent escapes undone.
+    pub fn form(&self) -> std::collections::HashMap<String, String> {
+        fn undone(held: &str) -> String {
+            let bytes = held.replace('+', " ").into_bytes();
+            let mut out = Vec::with_capacity(bytes.len());
+            let mut at = 0;
+            while at < bytes.len() {
+                if bytes[at] == b'%' && at + 2 < bytes.len() {
+                    let hex = std::str::from_utf8(&bytes[at + 1..at + 3]).unwrap_or("");
+                    if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                        out.push(byte);
+                        at += 3;
+                        continue;
+                    }
+                }
+                out.push(bytes[at]);
+                at += 1;
+            }
+            String::from_utf8_lossy(&out).into_owned()
+        }
+        self.body
+            .split('&')
+            .filter_map(|pair| pair.split_once('='))
+            .map(|(name, value)| (undone(name), undone(value)))
+            .collect()
+    }
+
+    /// One header, named in any case.
+    pub fn header(&self, named: &str) -> Option<String> {
+        self.head.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case(named)
+                .then(|| value.trim().to_owned())
+        })
+    }
+}
+
+/// A carrier, as far as a suite needs one: its backchannel, token and check
+/// endpoints on a port of its own, answering as it was told to.
+#[allow(dead_code, reason = "only the carrier suites ask one")]
+pub struct StandInCarrier {
+    pub root: String,
+    heard: Arc<std::sync::Mutex<Vec<CarrierHeard>>>,
+}
+
+#[allow(dead_code, reason = "only the carrier suites ask one")]
+impl StandInCarrier {
+    pub fn saying(says: CarrierSays) -> Self {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+        let root = format!(
+            "http://127.0.0.1:{}",
+            listener.local_addr().expect("an address").port()
+        );
+        let heard: Arc<std::sync::Mutex<Vec<CarrierHeard>>> = Arc::default();
+        let keeping = Arc::clone(&heard);
+        std::thread::spawn(move || {
+            let mut polled = false;
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut raw = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let (head, body) = loop {
+                    let read = stream.read(&mut chunk).unwrap_or(0);
+                    if read == 0 {
+                        break (String::new(), String::new());
+                    }
+                    raw.extend_from_slice(&chunk[..read]);
+                    let text = String::from_utf8_lossy(&raw).to_string();
+                    if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                        let length: usize = head
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.trim()
+                                    .eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        if body.len() >= length {
+                            break (head.to_owned(), body[..length].to_owned());
+                        }
+                    }
+                };
+                let path = head
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_owned();
+                let (status, answer) = match (says, path.as_str()) {
+                    (CarrierSays::Nothing, _) => ("503 Service Unavailable", "{}".to_owned()),
+                    (_, "/bc-authorize") => (
+                        "200 OK",
+                        r#"{"auth_req_id":"req-1","expires_in":120,"interval":1}"#.to_owned(),
+                    ),
+                    (CarrierSays::NotYetThenUnchanged, "/token") if !polled => {
+                        polled = true;
+                        (
+                            "400 Bad Request",
+                            r#"{"error":"authorization_pending"}"#.to_owned(),
+                        )
+                    }
+                    (_, "/token") => (
+                        "200 OK",
+                        r#"{"access_token":"at-1","token_type":"Bearer","expires_in":60}"#
+                            .to_owned(),
+                    ),
+                    (CarrierSays::Changed, "/check") => {
+                        ("200 OK", r#"{"swapped":true}"#.to_owned())
+                    }
+                    (_, "/check") => ("200 OK", r#"{"swapped":false}"#.to_owned()),
+                    _ => ("404 Not Found", "{}".to_owned()),
+                };
+                keeping
+                    .lock()
+                    .expect("the log")
+                    .push(CarrierHeard { path, head, body });
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n\
+                         content-length: {}\r\nconnection: close\r\n\r\n{answer}",
+                        answer.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        StandInCarrier { root, heard }
+    }
+
+    pub fn heard(&self) -> Vec<CarrierHeard> {
+        self.heard.lock().expect("the log").clone()
+    }
+
+    /// The three endpoints, as a realm would name them.
+    pub fn endpoints(&self) -> (String, String, String) {
+        (
+            format!("{}/bc-authorize", self.root),
+            format!("{}/token", self.root),
+            format!("{}/check", self.root),
+        )
     }
 }
 

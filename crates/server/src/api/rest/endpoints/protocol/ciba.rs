@@ -761,6 +761,9 @@ async fn doorbell_text(
             ),
         },
         whatsapp: None,
+        // Nothing to hold: the link grants nothing to whoever holds the SIM,
+        // only a page the person must be signed in to answer.
+        guard: None,
         about: auth::messaging::About {
             user_id: person.user_id.clone(),
             purpose: "ciba-doorbell".to_owned(),

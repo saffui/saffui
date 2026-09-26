@@ -1,5 +1,12 @@
 import { describe, expect, test } from "vitest";
-import { mailWrite, previewSms, smsTemplateIsValid, smsWrite, whatsAppWrite } from "./messaging";
+import {
+  mailWrite,
+  previewSms,
+  simSwapWrite,
+  smsTemplateIsValid,
+  smsWrite,
+  whatsAppWrite,
+} from "./messaging";
 
 describe("message gateway forms", () => {
   test("normalizes addresses without rewriting secrets", () => {
@@ -67,6 +74,38 @@ describe("WhatsApp settings form", () => {
     expect(
       whatsAppWrite({ phone_number_id: "1", template: "t", languages: "fr", token: " a b " }).token,
     ).toBe(" a b ");
+  });
+});
+
+describe("SIM swap settings form", () => {
+  test("trims the endpoints and leaves a blank window to the server", () => {
+    expect(
+      simSwapWrite({
+        client_id: " saffui ",
+        authorize_url: " https://carrier.example/bc-authorize ",
+        token_url: "https://carrier.example/token",
+        check_url: "https://carrier.example/check ",
+        max_age_hours: " ",
+        when_unanswered: "hold",
+      }),
+    ).toEqual({
+      client_id: "saffui",
+      authorize_url: "https://carrier.example/bc-authorize",
+      token_url: "https://carrier.example/token",
+      check_url: "https://carrier.example/check",
+      max_age_hours: null,
+      when_unanswered: "hold",
+    });
+    expect(
+      simSwapWrite({
+        client_id: "c",
+        authorize_url: "a",
+        token_url: "t",
+        check_url: "k",
+        max_age_hours: 24,
+        when_unanswered: "send",
+      }).max_age_hours,
+    ).toBe(24);
   });
 });
 

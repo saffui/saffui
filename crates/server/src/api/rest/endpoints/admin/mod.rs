@@ -30,6 +30,7 @@ pub mod rebac;
 pub mod recert;
 pub mod requests;
 pub mod sessions;
+pub mod sim_swap;
 pub mod sms;
 pub mod users;
 pub mod ussd;

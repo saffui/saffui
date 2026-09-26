@@ -1,6 +1,7 @@
 import type { MailWrite } from "@/models/mail";
 import type { SmsWrite } from "@/models/sms";
 import type { WhatsAppWrite } from "@/models/whatsapp";
+import type { SimSwapWrite } from "@/models/simSwap";
 
 export interface MailDraft {
   host: string;
@@ -25,6 +26,16 @@ export interface WhatsAppDraft {
   /// The languages as typed: separated by commas or spaces.
   languages: string;
   token: string;
+}
+
+export interface SimSwapDraft {
+  client_id: string;
+  authorize_url: string;
+  token_url: string;
+  check_url: string;
+  /// Blank keeps the server's own window.
+  max_age_hours: string | number;
+  when_unanswered: "send" | "hold";
 }
 
 export type SmsTemplateKind = "sms_otp" | "verify_phone" | "ciba_doorbell";
@@ -62,6 +73,19 @@ export function whatsAppWrite(draft: WhatsAppDraft): WhatsAppWrite {
     template: draft.template.trim(),
     languages,
     token: draft.token || null,
+  };
+}
+
+/// The endpoints trimmed, and a blank window left to the server.
+export function simSwapWrite(draft: SimSwapDraft): SimSwapWrite {
+  const window = String(draft.max_age_hours).trim();
+  return {
+    client_id: draft.client_id.trim(),
+    authorize_url: draft.authorize_url.trim(),
+    token_url: draft.token_url.trim(),
+    check_url: draft.check_url.trim(),
+    max_age_hours: window === "" ? null : Math.trunc(Number(window)),
+    when_unanswered: draft.when_unanswered,
   };
 }
 

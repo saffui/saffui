@@ -349,6 +349,9 @@ pub struct Posting<'a> {
     /// the deployment speaks to Meta.
     pub whatsapp: Option<&'a models::entities::whatsapp::WhatsAppSettings>,
     pub can_whatsapp: bool,
+    /// How the realm asks its carrier about a number, where it runs the
+    /// guard.
+    pub sim_swap: Option<&'a models::entities::sim_swap::SimSwapSettings>,
     pub now: DateTime<Utc>,
 }
 
@@ -609,6 +612,11 @@ async fn sms_otp(
     }
 
     let held = |key: &str| remembered.and_then(|state| state.get(key));
+    // Held after the carrier's answer: nothing more goes to this number in
+    // this login, and whatever else the flow offers stands in.
+    if held("held").and_then(serde_json::Value::as_bool) == Some(true) {
+        return Answered::plain(Outcome::Failed);
+    }
     let sent_before = held("sent")
         .and_then(serde_json::Value::as_i64)
         .unwrap_or(0);
@@ -745,6 +753,7 @@ async fn sms_otp(
                 crate::messaging::tongue_spoken_by(subject),
                 way,
                 carriers,
+                posting.sim_swap,
                 crate::messaging::About {
                     user_id: subject.user_id.clone(),
                     purpose: SMS_OTP.to_owned(),

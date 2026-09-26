@@ -6,6 +6,7 @@ pub mod mail;
 pub mod page_previews;
 pub mod realm_features;
 pub mod realm_keys;
+pub mod sim_swap;
 pub mod sms;
 pub mod tenants;
 pub mod ussd;

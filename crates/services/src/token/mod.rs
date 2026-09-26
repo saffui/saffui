@@ -1,3 +1,4 @@
+pub mod assertion;
 pub mod issuance;
 pub mod preview;
 

@@ -7,6 +7,7 @@ import {
   forgetRegistrationSecret,
   forgetSms,
   forgetUssd,
+  forgetSimSwap,
   forgetWhatsApp,
   getMail,
   getRealmKeys,
@@ -14,6 +15,7 @@ import {
   getRealmTheme,
   getSms,
   getUssd,
+  getSimSwap,
   getWhatsApp,
   importPartialRealm,
   keepFeatureWish,
@@ -31,6 +33,7 @@ import {
   writeRealmTheme,
   writeSms,
   writeUssd,
+  writeSimSwap,
   writeWhatsApp,
 } from "@/services/settings";
 import { keepAnswer, REALM } from "./answers";
@@ -104,6 +107,21 @@ describe("realm settings", () => {
     const held = await keepAnswer(getWhatsApp, REALM);
     expect(held.languages).toEqual(["en_US", "fr"]);
     await forgetWhatsApp(REALM);
+  });
+
+  test("keeps a carrier to ask about SIM changes, then forgets it", async () => {
+    await writeSimSwap(REALM, {
+      client_id: "saffui-at-the-carrier",
+      authorize_url: "https://carrier.example/bc-authorize",
+      token_url: "https://carrier.example/token",
+      check_url: "https://carrier.example/sim-swap/v2/check",
+      max_age_hours: null,
+      when_unanswered: "send",
+    });
+    const held = await keepAnswer(getSimSwap, REALM);
+    expect(held.max_age_hours).toBe(72);
+    expect(held.public_jwk).not.toHaveProperty("d");
+    await forgetSimSwap(REALM);
   });
 
   test("lists features, page keys and sign-in events", async () => {

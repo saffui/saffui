@@ -188,6 +188,23 @@ pub async fn outstanding(
     Ok(found > 0)
 }
 
+/// Void whatever of this purpose is still in flight for this person, and say
+/// whether there was one.
+pub async fn void(
+    transaction: &UnitOfWork,
+    user_id: &str,
+    purpose: Purpose<'_>,
+) -> StoreResult<bool> {
+    let removed = transaction
+        .execute(
+            "DELETE FROM one_time_tokens WHERE user_id = $1 AND purpose = $2",
+            &[&user_id, &purpose],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(removed > 0)
+}
+
 /// Drop everything that has expired, and say how many.
 ///
 /// Scoped like everything else, so a sweep clears this realm's and reports on

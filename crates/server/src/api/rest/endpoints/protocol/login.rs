@@ -2,14 +2,16 @@ use actix_web::http::StatusCode;
 use actix_web::{Either, HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use auth::login::authenticator::Answer;
 use auth::login::browser::{self, Step, Unanswerable};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use config::serving::PublicOrigin;
+use outbound::delivery::Sent;
 use secrecy::SecretBox;
 use serde::Deserialize;
 use services::oidc::form_post;
 use services::oidc::landing::{Landing, ResponseMode};
+use services::oidc::sign_in::Held;
 use store::error::StoreError;
-use store::tenancy::{RealmNamed, Tenancy};
+use store::tenancy::{RealmNamed, Tenancy, TenantContext};
 
 use crate::api::provenance::read_provenance;
 use crate::api::rest::endpoints::protocol::dto::uncached;
@@ -278,61 +280,180 @@ pub async fn answer(
         .collect();
 
     let device_token = binding::read(&request, binding::DEVICE);
-    let step = browser::answer_step(
-        &transaction,
-        sealing.provider.as_ref(),
-        &sealing.names,
-        &context,
-        &origin,
-        &auth_session,
-        // The ticket's name wins over a typed one: the exchange proved it,
-        // and the step ties the two together anyway.
-        negotiated
-            .as_deref()
-            .or(filled(&answered.username).as_deref()),
-        // Everything the body carried. The flow runs every step against what it
-        // was given, so a login resumed with a second factor still has to
-        // satisfy the first, and each step takes the kind it understands.
-        &answers,
-        auth::login::enrolment::Answers {
-            attestation: attestation.as_deref(),
-            code: code.as_deref(),
-            verified_address: answered.verify_email.as_deref(),
-            phone: answered.phone.as_deref().filter(|held| !held.is_empty()),
-            phone_code: answered
-                .phone_register
+    // Played once, and once more where the carrier held the code it drew.
+    let play = async |transaction: &store::tenancy::UnitOfWork| {
+        browser::answer_step(
+            transaction,
+            sealing.provider.as_ref(),
+            &sealing.names,
+            &context,
+            &origin,
+            &auth_session,
+            // The ticket's name wins over a typed one: the exchange proved it,
+            // and the step ties the two together anyway.
+            negotiated
                 .as_deref()
-                .filter(|held| !held.is_empty()),
-            code_channel,
-            kept: kept.as_deref(),
-            new_password: renewed.as_ref(),
-            declined: answered.enrolment_declined == Some(true),
-        },
-        &read_provenance(&request),
-        sealing.sender.is_some(),
-        sealing.texter.is_some(),
-        sealing.whatsapp.is_some(),
-        ring.as_ref().map(|ring| browser::Sealing {
-            ring,
-            envelope: &sealing.envelope,
-        }),
-        device_token.as_deref(),
-        signing.as_ref(),
-        // Anything other than the two words is no answer at all, so the
-        // screen is shown again rather than read as one of them.
-        match answered.consent.as_deref() {
-            Some("granted") => Some(true),
-            Some("refused") => Some(false),
-            _ => None,
-        },
-        answered.remember_me.unwrap_or(false),
-        answered.organization.as_deref(),
-        &federations,
+                .or(filled(&answered.username).as_deref()),
+            // Everything the body carried. The flow runs every step against what it
+            // was given, so a login resumed with a second factor still has to
+            // satisfy the first, and each step takes the kind it understands.
+            &answers,
+            auth::login::enrolment::Answers {
+                attestation: attestation.as_deref(),
+                code: code.as_deref(),
+                verified_address: answered.verify_email.as_deref(),
+                phone: answered.phone.as_deref().filter(|held| !held.is_empty()),
+                phone_code: answered
+                    .phone_register
+                    .as_deref()
+                    .filter(|held| !held.is_empty()),
+                code_channel,
+                kept: kept.as_deref(),
+                new_password: renewed.as_ref(),
+                declined: answered.enrolment_declined == Some(true),
+            },
+            &read_provenance(&request),
+            sealing.sender.is_some(),
+            sealing.texter.is_some(),
+            sealing.whatsapp.is_some(),
+            ring.as_ref().map(|ring| browser::Sealing {
+                ring,
+                envelope: &sealing.envelope,
+            }),
+            device_token.as_deref(),
+            signing.as_ref(),
+            // Anything other than the two words is no answer at all, so the
+            // screen is shown again rather than read as one of them.
+            match answered.consent.as_deref() {
+                Some("granted") => Some(true),
+                Some("refused") => Some(false),
+                _ => None,
+            },
+            answered.remember_me.unwrap_or(false),
+            answered.organization.as_deref(),
+            &federations,
+            now,
+        )
+        .await
+    };
+    let round = Round {
+        sealing: &sealing,
+        tenancy: &tenancy,
+        context: &context,
+        origin: &origin,
+        ring: ring.as_ref(),
+        realm: &realm,
+        page: &page,
+        spoken,
         now,
-    )
-    .await;
+    };
+    let step = play(&transaction).await;
+    match finish(step, transaction, round).await {
+        Finished::Told(response) => response,
+        // The carrier held the code: nothing went. The round is played again,
+        // where the step that drew the code fails and whatever else the flow
+        // offers answers in its place.
+        Finished::Held(holding) => {
+            let again = match tenancy.begin(&context).await {
+                Ok(transaction) => transaction,
+                Err(_) => return told(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+            };
+            if services::oidc::sign_in::hold_code(
+                &again,
+                &auth_session,
+                &holding.drawn.user_id,
+                &holding.drawn.step,
+                &holding.drawn.recipient,
+                holding.why,
+                now,
+            )
+            .await
+            .is_err()
+            {
+                return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+            }
+            let step = play(&again).await;
+            match finish(step, again, round).await {
+                Finished::Told(response) => response,
+                // The step that drew the code is marked held and draws none,
+                // so a second hold has nothing to hold.
+                Finished::Held(_) => told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
+            }
+        }
+    }
+}
 
-    match step {
+/// What a round comes to: an answer for the browser, or a code its carrier
+/// held, which the round is played again to answer.
+enum Finished {
+    Told(HttpResponse),
+    Held(Holding),
+}
+
+/// A code held before it went, and why it stayed.
+struct Holding {
+    drawn: Drawn,
+    why: Held,
+}
+
+/// Whose code it was, the step that drew it, and where it was going: read
+/// before the text is handed on, for a hold that comes back after.
+struct Drawn {
+    user_id: String,
+    step: String,
+    recipient: String,
+}
+
+impl Drawn {
+    /// A text the carrier is to be asked about, and nothing else.
+    fn of(outbound: &auth::messaging::Outbound) -> Option<Drawn> {
+        match outbound {
+            auth::messaging::Outbound::Text(text) if text.guard.is_some() => Some(Drawn {
+                user_id: text.about.user_id.clone(),
+                step: text.about.purpose.clone(),
+                recipient: text.text.to.clone(),
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// What finishing a round reads, the same for a round played again.
+#[derive(Clone, Copy)]
+struct Round<'a> {
+    sealing: &'a Sealing,
+    tenancy: &'a Tenancy,
+    context: &'a TenantContext,
+    origin: &'a PublicOrigin,
+    ring: Option<&'a store::keyring::RealmKeyring>,
+    realm: &'a str,
+    page: &'a str,
+    spoken: Spoken,
+    now: DateTime<Utc>,
+}
+
+/// Commit what the round wrote, send what it drew, and tell the browser.
+async fn finish(
+    step: Result<Step, Unanswerable>,
+    transaction: store::tenancy::UnitOfWork,
+    round: Round<'_>,
+) -> Finished {
+    let Round {
+        sealing,
+        tenancy,
+        context,
+        origin,
+        ring,
+        realm,
+        page,
+        spoken,
+        now,
+    } = round;
+    let tell = |status: StatusCode, named: &str| match spoken {
+        Spoken::Json => told(status, named),
+        Spoken::Form => shown(page, named),
+    };
+    Finished::Told(match step {
         // The rows the answer wrote are what the next step reads, and on an
         // admission they are what the code names. Answering before committing
         // hands out a code whose login the redemption cannot find.
@@ -342,7 +463,7 @@ pub async fn answer(
             // a code the redemption cannot find.
             let landed = match &step {
                 Step::Admitted(admitted) => {
-                    let signing = ring.as_ref().map(|ring| store::keyring::Signing {
+                    let signing = ring.map(|ring| store::keyring::Signing {
                         provider: sealing.provider.as_ref(),
                         ring,
                         envelope: &sealing.envelope,
@@ -350,7 +471,7 @@ pub async fn answer(
                     match services::oidc::minting::landed(
                         &transaction,
                         sealing.provider.as_ref(),
-                        &context,
+                        context,
                         admitted,
                         signing.as_ref(),
                         &origin.issuer(&context.realm_id),
@@ -359,7 +480,12 @@ pub async fn answer(
                     .await
                     {
                         Ok(landing) => Some(landing),
-                        Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
+                        Err(_) => {
+                            return Finished::Told(told(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "unavailable",
+                            ));
+                        }
                     }
                 }
                 Step::SentBack { error, login } => Some(services::oidc::minting::refused(
@@ -381,13 +507,18 @@ pub async fn answer(
                         .await
                     {
                         Ok(ticket) => Some(ticket),
-                        Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
+                        Err(_) => {
+                            return Finished::Told(told(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "unavailable",
+                            ));
+                        }
                     }
                 }
                 _ => None,
             };
             if transaction.commit().await.is_err() {
-                return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+                return Finished::Told(told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"));
             }
             match step {
                 Step::Challenge {
@@ -395,14 +526,22 @@ pub async fn answer(
                     mut asks,
                     sending,
                 } => {
-                    let carried = match sending {
+                    let drawn = sending.as_deref().and_then(Drawn::of);
+                    let sent = match sending {
                         Some(outbound) => {
                             outbound::delivery::deliver_outbound(
-                                &sealing, &tenancy, &context, *outbound,
+                                sealing, tenancy, context, *outbound,
                             )
                             .await
                         }
-                        None => None,
+                        None => Sent::Nowhere,
+                    };
+                    if let (Sent::Held(why), Some(drawn)) = (sent, drawn) {
+                        return Finished::Held(Holding { drawn, why });
+                    }
+                    let carried = match sent {
+                        Sent::By(way) => Some(way),
+                        Sent::Nowhere | Sent::Held(_) => None,
                     };
                     // The way a code went, where WhatsApp refused it and the
                     // gateway took it instead. Asking for the way that just
@@ -458,7 +597,7 @@ pub async fn answer(
                         // in the wrong browser needs to be told so rather
                         // than shown either.
                         Spoken::Form => shown(
-                            &page,
+                            page,
                             match &asks {
                                 Some(asks) if asks.get("wrong_browser").is_some() => {
                                     "wrong-browser"
@@ -527,7 +666,7 @@ pub async fn answer(
                         "admitted"
                     };
                     crate::metrics::login_counted(outcome);
-                    told_landing(&mut response, spoken, outcome, &landing, &origin, &realm)
+                    told_landing(&mut response, spoken, outcome, &landing, origin, realm)
                 }
                 Step::Refused => {
                     tracing::warn!("login refused");
@@ -554,7 +693,7 @@ pub async fn answer(
                             "tos_uri": tos_uri,
                         }),
                     ),
-                    Spoken::Form => shown(&page, "consent"),
+                    Spoken::Form => shown(page, "consent"),
                 },
                 Step::Organization { held } => match spoken {
                     Spoken::Json => uncached(&mut HttpResponseBuilder::new(StatusCode::OK)).json(
@@ -569,7 +708,7 @@ pub async fn answer(
                                 .collect::<Vec<_>>(),
                         }),
                     ),
-                    Spoken::Form => shown(&page, "choice-needs-script"),
+                    Spoken::Form => shown(page, "choice-needs-script"),
                 },
                 Step::LockedOut { until } => {
                     tracing::warn!(until, "login locked out");
@@ -578,7 +717,7 @@ pub async fn answer(
                             uncached(&mut HttpResponseBuilder::new(StatusCode::TOO_MANY_REQUESTS))
                                 .json(serde_json::json!({ "status": "locked-out", "until": until }))
                         }
-                        Spoken::Form => shown(&page, "locked-out"),
+                        Spoken::Form => shown(page, "locked-out"),
                     }
                 }
                 // The address is what is turned away, or a device that already
@@ -596,7 +735,7 @@ pub async fn answer(
                                 ))
                                 .json(serde_json::json!({ "status": "throttled", "until": until }))
                         }
-                        Spoken::Form => shown(&page, "throttled"),
+                        Spoken::Form => shown(page, "throttled"),
                     }
                 }
                 // Over, and not admitted: the client hears why at its
@@ -612,14 +751,7 @@ pub async fn answer(
                     });
                     binding::clear(&mut response, binding::AUTH_SESSION, &context.realm_id);
                     hand_over(&mut response, &context.realm_id, ticket.as_deref());
-                    told_landing(
-                        &mut response,
-                        spoken,
-                        "sent_back",
-                        &landing,
-                        &origin,
-                        &realm,
-                    )
+                    told_landing(&mut response, spoken, "sent_back", &landing, origin, realm)
                 }
             }
         }
@@ -634,7 +766,7 @@ pub async fn answer(
             response
         }
         Err(_) => told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
-    }
+    })
 }
 
 /// The outcome, the way the request asked to be answered.

@@ -14,6 +14,7 @@ pub mod mail;
 pub mod oidc;
 pub mod organization;
 pub mod realm;
+pub mod sim_swap;
 pub mod sms;
 pub mod tenant;
 pub mod user;

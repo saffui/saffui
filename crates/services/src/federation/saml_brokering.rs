@@ -2,9 +2,7 @@ use chrono::{DateTime, Utc};
 use crypto::jose::jwk::KeyPair;
 use crypto::jose::jwk::alg::rsa::RsaKeyPair;
 use crypto::provider::{CryptoProvider, PrivateKey, PublicKey, SignAlg};
-use crypto::x509::{
-    CertifiedKey, Issuance, issue_certificate, public_key_of, read_certificate_facts,
-};
+use crypto::x509::{Issuance, issue_certificate, public_key_of, read_certificate_facts};
 use data_encoding::HEXLOWER;
 use models::entities::attributes::AttributesMap;
 use models::entities::authz::IdentityProviderModel;
@@ -34,7 +32,6 @@ use crate::federation::brokering::{Arrival, STATE_LIFESPAN, Unbrokered, text};
 use crate::oidc::grant::Signing;
 
 const PERSISTENT: &str = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent";
-const MINIMUM_RSA_BITS: u32 = 2048;
 /// Core §8.3.6 bounds an entity identifier to 1024 characters.
 const ENTITY_ID_MAX_CHARS: usize = 1024;
 
@@ -114,17 +111,7 @@ impl SamlUpstream {
         for certificate in &identity_provider.signing_certificates {
             let facts = read_certificate_facts(certificate)
                 .ok_or(UnusableSaml::WeakKey("a certificate that does not read"))?;
-            let weakness = match facts.key {
-                CertifiedKey::Rsa { bits } if bits < MINIMUM_RSA_BITS => {
-                    Some("RSA below 2048 bits")
-                }
-                CertifiedKey::Rsa { .. } => None,
-                CertifiedKey::Ec { curve } => curve
-                    .is_none()
-                    .then_some("a curve other than P-256, P-384 or P-521"),
-                CertifiedKey::Other => Some("a key of a kind not verified here"),
-            };
-            if let Some(weakness) = weakness {
+            if let Some(weakness) = facts.key.weakness() {
                 return Err(UnusableSaml::WeakKey(weakness));
             }
         }

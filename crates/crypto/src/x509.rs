@@ -129,6 +129,22 @@ pub enum CertifiedKey {
     Other,
 }
 
+impl CertifiedKey {
+    /// Why this build would not trust the key, in words: RSA under 2048 bits, a
+    /// curve JOSE does not name, or a kind it does not verify. Nothing for a
+    /// key it would.
+    pub fn weakness(self) -> Option<&'static str> {
+        match self {
+            Self::Rsa { bits } if bits < 2048 => Some("RSA below 2048 bits"),
+            Self::Rsa { .. } => None,
+            Self::Ec { curve } => curve
+                .is_none()
+                .then_some("a curve other than P-256, P-384 or P-521"),
+            Self::Other => Some("a key of a kind not verified here"),
+        }
+    }
+}
+
 /// What decides whether a certificate's key is fit to trust.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CertificateFacts {
@@ -569,6 +585,32 @@ mod tests {
         ] {
             assert_eq!(issue_certificate(&refused), None);
         }
+    }
+
+    /// A key is weighed by its kind and strength: RSA from 2048 bits and the
+    /// curves JOSE names are trusted, and what is not says why.
+    #[test]
+    fn a_key_is_weighed_by_its_kind_and_strength() {
+        assert_eq!(
+            CertifiedKey::Rsa { bits: 2047 }.weakness(),
+            Some("RSA below 2048 bits")
+        );
+        assert_eq!(CertifiedKey::Rsa { bits: 2048 }.weakness(), None);
+        assert_eq!(
+            CertifiedKey::Ec {
+                curve: Some("P-256")
+            }
+            .weakness(),
+            None
+        );
+        assert_eq!(
+            CertifiedKey::Ec { curve: None }.weakness(),
+            Some("a curve other than P-256, P-384 or P-521")
+        );
+        assert_eq!(
+            CertifiedKey::Other.weakness(),
+            Some("a key of a kind not verified here")
+        );
     }
 
     /// A certificate tells its key's kind and strength, its curve among those JOSE

@@ -222,6 +222,10 @@ Code meant for the whole crate goes into a module of its own rather than into
    usage, for tests to build chains with; the certificates a PEM text carries;
    and whether a certificate is an authority's by OpenSSL's reading of its
    extensions, one it found malformed never being one.
+10. `x509::CertifiedKey::weakness` (2026-09-26, the realm's trusted
+    authorities): why this build would not trust a certificate's key, in words,
+    the judgement the SAML intake made for itself and now shares with the
+    deposit of an authority.
 
 ## Before vendoring anything
 

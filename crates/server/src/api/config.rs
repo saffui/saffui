@@ -521,6 +521,7 @@ fn protocol_scope() -> impl HttpServiceFactory + 'static {
         .service(web::resource("/introspect").route(web::post().to(introspect::tell)))
         .service(web::resource("/revoke").route(web::post().to(revoke::take_back)))
         .service(web::resource("/certs").route(web::get().to(keys::published)))
+        .service(web::resource("/sim-swap-keys").route(web::get().to(keys::sim_swap_keys)))
         .service(
             web::resource("/logout")
                 .route(web::get().to(logout::end))

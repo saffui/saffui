@@ -48,6 +48,28 @@ pub async fn published(realm: web::Path<String>, tenancy: web::Data<Tenancy>) ->
         }))
 }
 
+/// The key this realm signs its assertions to its carrier with, for the
+/// carrier to verify them. Nothing where the realm asks no carrier.
+pub async fn sim_swap_keys(realm: web::Path<String>, tenancy: web::Data<Tenancy>) -> HttpResponse {
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => return answer_unavailable(),
+        Err(_) => return refused(StatusCode::NOT_FOUND),
+    };
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => return answer_unavailable(),
+        Err(_) => return refused(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+    match services::admin::sim_swap::read_public_keys(&transaction).await {
+        Ok(Some(keys)) => HttpResponseBuilder::new(StatusCode::OK)
+            .insert_header(("Cache-Control", "public, max-age=300"))
+            .json(keys),
+        Ok(None) => refused(StatusCode::NOT_FOUND),
+        Err(_) => refused(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
 /// One key, as RFC 7517 §4 spells it.
 ///
 /// `use` and `alg` are added rather than assumed from the stored JWK: a

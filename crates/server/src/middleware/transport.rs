@@ -15,38 +15,32 @@
 //! it would have, so a disabled realm and an absent one stay the same answer
 //! here as everywhere else. A rule the database fails to hand over is answered
 //! 503, not taken as leave to serve in the clear.
+//!
+//! The doors behind the admin guard and the decision door are judged by their
+//! guards instead, by the realm that minted the caller's token once it has
+//! verified: the only realm they can act in, which the admin plane names where
+//! this middleware cannot read it and the decision door does not name at all.
 
 use std::future::{Future, Ready, ready};
 use std::net::IpAddr;
 use std::pin::Pin;
 use std::rc::Rc;
 use store::error::StoreError;
-use store::tenancy::{RealmNamed, Tenancy};
+use store::tenancy::{RealmNamed, Tenancy, UnitOfWork};
 
 use actix_web::body::EitherBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform, forward_ready};
 use actix_web::http::header::HeaderName;
 use actix_web::{Error, HttpResponse, web};
 use config::proxying::Proxying;
-use models::entities::realm::SslEnforcement;
+use models::entities::realm::{RealmModel, SslEnforcement};
 
 use crate::api::rest::endpoints::protocol::dto::answer_unavailable;
 
 /// The answer this request gets instead of being served, when it must not be.
 async fn turn_away_arriving_in_the_clear(request: &ServiceRequest) -> Option<HttpResponse> {
     let proxying = request.app_data::<web::Data<Proxying>>()?;
-    let peer = request.peer_addr().map(|address| address.ip().to_string());
-
-    // The scheme the terminating proxy wrote, believed only from a named peer.
-    let vouched = proxying
-        .scheme_header()
-        .and_then(|named| HeaderName::from_bytes(named.as_bytes()).ok())
-        .and_then(|named| request.headers().get(named).cloned());
-    let spoken = proxying.forwarded_scheme(
-        peer.as_deref(),
-        vouched.as_ref().and_then(|value| value.to_str().ok()),
-    );
-    if spoken.is_some_and(|scheme| scheme.eq_ignore_ascii_case("https")) {
+    if vouched_https(request, proxying) {
         return None;
     }
 
@@ -63,13 +57,54 @@ async fn turn_away_arriving_in_the_clear(request: &ServiceRequest) -> Option<Htt
         Ok(None) => return None,
         Err(_) => return Some(answer_unavailable()),
     };
-    let in_the_clear_refused = match held.ssl_enforcement {
+    refuses_the_clear(&held, request, proxying).then(turned_away)
+}
+
+/// Whether the realm that minted a caller's token turns this request away in
+/// the clear, for the doors whose realm is the token's rather than the path's.
+///
+/// Asked once the token has verified, so the realm whose rule is read is one
+/// the token proves rather than one it merely names.
+pub(crate) async fn token_realm_refuses_the_clear(
+    request: &ServiceRequest,
+    transaction: &UnitOfWork,
+) -> Result<bool, services::realm::Unreadable> {
+    let Some(proxying) = request.app_data::<web::Data<Proxying>>() else {
+        return Ok(false);
+    };
+    if vouched_https(request, proxying) {
+        return Ok(false);
+    }
+    let held = services::realm::named(transaction, &transaction.context().realm_id).await?;
+    Ok(held.is_some_and(|held| refuses_the_clear(&held, request, proxying)))
+}
+
+/// Whether the terminating proxy this deployment names said `https`: the only
+/// word on the scheme believed, from a named peer and no one else.
+fn vouched_https(request: &ServiceRequest, proxying: &Proxying) -> bool {
+    let peer = request.peer_addr().map(|address| address.ip().to_string());
+    let vouched = proxying
+        .scheme_header()
+        .and_then(|named| HeaderName::from_bytes(named.as_bytes()).ok())
+        .and_then(|named| request.headers().get(named).cloned());
+    proxying
+        .forwarded_scheme(
+            peer.as_deref(),
+            vouched.as_ref().and_then(|value| value.to_str().ok()),
+        )
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https"))
+}
+
+/// Whether a realm's word turns away a request nobody vouched for as https.
+fn refuses_the_clear(held: &RealmModel, request: &ServiceRequest, proxying: &Proxying) -> bool {
+    match held.ssl_enforcement {
         None | Some(SslEnforcement::NotRequired) => false,
         Some(SslEnforcement::Always) => true,
         // For requests that did not come from a private address. The address
         // judged is the one the deployment believes the caller has, counted
         // from the right of what its own proxies wrote.
         Some(SslEnforcement::ExternalOnly) => {
+            let peer = request.peer_addr().map(|address| address.ip().to_string());
             let carried = proxying
                 .header()
                 .and_then(|named| HeaderName::from_bytes(named.name().as_bytes()).ok())
@@ -82,8 +117,7 @@ async fn turn_away_arriving_in_the_clear(request: &ServiceRequest) -> Option<Htt
                 .and_then(|address| address.parse::<IpAddr>().ok());
             !believed.is_some_and(from_a_private_address)
         }
-    };
-    in_the_clear_refused.then(turned_away)
+    }
 }
 
 /// Loopback, RFC 1918, link-local, and their v6 kin.

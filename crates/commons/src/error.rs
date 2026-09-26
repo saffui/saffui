@@ -47,6 +47,7 @@ catalogue! {
     ValidationError = 4000, 422, "validation_error", "the request payload is invalid";
     Unauthorized = 91, 401, "unauthorized", "authentication required";
     AccessDenied = 90, 403, "access_denied", "access denied";
+    ServedOverHttps = 92, 403, "transport.https_required", "this realm is served over https";
     BadRequest = 4001, 400, "bad_request", "the request is invalid";
     TooManyRequests = 4029, 429, "too_many_requests", "too many requests; retry later";
     InternalError = 5000, 500, "internal_error", "an internal error occurred";

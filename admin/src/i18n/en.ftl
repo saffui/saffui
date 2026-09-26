@@ -1199,6 +1199,7 @@ toast-refused = Refused ({ $status })
 toast-hint-forbidden = The plane accepted who you are and refused what you asked: your role does not hold this capability. Re-running provision refreshes an untouched administrator role; otherwise grant the capability to a role you hold.
 toast-hint-unauthorized = The session no longer stands; sign in again.
 toast-hint-service-unavailable = The server could not reach its database. Try again in a moment; if it lasts, its readiness probe says why.
+toast-hint-https-required = This realm insists on https, and the console reached it in the clear. Open the console over https; behind a proxy, the deployment must name that proxy and the header it states the scheme in.
 toast-realm-deleted = Realm { $realm } deleted.
 toast-saved = Saved
 toast-kept = Saved: { $subject }

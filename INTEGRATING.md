@@ -388,7 +388,10 @@ token endpoint.
 - A realm may insist on `https`. Its protocol endpoints then answer a plain
   request with `403 invalid_request` "this realm is served over https", unless
   the proxy the deployment names vouches for `https`. Discovery is exempt, as
-  the way a client learns the `https` addresses.
+  the way a client learns the `https` addresses. The admin API and the
+  authorization decision endpoint hold their caller to the rule of the realm
+  that minted its token, once the token has verified, and answer a plain
+  request `403` with `error_code` `transport.https_required`.
 - Cross-origin calls from a browser are admitted for an origin some client of
   the realm lists in `web_origins`. A preflight allows `GET`, `POST` and
   `OPTIONS` with the headers `authorization`, `content-type` and `dpop`;

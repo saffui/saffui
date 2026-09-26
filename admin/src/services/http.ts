@@ -9,6 +9,7 @@ const HINTS: Record<string, string> = {
   access_denied: "toast-hint-forbidden",
   unauthorized: "toast-hint-unauthorized",
   service_unavailable: "toast-hint-service-unavailable",
+  "transport.https_required": "toast-hint-https-required",
   "user.password.current_mismatch": "toast-hint-current-password",
   "user.locked_out": "toast-hint-locked-out",
   too_many_requests: "toast-hint-too-many-requests",

@@ -37,7 +37,8 @@ pub(crate) fn unverified_issuer(token: &str) -> Option<String> {
     claims.get("iss")?.as_str().map(str::to_owned)
 }
 
-/// Verify the bearer and establish who it is, and stop there.
+/// Verify the bearer, establish who it is and hold it to its realm's word on
+/// plain connections, and stop there.
 pub(crate) async fn admitted(
     gate: &crate::middleware::caller::Caller,
     request: &ServiceRequest,
@@ -58,7 +59,16 @@ pub(crate) async fn admitted(
         .await
         .map_err(report_store_failure)?;
 
-    services::context::admit_bearer(&transaction, context, &keys, &bearer, now)
+    let established = services::context::admit_bearer(&transaction, context, &keys, &bearer, now)
         .await
-        .map_err(refuse_unestablished_context)
+        .map_err(refuse_unestablished_context)?;
+    if crate::middleware::transport::token_realm_refuses_the_clear(request, &transaction)
+        .await
+        .map_err(report_store_failure)?
+    {
+        return Err(commons::http::ApiError::new(
+            commons::error::ErrorCode::ServedOverHttps,
+        ));
+    }
+    Ok(established)
 }

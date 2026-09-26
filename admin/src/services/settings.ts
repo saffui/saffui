@@ -2,6 +2,7 @@ import { adminPath, api } from "@/services/http";
 import { say } from "@/i18n";
 import type { MailBrief, MailWrite } from "@/models/mail";
 import type { SmsBrief, SmsWrite } from "@/models/sms";
+import type { WhatsAppBrief, WhatsAppWrite } from "@/models/whatsapp";
 import type { RealmKeys } from "@/models/keys";
 import type { RealmSettings, RealmTheme, RealmUpdate } from "@/models/realm";
 
@@ -290,6 +291,36 @@ export async function sendTestSms(realm: string, to: string): Promise<void> {
     method: "POST",
     json: { to },
     subject: say("sms-test-subject"),
+  });
+}
+
+export async function getWhatsApp(realm: string): Promise<WhatsAppBrief> {
+  return api<WhatsAppBrief>(adminPath(realm, "whatsapp"));
+}
+
+export async function writeWhatsApp(realm: string, asked: WhatsAppWrite): Promise<void> {
+  await api<unknown>(adminPath(realm, "whatsapp"), {
+    method: "PUT",
+    json: asked,
+    subject: say("settings-group-phone"),
+  });
+}
+
+export async function forgetWhatsApp(realm: string): Promise<void> {
+  await api<void>(adminPath(realm, "whatsapp"), {
+    method: "DELETE",
+    subject: say("settings-group-phone"),
+  });
+}
+
+/// Drive the business number end to end: one real code, 000000, through Meta
+/// to the given number. Green means the settings on screen actually carry
+/// codes.
+export async function sendTestWhatsApp(realm: string, to: string, language: string): Promise<void> {
+  await api<void>(adminPath(realm, "whatsapp/test"), {
+    method: "POST",
+    json: { to, language },
+    subject: say("whatsapp-test-subject"),
   });
 }
 

@@ -54,3 +54,7 @@ mod subject_door;
 mod texted;
 #[path = "grouped/ui_theme.rs"]
 mod ui_theme;
+#[path = "grouped/whatsapp_login.rs"]
+mod whatsapp_login;
+#[path = "grouped/whatsapp_settings.rs"]
+mod whatsapp_settings;

@@ -1,5 +1,6 @@
 import type { MailWrite } from "@/models/mail";
 import type { SmsWrite } from "@/models/sms";
+import type { WhatsAppWrite } from "@/models/whatsapp";
 
 export interface MailDraft {
   host: string;
@@ -15,6 +16,14 @@ export interface MailDraft {
 export interface SmsDraft {
   url: string;
   sender: string;
+  token: string;
+}
+
+export interface WhatsAppDraft {
+  phone_number_id: string;
+  template: string;
+  /// The languages as typed: separated by commas or spaces.
+  languages: string;
   token: string;
 }
 
@@ -37,6 +46,21 @@ export function smsWrite(draft: SmsDraft): SmsWrite {
   return {
     url: draft.url.trim(),
     sender: draft.sender.trim(),
+    token: draft.token || null,
+  };
+}
+
+/// The languages once each, in the order typed; a token left blank keeps the
+/// held one.
+export function whatsAppWrite(draft: WhatsAppDraft): WhatsAppWrite {
+  const languages: string[] = [];
+  for (const typed of draft.languages.split(/[\s,]+/)) {
+    if (typed && !languages.includes(typed)) languages.push(typed);
+  }
+  return {
+    phone_number_id: draft.phone_number_id.trim(),
+    template: draft.template.trim(),
+    languages,
     token: draft.token || null,
   };
 }

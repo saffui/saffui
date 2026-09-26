@@ -64,6 +64,8 @@ pub struct Answers<'a> {
     /// The texted proving code, typed back. Its own field and not `code`,
     /// for the reason `kept` is.
     pub phone_code: Option<&'a str>,
+    /// The way the person asked the proving code to come instead.
+    pub code_channel: Option<models::messaging::Channel>,
     /// One code typed back off the sheet just shown, proving it was kept. Its
     /// own field and not `code`: two ceremonies reading one answer is how a
     /// person's authenticator code gets spent against the wrong ledger.
@@ -852,8 +854,8 @@ async fn finish_verify(
 }
 
 /// One round of proving a phone: ask for a number when the account holds
-/// none, text a code at it, and mark the number proven when the code comes
-/// back. The code is bound to this login, and the number it went to rides
+/// none, send a code to it over WhatsApp or by text, and mark the number
+/// proven when the code comes back. The code is bound to this login, and the number it went to rides
 /// the notes, so proving it cannot bless a number swapped in behind it.
 async fn verify_phone_round(
     transaction: &UnitOfWork,
@@ -869,9 +871,10 @@ async fn verify_phone_round(
     let Some(posting) = posting else {
         return Enrolment::Settled;
     };
-    let Some(settings) = posting.sms.filter(|_| posting.can_text) else {
+    let carriers = posting.code_carriers();
+    if !carriers.carries_any() {
         return Enrolment::Settled;
-    };
+    }
     let state = remembered.get(VERIFY_PHONE);
 
     if let (Some(typed), Some(state)) = (answers.phone_code, state) {
@@ -950,21 +953,31 @@ async fn verify_phone_round(
         },
     };
 
-    let shown = json!({
-        "code_sent_to": crate::login::authenticator::redacted_phone(&texting_to)
-    });
-    let sent_before = state
-        .and_then(|held| held.get("sent"))
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
+    let held = |key: &str| state.and_then(|state| state.get(key));
+    let sent_before = held("sent").and_then(Value::as_i64).unwrap_or(0);
+    // The way the code in flight went, when it went to this same number.
+    let by_before = held("by")
+        .and_then(Value::as_str)
+        .and_then(|way| way.parse::<models::messaging::Channel>().ok())
+        .filter(|_| held("to").and_then(Value::as_str) == Some(texting_to.as_str()));
+    let switched_before = held("switched").and_then(Value::as_bool).unwrap_or(false);
     let standing = |sent: i64| Enrolment::Asked {
         named: VERIFY_PHONE,
         challenge: Challenge {
-            shown: shown.clone(),
-            remembered: json!({ "to": texting_to, "sent": sent }),
+            shown: crate::login::authenticator::code_shown(&texting_to, by_before, &carriers),
+            remembered: json!({
+                "to": texting_to,
+                "sent": sent,
+                "by": by_before.map(models::messaging::Channel::as_str),
+                "switched": switched_before,
+            }),
         },
         sending: None,
     };
+
+    // The other way, asked for once without waiting, as at the sign-in code.
+    let asked = answers.code_channel.filter(|way| carriers.carries(*way));
+    let switching = !switched_before && asked.is_some_and(|way| Some(way) != by_before);
 
     // The same three brakes the login code wears: one in flight, only so
     // many per login, and the realm's own day.
@@ -973,7 +986,10 @@ async fn verify_phone_round(
     else {
         return Enrolment::Refused;
     };
-    if recent.is_some_and(|sent| posting.now - sent < chrono::Duration::seconds(VERIFY_COOLDOWN)) {
+    if !switching
+        && recent
+            .is_some_and(|sent| posting.now - sent < chrono::Duration::seconds(VERIFY_COOLDOWN))
+    {
         return standing(sent_before);
     }
     if sent_before >= PHONE_CODES_PER_LOGIN {
@@ -994,6 +1010,19 @@ async fn verify_phone_round(
         Ok(Some(_)) => return Enrolment::Settled,
         Err(()) => return Enrolment::Refused,
     }
+
+    let Ok(way) = crate::messaging::code_way(
+        transaction,
+        &subject.user_id,
+        &texting_to,
+        asked,
+        carriers,
+        posting.now,
+    )
+    .await
+    else {
+        return Enrolment::Refused;
+    };
 
     let Some(code) = crate::login::authenticator::drawn_code(provider) else {
         return Enrolment::Refused;
@@ -1027,26 +1056,28 @@ async fn verify_phone_round(
     Enrolment::Asked {
         named: VERIFY_PHONE,
         challenge: Challenge {
-            shown,
-            remembered: json!({ "to": texting_to, "sent": sent_before + 1 }),
+            shown: crate::login::authenticator::code_shown(&texting_to, Some(way), &carriers),
+            remembered: json!({
+                "to": texting_to,
+                "sent": sent_before + 1,
+                "by": way.as_str(),
+                "switched": switched_before || switching,
+            }),
         },
         sending: Some(Box::new(crate::messaging::Outbound::Text(
-            crate::messaging::OutgoingText {
-                settings: settings.duplicate(),
-                text: crate::messaging::Text {
-                    to: texting_to,
-                    body: crate::messaging::texted_words(
-                        realm,
-                        "verify_phone",
-                        &code,
-                        crate::messaging::tongue_spoken_by(subject),
-                    ),
-                },
-                about: crate::messaging::About {
+            crate::messaging::code_for_phone(
+                realm,
+                "verify_phone",
+                &code,
+                texting_to,
+                crate::messaging::tongue_spoken_by(subject),
+                way,
+                carriers,
+                crate::messaging::About {
                     user_id: subject.user_id.clone(),
                     purpose: VERIFY_PHONE.to_owned(),
                 },
-            },
+            ),
         ))),
     }
 }

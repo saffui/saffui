@@ -37,6 +37,9 @@ export interface MessageDelivery {
   attempted_at: string;
   delivered: boolean;
   detail: string | null;
+  /// Which way the attempt went; absent on the ones made before there was a
+  /// choice.
+  channel: "mail" | "sms" | "whatsapp" | null;
 }
 
 /// Mirrors the `GET .../users/{user}/lockout` answer.

@@ -655,6 +655,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V108__logout_notices.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 109,
+            name: "whatsapp",
+            sql: include_str!("../migrations/V109__whatsapp.sql"),
+            transactional: true,
+        }),
     ]
 }
 

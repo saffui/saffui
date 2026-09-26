@@ -45,6 +45,14 @@ pub async fn read_sms_settings(
     sms::load(transaction, &ring, envelope).await.ok().flatten()
 }
 
+/// Whether the realm could send a code either way, which is whether a person
+/// has another way to ask for. A realm that cannot be read offers none.
+pub async fn carries_both_ways(transaction: &UnitOfWork) -> bool {
+    store::providers::realms::whatsapp::held_beside_a_gateway(transaction)
+        .await
+        .unwrap_or(false)
+}
+
 /// Keep the receipt of one attempt to send, delivered or not.
 pub async fn record_delivery(
     transaction: &UnitOfWork,

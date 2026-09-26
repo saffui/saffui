@@ -169,7 +169,7 @@ pub async fn looked_at(
             .get("accept-language")
             .and_then(|held| held.to_str().ok()),
     );
-    let (doors, idps, saved, policy) = doors_of_realm(&tenancy, &realm).await;
+    let (doors, idps, saved, policy) = doors_of_realm(&tenancy, &realm, false).await;
 
     // The draft when one is named and still lives, and what is saved otherwise.
     // A draft that has expired shows the saved wording rather than an error: the
@@ -204,6 +204,7 @@ pub async fn looked_at(
                 .unwrap_or_default(),
         )
         .replace("{token}", "")
+        .replace("{ways}", "hidden")
         .replace("{action}", "#")
         .replace("{user}", "")
         .replace("{address}", "")
@@ -291,6 +292,9 @@ struct WayBack {
 async fn doors_of_realm(
     tenancy: &store::tenancy::Tenancy,
     realm: &str,
+    // Whether this deployment carries a code both ways, so the realm is only
+    // asked when a person could be offered the other.
+    both_ways_carried: bool,
 ) -> (
     String,
     String,
@@ -327,6 +331,9 @@ async fn doors_of_realm(
         .await
     {
         doors.push("recovery-code");
+    }
+    if both_ways_carried && services::messaging::delivery::carries_both_ways(&transaction).await {
+        doors.push("code-ways");
     }
     let idps = match services::federation::brokering::read_providers(&transaction).await {
         Ok(rows) => federated_doors(&rows),
@@ -535,6 +542,16 @@ fn page(
                 )
                 .replace("{back-address}", &escaped(address))
                 .replace("{back-name}", &escaped(name))
+                // Shown without a script only where a person could be offered
+                // the other way; with one, the script decides from the answer.
+                .replace(
+                    "{ways}",
+                    if doors.split_whitespace().any(|door| door == "code-ways") {
+                        ""
+                    } else {
+                        "hidden"
+                    },
+                )
                 .replace(
                     "{token}",
                     &escaped(live.page_token.as_deref().unwrap_or_default()),
@@ -742,7 +759,12 @@ pub async fn magic_link(
     let Some((named, token)) = followed else {
         let live = read_live_login(&request, &tenancy, &sealing, &realm).await;
         let tongues = tongues_of_realm(&tenancy, &realm).await;
-        let (doors, idps, overrides, policy) = doors_of_realm(&tenancy, &realm).await;
+        let (doors, idps, overrides, policy) = doors_of_realm(
+            &tenancy,
+            &realm,
+            sealing.texter.is_some() && sealing.whatsapp.is_some(),
+        )
+        .await;
         return page(
             &request,
             &live,
@@ -819,7 +841,7 @@ pub async fn reset_password(
         asked.user.filter(|held| !held.is_empty()),
     ) else {
         let tongues = tongues_of_realm(&tenancy, &realm).await;
-        let (doors, idps, overrides, policy) = doors_of_realm(&tenancy, &realm).await;
+        let (doors, idps, overrides, policy) = doors_of_realm(&tenancy, &realm, false).await;
         return page(
             &request,
             &LiveLogin::default(),
@@ -857,7 +879,7 @@ pub async fn reset_form(
             .get("accept-language")
             .and_then(|held| held.to_str().ok()),
     );
-    let (.., overrides, _) = doors_of_realm(tenancy, realm).await;
+    let (.., overrides, _) = doors_of_realm(tenancy, realm, false).await;
     let mut body = match overrides.as_ref() {
         Some(spoken) => i18n::reset_page_over(tongue, spoken),
         None => i18n::reset_page_in(tongue).to_owned(),

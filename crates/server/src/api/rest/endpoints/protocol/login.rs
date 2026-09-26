@@ -52,6 +52,8 @@ pub struct Answered {
     pub phone: Option<String>,
     /// The texted code proving that number, typed back.
     pub phone_register: Option<String>,
+    /// The way the person asked a code to come instead: `sms` or `whatsapp`.
+    pub code_channel: Option<String>,
     /// The same, for a link confirming an address.
     pub verify_email: Option<String>,
     /// What the consent screen answered: `granted` or `refused`.
@@ -166,6 +168,14 @@ pub async fn answer(
     }
     if let Some(typed) = filled(&answered.sms_otp) {
         answers.push(Answer::SmsOtp(typed));
+    }
+    // Anything but a way a phone takes is no ask at all, and the code goes
+    // the way it would have.
+    let code_channel = filled(&answered.code_channel)
+        .and_then(|asked| asked.parse::<models::messaging::Channel>().ok())
+        .filter(|way| *way != models::messaging::Channel::Mail);
+    if let Some(way) = code_channel {
+        answers.push(Answer::CodeChannel(way));
     }
     let attestation = filled(&answered.webauthn_register);
     let code = filled(&answered.totp_register);
@@ -293,6 +303,7 @@ pub async fn answer(
                 .phone_register
                 .as_deref()
                 .filter(|held| !held.is_empty()),
+            code_channel,
             kept: kept.as_deref(),
             new_password: renewed.as_ref(),
             declined: answered.enrolment_declined == Some(true),
@@ -300,6 +311,7 @@ pub async fn answer(
         &read_provenance(&request),
         sealing.sender.is_some(),
         sealing.texter.is_some(),
+        sealing.whatsapp.is_some(),
         ring.as_ref().map(|ring| browser::Sealing {
             ring,
             envelope: &sealing.envelope,
@@ -380,14 +392,31 @@ pub async fn answer(
             match step {
                 Step::Challenge {
                     execution_id,
-                    asks,
+                    mut asks,
                     sending,
                 } => {
-                    if let Some(outbound) = sending {
-                        outbound::delivery::deliver_outbound(
-                            &sealing, &tenancy, &context, *outbound,
-                        )
-                        .await;
+                    let carried = match sending {
+                        Some(outbound) => {
+                            outbound::delivery::deliver_outbound(
+                                &sealing, &tenancy, &context, *outbound,
+                            )
+                            .await
+                        }
+                        None => None,
+                    };
+                    // The way a code went, where WhatsApp refused it and the
+                    // gateway took it instead. Asking for the way that just
+                    // refused would be asking for nothing.
+                    if let (Some(carried), Some(shown)) = (carried, asks.as_mut())
+                        && shown
+                            .get("sent_by")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|meant| meant != carried.as_str())
+                    {
+                        shown["sent_by"] = serde_json::json!(carried.as_str());
+                        if let Some(fields) = shown.as_object_mut() {
+                            fields.remove("other_way");
+                        }
                     }
                     match spoken {
                         Spoken::Json => {
@@ -424,15 +453,30 @@ pub async fn answer(
                             answer.json(body)
                         }
                         // A key needs the script; a code needs only the
-                        // field; a link followed in the wrong browser needs
-                        // to be told so rather than shown either.
+                        // field, in the panel of the step that sent it and
+                        // in the words of the way it went; a link followed
+                        // in the wrong browser needs to be told so rather
+                        // than shown either.
                         Spoken::Form => shown(
                             &page,
                             match &asks {
                                 Some(asks) if asks.get("wrong_browser").is_some() => {
                                     "wrong-browser"
                                 }
-                                Some(asks) if asks.get("code_sent_to").is_some() => "texted",
+                                Some(asks) if asks.get("code_sent_to").is_some() => {
+                                    let over_whatsapp =
+                                        asks.get("sent_by").and_then(serde_json::Value::as_str)
+                                            == Some("whatsapp");
+                                    match (
+                                        execution_id == auth::login::enrolment::VERIFY_PHONE,
+                                        over_whatsapp,
+                                    ) {
+                                        (true, true) => "phone-code-over-whatsapp",
+                                        (true, false) => "phone-code",
+                                        (false, true) => "texted-over-whatsapp",
+                                        (false, false) => "texted",
+                                    }
+                                }
                                 Some(asks) if asks.get("ask_phone").is_some() => "phone",
                                 Some(_) => "key-needs-script",
                                 None => "code",

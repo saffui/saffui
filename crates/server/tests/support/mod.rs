@@ -386,9 +386,19 @@ pub fn sealing_carrying(
     sender: Option<Arc<dyn auth::messaging::Deliver>>,
     texter: Option<Arc<dyn auth::messaging::Texter>>,
 ) -> outbound::Sealing {
+    sealing_speaking(sender, texter, None)
+}
+
+/// The same, with WhatsApp beside the text.
+#[allow(dead_code, reason = "only the WhatsApp suite speaks it")]
+pub fn sealing_speaking(
+    sender: Option<Arc<dyn auth::messaging::Deliver>>,
+    texter: Option<Arc<dyn auth::messaging::Texter>>,
+    whatsapp: Option<Arc<dyn auth::messaging::WhatsAppSender>>,
+) -> outbound::Sealing {
     let shared: Arc<dyn CryptoProvider> = Arc::new(provider());
     let envelope = Envelope::new(Arc::clone(&shared), KEK).expect("an envelope");
-    outbound::Sealing::new(sender, texter, shared, envelope).expect("a sealing")
+    outbound::Sealing::new(sender, texter, whatsapp, shared, envelope).expect("a sealing")
 }
 
 /// What a count keeps of a name typed in `realm_id`, worked out here rather
@@ -491,6 +501,60 @@ impl auth::messaging::Texter for Textbox {
             return Err(auth::messaging::Undelivered::Refused);
         }
         self.held.lock().expect("the textbox").push(text.clone());
+        Ok(())
+    }
+}
+
+/// One code as Meta would have been asked to carry it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code, reason = "only the WhatsApp suite speaks it")]
+pub struct WhatsAppCode {
+    pub to: String,
+    pub code: String,
+    pub language: String,
+}
+
+/// Meta, as far as a suite needs it: the codes it was handed, or a refusal.
+#[derive(Default, Clone)]
+#[allow(dead_code, reason = "only the WhatsApp suite speaks it")]
+pub struct WhatsAppBox {
+    held: Arc<std::sync::Mutex<Vec<WhatsAppCode>>>,
+    refuses: bool,
+}
+
+#[allow(dead_code, reason = "only the WhatsApp suite speaks it")]
+impl WhatsAppBox {
+    pub fn held(&self) -> Vec<WhatsAppCode> {
+        self.held.lock().expect("the box").clone()
+    }
+
+    /// One that takes the code and refuses it, the way Meta answers a token
+    /// that lapsed or a template it never approved.
+    pub fn refusing() -> Self {
+        WhatsAppBox {
+            held: Arc::default(),
+            refuses: true,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl auth::messaging::WhatsAppSender for WhatsAppBox {
+    async fn send_code(
+        &self,
+        _settings: &models::entities::whatsapp::WhatsAppSettings,
+        to: &str,
+        code: &str,
+        language: &str,
+    ) -> Result<(), auth::messaging::Undelivered> {
+        if self.refuses {
+            return Err(auth::messaging::Undelivered::Refused);
+        }
+        self.held.lock().expect("the box").push(WhatsAppCode {
+            to: to.to_owned(),
+            code: code.to_owned(),
+            language: language.to_owned(),
+        });
         Ok(())
     }
 }

@@ -18,6 +18,8 @@ pub struct Sealing {
     pub sender: Option<std::sync::Arc<dyn auth::messaging::Deliver>>,
     /// What carries a text out, under the same rule.
     pub texter: Option<std::sync::Arc<dyn auth::messaging::Texter>>,
+    /// What carries a code over WhatsApp, under the same rule.
+    pub whatsapp: Option<std::sync::Arc<dyn auth::messaging::WhatsAppSender>>,
     pub provider: Arc<dyn CryptoProvider>,
     pub envelope: Arc<Envelope>,
     /// What every door counts a typed name under, derived from the envelope
@@ -31,6 +33,7 @@ impl Sealing {
     pub fn new(
         sender: Option<Arc<dyn auth::messaging::Deliver>>,
         texter: Option<Arc<dyn auth::messaging::Texter>>,
+        whatsapp: Option<Arc<dyn auth::messaging::WhatsAppSender>>,
         provider: Arc<dyn CryptoProvider>,
         envelope: Envelope,
     ) -> Result<Sealing, CryptoError> {
@@ -38,6 +41,7 @@ impl Sealing {
         Ok(Sealing {
             sender,
             texter,
+            whatsapp,
             provider,
             envelope: Arc::new(envelope),
             names,

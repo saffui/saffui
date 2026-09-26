@@ -1,7 +1,10 @@
 use models::entities::attributes;
 use models::entities::mail::MailSettings;
 use models::entities::realm::RealmModel;
+use models::entities::sms::SmsSettings;
 use models::entities::user::{UserModel, profile};
+use models::entities::whatsapp::WhatsAppSettings;
+use models::messaging::Channel;
 use store::tenancy::UnitOfWork;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,11 +75,23 @@ impl std::fmt::Debug for Outgoing {
 /// mail: apart from the sending, so nothing holds a transaction open across
 /// a conversation with a gateway.
 pub struct OutgoingText {
-    pub settings: models::entities::sms::SmsSettings,
+    /// The realm's gateway, when it holds one: how a link goes, and how a code
+    /// goes when WhatsApp was not the way chosen or refused it.
+    pub settings: Option<SmsSettings>,
     pub text: Text,
+    /// Tried first, when the code is to go by WhatsApp.
+    pub whatsapp: Option<WhatsAppCode>,
     /// Who it is for and what it is for, so the attempt can be recorded
     /// against them. Never the body.
     pub about: About,
+}
+
+/// A code on its way over WhatsApp. The approved template carries the words,
+/// so only the code and the language it is read in travel with it.
+pub struct WhatsAppCode {
+    pub settings: WhatsAppSettings,
+    pub code: String,
+    pub language: String,
 }
 
 impl std::fmt::Debug for OutgoingText {
@@ -122,10 +137,19 @@ pub struct Text {
 /// compile rather than fail to send.
 #[async_trait::async_trait]
 pub trait Texter: Send + Sync {
-    async fn text(
+    async fn text(&self, settings: &SmsSettings, text: &Text) -> Result<(), Undelivered>;
+}
+
+/// What carries a code over WhatsApp, apart from `Texter` for the reason SMS
+/// is apart from mail: its settings are Meta's and not a gateway's.
+#[async_trait::async_trait]
+pub trait WhatsAppSender: Send + Sync {
+    async fn send_code(
         &self,
-        settings: &models::entities::sms::SmsSettings,
-        text: &Text,
+        settings: &WhatsAppSettings,
+        to: &str,
+        code: &str,
+        language: &str,
     ) -> Result<(), Undelivered>;
 }
 
@@ -898,5 +922,271 @@ pub fn texted_link(
             Tongue::French => format!("Une demande de connexion vous attend : {link}"),
             Tongue::English => format!("A sign-in request awaits you: {link}"),
         },
+    }
+}
+
+/// What can carry a code in this realm, on this deployment: each is the
+/// realm's settings, present only where the deployment carries that way too.
+#[derive(Clone, Copy)]
+pub struct CodeCarriers<'a> {
+    pub sms: Option<&'a SmsSettings>,
+    pub whatsapp: Option<&'a WhatsAppSettings>,
+}
+
+impl CodeCarriers<'_> {
+    pub fn carries_any(&self) -> bool {
+        self.sms.is_some() || self.whatsapp.is_some()
+    }
+
+    /// Whether a person has a choice to make, and so one worth remembering.
+    pub fn carries_both(&self) -> bool {
+        self.sms.is_some() && self.whatsapp.is_some()
+    }
+
+    pub fn carries(&self, way: Channel) -> bool {
+        match way {
+            Channel::Sms => self.sms.is_some(),
+            Channel::WhatsApp => self.whatsapp.is_some(),
+            Channel::Mail => false,
+        }
+    }
+
+    /// Which way a code goes: the way the person just asked for where it is
+    /// open, the way they asked for this number before, WhatsApp where the
+    /// realm speaks it, SMS otherwise.
+    pub fn way_for(&self, asked: Option<Channel>, remembered: Option<Channel>) -> Option<Channel> {
+        asked
+            .filter(|way| self.carries(*way))
+            .or(remembered.filter(|way| self.carries(*way)))
+            .or(self.whatsapp.map(|_| Channel::WhatsApp))
+            .or(self.sms.map(|_| Channel::Sms))
+    }
+
+    /// The way a person could ask for instead of `way`, when there is one.
+    pub fn other_than(&self, way: Channel) -> Option<Channel> {
+        match way {
+            Channel::WhatsApp => self.sms.map(|_| Channel::Sms),
+            Channel::Sms => self.whatsapp.map(|_| Channel::WhatsApp),
+            Channel::Mail => None,
+        }
+    }
+}
+
+/// Which way this code goes, with the person's ask remembered when they made
+/// one between two open ways. Read and written in the transaction that mints
+/// the code, so a choice is only ever kept beside a code sent the way it
+/// names.
+pub async fn code_way(
+    transaction: &UnitOfWork,
+    user_id: &str,
+    recipient: &str,
+    asked: Option<Channel>,
+    carriers: CodeCarriers<'_>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Channel, ()> {
+    use store::providers::directory::code_channels;
+
+    let remembered = if carriers.carries_both() {
+        code_channels::chosen_for(transaction, user_id, recipient)
+            .await
+            .map_err(|_| ())?
+    } else {
+        None
+    };
+    let way = carriers.way_for(asked, remembered).ok_or(())?;
+    if carriers.carries_both() && asked == Some(way) && remembered != Some(way) {
+        code_channels::choose(transaction, user_id, recipient, way, now)
+            .await
+            .map_err(|_| ())?;
+    }
+    Ok(way)
+}
+
+/// A code for a phone, ready to go the way chosen for it: by WhatsApp with the
+/// realm's gateway behind it for a refusal, or by SMS alone. The text is
+/// written either way, since it is what the gateway sends when WhatsApp
+/// refuses.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one code"
+)]
+pub fn code_for_phone(
+    realm: &RealmModel,
+    kind: &str,
+    code: &str,
+    to: String,
+    reader: Option<&str>,
+    way: Channel,
+    carriers: CodeCarriers<'_>,
+    about: About,
+) -> OutgoingText {
+    let whatsapp = carriers
+        .whatsapp
+        .filter(|_| way == Channel::WhatsApp)
+        .and_then(|settings| {
+            whatsapp_language(settings, reader, realm.default_locale.as_deref()).map(|language| {
+                WhatsAppCode {
+                    settings: settings.duplicate(),
+                    code: code.to_owned(),
+                    language,
+                }
+            })
+        });
+    OutgoingText {
+        settings: carriers.sms.map(SmsSettings::duplicate),
+        text: Text {
+            to,
+            body: texted_words(realm, kind, code, reader),
+        },
+        whatsapp,
+        about,
+    }
+}
+
+/// The language a WhatsApp code is read in: one the template was approved in,
+/// picked the way a text's wording is, the person's first, then the realm's,
+/// then English, then the first by name. A tag is compared the way Meta
+/// spells it, so a person's `fr-CA` finds a template approved in `fr_CA`.
+pub fn whatsapp_language(
+    settings: &WhatsAppSettings,
+    reader: Option<&str>,
+    realm: Option<&str>,
+) -> Option<String> {
+    let approved: std::collections::HashMap<String, String> = settings
+        .languages
+        .iter()
+        .map(|held| (held.clone(), held.clone()))
+        .collect();
+    let spelled = |tag: &str| tag.replace('-', "_");
+    pick_wording(
+        &approved,
+        reader.map(spelled).as_deref(),
+        realm.map(spelled).as_deref(),
+    )
+    .cloned()
+}
+
+#[cfg(test)]
+mod ways {
+    use super::*;
+    use secrecy::SecretBox;
+
+    fn gateway() -> SmsSettings {
+        SmsSettings {
+            url: "https://sms.example.test/send".to_owned(),
+            sender: "saffui".to_owned(),
+            token: None,
+        }
+    }
+
+    fn business(languages: &[&str]) -> WhatsAppSettings {
+        WhatsAppSettings {
+            phone_number_id: "106540352242922".to_owned(),
+            template: "sign_in_code".to_owned(),
+            languages: languages.iter().map(|held| (*held).to_owned()).collect(),
+            token: SecretBox::new(Box::new("a-token".to_owned())),
+        }
+    }
+
+    /// Asked outranks remembered, remembered outranks WhatsApp, and a way the
+    /// realm or the deployment does not carry is never the answer.
+    #[test]
+    fn a_code_goes_the_way_asked_then_remembered_then_whatsapp() {
+        let (sms, whatsapp) = (gateway(), business(&["en_US"]));
+        let both = CodeCarriers {
+            sms: Some(&sms),
+            whatsapp: Some(&whatsapp),
+        };
+        assert_eq!(both.way_for(None, None), Some(Channel::WhatsApp));
+        assert_eq!(both.way_for(None, Some(Channel::Sms)), Some(Channel::Sms));
+        assert_eq!(
+            both.way_for(Some(Channel::WhatsApp), Some(Channel::Sms)),
+            Some(Channel::WhatsApp)
+        );
+        assert_eq!(both.other_than(Channel::WhatsApp), Some(Channel::Sms));
+        assert_eq!(both.other_than(Channel::Sms), Some(Channel::WhatsApp));
+
+        let texts_only = CodeCarriers {
+            sms: Some(&sms),
+            whatsapp: None,
+        };
+        assert_eq!(
+            texts_only.way_for(Some(Channel::WhatsApp), Some(Channel::WhatsApp)),
+            Some(Channel::Sms),
+            "a way nothing carries was chosen"
+        );
+        assert_eq!(texts_only.other_than(Channel::Sms), None);
+
+        let neither = CodeCarriers {
+            sms: None,
+            whatsapp: None,
+        };
+        assert_eq!(neither.way_for(Some(Channel::Sms), None), None);
+    }
+
+    /// A person's tag finds the template's own spelling, the region before
+    /// the bare language, and a person nobody named falls to the realm's.
+    #[test]
+    fn a_whatsapp_code_is_read_in_a_language_the_template_was_approved_in() {
+        let settings = business(&["en_US", "fr", "pt_BR", "pt_PT"]);
+        let picked =
+            |reader: Option<&str>, realm: Option<&str>| whatsapp_language(&settings, reader, realm);
+        assert_eq!(picked(Some("pt-BR"), None).as_deref(), Some("pt_BR"));
+        assert_eq!(picked(Some("fr-CA"), None).as_deref(), Some("fr"));
+        assert_eq!(picked(Some("de"), Some("fr")).as_deref(), Some("fr"));
+        assert_eq!(picked(None, None).as_deref(), Some("en_US"));
+    }
+
+    /// WhatsApp carries the code and the gateway stands behind it; SMS alone
+    /// carries no WhatsApp half at all.
+    #[test]
+    fn a_code_by_whatsapp_keeps_the_gateway_behind_it() {
+        let realm = models::entities::realm::RealmCreateModel {
+            name: "main".into(),
+            display_name: "Main".into(),
+            enabled: true,
+        }
+        .into_model(
+            "main".into(),
+            models::auditable::AuditableModel::from_creator("acme".into(), "test".into()),
+        );
+        let (sms, whatsapp) = (gateway(), business(&["en_US"]));
+        let both = CodeCarriers {
+            sms: Some(&sms),
+            whatsapp: Some(&whatsapp),
+        };
+        let about = || About {
+            user_id: "u".to_owned(),
+            purpose: "sms-otp".to_owned(),
+        };
+        let by_whatsapp = code_for_phone(
+            &realm,
+            "sms_otp",
+            "419302",
+            "+22890123456".to_owned(),
+            None,
+            Channel::WhatsApp,
+            both,
+            about(),
+        );
+        let leg = by_whatsapp.whatsapp.as_ref().expect("a WhatsApp half");
+        assert_eq!(
+            (leg.code.as_str(), leg.language.as_str()),
+            ("419302", "en_US")
+        );
+        assert!(by_whatsapp.settings.is_some(), "no gateway stood behind it");
+        assert!(by_whatsapp.text.body.contains("419302"));
+
+        let by_text = code_for_phone(
+            &realm,
+            "sms_otp",
+            "419302",
+            "+22890123456".to_owned(),
+            None,
+            Channel::Sms,
+            both,
+            about(),
+        );
+        assert!(by_text.whatsapp.is_none(), "a text went by WhatsApp too");
     }
 }

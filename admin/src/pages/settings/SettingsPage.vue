@@ -12,10 +12,12 @@ import {
   forgetMail,
   forgetSms,
   forgetUssd,
+  forgetWhatsApp,
   forgetRegistrationSecret,
   getMail,
   getSms,
   getUssd,
+  getWhatsApp,
   getRealmSettings,
   exportRealm,
   importPartialRealm,
@@ -29,9 +31,11 @@ import {
   rotateRegistrationSecret,
   sendTestMail,
   sendTestSms,
+  sendTestWhatsApp,
   writeMail,
   writeSms,
   writeUssd,
+  writeWhatsApp,
 } from "@/services/settings";
 import type { ImportCollisionPolicy, PartialImportReport } from "@/services/settings";
 import { deleteRealm } from "@/services/realms";
@@ -42,6 +46,7 @@ import type { RealmFeature } from "@/models/feature";
 import { ApiError } from "@/services/http";
 import type { MailBrief, MailRefusal, RelayReport } from "@/models/mail";
 import type { SmsBrief, SmsToday } from "@/models/sms";
+import type { WhatsAppBrief } from "@/models/whatsapp";
 import { OTP_DEFAULTS, OWASP_HASHING, SOURCE_THROTTLE_DEFAULTS } from "@/models/realm";
 import type { MailTemplate, PasswordPolicy, RealmSettings, RealmUpdate } from "@/models/realm";
 import type { ExecutionRow } from "@/models/flows";
@@ -53,6 +58,7 @@ import {
   smsPlaceholder,
   smsTemplateIsValid,
   smsWrite,
+  whatsAppWrite,
 } from "./messaging";
 import { localeMutation, localeSelection, toggleLocale } from "./localizationForm";
 import {
@@ -112,6 +118,7 @@ function markDirty() {
 const settings = ref<RealmSettings | null>(null);
 const mail = ref<MailBrief | null>(null);
 const sms = ref<SmsBrief | null>(null);
+const whatsApp = ref<WhatsAppBrief | null>(null);
 const ussdHeld = ref(false);
 const failed = ref("");
 const exporting = ref(false);
@@ -401,6 +408,11 @@ onMounted(async () => {
         sender: sms.value.sender,
         token: "",
       };
+    } catch (refused) {
+      if (!(refused instanceof ApiError && refused.status < 500)) throw refused;
+    }
+    try {
+      adoptWhatsApp(await getWhatsApp(realm.value));
     } catch (refused) {
       if (!(refused instanceof ApiError && refused.status < 500)) throw refused;
     }
@@ -916,6 +928,47 @@ async function testSms() {
 async function removeSms() {
   await forgetSms(realm.value);
   sms.value = null;
+}
+
+const whatsAppForm = ref({ phone_number_id: "", template: "", languages: "", token: "" });
+
+function adoptWhatsApp(held: WhatsAppBrief) {
+  whatsApp.value = held;
+  whatsAppForm.value = {
+    phone_number_id: held.phone_number_id,
+    template: held.template,
+    languages: held.languages.join(" "),
+    token: "",
+  };
+  if (!held.languages.includes(whatsAppTestLanguage.value)) {
+    whatsAppTestLanguage.value = held.languages[0] ?? "";
+  }
+}
+
+async function saveWhatsApp() {
+  await writeWhatsApp(realm.value, whatsAppWrite(whatsAppForm.value));
+  adoptWhatsApp(await getWhatsApp(realm.value));
+}
+
+async function removeWhatsApp() {
+  await forgetWhatsApp(realm.value);
+  whatsApp.value = null;
+  whatsAppForm.value = { phone_number_id: "", template: "", languages: "", token: "" };
+}
+
+/// One real code, 000000, through Meta. Green means the settings on screen
+/// actually carry codes.
+const whatsAppTestTo = ref("");
+const whatsAppTestLanguage = ref("");
+const whatsAppTestPassed = ref(false);
+async function testWhatsApp() {
+  whatsAppTestPassed.value = false;
+  try {
+    await sendTestWhatsApp(realm.value, whatsAppTestTo.value.trim(), whatsAppTestLanguage.value);
+    whatsAppTestPassed.value = true;
+  } catch {
+    // The toast carries the server's refusal.
+  }
 }
 
 const ussdSecret = ref("");
@@ -2309,6 +2362,102 @@ async function saveSmsTemplate() {
               </button>
               <span v-if="smsTestPassed" class="pb-1.5 text-[11px] text-ok">{{
                 say("sms-test-passed")
+              }}</span>
+            </form>
+          </div>
+
+          <form
+            class="mt-4 flex w-full flex-col gap-3 rounded-lg border border-border bg-surface p-4 text-xs"
+            @submit.prevent="saveWhatsApp"
+          >
+            <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("whatsapp-title") }} <AppHint name="whatsapp-help" />
+            </div>
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("whatsapp-number-id") }} <AppHint name="whatsapp-number-id-help" />
+                <input
+                  v-model="whatsAppForm.phone_number_id"
+                  class="sf-field mt-1 font-mono"
+                  inputmode="numeric"
+                  spellcheck="false"
+                  placeholder="106540352242922"
+                />
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("whatsapp-template") }} <AppHint name="whatsapp-template-help" />
+                <input
+                  v-model="whatsAppForm.template"
+                  class="sf-field mt-1 font-mono"
+                  spellcheck="false"
+                  placeholder="sign_in_code"
+                />
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("whatsapp-languages") }} <AppHint name="whatsapp-languages-help" />
+                <input
+                  v-model="whatsAppForm.languages"
+                  class="sf-field mt-1 font-mono"
+                  spellcheck="false"
+                  placeholder="en_US fr"
+                />
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("whatsapp-token") }} <AppHint name="whatsapp-token-help" />
+                <input
+                  v-model="whatsAppForm.token"
+                  type="password"
+                  :placeholder="whatsApp ? say('sms-token-kept') : ''"
+                  class="sf-field mt-1"
+                  autocomplete="new-password"
+                />
+              </label>
+            </div>
+            <div class="mt-1 flex items-center gap-2">
+              <button type="submit" class="sf-button sf-button-primary">
+                {{ say("settings-save") }}
+              </button>
+              <button
+                v-if="whatsApp"
+                type="button"
+                class="rounded-md border border-border px-3 py-1.5 text-xs text-danger hover:bg-surface-2"
+                @click="removeWhatsApp"
+              >
+                {{ say("sms-forget") }}
+              </button>
+            </div>
+          </form>
+
+          <div v-if="whatsApp" class="mt-4 w-full rounded-lg border border-border bg-surface p-4">
+            <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("whatsapp-test-title") }} <AppHint name="whatsapp-test-help" />
+            </div>
+            <form class="mt-2 flex flex-wrap items-end gap-2 text-xs" @submit.prevent="testWhatsApp">
+              <label class="flex-1 text-[11px] font-medium text-muted">
+                {{ say("sms-test-to") }}
+                <input
+                  v-model="whatsAppTestTo"
+                  class="sf-field mt-1 font-mono"
+                  spellcheck="false"
+                  placeholder="+22890123456"
+                />
+              </label>
+              <label class="text-[11px] font-medium text-muted">
+                {{ say("whatsapp-test-language") }}
+                <select v-model="whatsAppTestLanguage" class="sf-field mt-1 font-mono">
+                  <option v-for="language in whatsApp.languages" :key="language" :value="language">
+                    {{ language }}
+                  </option>
+                </select>
+              </label>
+              <button
+                type="submit"
+                class="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-surface-2"
+              >
+                {{ say("sms-test-send") }}
+              </button>
+              <span v-if="whatsAppTestPassed" class="pb-1.5 text-[11px] text-ok">{{
+                say("whatsapp-test-passed")
               }}</span>
             </form>
           </div>

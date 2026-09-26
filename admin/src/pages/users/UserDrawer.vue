@@ -127,6 +127,13 @@ function ago(at: string | null): string {
   return say("ago-years", { held: Math.floor(days / 365) });
 }
 
+/// Which way a receipt's attempt went, in the console's words.
+function wayOf(channel: "mail" | "sms" | "whatsapp"): string {
+  if (channel === "whatsapp") return say("user-message-by-whatsapp");
+  if (channel === "sms") return say("user-message-by-sms");
+  return say("user-message-by-mail");
+}
+
 function stamp(at: string | null): string {
   if (!at) return "";
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
@@ -1220,6 +1227,7 @@ function instant(epoch: number | null | undefined): string {
       <div v-for="delivery in messages" :key="delivery.delivery_id" class="mt-2 rounded-lg border border-border px-3 py-2.5 text-xs">
         <div class="flex items-center gap-2">
           <span class="font-mono text-[11.5px]">{{ delivery.purpose }}</span>
+          <span v-if="delivery.channel" class="text-[11px] text-muted">{{ wayOf(delivery.channel) }}</span>
           <span class="ml-auto" :class="delivery.delivered ? 'text-ok' : 'text-danger'">
             {{ delivery.delivered ? say("user-message-delivered") : say("user-message-failed") }}
           </span>

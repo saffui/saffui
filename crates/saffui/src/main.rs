@@ -1132,6 +1132,15 @@ fn plane(database: &pgcore::database::Database) -> Result<Plane, String> {
                     Some(Arc::new(outbound::senders::LoggedTexter))
                 }
             },
+            match config::messaging::WhatsAppSink::from_env().map_err(|e| e.to_string())? {
+                config::messaging::WhatsAppSink::None => None,
+                config::messaging::WhatsAppSink::Meta => {
+                    Some(Arc::new(outbound::senders::MetaWhatsApp::new(egress)))
+                }
+                config::messaging::WhatsAppSink::Logged => {
+                    Some(Arc::new(outbound::senders::LoggedWhatsApp))
+                }
+            },
             provider,
             envelope,
         )

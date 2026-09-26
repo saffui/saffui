@@ -1,6 +1,6 @@
 use crate::tenancy::UnitOfWork;
 use chrono::{DateTime, Utc};
-use models::messaging::Delivery;
+use models::messaging::{Channel, Delivery};
 
 use crate::error::{StoreError, StoreResult};
 
@@ -20,10 +20,10 @@ pub async fn record(transaction: &UnitOfWork, delivery: &Delivery) -> StoreResul
         .execute(
             "INSERT INTO message_deliveries \
                  (tenant, realm_id, delivery_id, user_id, purpose, recipient, \
-                  attempted_at, delivered, detail) \
+                  attempted_at, delivered, detail, channel) \
              SELECT current_setting('saffui.current_tenant', true), \
                     current_setting('saffui.current_realm', true), \
-                    $1, $2, $3, $4, $5, $6, $7",
+                    $1, $2, $3, $4, $5, $6, $7, $8",
             &[
                 &delivery.delivery_id,
                 &delivery.user_id,
@@ -32,6 +32,7 @@ pub async fn record(transaction: &UnitOfWork, delivery: &Delivery) -> StoreResul
                 &delivery.attempted_at,
                 &delivery.delivered,
                 &detail,
+                &delivery.channel.map(Channel::as_str),
             ],
         )
         .await
@@ -47,7 +48,8 @@ pub async fn of_user(
 ) -> StoreResult<Vec<Delivery>> {
     Ok(transaction
         .query(
-            "SELECT delivery_id, user_id, purpose, recipient, attempted_at, delivered, detail \
+            "SELECT delivery_id, user_id, purpose, recipient, attempted_at, delivered, detail, \
+                    channel \
              FROM message_deliveries WHERE user_id = $1 \
              ORDER BY attempted_at DESC LIMIT $2",
             &[&user_id, &limit],
@@ -63,6 +65,7 @@ pub async fn of_user(
             attempted_at: row.get("attempted_at"),
             delivered: row.get("delivered"),
             detail: row.get("detail"),
+            channel: channel_of(row.get("channel")),
         })
         .collect())
 }
@@ -78,11 +81,12 @@ pub async fn drop_older_than(transaction: &UnitOfWork, cut: DateTime<Utc>) -> St
         .map_err(|_| StoreError::Backend)
 }
 
-/// What this realm tried to send and could not, most recent first.
+/// What this realm tried to mail and could not, most recent first.
 ///
 /// The console shows these where mail is configured, because a relay that
 /// answers a probe and still refuses real mail is the case an operator cannot
 /// otherwise see: the settings are right and the messages are not arriving.
+/// An attempt from before receipts named their channel is shown as it was.
 pub async fn read_refusals_since(
     transaction: &UnitOfWork,
     since: DateTime<Utc>,
@@ -90,9 +94,11 @@ pub async fn read_refusals_since(
 ) -> StoreResult<Vec<Delivery>> {
     Ok(transaction
         .query(
-            "SELECT delivery_id, user_id, purpose, recipient, attempted_at, delivered, detail \
+            "SELECT delivery_id, user_id, purpose, recipient, attempted_at, delivered, detail, \
+                    channel \
              FROM message_deliveries \
              WHERE delivered = false AND attempted_at >= $1 \
+               AND (channel IS NULL OR channel = 'mail') \
              ORDER BY attempted_at DESC \
              LIMIT $2",
             &[&since, &max],
@@ -108,6 +114,13 @@ pub async fn read_refusals_since(
             attempted_at: row.get(4),
             delivered: row.get(5),
             detail: row.get(6),
+            channel: channel_of(row.get(7)),
         })
         .collect())
+}
+
+/// A stored channel, read back. The column admits only the spellings the
+/// enum holds, so anything else is a row this build did not write.
+fn channel_of(stored: Option<String>) -> Option<Channel> {
+    stored.and_then(|held| held.parse().ok())
 }

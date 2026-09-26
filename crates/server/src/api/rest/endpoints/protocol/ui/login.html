@@ -13,6 +13,8 @@
     <div id="realm-name"></div>
   </div>
   <h1>{{login-title}}</h1>
+  <i id="texted-over-whatsapp" hidden></i>
+  <i id="phone-code-over-whatsapp" hidden></i>
   <form id="login" method="post" novalidate>
     <input type="hidden" name="page_token" value="{token}">
     <div id="credentials">
@@ -50,10 +52,14 @@
       <p class="key-privacy">{{passkey-privacy}}</p>
     </div>
     <div id="texted" hidden>
-      <p><span id="texted-note"></span>{{sms-sent}}</p>
-      <label>{{sms-code}}
+      <p><span id="texted-note"></span><span id="texted-note-sms">{{sms-sent}}</span><span id="texted-note-whatsapp" hidden>{{whatsapp-sent}}</span></p>
+      <label><span id="texted-label-sms">{{sms-code}}</span><span id="texted-label-whatsapp" hidden>{{whatsapp-code}}</span>
         <input name="sms_otp" inputmode="numeric" autocomplete="one-time-code">
       </label>
+      <p id="texted-ways" {ways}>{{code-not-received}}
+        <button type="submit" name="code_channel" value="sms" id="texted-by-sms">{{code-by-sms}}</button>
+        <button type="submit" name="code_channel" value="whatsapp" id="texted-by-whatsapp">{{code-by-whatsapp}}</button>
+      </p>
     </div>
     <div id="phone" hidden>
       <p>{{phone-ask}}</p>
@@ -63,10 +69,14 @@
       </label>
     </div>
     <div id="phone-code" hidden>
-      <p><span id="phone-code-note"></span>{{sms-sent}}</p>
-      <label>{{sms-code}}
+      <p><span id="phone-code-note"></span><span id="phone-code-note-sms">{{sms-sent}}</span><span id="phone-code-note-whatsapp" hidden>{{whatsapp-sent}}</span></p>
+      <label><span id="phone-code-label-sms">{{sms-code}}</span><span id="phone-code-label-whatsapp" hidden>{{whatsapp-code}}</span>
         <input name="phone_register" inputmode="numeric" autocomplete="one-time-code">
       </label>
+      <p id="phone-code-ways" {ways}>{{code-not-received}}
+        <button type="submit" name="code_channel" value="sms" id="phone-code-by-sms">{{code-by-sms}}</button>
+        <button type="submit" name="code_channel" value="whatsapp" id="phone-code-by-whatsapp">{{code-by-whatsapp}}</button>
+      </p>
     </div>
     <div id="app" hidden>
       <h2>{{enroll-title}}</h2>

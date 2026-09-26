@@ -13,9 +13,10 @@ async fn asked(
     bearer: &str,
     body: Option<Value>,
 ) -> (StatusCode, Value) {
-    asked_under(
+    sent(
         plane,
         config::proxying::Proxying::none(),
+        false,
         method,
         path,
         bearer,
@@ -24,10 +25,25 @@ async fn asked(
     .await
 }
 
-/// The same, on a plane that stands behind the given proxies.
+/// The same, on a plane that stands behind the given proxies, sent the way
+/// they forward what reached them over https: from the peer they speak from,
+/// saying the scheme.
 async fn asked_under(
     plane: &Plane,
     hops: config::proxying::Proxying,
+    method: Method,
+    path: &str,
+    bearer: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    sent(plane, hops, true, method, path, bearer, body).await
+}
+
+/// One request to a plane mounted over `hops`, forwarded as https or not.
+async fn sent(
+    plane: &Plane,
+    hops: config::proxying::Proxying,
+    forwarded_https: bool,
     method: Method,
     path: &str,
     bearer: &str,
@@ -55,6 +71,11 @@ async fn asked_under(
         .method(method)
         .uri(path)
         .insert_header(("authorization", format!("Bearer {bearer}")));
+    if forwarded_https {
+        asking = asking
+            .peer_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 34567)))
+            .insert_header(("x-forwarded-proto", "https"));
+    }
     if let Some(body) = body {
         asking = asking.set_json(body);
     }
@@ -1192,7 +1213,8 @@ async fn a_realm_is_not_switched_off_from_its_own_console() {
 /// scheme is a fact only a named proxy can state. A deployment that named no
 /// scheme header and no peers would store the setting, show it, and never
 /// once consult it. The refusal names what to configure; a deployment that
-/// configured it is taken at its word.
+/// configured it is taken at its word, and so are its administrators: once
+/// it holds, turning it back off is asked over https like anything else.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn insisting_on_https_needs_a_proxy_that_can_say_the_scheme() {
@@ -1217,8 +1239,7 @@ async fn insisting_on_https_needs_a_proxy_that_can_say_the_scheme() {
         "the refusal did not name the configuration: {told}"
     );
 
-    // Configured: the same ask is taken, and turning it back off never needs
-    // the proxy at all.
+    // Configured: the same ask is taken.
     let behind = config::proxying::Proxying::behind_peers(
         1,
         config::proxying::ProxyHeader::XForwardedFor,
@@ -1227,7 +1248,7 @@ async fn insisting_on_https_needs_a_proxy_that_can_say_the_scheme() {
     .saying_the_scheme_in("x-forwarded-proto");
     let (status, told) = asked_under(
         &plane,
-        behind,
+        behind.clone(),
         Method::PUT,
         &own,
         &bearer,
@@ -1239,6 +1260,18 @@ async fn insisting_on_https_needs_a_proxy_that_can_say_the_scheme() {
 
     let (status, told) = asked(
         &plane,
+        Method::PUT,
+        &own,
+        &bearer,
+        Some(serde_json::json!({ "ssl_enforcement": "none" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{told}");
+    assert_eq!(told["error_code"], "transport.https_required", "{told}");
+
+    let (status, told) = asked_under(
+        &plane,
+        behind,
         Method::PUT,
         &own,
         &bearer,

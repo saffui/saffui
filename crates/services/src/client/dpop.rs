@@ -15,6 +15,10 @@ use crate::token::verifier_for;
 /// is not thereby an attack.
 const WINDOW: i64 = 60;
 
+/// How far apart the clocks judging a proof may sit: another instance's, and
+/// the database's, which sweeps a spent proof away once it has expired.
+const DRIFT: i64 = 60;
+
 /// The algorithms a proof may be signed at, for discovery to advertise.
 ///
 /// Asymmetric only. A shared secret proves possession of something this server
@@ -161,12 +165,15 @@ pub async fn proven(
     }
 
     // §11.1: accepted once. Recorded against the identifier its holder drew,
-    // hashed, and kept only as long as `iat` would still be in its window.
+    // hashed, and kept until `iat` has left the window on every clock that may
+    // read it, which for a proof from the future is later than a window past
+    // now.
     let jti = claim("jti").ok_or(Unproven::Refused)?;
+    let taken_until = now + Duration::seconds(instant - now.timestamp() + WINDOW);
     let spent = dpop::spend(
         transaction,
         &digest(provider, jti.as_bytes())?,
-        now + Duration::seconds(WINDOW),
+        taken_until + Duration::seconds(DRIFT),
     )
     .await
     .map_err(|_| Unproven::Unreadable)?;

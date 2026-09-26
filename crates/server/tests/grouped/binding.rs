@@ -326,6 +326,39 @@ async fn a_proof_is_accepted_once() {
     assert_eq!(told["error"], "invalid_dpop_proof", "{told}");
 }
 
+/// A proof whose `iat` runs ahead of the server's clock is taken until a
+/// window past that `iat`, so it stays spent until then and a drift beyond:
+/// kept only a window past the moment it was spent, a sweep in between would
+/// hand it back for a second use.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_proof_ahead_of_the_clock_stays_spent_through_its_window() {
+    let plane = Plane::with_actions(&[]).await;
+    let key = SigningKey::generate("holder");
+    let issued_at = now() + 50;
+    let proof = key.proof("POST", &at("token"), None, "running-ahead", issued_at);
+    let (status, told) = exchanged(&plane, &code_for(&plane).await, Some(&proof)).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+
+    let transaction = plane
+        .scoped(&store::tenancy::TenantContext::new(
+            support::TENANT,
+            support::REALM,
+        ))
+        .await;
+    let kept: chrono::DateTime<chrono::Utc> = transaction
+        .query_one("SELECT max(expires_at) FROM dpop_proofs", &[])
+        .await
+        .expect("the spent proofs")
+        .get(0);
+    assert!(
+        kept.timestamp() >= issued_at + 120,
+        "a proof taken until {} was kept spent until {} only",
+        issued_at + 60,
+        kept.timestamp()
+    );
+}
+
 /// A proof spent on a request that is then refused stays spent: presented
 /// again, it is the replay §11.1 stops, however the first request ended. At
 /// the token endpoint the refusal is an exchange naming no code; at the push,

@@ -116,6 +116,9 @@ export function opened({ rounds = [], fetching = true, doors = "", policy = [] }
     "recovery_codes_register",
     "new_password",
     "new_password_again",
+    "sms_otp",
+    "phone",
+    "phone_register",
   ]) {
     form[field] = new Element("input", field);
   }

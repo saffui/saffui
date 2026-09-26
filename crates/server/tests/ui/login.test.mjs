@@ -745,3 +745,105 @@ test("a factor the realm requires cannot be declined", async () => {
   await page.signIn();
   assert.equal(page.element("enroll-later").hidden, true, "a required factor offered a way out");
 });
+
+// The defect these exist for: the texted panels had their fields and no line
+// carrying them, so a browser running the script sent every round without the
+// code, and a sign-in by text or a phone's proof could never finish there.
+test("a texted code rides the round that answers it", async () => {
+  const page = opened({
+    rounds: [
+      { told: { status: "challenge", execution: "sms-otp", asks: { code_sent_to: "…42" } } },
+      { told: { status: "admitted", redirect_to: "https://app.example/cb" } },
+    ],
+  });
+  await page.signIn();
+
+  assert.equal(page.element("texted").hidden, false);
+  assert.equal(page.element("credentials").hidden, true);
+  assert.equal(page.element("texted-note").textContent, "…42");
+  page.form.sms_otp.value = "419302";
+  page.form.fire("submit");
+  await page.settle();
+
+  assert.equal(page.sent[1].body.sms_otp, "419302", "the typed code never left the page");
+  assert.deepEqual(page.went, ["https://app.example/cb"]);
+});
+
+test("a phone offered for proof rides its round, and its code the next alone", async () => {
+  const page = opened({
+    rounds: [
+      { told: { status: "challenge", execution: "verify-phone", asks: { ask_phone: true } } },
+      { told: { status: "challenge", execution: "verify-phone", asks: { code_sent_to: "…56" } } },
+      { told: { status: "admitted", redirect_to: "https://app.example/cb" } },
+    ],
+  });
+  await page.signIn();
+  assert.equal(page.element("phone").hidden, false);
+
+  page.form.phone.value = "+22890123456";
+  page.form.fire("submit");
+  await page.settle();
+  assert.equal(page.sent[1].body.phone, "+22890123456", "the number never left the page");
+  assert.equal(page.element("phone-code").hidden, false);
+  assert.equal(page.element("phone-code-note").textContent, "…56");
+
+  page.form.phone_register.value = "419302";
+  page.form.fire("submit");
+  await page.settle();
+  assert.equal(page.sent[2].body.phone_register, "419302", "the code never left the page");
+  assert.equal(page.sent[2].body.phone, undefined, "the number was offered again beside its code");
+});
+
+test("a refusal forgets a texted code with the password", async () => {
+  const page = opened({
+    rounds: [
+      { told: { status: "challenge", execution: "sms-otp", asks: { code_sent_to: "…42" } } },
+      { told: { status: "refused" } },
+      { told: { status: "challenge" } },
+    ],
+  });
+  await page.signIn();
+  page.form.sms_otp.value = "419302";
+  page.form.fire("submit");
+  await page.settle();
+
+  assert.equal(page.form.sms_otp.value, "", "the code stayed in its field");
+  await page.signIn();
+  assert.equal(page.sent[2].body.sms_otp, undefined, "a refused code rode the next attempt");
+});
+
+test("a refusal forgets a phone and the code it was sent", async () => {
+  const offered = opened({
+    rounds: [
+      { told: { status: "challenge", execution: "verify-phone", asks: { ask_phone: true } } },
+      { told: { status: "refused" } },
+      { told: { status: "challenge" } },
+    ],
+  });
+  await offered.signIn();
+  offered.form.phone.value = "+22890123456";
+  offered.form.fire("submit");
+  await offered.settle();
+  assert.equal(offered.form.phone.value, "", "the number stayed in its field");
+  await offered.signIn();
+  assert.equal(offered.sent[2].body.phone, undefined, "a refused number rode the next attempt");
+
+  const coded = opened({
+    rounds: [
+      { told: { status: "challenge", execution: "verify-phone", asks: { ask_phone: true } } },
+      { told: { status: "challenge", execution: "verify-phone", asks: { code_sent_to: "…56" } } },
+      { told: { status: "refused" } },
+      { told: { status: "challenge" } },
+    ],
+  });
+  await coded.signIn();
+  coded.form.phone.value = "+22890123456";
+  coded.form.fire("submit");
+  await coded.settle();
+  coded.form.phone_register.value = "419302";
+  coded.form.fire("submit");
+  await coded.settle();
+  assert.equal(coded.form.phone_register.value, "", "the code stayed in its field");
+  await coded.signIn();
+  assert.equal(coded.sent[3].body.phone_register, undefined, "a refused code rode the next attempt");
+});

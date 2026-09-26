@@ -1,8 +1,7 @@
 use chrono::{DateTime, TimeZone, Utc};
 use crypto::provider::{CryptoProvider, HashAlg};
 use crypto::x509::{
-    CertifiedKey, is_authority, read_certificate_facts, read_pem_certificates, subject_dn,
-    subject_key_identifier,
+    is_authority, read_certificate_facts, read_pem_certificates, subject_dn, subject_key_identifier,
 };
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
 use models::entities::trust_anchors::{TrustAnchor, TrustAnchorRole};
@@ -23,8 +22,8 @@ pub enum Undepositable {
         "this certificate is not a certification authority's: deposit the authority that issued it"
     )]
     NotAnAuthority,
-    #[error("the authority's RSA key is shorter than 2048 bits")]
-    WeakKey,
+    #[error("the authority's key is not trusted here: {0}")]
+    WeakKey(&'static str),
     #[error("this certificate has expired")]
     Expired,
     #[error("this authority is already trusted for that")]
@@ -67,8 +66,8 @@ pub async fn deposit(
         return Err(Undepositable::NotAnAuthority);
     }
     let facts = read_certificate_facts(&certificate).ok_or(Undepositable::NotOneCertificate)?;
-    if matches!(facts.key, CertifiedKey::Rsa { bits } if bits < 2048) {
-        return Err(Undepositable::WeakKey);
+    if let Some(weakness) = facts.key.weakness() {
+        return Err(Undepositable::WeakKey(weakness));
     }
     let not_after = Utc
         .timestamp_opt(facts.not_after, 0)

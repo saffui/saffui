@@ -3,6 +3,8 @@ use super::support;
 use super::support::Plane;
 use actix_web::http::{Method, StatusCode};
 use crypto::jose::jwk::KeyPair;
+use crypto::jose::jwk::alg::ec::{EcCurve, EcKeyPair};
+use crypto::jose::jwk::alg::ed::{EdCurve, EdKeyPair};
 use crypto::jose::jwk::alg::rsa::RsaKeyPair;
 use crypto::provider::{PrivateKey, PublicKey};
 use crypto::x509::{Issuance, issue_authority_certificate, issue_certificate};
@@ -68,6 +70,23 @@ fn certificate(key: &RsaKeyPair, name: &str, serial: u8, authority: bool, until:
     } else {
         issue_certificate(&issuance)
     }
+    .expect("a certificate issued by the crypto crate");
+    support::pem_certificate(&der)
+}
+
+/// An authority's certificate for `subject`'s key, issued under `issuer`'s
+/// and named like it, PEM encoded: how a key the crate does not sign with is
+/// certified here.
+fn authority_holding(subject: &dyn KeyPair, issuer: &RsaKeyPair) -> String {
+    let der = issue_authority_certificate(&Issuance {
+        subject_key: &PublicKey::from_der(subject.to_der_public_key()),
+        subject_name: "Authority",
+        issuer_key: &PrivateKey::from_der(issuer.to_der_private_key()),
+        issuer_name: "Authority",
+        serial: &[1],
+        not_before: FROM,
+        not_after: UNTIL,
+    })
     .expect("a certificate issued by the crypto crate");
     support::pem_certificate(&der)
 }
@@ -242,6 +261,53 @@ async fn what_could_not_serve_as_an_authority_is_refused_in_words() {
         json!([]),
         "a refused deposit was kept: {listed}"
     );
+}
+
+/// An authority holds a key this build verifies: one on a curve JOSE names is
+/// trusted, one on another curve or of another kind is refused in words.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_authority_holds_a_key_this_build_verifies() {
+    let plane = Plane::with_actions(&[AdminAction::RealmRead, AdminAction::RealmWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let anchors = format!("/admin/realms/{REALM}/trust-anchors");
+    let issuer = RsaKeyPair::generate(2048).expect("an RSA key");
+    let unnamed = EcKeyPair::generate(EcCurve::Secp256k1).expect("a secp256k1 key");
+    let edwards = EdKeyPair::generate(EdCurve::Ed25519).expect("an Ed25519 key");
+    let named = EcKeyPair::generate(EcCurve::P256).expect("a P-256 key");
+
+    for (subject, said) in [
+        (
+            &unnamed as &dyn KeyPair,
+            "a curve other than P-256, P-384 or P-521",
+        ),
+        (&edwards, "a key of a kind not verified here"),
+    ] {
+        let (status, told) = asked(
+            &plane,
+            Method::POST,
+            &anchors,
+            &bearer,
+            Some(deposit_body(&authority_holding(subject, &issuer))),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{said}: {told}");
+        assert!(
+            told["message"]
+                .as_str()
+                .is_some_and(|held| held.contains(said)),
+            "{said}: refused in other words: {told}"
+        );
+    }
+    let (status, made) = asked(
+        &plane,
+        Method::POST,
+        &anchors,
+        &bearer,
+        Some(deposit_body(&authority_holding(&named, &issuer))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
 }
 
 /// A realm trusts at most fifty authorities for one purpose, which bounds

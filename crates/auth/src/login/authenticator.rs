@@ -221,7 +221,7 @@ pub enum Answer {
     /// spaces a person copies between the digits are theirs to get wrong.
     SmsOtp(String),
     /// The way the person asked their code to come instead of the way it went.
-    CodeChannel(models::messaging::Channel),
+    CodeChannel(Channel),
 }
 
 /// Say whether an answer satisfies one authenticator.

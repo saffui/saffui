@@ -495,6 +495,34 @@ async fn a_deployment_that_does_not_speak_to_meta_texts() {
     );
 }
 
+/// The subject owes the proof of an unproven phone, and reads French.
+async fn owe_a_proof(plane: &Plane) {
+    let transaction = plane.scoped(&within()).await;
+    let mut subject = store::providers::directory::users::load(&transaction, support::SUBJECT)
+        .await
+        .expect("the users table")
+        .expect("a planted subject");
+    subject.required_actions = Some(vec![RequiredAction::VerifyPhone]);
+    let mut attributes = subject.attributes.unwrap_or_default();
+    attributes.insert(
+        models::entities::user::profile::LOCALE.to_owned(),
+        models::entities::attributes::AttributeValue::Str("fr-FR".to_owned()),
+    );
+    subject.attributes = Some(attributes);
+    store::providers::directory::users::update(&transaction, &subject)
+        .await
+        .expect("the instruction kept");
+    store::providers::directory::users::set_phone(
+        &transaction,
+        support::SUBJECT,
+        Some(PHONE),
+        false,
+    )
+    .await
+    .expect("the phone unproven");
+    transaction.commit().await.expect("the arrangement kept");
+}
+
 /// A phone is proven over WhatsApp the way it is by text, in the person's
 /// language where the template speaks it.
 #[tokio::test]
@@ -502,32 +530,7 @@ async fn a_deployment_that_does_not_speak_to_meta_texts() {
 async fn a_phone_is_proven_over_whatsapp() {
     let plane = Plane::with_actions(&[]).await;
     arrange(&plane, true).await;
-    {
-        let transaction = plane.scoped(&within()).await;
-        let mut subject = store::providers::directory::users::load(&transaction, support::SUBJECT)
-            .await
-            .expect("the users table")
-            .expect("a planted subject");
-        subject.required_actions = Some(vec![RequiredAction::VerifyPhone]);
-        let mut attributes = subject.attributes.unwrap_or_default();
-        attributes.insert(
-            models::entities::user::profile::LOCALE.to_owned(),
-            models::entities::attributes::AttributeValue::Str("fr-FR".to_owned()),
-        );
-        subject.attributes = Some(attributes);
-        store::providers::directory::users::update(&transaction, &subject)
-            .await
-            .expect("the instruction kept");
-        store::providers::directory::users::set_phone(
-            &transaction,
-            support::SUBJECT,
-            Some(PHONE),
-            false,
-        )
-        .await
-        .expect("the phone unproven");
-        transaction.commit().await.expect("the arrangement kept");
-    }
+    owe_a_proof(&plane).await;
     let (textbox, whatsapp) = (Textbox::default(), WhatsAppBox::default());
 
     let login = Login::open(&plane, &textbox, Some(&whatsapp)).await;
@@ -623,4 +626,29 @@ async fn the_page_offers_the_other_way_only_where_both_are_carried() {
         "a way the deployment does not carry was offered"
     );
     assert!(!both.contains("{ways}") && !texts_only.contains("{ways}"));
+}
+
+/// The phone's proof takes an ask for a way nothing carries as no ask at all,
+/// as the sign-in code does.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_proofs_ask_for_a_way_nothing_carries_sends_nothing() {
+    let plane = Plane::with_actions(&[]).await;
+    arrange(&plane, true).await;
+    owe_a_proof(&plane).await;
+    let textbox = Textbox::default();
+
+    let login = Login::open(&plane, &textbox, None).await;
+    let (_, told) = login.answer(serde_json::json!({})).await;
+    assert_eq!(told["execution"], "verify-phone", "{told}");
+    assert_eq!(told["asks"]["sent_by"], "sms", "{told}");
+    let (_, told) = login
+        .answer(serde_json::json!({ "code_channel": "whatsapp" }))
+        .await;
+    assert_eq!(told["asks"]["sent_by"], "sms", "{told}");
+    assert_eq!(
+        textbox.held().len(),
+        1,
+        "an ask for a way nothing carries sent another proving code"
+    );
 }

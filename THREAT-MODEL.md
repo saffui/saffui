@@ -158,9 +158,17 @@ matters: the transport is judged before the token. A request the proxy vouches
 for as https passes without a read, and anything else pays one realm read. Where
 a realm asks for https from outside only, the address judged is the one the
 deployment believes, and the private ranges are spelled out rather than inferred
-(`crates/server/src/middleware/transport.rs:36`, `:93`). A rule the database
+(`crates/server/src/middleware/transport.rs:41`, `:127`). A rule the database
 fails to hand over, for want of a connection or on the way to the row, is
-answered 503 rather than taken as leave to serve in the clear (`:58`, `:64`).
+answered 503 rather than taken as leave to serve in the clear (`:52`, `:58`).
+The admin plane and the decision door name no realm where the transport can read
+one, so each holds its caller to the rule of the realm that minted the token
+instead, once the token has verified: the only realm either can act in, and one
+the token proves rather than merely names. The provisioning door is held the
+same way, by the admin guard it shares
+(`crates/server/src/middleware/admin_guard.rs:192`,
+`crates/server/src/middleware/bearer.rs:65`,
+`crates/server/src/middleware/transport.rs:68`).
 
 ### TB-3, keys and secrets
 
@@ -247,7 +255,7 @@ answers it, or the word that says nothing does.
 
 | Id | Threat | Agent | What answers it |
 |---|---|---|---|
-| T-EDGE-1 | Anything asked as fast as the caller likes: credential stuffing, enumeration by volume, resource exhaustion | TA-1 | **No request rate is bounded inside this product.** Failed passwords, and short codes typed at the device page, are counted per address and turn that address away (T-LOG-3, T-LOG-13); the catalogue's too many requests answer is returned only to a password change turned away (`crates/commons/src/error.rs:51`, `crates/server/src/api/rest/endpoints/account.rs:193`). Volume from many addresses, and every request that is neither a password nor a short code, is A.EDGE's |
+| T-EDGE-1 | Anything asked as fast as the caller likes: credential stuffing, enumeration by volume, resource exhaustion | TA-1 | **No request rate is bounded inside this product.** Failed passwords, and short codes typed at the device page, are counted per address and turn that address away (T-LOG-3, T-LOG-13); the catalogue's too many requests answer is returned only to a password change turned away (`crates/commons/src/error.rs:52`, `crates/server/src/api/rest/endpoints/account.rs:193`). Volume from many addresses, and every request that is neither a password nor a short code, is A.EDGE's |
 | T-EDGE-2 | A body large enough to cost the server more than it costs the caller | TA-1 | Ceilings stated per scope rather than inherited (`crates/server/src/api/config.rs:46`) |
 | T-EDGE-3 | A plain request read as a secure one, or a caller's address believed from the caller | TA-1, TA-6 | The scheme and the certificate are read only from a named peer, and a deployment that named none gets nothing rather than everyone's (`crates/config/src/proxying.rs:201`); the address is counted from the right (`:276`) |
 | T-EDGE-4 | The server made to fetch inside its own network on somebody's say so | TA-3, TA-4 | One builder for every outbound HTTP call, scheme by policy and address by resolver, no redirect followed (`crates/outbound/src/egress.rs:104`), including the sinks a client's own registration names (`crates/server/src/api/rest/endpoints/protocol/backchannel.rs:20`, `crates/server/src/api/rest/endpoints/protocol/ciba.rs:639`); the relay a realm names for its mail is weighed under the same policy before it is dialled, the relay probe included (`crates/outbound/src/smtp.rs:164`) |
@@ -317,6 +325,7 @@ answers it, or the word that says nothing does.
 | T-ADM-5 | The record of what an administrator did, rewritten | TA-3, TA-7 | Only the database function writes entries, the chain is serialised, and the plane serves verification and anchors (`crates/store/migrations/V011__audit_chain.sql:130`) |
 | T-ADM-6 | Refused attempts leaving no trace | TA-3 | **Nothing.** A knock the guard turns away is not journalled; it is a log line only (`crates/server/src/middleware/admin_audit.rs:93`) |
 | T-ADM-7 | A realm restored or cloned from a document running on defaults, its password policy, its brakes and its lifespans left behind, or a document written by hand to set what the plane would refuse | TA-3 | The import writes every setting the document carries, and weighs the realm as it landed by the checks a settings edit meets before anything commits, so a refusal leaves no realm behind; the secret a protected registration stands on never travels, and such a realm lands closed to registration (`crates/services/src/admin/portability.rs:1715`, `:1702`, `crates/server/src/api/rest/endpoints/admin/portability.rs:112`, `crates/server/src/api/rest/endpoints/admin/realms.rs:405`) |
+| T-ADM-8 | An administrator's token, and what the plane answers to it, carried in the clear to a realm that insists on https | TA-6 | The rule of the realm that minted the token is read once the token has verified, at the admin plane, the provisioning door and the decision door alike, and a request the named proxy did not vouch for as https is refused wherever that rule says so, in words: `transport.https_required` (`crates/server/src/middleware/admin_guard.rs:192`, `crates/server/src/middleware/bearer.rs:65`, `crates/server/src/middleware/transport.rs:68`) |
 
 ### Tenancy, CJ-2
 
@@ -416,7 +425,6 @@ tree; none of them is written here as a recipe.
 | R-5 | The stated 8 KiB ceiling on the protocol scope is hung on forms only | A JSON body on that scope falls back to the framework's own default |
 | R-6 | Three endpoints are registered outside every scope | They take neither a scope ceiling nor the transport guard |
 | R-7 | A knock the admin guard refuses is not journalled | Repeated refusals are a log line and nothing an auditor reads |
-| R-8 | The admin scope does not wrap the transport guard, while the provisioning and account scopes do | A realm's insistence on https is not read for that scope |
 | R-9 | One capability authorizes both sides of the four eyes rule | Two holders satisfy it; one holder cannot self approve |
 | R-10 | Anchoring is an assertion the operator makes | The server publishes nothing itself, so the bound on a rewrite is only as good as where the operator published |
 | R-11 | No release pipeline: no SBOM, no signature, no provenance, no fuzzing, and no lint confining unsafe code | T-SUP-3, and unsafe is confined by convention rather than mechanically |
@@ -430,6 +438,10 @@ R-13 is closed the same way, by the slice that keyed the name digest: a typed
 name is kept as a MAC under a key derived from the KEK, where it was a SHA-256
 anybody could recompute from a guess, and what used to be that row is T-LOG-6
 above.
+
+R-8 is closed the same way: the admin plane and the decision door keep the
+https rule of the realm that minted the caller's token, and what used to be
+that row is T-ADM-8 above.
 
 ## Keeping this true
 

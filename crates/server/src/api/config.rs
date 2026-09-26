@@ -300,7 +300,6 @@ fn admin_scope(
     // The provisioning door: the same guard, its own root, and a JSON reader
     // that accepts the protocol's own content type.
     let mut scim = web::scope("/realms/{realm}/scim/v2")
-        .wrap(crate::middleware::transport::SecuredTransport)
         .app_data(
             web::JsonConfig::default()
                 .limit(ADMIN_BODY)
@@ -328,7 +327,8 @@ fn admin_scope(
     (scope, scim)
 }
 
-/// The point of application: only that the token stood up.
+/// The point of application: only that the token stood up, over a connection
+/// its realm accepts.
 ///
 /// What may be done is the question being asked here, so the transport does not
 /// settle it first.

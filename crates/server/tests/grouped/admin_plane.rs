@@ -1374,6 +1374,119 @@ async fn a_person_keeps_an_address_a_second_account_shares() {
     );
 }
 
+/// The doors behind the admin guard and the decision door keep the https rule
+/// of the realm that minted the caller's token: a plain request is turned away
+/// in words and the same one vouched https by the named proxy is not, a token
+/// that does not verify is told so before any realm's rule is read, and
+/// `external` spares a private caller and not a public one.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_token_realm_holds_the_guarded_doors_to_https() {
+    let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
+    let bearer = plane.token(&claims());
+    let forged = SigningKey::generate(KID).sign(&claims(), KID);
+    let mut behind_proxy = mounted(&plane, &policy());
+    behind_proxy.hops = config::proxying::Proxying::behind_peers(
+        1,
+        config::proxying::ProxyHeader::XForwardedFor,
+        vec![config::proxying::Peer::parse("127.0.0.1").expect("an address")],
+    )
+    .saying_the_scheme_in("x-forwarded-proto");
+    let app = test::init_service(App::new().configure(register(&behind_proxy))).await;
+    let asked = |door: &(Method, String), token: &str, headers: &[(&'static str, &'static str)]| {
+        let (method, path) = door;
+        let mut request = test::TestRequest::with_uri(path)
+            .method(method.clone())
+            .peer_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 34567)))
+            .insert_header(("authorization", format!("Bearer {token}")));
+        if *method == Method::POST {
+            request = request.set_json(serde_json::json!({}));
+        }
+        for header in headers {
+            request = request.insert_header(*header);
+        }
+        request.to_request()
+    };
+    let answered = |request| {
+        let app = &app;
+        async move {
+            let response = test::call_service(app, request).await;
+            let status = response.status();
+            let said =
+                String::from_utf8(test::read_body(response).await.to_vec()).unwrap_or_default();
+            (status, said.contains("transport.https_required"), said)
+        }
+    };
+    let insist = |rule: models::entities::realm::SslEnforcement| {
+        let plane = &plane;
+        async move {
+            let transaction = plane
+                .scoped(&TenantContext::new(support::TENANT, REALM))
+                .await;
+            let mut realm = store::providers::realms::load(&transaction, REALM)
+                .await
+                .expect("the realms table")
+                .expect("a planted realm");
+            realm.ssl_enforcement = Some(rule);
+            store::providers::realms::update(&transaction, &realm)
+                .await
+                .expect("the realms table");
+            transaction.commit().await.expect("the rule kept");
+        }
+    };
+    let realm_read = (Method::GET, format!("/admin/realms/{REALM}"));
+    let doors = [
+        realm_read.clone(),
+        (Method::GET, format!("/realms/{REALM}/scim/v2/Users")),
+        (Method::POST, "/authz/decision".to_owned()),
+    ];
+
+    insist(models::entities::realm::SslEnforcement::Always).await;
+    for door in &doors {
+        let path = &door.1;
+        let (status, refused_in_words, said) = answered(asked(door, &bearer, &[])).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{path}: a plain request was answered: {said}"
+        );
+        assert!(refused_in_words, "{path}: refused in other words: {said}");
+
+        let vouched = [("x-forwarded-proto", "https")];
+        let (_, refused_in_words, said) = answered(asked(door, &bearer, &vouched)).await;
+        assert!(
+            !refused_in_words,
+            "{path}: a vouched https request was turned away: {said}"
+        );
+
+        let (status, _, said) = answered(asked(door, &forged, &[])).await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{path}: a forged token was judged by the rule of the realm it names: {said}"
+        );
+    }
+
+    insist(models::entities::realm::SslEnforcement::ExternalOnly).await;
+    let (status, _, said) = answered(asked(&realm_read, &bearer, &[])).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a private caller was refused under external: {said}"
+    );
+    let public = [("x-forwarded-for", "198.51.100.7")];
+    let (status, refused_in_words, said) = answered(asked(&realm_read, &bearer, &public)).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a public caller passed under external: {said}"
+    );
+    assert!(
+        refused_in_words,
+        "a public caller was refused in other words: {said}"
+    );
+}
+
 /// Reading people is not writing them: the table charges the two apart.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]

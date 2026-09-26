@@ -187,6 +187,17 @@ async fn establish(
         return Err(refused(Refusal::WrongRealm));
     }
 
+    // The realm's word on plain connections holds here as at its protocol
+    // doors: an administrator's token is the last one to send in the clear.
+    if crate::middleware::transport::token_realm_refuses_the_clear(request, &transaction)
+        .await
+        .map_err(report_store_failure)?
+    {
+        return Err(commons::http::ApiError::new(
+            commons::error::ErrorCode::ServedOverHttps,
+        ));
+    }
+
     let held = capabilities(&transaction, &established).await?;
 
     let required = request

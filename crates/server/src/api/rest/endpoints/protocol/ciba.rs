@@ -747,8 +747,10 @@ async fn doorbell_text(
         origin.as_str(),
         realm.name,
     );
+    // A link, which an authentication template cannot carry: the doorbell
+    // rings by SMS whatever else the realm speaks.
     Some(auth::messaging::OutgoingText {
-        settings,
+        settings: Some(settings),
         text: auth::messaging::Text {
             to: phone.to_owned(),
             body: auth::messaging::texted_link(
@@ -758,6 +760,7 @@ async fn doorbell_text(
                 auth::messaging::tongue_spoken_by(person),
             ),
         },
+        whatsapp: None,
         about: auth::messaging::About {
             user_id: person.user_id.clone(),
             purpose: "ciba-doorbell".to_owned(),

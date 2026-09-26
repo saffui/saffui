@@ -17,3 +17,4 @@ pub mod realm;
 pub mod sms;
 pub mod tenant;
 pub mod user;
+pub mod whatsapp;

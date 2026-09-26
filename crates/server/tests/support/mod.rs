@@ -386,9 +386,19 @@ pub fn sealing_carrying(
     sender: Option<Arc<dyn auth::messaging::Deliver>>,
     texter: Option<Arc<dyn auth::messaging::Texter>>,
 ) -> outbound::Sealing {
+    sealing_speaking(sender, texter, None)
+}
+
+/// The same, with WhatsApp beside the text.
+#[allow(dead_code, reason = "only the WhatsApp suite speaks it")]
+pub fn sealing_speaking(
+    sender: Option<Arc<dyn auth::messaging::Deliver>>,
+    texter: Option<Arc<dyn auth::messaging::Texter>>,
+    whatsapp: Option<Arc<dyn auth::messaging::WhatsAppSender>>,
+) -> outbound::Sealing {
     let shared: Arc<dyn CryptoProvider> = Arc::new(provider());
     let envelope = Envelope::new(Arc::clone(&shared), KEK).expect("an envelope");
-    outbound::Sealing::new(sender, texter, shared, envelope).expect("a sealing")
+    outbound::Sealing::new(sender, texter, whatsapp, shared, envelope).expect("a sealing")
 }
 
 /// What a count keeps of a name typed in `realm_id`, worked out here rather

@@ -9,6 +9,7 @@ pub mod realm_keys;
 pub mod sms;
 pub mod tenants;
 pub mod ussd;
+pub mod whatsapp;
 
 use crate::tenancy::UnitOfWork;
 use models::entities::realm::{ClientRegistration, RealmModel, RegistrationBounds, SslEnforcement};

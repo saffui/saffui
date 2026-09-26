@@ -12,6 +12,7 @@ use models::entities::credentials::{CredentialType, OtpCredentialData, OtpParame
 use models::entities::mail::MailSettings;
 use models::entities::realm::RealmModel;
 use models::entities::user::UserModel;
+use models::messaging::Channel;
 use secrecy::{ExposeSecret, SecretBox};
 use store::providers::directory::{credentials, one_time_tokens, users};
 use store::tenancy::UnitOfWork;
@@ -219,6 +220,8 @@ pub enum Answer {
     /// The texted code, as typed. Normalised where it is checked, so the
     /// spaces a person copies between the digits are theirs to get wrong.
     SmsOtp(String),
+    /// The way the person asked their code to come instead of the way it went.
+    CodeChannel(models::messaging::Channel),
 }
 
 /// Say whether an answer satisfies one authenticator.
@@ -342,7 +345,21 @@ pub struct Posting<'a> {
     /// deployment carries any.
     pub sms: Option<&'a models::entities::sms::SmsSettings>,
     pub can_text: bool,
+    /// And for codes over WhatsApp: the realm's business number, and whether
+    /// the deployment speaks to Meta.
+    pub whatsapp: Option<&'a models::entities::whatsapp::WhatsAppSettings>,
+    pub can_whatsapp: bool,
     pub now: DateTime<Utc>,
+}
+
+impl<'a> Posting<'a> {
+    /// What can carry a code in this realm, on this deployment.
+    pub fn code_carriers(&self) -> crate::messaging::CodeCarriers<'a> {
+        crate::messaging::CodeCarriers {
+            sms: self.sms.filter(|_| self.can_text),
+            whatsapp: self.whatsapp.filter(|_| self.can_whatsapp),
+        }
+    }
 }
 
 /// How long a mailed link stays good.
@@ -527,12 +544,14 @@ const SMS_OTP: &str = "sms-otp";
 /// The template kind, spelled the way a settings map keys it.
 const SMS_OTP_TEMPLATE: &str = "sms_otp";
 
-/// Text a code to the phone this account has proven, or spend one typed back.
+/// Send a code to the phone this account has proven, over WhatsApp or by
+/// text, or spend one typed back.
 ///
 /// The code is bound to this login, so one read off a phone cannot finish a
-/// login somebody else started. Every send is counted twice before it goes:
-/// against this login, so one attempt cannot fan out codes, and against the
-/// realm's day, because a text is a billable action an attacker can trigger.
+/// login somebody else started. Every send is counted twice before it goes,
+/// whichever way it goes: against this login, so one attempt cannot fan out
+/// codes, and against the realm's day, because either way is a billable
+/// action an attacker can trigger.
 async fn sms_otp(
     transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
@@ -572,10 +591,11 @@ async fn sms_otp(
         };
     }
 
-    let Some(settings) = posting.sms.filter(|_| posting.can_text) else {
+    let carriers = posting.code_carriers();
+    if !carriers.carries_any() {
         tracing::warn!("a login asked for a texted code and nothing here can send one");
         return Answered::plain(Outcome::Failed);
-    };
+    }
     let phone = subject
         .phone_number
         .as_deref()
@@ -588,18 +608,36 @@ async fn sms_otp(
         return Answered::plain(Outcome::Failed);
     }
 
-    let sent_before = remembered
-        .and_then(|held| held.get("sent"))
+    let held = |key: &str| remembered.and_then(|state| state.get(key));
+    let sent_before = held("sent")
         .and_then(serde_json::Value::as_i64)
         .unwrap_or(0);
+    let by_before = held("by")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|way| way.parse::<Channel>().ok());
+    let switched_before = held("switched")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
     let standing = |sent: i64| Answered {
         outcome: Outcome::Pending,
         asks: Some(Challenge {
-            shown: serde_json::json!({ "code_sent_to": redacted_phone(&phone) }),
-            remembered: serde_json::json!({ "sent": sent }),
+            shown: code_shown(&phone, by_before, &carriers),
+            remembered: serde_json::json!({
+                "sent": sent,
+                "by": by_before.map(Channel::as_str),
+                "switched": switched_before,
+            }),
         }),
         sending: None,
     };
+
+    // The other way, asked for once without waiting: a person whose phone
+    // has no WhatsApp finds out when the code does not come.
+    let asked = answers.iter().find_map(|answer| match answer {
+        Answer::CodeChannel(way) => Some(*way),
+        _ => None,
+    });
+    let switching = !switched_before && asked.is_some_and(|way| Some(way) != by_before);
 
     // One in flight is enough, and a login only causes so many: both answered
     // the way a fresh send is, so nothing is told apart by whether one went.
@@ -611,6 +649,7 @@ async fn sms_otp(
         return Answered::plain(Outcome::Failed);
     };
     if let Some(sent) = recent
+        && !switching
         && posting.now - sent < chrono::Duration::seconds(CODE_COOLDOWN)
     {
         return standing(sent_before);
@@ -619,10 +658,11 @@ async fn sms_otp(
         return standing(sent_before);
     }
 
-    // The realm's brakes come before anything is drawn. A tripped brake with
-    // a code still in flight re-challenges, because that code can still
-    // finish this login; with nothing in flight the step fails plainly, and
-    // whatever alternative the flow holds stands in.
+    // The realm's brakes come before anything is drawn, whichever way the
+    // code is to go. A tripped brake with a code still in flight re-challenges,
+    // because that code can still finish this login; with nothing in flight
+    // the step fails plainly, and whatever alternative the flow holds stands
+    // in.
     match crate::messaging::text_brakes(transaction, realm, &subject.user_id, &phone, posting.now)
         .await
     {
@@ -640,6 +680,19 @@ async fn sms_otp(
         }
         Err(()) => return Answered::plain(Outcome::Failed),
     }
+
+    let Ok(way) = crate::messaging::code_way(
+        transaction,
+        &subject.user_id,
+        &phone,
+        asked,
+        carriers,
+        posting.now,
+    )
+    .await
+    else {
+        return Answered::plain(Outcome::Failed);
+    };
 
     let Some(code) = drawn_code(provider) else {
         return Answered::plain(Outcome::Failed);
@@ -673,28 +726,47 @@ async fn sms_otp(
     Answered {
         outcome: Outcome::Pending,
         asks: Some(Challenge {
-            shown: serde_json::json!({ "code_sent_to": redacted_phone(&phone) }),
-            remembered: serde_json::json!({ "sent": sent_before + 1 }),
+            shown: code_shown(&phone, Some(way), &carriers),
+            remembered: serde_json::json!({
+                "sent": sent_before + 1,
+                "by": way.as_str(),
+                "switched": switched_before || switching,
+            }),
         }),
         sending: Some(crate::messaging::Outbound::Text(
-            crate::messaging::OutgoingText {
-                settings: settings.duplicate(),
-                text: crate::messaging::Text {
-                    to: phone,
-                    body: crate::messaging::texted_words(
-                        realm,
-                        SMS_OTP_TEMPLATE,
-                        &code,
-                        crate::messaging::tongue_spoken_by(subject),
-                    ),
-                },
-                about: crate::messaging::About {
+            crate::messaging::code_for_phone(
+                realm,
+                SMS_OTP_TEMPLATE,
+                &code,
+                phone,
+                crate::messaging::tongue_spoken_by(subject),
+                way,
+                carriers,
+                crate::messaging::About {
                     user_id: subject.user_id.clone(),
                     purpose: SMS_OTP.to_owned(),
                 },
-            },
+            ),
         )),
     }
+}
+
+/// What a code's challenge shows: enough of the number for its holder to
+/// know it, which way the code went, and the other way when there is one to
+/// ask for.
+pub(crate) fn code_shown(
+    phone: &str,
+    by: Option<Channel>,
+    carriers: &crate::messaging::CodeCarriers<'_>,
+) -> serde_json::Value {
+    let mut shown = serde_json::json!({ "code_sent_to": redacted_phone(phone) });
+    if let Some(by) = by {
+        shown["sent_by"] = serde_json::json!(by.as_str());
+        if let Some(other) = carriers.other_than(by) {
+            shown["other_way"] = serde_json::json!(other.as_str());
+        }
+    }
+    shown
 }
 
 /// Six digits, drawn without bias: values past the largest multiple of a

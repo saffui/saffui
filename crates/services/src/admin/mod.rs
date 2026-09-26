@@ -25,3 +25,4 @@ pub mod sessions;
 pub mod sms;
 pub mod users;
 pub mod ussd;
+pub mod whatsapp;

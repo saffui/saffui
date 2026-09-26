@@ -7,7 +7,7 @@ use crate::api::rest::endpoints::admin::{
     account, agents, authorization, branding, claim_sources, client_scopes, clients, compliance,
     credentials, directory, events, features, federation, flows, idps, iga, journal, keys, mail,
     metrics, negotiation, overview, page_drafts, portability, protocol_mappers, realm_keys, realms,
-    rebac, recert, requests, sessions, sms, users, ussd,
+    rebac, recert, requests, sessions, sms, users, ussd, whatsapp,
 };
 use crate::api::rest::endpoints::scim;
 
@@ -209,6 +209,30 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/sms",
             action: AdminAction::RealmWrite,
             handler: Some(|| web::delete().to(sms::forget)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/whatsapp/test",
+            action: AdminAction::RealmWrite,
+            handler: Some(|| web::post().to(whatsapp::send_test)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/whatsapp",
+            action: AdminAction::RealmRead,
+            handler: Some(|| web::get().to(whatsapp::read)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/whatsapp",
+            action: AdminAction::RealmWrite,
+            handler: Some(|| web::put().to(whatsapp::write)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/whatsapp",
+            action: AdminAction::RealmWrite,
+            handler: Some(|| web::delete().to(whatsapp::forget)),
         },
         AdminRoute {
             method: Method::GET,

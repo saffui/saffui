@@ -1,9 +1,10 @@
-//! What carries a message or a text out: the realm's relay or gateway, a
-//! gateway of the deployment's own, or the log of a deployment being built.
+//! What carries a message, a text or a WhatsApp code out: the realm's relay,
+//! gateway or business number, a gateway of the deployment's own, or the log
+//! of a deployment being built.
 
 use std::time::Duration;
 
-use auth::messaging::{Deliver, Message, Text, Texter, Undelivered};
+use auth::messaging::{Deliver, Message, Text, Texter, Undelivered, WhatsAppSender};
 use config::serving::Egress;
 
 use crate::egress::{may_dial, outward_agent};
@@ -14,6 +15,7 @@ use lettre::message::Mailbox;
 use lettre::message::{MultiPart, SinglePart};
 use models::entities::mail::MailSettings;
 use models::entities::sms::SmsSettings;
+use models::entities::whatsapp::WhatsAppSettings;
 use openssl::error::ErrorStack;
 
 /// How long a gateway gets to take a message.
@@ -231,9 +233,166 @@ impl Texter for LoggedTexter {
     }
 }
 
+/// Meta's Graph API, at the version this build speaks. Meta keeps v25.0
+/// until 2028-07-29.
+const GRAPH: &str = "https://graph.facebook.com/v25.0";
+
+/// WhatsApp over Meta's own Cloud API.
+///
+/// One POST per code to the business number's messages edge, the realm's
+/// system user token as the bearer, and the realm's approved authentication
+/// template carrying the code in the two places such a template takes it:
+/// its body and its copy-code button. Any 2xx is Meta taking the message,
+/// which is not Meta delivering it: a number with no WhatsApp is accepted
+/// here and fails later, where nothing listens.
+///
+/// Dialled under the same guardrails as every call this server makes
+/// outward: the egress policy decides the scheme, and the resolver refuses
+/// addresses inside the deployment.
+pub struct MetaWhatsApp {
+    graph: String,
+    egress: Egress,
+}
+
+impl MetaWhatsApp {
+    pub fn new(egress: Egress) -> Self {
+        MetaWhatsApp::at(GRAPH.to_owned(), egress)
+    }
+
+    /// The same, answering at another root: a suite's stand-in for Meta.
+    pub fn at(graph: String, egress: Egress) -> Self {
+        MetaWhatsApp { graph, egress }
+    }
+}
+
+#[async_trait::async_trait]
+impl WhatsAppSender for MetaWhatsApp {
+    async fn send_code(
+        &self,
+        settings: &WhatsAppSettings,
+        to: &str,
+        code: &str,
+        language: &str,
+    ) -> Result<(), Undelivered> {
+        let url = format!("{}/{}/messages", self.graph, settings.phone_number_id);
+        if !may_dial(&url, self.egress) {
+            tracing::warn!("the WhatsApp endpoint is not one this egress policy dials");
+            return Err(Undelivered::Refused);
+        }
+        let body = template_message(settings, to, code, language);
+        let bearer = settings.token.expose_secret().clone();
+        let egress = self.egress;
+        tokio::task::spawn_blocking(move || {
+            outward_agent(egress, PATIENCE)
+                .post(&url)
+                .header("authorization", &format!("Bearer {bearer}"))
+                .header("content-type", "application/json")
+                .send(body.to_string())
+                .map(|_| ())
+                .map_err(|why| {
+                    tracing::warn!(why = %why, "a WhatsApp code was not sent");
+                    Undelivered::Refused
+                })
+        })
+        .await
+        .map_err(|_| Undelivered::Refused)?
+    }
+}
+
+/// What Meta takes for an authentication template: the number as digits, and
+/// the code twice, in the body and on the button, which is sent as a `url`
+/// button whatever the template calls it.
+fn template_message(
+    settings: &WhatsAppSettings,
+    to: &str,
+    code: &str,
+    language: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to.trim_start_matches('+'),
+        "type": "template",
+        "template": {
+            "name": settings.template,
+            "language": { "code": language },
+            "components": [
+                {
+                    "type": "body",
+                    "parameters": [{ "type": "text", "text": code }],
+                },
+                {
+                    "type": "button",
+                    "sub_type": "url",
+                    "index": "0",
+                    "parameters": [{ "type": "text", "text": code }],
+                },
+            ],
+        },
+    })
+}
+
+/// Writes the code to the log instead of sending it, under the rule
+/// `LoggedTexter` keeps.
+pub struct LoggedWhatsApp;
+
+#[async_trait::async_trait]
+impl WhatsAppSender for LoggedWhatsApp {
+    async fn send_code(
+        &self,
+        settings: &WhatsAppSettings,
+        to: &str,
+        code: &str,
+        language: &str,
+    ) -> Result<(), Undelivered> {
+        tracing::warn!(
+            to,
+            code,
+            template = settings.template,
+            language,
+            "a WhatsApp code was written to the log and not sent"
+        );
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shape Meta documents for a copy-code template, field for field,
+    /// with the number stripped to its digits.
+    #[test]
+    fn a_code_is_put_where_an_authentication_template_takes_it() {
+        let settings = WhatsAppSettings {
+            phone_number_id: "106540352242922".to_owned(),
+            template: "sign_in_code".to_owned(),
+            languages: vec!["en_US".to_owned()],
+            token: crypto::secrecy::SecretBox::new(Box::new("a-token".to_owned())),
+        };
+        assert_eq!(
+            template_message(&settings, "+22890123456", "419302", "en_US"),
+            serde_json::json!({
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": "22890123456",
+                "type": "template",
+                "template": {
+                    "name": "sign_in_code",
+                    "language": { "code": "en_US" },
+                    "components": [
+                        { "type": "body", "parameters": [{ "type": "text", "text": "419302" }] },
+                        {
+                            "type": "button",
+                            "sub_type": "url",
+                            "index": "0",
+                            "parameters": [{ "type": "text", "text": "419302" }]
+                        }
+                    ]
+                }
+            })
+        );
+    }
 
     fn settings() -> MailSettings {
         MailSettings {

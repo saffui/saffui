@@ -68,10 +68,55 @@ impl TextSink {
     }
 }
 
+const WHATSAPP_SINK: &str = "WHATSAPP_SINK";
+
+/// How this deployment sends codes over WhatsApp.
+///
+/// No default, for the reason mail has none. The business number and its
+/// token are each realm's own, so the deployment only says whether it speaks
+/// to Meta, writes to the log, or sends nothing this way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhatsAppSink {
+    /// Nothing goes over WhatsApp, and a code goes by SMS.
+    None,
+    /// Meta's Cloud API, under each realm's own business number.
+    Meta,
+    /// Written to the log rather than sent. For a deployment being built.
+    Logged,
+}
+
+impl WhatsAppSink {
+    pub fn from_env() -> Result<Self, ConfigError> {
+        match crate::optional(WHATSAPP_SINK).as_deref() {
+            None | Some("none") => Ok(WhatsAppSink::None),
+            Some("meta") => Ok(WhatsAppSink::Meta),
+            Some("log") => Ok(WhatsAppSink::Logged),
+            Some(_) => Err(ConfigError::Invalid {
+                key: format!("{}{WHATSAPP_SINK}", crate::PREFIX),
+                expected: "none, meta or log".to_owned(),
+            }),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tests::{clear, env_guard, set};
+
+    #[test]
+    fn a_whatsapp_sink_is_named_or_nothing_goes_that_way() {
+        let _guard = env_guard();
+        clear(&[WHATSAPP_SINK]);
+        assert_eq!(WhatsAppSink::from_env().unwrap(), WhatsAppSink::None);
+        set(WHATSAPP_SINK, "meta");
+        assert_eq!(WhatsAppSink::from_env().unwrap(), WhatsAppSink::Meta);
+        set(WHATSAPP_SINK, "log");
+        assert_eq!(WhatsAppSink::from_env().unwrap(), WhatsAppSink::Logged);
+        set(WHATSAPP_SINK, "telegram");
+        assert!(WhatsAppSink::from_env().is_err());
+        clear(&[WHATSAPP_SINK]);
+    }
 
     #[test]
     fn a_text_sink_is_named_or_nothing_sends() {

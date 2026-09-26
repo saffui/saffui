@@ -332,6 +332,9 @@
     delete answered.recovery_code;
     delete answered.recovery_codes_register;
     delete answered.new_password;
+    delete answered.sms_otp;
+    delete answered.phone;
+    delete answered.phone_register;
     form.password.value = "";
     form.totp.value = "";
     form.totp_register.value = "";
@@ -339,6 +342,9 @@
     form.recovery_codes_register.value = "";
     form.new_password.value = "";
     form.new_password_again.value = "";
+    form.sms_otp.value = "";
+    form.phone.value = "";
+    form.phone_register.value = "";
   }
 
   // The page is served at the URL it posts to, so the realm is never parsed.
@@ -462,6 +468,10 @@
         form.phone.focus();
         return;
       }
+      // The number was taken. Offered again on a round that brings no code,
+      // it would be taken as a new one, unproven, and another code sent.
+      delete answered.phone;
+      form.phone.value = "";
       // Written as text: the number is this server's own redaction of it.
       document.getElementById("phone-code-note").textContent = told.asks.code_sent_to || "";
       only("phone-code");
@@ -574,6 +584,9 @@
     if (form.recovery_codes_register.value) {
       answered.recovery_codes_register = form.recovery_codes_register.value;
     }
+    if (form.sms_otp.value) answered.sms_otp = form.sms_otp.value;
+    if (form.phone.value) answered.phone = form.phone.value;
+    if (form.phone_register.value) answered.phone_register = form.phone_register.value;
     if (form.new_password.value) {
       const mismatch = document.getElementById("renew-mismatch");
       mismatch.hidden = form.new_password.value === form.new_password_again.value;

@@ -59,6 +59,8 @@ catalogue! {
     UssdSettingsNotFound = 104, 404, "realm.ussd.not_found", "this realm has no USSD gateway";
     WhatsAppSettingsNotFound = 105, 404, "realm.whatsapp.not_found", "this realm has no WhatsApp settings";
     SimSwapSettingsNotFound = 106, 404, "realm.sim_swap.not_found", "this realm asks no carrier about SIM changes";
+    TrustAnchorNotFound = 107, 404, "realm.trust_anchor.not_found", "this realm trusts no such authority";
+    TrustAnchorAlreadyDeposited = 108, 409, "realm.trust_anchor.already_deposited", "this authority is already trusted for that";
     RealmAlreadyExists = 101, 409, "realm.already_exists", "a realm with this identifier already exists";
     KeyNotFound = 110, 404, "realm.key.not_found", "this realm holds no such key";
     KeyStillActive = 111, 409, "realm.key.still_active", "this key is still in service; rotate its algorithm first";
@@ -191,7 +193,7 @@ mod tests {
     /// whoever still sends it.
     #[test]
     fn the_catalogue_has_not_shrunk() {
-        assert_eq!(ErrorCode::ALL.len(), 71);
+        assert_eq!(ErrorCode::ALL.len(), 73);
     }
 
     /// The admin console keys its hints by slug, so a hint under a slug this

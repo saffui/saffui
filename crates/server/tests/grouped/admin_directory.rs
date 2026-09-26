@@ -5,7 +5,7 @@ use models::entities::authz::AdminAction;
 use serde_json::Value;
 use store::providers::directory::roles;
 #[allow(unused_imports)]
-use store::tenancy::{TenantContext, UnitOfWork};
+use store::tenancy::TenantContext;
 
 const REALM: &str = support::REALM;
 
@@ -1347,35 +1347,10 @@ async fn a_role_name_taken_after_the_check_is_refused_by_the_write() {
                     .map(|_| ())
             }
         };
-        let (refused, ()) = tokio::join!(written, commit_once_a_write_queues_behind(rival));
+        let (refused, ()) =
+            tokio::join!(written, support::commit_once_a_write_queues_behind(rival));
         assert_eq!(refused, Err(Unwritable::AlreadyExists), "on {asked}");
     }
-}
-
-/// Commit the rival once another request's write queues behind one of its
-/// locks: the window a check read before a write cannot see into.
-async fn commit_once_a_write_queues_behind(rival: UnitOfWork) {
-    let queued = async {
-        loop {
-            let behind: i64 = rival
-                .query_one(
-                    "SELECT count(*) FROM pg_locks \
-                     WHERE NOT granted AND pg_backend_pid() = ANY(pg_blocking_pids(pid))",
-                    &[],
-                )
-                .await
-                .expect("the lock table")
-                .get(0);
-            if behind > 0 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    };
-    tokio::time::timeout(std::time::Duration::from_secs(10), queued)
-        .await
-        .expect("the write never queued behind the rival");
-    rival.commit().await.expect("the rival lands");
 }
 
 /// A domain claim refuses a domain outside its ASCII form at the door, and a
@@ -1418,7 +1393,7 @@ async fn a_domain_claim_refuses_a_foreign_script_and_a_vanished_organization() {
     let late = plane.scoped(&context).await;
     let (refused, ()) = tokio::join!(
         directory::claim_organization_domain(&late, &org, "race.example", "saffui-domain-race"),
-        commit_once_a_write_queues_behind(rival)
+        support::commit_once_a_write_queues_behind(rival)
     );
     assert_eq!(refused, Err(Unwritable::NotFound));
 }

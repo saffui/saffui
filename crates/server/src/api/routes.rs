@@ -7,7 +7,7 @@ use crate::api::rest::endpoints::admin::{
     account, agents, authorization, branding, claim_sources, client_scopes, clients, compliance,
     credentials, directory, events, features, federation, flows, idps, iga, journal, keys, mail,
     metrics, negotiation, overview, page_drafts, portability, protocol_mappers, realm_keys, realms,
-    rebac, recert, requests, sessions, sim_swap, sms, users, ussd, whatsapp,
+    rebac, recert, requests, sessions, sim_swap, sms, trust_anchors, users, ussd, whatsapp,
 };
 use crate::api::rest::endpoints::scim;
 
@@ -227,6 +227,24 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/sim-swap",
             action: AdminAction::RealmWrite,
             handler: Some(|| web::delete().to(sim_swap::forget)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/trust-anchors",
+            action: AdminAction::RealmRead,
+            handler: Some(|| web::get().to(trust_anchors::list)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/trust-anchors",
+            action: AdminAction::RealmWrite,
+            handler: Some(|| web::post().to(trust_anchors::deposit)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/trust-anchors/{anchor}",
+            action: AdminAction::RealmWrite,
+            handler: Some(|| web::delete().to(trust_anchors::withdraw)),
         },
         AdminRoute {
             method: Method::POST,

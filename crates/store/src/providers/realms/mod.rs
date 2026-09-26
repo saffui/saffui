@@ -9,6 +9,7 @@ pub mod realm_keys;
 pub mod sim_swap;
 pub mod sms;
 pub mod tenants;
+pub mod trust_anchors;
 pub mod ussd;
 pub mod whatsapp;
 

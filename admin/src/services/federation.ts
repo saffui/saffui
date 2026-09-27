@@ -1,6 +1,7 @@
 import { adminPath, api } from "@/services/http";
 import type {
   DeliveryProof,
+  DiscoveredProvider,
   DirectoryRow,
   DirectoryImportReport,
   DirectoryMutation,
@@ -29,6 +30,16 @@ export async function updateIdp(realm: string, alias: string, body: IdpMutation)
     method: "PUT",
     json: body,
     subject: alias,
+  });
+}
+
+/// What an issuer publishes about itself, read by the server. Nothing is
+/// kept, so no toast says so; a refusal still does.
+export async function discoverProvider(realm: string, issuer: string): Promise<DiscoveredProvider> {
+  return api<DiscoveredProvider>(adminPath(realm, "provider-discovery"), {
+    method: "POST",
+    json: { issuer },
+    quiet: true,
   });
 }
 

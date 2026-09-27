@@ -745,6 +745,12 @@ pub fn routes() -> Vec<AdminRoute> {
             handler: Some(|| web::post().to(idps::prove)),
         },
         AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/provider-discovery",
+            action: AdminAction::IdpWrite,
+            handler: Some(|| web::post().to(idps::discover)),
+        },
+        AdminRoute {
             method: Method::GET,
             pattern: "/admin/realms/{realm}/identity-providers/{alias}/mappers",
             action: AdminAction::IdpRead,

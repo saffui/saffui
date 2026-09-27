@@ -1677,6 +1677,31 @@ async fn a_way_back_naming_another_issuer_is_refused() {
     }
 }
 
+/// A provider announcing that its way back names its issuer, RFC 9207, is
+/// held to it: a way back naming none is refused, where the same way back
+/// from a provider announcing nothing is taken.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_way_back_naming_no_issuer_is_refused_where_one_was_announced() {
+    let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = served_upstream(&plane);
+    create_oidc_provider(
+        &plane,
+        &bearer,
+        "announced",
+        &base,
+        json!({ "iss_parameter": { "Str": "required" } }),
+    )
+    .await;
+    create_oidc_provider(&plane, &bearer, "silent", &base, json!({})).await;
+
+    let (status, landing, _) = crossed(&plane, "announced").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{landing:?}");
+    let (status, landing, _) = crossed(&plane, "silent").await;
+    assert_eq!(status, StatusCode::SEE_OTHER, "{landing:?}");
+}
+
 /// A provider that pairs the contexts it answers with the realm's admits a
 /// login at the level the realm gives the paired name, not at the one the
 /// upstream's own name carries here; one answering a context it pairs with

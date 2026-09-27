@@ -6,6 +6,7 @@ import {
   deleteDirectory,
   deleteIdp,
   deleteIdpMapper,
+  discoverProvider,
   listDirectories,
   listIdpMappers,
   listIdps,
@@ -102,6 +103,13 @@ describe("federation", () => {
     const rewritten = await keepAnswer(updateIdp, REALM, NATIONAL, { ...provider, display_name: "National ID" });
     expect(rewritten.configs?.assertion_jwk).toEqual(created.configs?.assertion_jwk);
     await deleteIdp(REALM, NATIONAL);
+  });
+
+  test("asks for an issuer's discovery document, and says why an address is none", async () => {
+    await expect(discoverProvider(REALM, "http://discovery.example.test")).rejects.toMatchObject({
+      status: 422,
+      message: "http://discovery.example.test is not an issuer: an https address with no query or fragment",
+    });
   });
 
   test("keeps a SAML provider with an attribute mapper, and removes both", async () => {

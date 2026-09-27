@@ -1,4 +1,5 @@
 import type {
+  DiscoveredProvider,
   IdpMapperMutation,
   IdpMapperRow,
   IdpMapperType,
@@ -50,6 +51,7 @@ export interface ProviderDraft {
   userinfoAlgorithms: string;
   claimsRequest: string;
   acceptedContexts: string;
+  issuerRequiredOnReturn: boolean;
   tokenAuth: TokenAuth;
   pkce: boolean;
   subjectPointer: string;
@@ -111,6 +113,7 @@ export function emptyProviderDraft(): ProviderDraft {
     userinfoAlgorithms: "",
     claimsRequest: "",
     acceptedContexts: "",
+    issuerRequiredOnReturn: false,
     tokenAuth: "client_secret_basic",
     pkce: true,
     subjectPointer: "",
@@ -161,6 +164,7 @@ export function providerDraft(row: IdpRow): ProviderDraft {
     userinfoAlgorithms: configText(row, "userinfo_algs"),
     claimsRequest: indentClaimsRequest(configText(row, "claims")),
     acceptedContexts: configText(row, "accepted_acrs"),
+    issuerRequiredOnReturn: configText(row, "iss_parameter") === "required",
     tokenAuth: readTokenAuth(configText(row, "token_auth")),
     pkce: configText(row, "pkce") !== "false",
     subjectPointer: configText(row, "subject_pointer"),
@@ -222,6 +226,23 @@ export function readProviderPublicKey(row: IdpRow | undefined, field: ProviderKe
   }
 }
 
+/// A draft with what an issuer's discovery document says in place of what was
+/// typed: its endpoints, the identity token algorithms this server verifies,
+/// and whether its way back names its issuer. The userinfo algorithms stay as
+/// they are, eSignet 2.0.0 announcing PS256 there while it signs RS256.
+export function applyDiscoveredProvider(draft: ProviderDraft, found: DiscoveredProvider): ProviderDraft {
+  return {
+    ...draft,
+    issuer: found.issuer,
+    authorizationEndpoint: found.authorization_endpoint,
+    tokenEndpoint: found.token_endpoint,
+    jwksUri: found.jwks_uri,
+    userinfoEndpoint: found.userinfo_endpoint ?? draft.userinfoEndpoint,
+    algorithms: found.id_token_algs.join(" "),
+    issuerRequiredOnReturn: found.iss_parameter,
+  };
+}
+
 export function providerMutation(draft: ProviderDraft): IdpMutation {
   const alias = draft.alias.trim();
   return {
@@ -258,6 +279,7 @@ function brokerConfigs(draft: ProviderDraft): IdpMutation["configs"] {
     }
     written("claims", draft.claimsRequest);
     written("accepted_acrs", draft.acceptedContexts);
+    if (draft.issuerRequiredOnReturn) configs.iss_parameter = { Str: "required" };
   } else {
     configs.userinfo_endpoint = { Str: draft.userinfoEndpoint.trim() };
     configs.subject_pointer = { Str: draft.subjectPointer.trim() };

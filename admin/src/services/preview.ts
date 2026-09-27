@@ -931,6 +931,20 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
       },
     ]);
   }
+  if (path.endsWith("/provider-discovery")) {
+    const issuer = String((body as { issuer?: string } | undefined)?.issuer ?? "https://esignet.id.example").replace(/\/+$/, "");
+    return answer({
+      issuer,
+      authorization_endpoint: `${issuer}/authorize`,
+      token_endpoint: `${issuer}/v1/esignet/oauth/v2/token`,
+      jwks_uri: `${issuer}/v1/esignet/oauth/.well-known/jwks.json`,
+      userinfo_endpoint: `${issuer}/v1/esignet/oidc/userinfo`,
+      id_token_algs: ["PS256"],
+      acr_values: ["mosip:idp:acr:biometrics", "mosip:idp:acr:generated-code", "mosip:idp:acr:knowledge"],
+      iss_parameter: true,
+      gaps: ["no-pkce-s256"],
+    });
+  }
   if (path.endsWith("/identity-providers")) {
     return answer([
       { internal_id: "i-1", provider_id: "corp-okta", name: "corp-okta", display_name: "Corp Okta", description: "", enabled: true, trust_email: true, configs: null },

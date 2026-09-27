@@ -5,13 +5,14 @@ import AppHint from "@/components/AppHint.vue";
 import AppToggle from "@/components/AppToggle.vue";
 import { say } from "@/i18n";
 import type { RoleRow } from "@/models/directory";
-import type { IdpMapperRow, IdpRow } from "@/models/federation";
+import type { DiscoveredProvider, IdpMapperRow, IdpRow } from "@/models/federation";
 import { listRoles } from "@/services/directory";
 import {
   createIdp,
   createIdpMapper,
   deleteIdp,
   deleteIdpMapper,
+  discoverProvider,
   listIdpMappers,
   updateIdp,
   updateIdpMapper,
@@ -24,6 +25,7 @@ import {
   SAML_ROLE_MAPPER,
   type BrokerProtocol,
   type ProviderKeyField,
+  applyDiscoveredProvider,
   emptyMapperDraft,
   findProviderBlocker,
   listNeededProviderKeys,
@@ -45,6 +47,8 @@ const emit = defineEmits<{ close: []; saved: []; deleted: [] }>();
 const current = ref<"configuration" | "mappers">("configuration");
 const draft = ref(props.row ? providerDraft(props.row) : presetDraft(props.preset));
 const saving = ref(false);
+const discovering = ref(false);
+const discovered = ref<DiscoveredProvider | null>(null);
 const doomName = ref("");
 const mappers = ref<IdpMapperRow[]>([]);
 const roles = ref<RoleRow[]>([]);
@@ -136,6 +140,19 @@ async function saveProvider() {
     // The toast carries the refusal.
   } finally {
     saving.value = false;
+  }
+}
+
+async function discoverFromIssuer() {
+  discovering.value = true;
+  try {
+    const found = await discoverProvider(props.realm, draft.value.issuer.trim());
+    draft.value = applyDiscoveredProvider(draft.value, found);
+    discovered.value = found;
+  } catch {
+    // The toast carries the refusal.
+  } finally {
+    discovering.value = false;
   }
 }
 
@@ -281,6 +298,30 @@ async function dropMapper(row: IdpMapperRow) {
               class="sf-field mt-1 font-mono"
             />
           </label>
+        </div>
+        <div v-if="draft.protocol === 'oidc'" class="mt-3 space-y-2">
+          <span class="inline-flex items-center gap-1">
+            <button
+              type="button"
+              class="sf-button sf-button-secondary"
+              :disabled="discovering || !draft.issuer.trim()"
+              @click="discoverFromIssuer"
+            >
+              {{ say("idp-discover") }}
+            </button>
+            <AppHint name="idp-discover-help" />
+          </span>
+          <div v-if="discovered" class="space-y-1 text-[11px] leading-4 text-muted" role="status">
+            <p>{{ say("idp-discovered") }}</p>
+            <p v-if="discovered.acr_values.length">
+              {{ say("idp-discovered-contexts", { contexts: discovered.acr_values.join(", ") }) }}
+            </p>
+            <p v-for="gap in discovered.gaps" :key="gap" class="text-warn">{{ say(`idp-gap-${gap}`) }}</p>
+          </div>
+          <span class="inline-flex items-center gap-1">
+            <AppToggle v-model="draft.issuerRequiredOnReturn">{{ say("idp-iss-required") }}</AppToggle>
+            <AppHint name="idp-iss-required-help" />
+          </span>
         </div>
       </section>
 

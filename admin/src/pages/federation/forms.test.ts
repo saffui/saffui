@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import type { IdpRow } from "@/models/federation";
 import {
   ATTRIBUTE_MAPPER,
+  applyDiscoveredProvider,
   PERSISTENT_NAME_ID,
   ROLE_MAPPER,
   SAML_ATTRIBUTE_MAPPER,
@@ -144,6 +145,39 @@ describe("national sign-in provider forms", () => {
     expect(listNeededProviderKeys({ ...draft, protocol: "oauth2", userinfoForm: "jwe" })).toEqual(["assertion_jwk"]);
     expect(JSON.parse(readProviderPublicKey(row, "assertion_jwk"))).toEqual(JSON.parse(assertionJwk));
     expect(readProviderPublicKey(undefined, "assertion_jwk")).toBe("");
+  });
+
+  test("round-trips a way back held to name its issuer", () => {
+    const held = providerDraft({ ...row, configs: { ...row.configs, iss_parameter: { Str: "required" } } });
+    expect(held.issuerRequiredOnReturn).toBe(true);
+    expect(providerMutation(held).configs.iss_parameter).toEqual({ Str: "required" });
+    const loose = { ...held, issuerRequiredOnReturn: false };
+    expect(providerMutation(loose).configs.iss_parameter).toBeUndefined();
+    expect(providerMutation({ ...held, protocol: "oauth2" }).configs.iss_parameter).toBeUndefined();
+  });
+
+  test("takes what the issuer publishes, keeping the userinfo algorithms as set", () => {
+    const draft = { ...providerDraft(row), issuerRequiredOnReturn: false };
+    const found = {
+      issuer: "https://esignet.example",
+      authorization_endpoint: "https://esignet.example/v1/authorize",
+      token_endpoint: "https://esignet.example/v1/token",
+      jwks_uri: "https://esignet.example/v1/jwks",
+      userinfo_endpoint: null,
+      id_token_algs: ["PS256", "ES256"],
+      acr_values: ["mosip:idp:acr:biometrics"],
+      iss_parameter: true,
+      gaps: [],
+    };
+    const applied = applyDiscoveredProvider(draft, found);
+    expect(applied.authorizationEndpoint).toBe("https://esignet.example/v1/authorize");
+    expect(applied.tokenEndpoint).toBe("https://esignet.example/v1/token");
+    expect(applied.jwksUri).toBe("https://esignet.example/v1/jwks");
+    expect(applied.userinfoEndpoint).toBe("https://esignet.example/oauth2/userinfo");
+    expect(applied.algorithms).toBe("PS256 ES256");
+    expect(applied.userinfoAlgorithms).toBe("RS256 PS256");
+    expect(applied.issuerRequiredOnReturn).toBe(true);
+    expect(applied.clientId).toBe(draft.clientId);
   });
 
   test("keeps a claims request that is not a JSON object from being saved", () => {

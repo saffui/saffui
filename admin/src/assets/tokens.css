@@ -370,6 +370,24 @@ body {
     box-shadow: 0 12px 32px rgb(23 21 15 / 0.14), var(--sf-shadow);
   }
 
+  .sf-toggle-card {
+    display: flex;
+    min-width: 0;
+    min-height: 44px;
+    align-items: center;
+    padding: 8px 10px;
+    border: 1px solid var(--sf-border);
+    border-radius: 6px;
+    background: var(--sf-surface);
+  }
+  .sf-toggle-card:hover {
+    border-color: var(--sf-border-strong);
+    background: var(--sf-surface-2);
+  }
+  .sf-toggle-card > label {
+    width: 100%;
+  }
+
   .sf-login-shell {
     position: relative;
     isolation: isolate;

@@ -15,4 +15,9 @@ describe("federation boards", () => {
     expect(page).toContain('<AppHint name="federation-kerberos-help" />');
     expect(page).toContain('<AppHint name="federation-platforms-help" />');
   });
+
+  test("uses the page width for directory and trusted-platform cards", () => {
+    expect(page.match(/lg:grid-cols-2/g)).toHaveLength(2);
+    expect(page).not.toContain("grid max-w-3xl gap-2");
+  });
 });

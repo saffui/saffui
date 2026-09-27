@@ -1273,7 +1273,7 @@ async function saveSmsTemplate() {
                       {{ say("settings-partial-import-lede") }}
                     </p>
                   </div>
-                  <label class="sf-button sf-button-secondary shrink-0 cursor-pointer">
+                  <label class="sf-button sf-button-secondary relative shrink-0 cursor-pointer">
                     {{ say("settings-partial-import-select") }}
                     <input
                       type="file"

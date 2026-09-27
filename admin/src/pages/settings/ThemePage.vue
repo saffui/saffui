@@ -284,7 +284,7 @@ const sample = computed(() => ({
             </div>
             <div class="ml-auto flex items-center gap-2">
               <label
-                class="cursor-pointer rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2"
+                class="relative cursor-pointer rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2"
               >
                 {{ mark.held ? say("mark-replace") : say("mark-choose") }}
                 <input type="file" :accept="ACCEPTED" class="sr-only" @change="chooseMark" />

@@ -6,7 +6,7 @@ defineProps<{ disabled?: boolean }>();
 </script>
 
 <template>
-  <label class="flex min-h-8 cursor-pointer select-none items-center gap-2.5 text-[13px] leading-5 has-[:disabled]:cursor-not-allowed">
+  <label class="relative flex min-h-8 cursor-pointer select-none items-center gap-2.5 text-[13px] leading-5 has-[:disabled]:cursor-not-allowed">
     <input
       v-model="on"
       type="checkbox"

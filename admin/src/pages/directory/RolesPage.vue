@@ -191,10 +191,10 @@ async function dropRole() {
 
     <form
       v-if="making"
-      class="mt-3 flex max-w-xl flex-wrap items-end gap-2 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
+      class="mt-3 grid max-w-5xl items-end gap-3 rounded-lg border border-border bg-surface p-4 text-xs sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_auto]"
       @submit.prevent="makeRole"
     >
-      <label class="flex-1 text-[11px] font-medium text-muted">
+      <label class="min-w-0 text-[11px] font-medium text-muted">
         {{ say("settings-name") }} <AppHint name="role-name-help" />
         <input
           v-model="newName"
@@ -202,7 +202,7 @@ async function dropRole() {
           spellcheck="false"
         />
       </label>
-      <label class="flex-1 text-[11px] font-medium text-muted">
+      <label class="min-w-0 text-[11px] font-medium text-muted">
         {{ say("scopes-col-description") }}
         <input
           v-model="newDescription"
@@ -211,7 +211,7 @@ async function dropRole() {
       </label>
       <button
         type="submit"
-        class="sf-button sf-button-primary"
+        class="sf-button sf-button-primary sm:col-span-2 sm:w-fit lg:col-span-1"
       >
         {{ say("realm-create") }}
       </button>

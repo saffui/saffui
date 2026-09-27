@@ -27,6 +27,11 @@ const emit = defineEmits<{ open: [row: T] }>();
         </tr>
       </thead>
       <tbody>
+        <tr v-if="!items.length">
+          <td colspan="4" class="py-8 text-center text-sm text-muted">
+            {{ say("directory-empty") }}
+          </td>
+        </tr>
         <tr
           v-for="row in items"
           :key="keyOf(row)"

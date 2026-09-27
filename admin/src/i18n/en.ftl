@@ -116,6 +116,7 @@ users-pending-owing = something owed
 filters-any = any
 filters-clear = clear all
 users-search = username, email…
+users-empty = No user matches these filters.
 users-enabled = enabled
 users-email-verified = Verified
 users-disabled = Disabled
@@ -265,6 +266,7 @@ scopes-default = default
 
 directory-col-display = Display name
 directory-nobody = Nobody.
+directory-empty = Nothing matches this page.
 roles-title = Roles
 role-held-by-users = Held by users
 role-held-by-groups = Held by groups

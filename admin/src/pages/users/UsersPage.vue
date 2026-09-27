@@ -191,6 +191,11 @@ async function makeUser() {
           </tr>
         </thead>
         <tbody>
+          <tr v-if="!page.items.length">
+            <td colspan="4" class="py-8 text-center text-sm text-muted">
+              {{ say("users-empty") }}
+            </td>
+          </tr>
           <tr
             v-for="user in page.items"
             :key="user.user_id"
@@ -215,15 +220,15 @@ async function makeUser() {
             <td>
               <span
                 v-if="!user.enabled"
-                class="rounded border border-danger/40 px-1.5 py-0.5 text-[10.5px] text-danger"
+                class="sf-badge sf-badge-danger"
                 >{{ say("users-disabled") }}</span
               >
               <span
                 v-else-if="user.required_actions.length"
-                class="rounded border border-warn/40 px-1.5 py-0.5 text-[10.5px] text-warn"
+                class="sf-badge sf-badge-warn"
                 >{{ say("users-actions-pending", { count: user.required_actions.length }) }}</span
               >
-              <span v-else class="text-[10.5px] text-faint">{{ say("users-active") }}</span>
+              <span v-else class="sf-badge sf-badge-ok">{{ say("users-active") }}</span>
             </td>
           </tr>
         </tbody>
@@ -304,15 +309,15 @@ async function makeUser() {
           <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
             {{ say("user-ask-first") }} <AppHint name="user-required-actions-help" />
           </div>
-          <div class="mt-1.5 flex flex-col gap-1.5">
-            <AppToggle
-              v-for="action in REQUIRED_ACTIONS"
-              :key="action"
-              :model-value="born.actions.includes(action)"
-              @update:model-value="flipAction(action)"
-            >
-              <span class="font-mono text-[11px]">{{ action }}</span>
-            </AppToggle>
+          <div class="mt-2 grid gap-2 sm:grid-cols-2">
+            <div v-for="action in REQUIRED_ACTIONS" :key="action" class="sf-toggle-card">
+              <AppToggle
+                :model-value="born.actions.includes(action)"
+                @update:model-value="flipAction(action)"
+              >
+                <span class="min-w-0 flex-1 truncate font-mono text-xs">{{ action }}</span>
+              </AppToggle>
+            </div>
           </div>
         </div>
         <p class="text-[10.5px] text-faint">{{ say("user-new-note") }}</p>

@@ -244,10 +244,10 @@ function joined(member: OrgMember): string {
 
     <form
       v-if="making"
-      class="mt-3 flex max-w-xl flex-wrap items-end gap-2 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
+      class="mt-3 grid max-w-5xl items-end gap-3 rounded-lg border border-border bg-surface p-4 text-xs sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_auto]"
       @submit.prevent="makeOrg"
     >
-      <label class="flex-1 text-[11px] font-medium text-muted">
+      <label class="min-w-0 text-[11px] font-medium text-muted">
         {{ say("settings-name") }}
         <input
           v-model="newName"
@@ -255,7 +255,7 @@ function joined(member: OrgMember): string {
           spellcheck="false"
         />
       </label>
-      <label class="flex-1 text-[11px] font-medium text-muted">
+      <label class="min-w-0 text-[11px] font-medium text-muted">
         {{ say("directory-col-display") }}
         <input
           v-model="newDisplay"
@@ -264,7 +264,7 @@ function joined(member: OrgMember): string {
       </label>
       <button
         type="submit"
-        class="sf-button sf-button-primary"
+        class="sf-button sf-button-primary sm:col-span-2 sm:w-fit lg:col-span-1"
       >
         {{ say("realm-create") }}
       </button>
@@ -411,7 +411,7 @@ function joined(member: OrgMember): string {
           </label>
           <button
             type="submit"
-            class="rounded-md border border-border px-3 py-1.5 text-[11px] hover:bg-surface-2"
+            class="sf-button sf-button-secondary"
           >
             {{ say("org-claim") }}
           </button>
@@ -423,7 +423,7 @@ function joined(member: OrgMember): string {
           <code class="min-w-0 flex-1 truncate font-mono text-[10.5px]">{{ challenge.line }}</code>
           <button
             type="button"
-            class="rounded border border-border px-2 py-0.5 text-[10.5px] text-muted hover:bg-surface-3"
+            class="sf-button sf-button-secondary h-8 min-h-8 px-2.5 text-xs"
             @click="copyChallenge"
           >
             {{ say("action-copy") }}

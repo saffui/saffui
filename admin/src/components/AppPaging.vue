@@ -15,11 +15,11 @@ const SIZES = [10, 25, 50, 100] as const;
 
 <template>
   <div
-    class="flex h-[34px] items-center gap-2 border-t border-border bg-surface-2 px-3 text-[11.5px] text-faint"
+    class="flex min-h-10 flex-wrap items-center gap-2 border-t border-border bg-surface-2 px-3 py-1.5 text-xs text-muted"
   >
     <button
       type="button"
-      class="rounded-md border border-border px-2 py-1 hover:bg-surface-2 disabled:opacity-40"
+      class="sf-button sf-button-secondary h-7 min-h-7 px-2.5 disabled:opacity-40"
       :disabled="first === 0"
       @click="emit('update:first', Math.max(0, first - size))"
     >
@@ -27,7 +27,7 @@ const SIZES = [10, 25, 50, 100] as const;
     </button>
     <button
       type="button"
-      class="rounded-md border border-border px-2 py-1 hover:bg-surface-2 disabled:opacity-40"
+      class="sf-button sf-button-secondary h-7 min-h-7 px-2.5 disabled:opacity-40"
       :disabled="count < size"
       @click="emit('update:first', first + size)"
     >
@@ -38,7 +38,7 @@ const SIZES = [10, 25, 50, 100] as const;
       {{ say("paging-size") }}
       <select
         :value="size"
-        class="rounded-md border border-border bg-surface-2 px-1.5 py-1 text-[11px] text-ink"
+        class="sf-field h-7 min-h-7 w-auto py-0 pr-7 pl-2 text-xs"
         @change="emit('update:size', Number(($event.target as HTMLSelectElement).value))"
       >
         <option v-for="held in SIZES" :key="held" :value="held">{{ held }}</option>

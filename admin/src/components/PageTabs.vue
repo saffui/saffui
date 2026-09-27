@@ -31,12 +31,12 @@ const goes = computed(() => props.to ?? ((leaf: string) => `/${realm.value}/${le
 </script>
 
 <template>
-  <nav class="flex h-8 min-w-0 items-center gap-0.5 overflow-x-auto border-b border-border" aria-label="Tabs">
+  <nav class="flex h-9 min-w-0 items-center gap-0.5 overflow-x-auto border-b border-border" aria-label="Tabs">
     <RouterLink
       v-for="leaf in shown"
       :key="leaf"
       :to="goes(leaf)"
-      class="flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap border-b-2 px-3 text-[13.5px]"
+      class="flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap border-b-2 px-3 text-[13px] font-medium transition-colors"
       :class="
         leaf === here
           ? 'border-accent text-ink'

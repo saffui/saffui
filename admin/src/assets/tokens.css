@@ -20,8 +20,8 @@
   --sf-border-strong: #cfc9c0;
 
   --sf-ink: #17150f;
-  --sf-muted: #5f594f;
-  --sf-faint: #8b857b;
+  --sf-muted: #565047;
+  --sf-faint: #746e64;
 
   --sf-accent: #c99433;
   --sf-accent-ink: #1a1305;
@@ -58,8 +58,8 @@
   --sf-border-strong: #3a3733;
 
   --sf-ink: #efece7;
-  --sf-muted: #a29b92;
-  --sf-faint: #6e6862;
+  --sf-muted: #b0a9a0;
+  --sf-faint: #89827a;
 
   --sf-accent: #d9a441;
   --sf-accent-ink: #17110a;
@@ -136,6 +136,7 @@ body {
   color: var(--sf-ink);
   font-family: var(--font-sans);
   font-size: 14px;
+  line-height: 1.45;
   -webkit-font-smoothing: antialiased;
 }
 ::selection {
@@ -154,11 +155,11 @@ body {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    height: 30px;
-    padding: 0 13px;
+    min-height: 32px;
+    padding: 0 14px;
     border-radius: var(--radius-control);
     border: 1px solid transparent;
-    font-size: 12px;
+    font-size: 12.5px;
     font-weight: 500;
     white-space: nowrap;
     cursor: pointer;
@@ -241,28 +242,30 @@ body {
     text-align: left;
     border-collapse: collapse;
     background: var(--sf-surface);
-    font-size: 13px;
+    font-size: 13.25px;
   }
   .sf-table thead tr {
-    height: 31px;
+    height: 34px;
     background: var(--sf-surface-2);
   }
   .sf-table th {
-    padding: 0 6px;
-    font-size: 12px;
-    font-weight: 500;
+    padding: 0 8px;
+    font-size: 11.75px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
     color: var(--sf-muted);
     white-space: nowrap;
   }
   .sf-table tbody tr {
-    height: 38px;
+    height: 42px;
     border-top: 1px solid var(--sf-border);
   }
   .sf-table tbody tr:hover {
     background: var(--sf-neutral-tint);
   }
   .sf-table td {
-    padding: 0 6px;
+    padding: 8px;
+    line-height: 1.35;
   }
   .sf-table th:first-child,
   .sf-table td:first-child {
@@ -292,13 +295,15 @@ body {
 
   .sf-field {
     width: 100%;
-    padding: 6px 10px;
+    min-height: 36px;
+    padding: 7px 10px;
     border-radius: var(--radius-control);
     border: 1px solid var(--sf-border);
     background: var(--sf-surface-2);
     color: var(--sf-ink);
-    font-size: 12px;
-    line-height: 1.4;
+    font-size: 13px;
+    line-height: 1.45;
+    transition: border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease;
   }
   .sf-field::placeholder {
     color: var(--sf-faint);
@@ -308,6 +313,61 @@ body {
     border-color: var(--sf-accent);
     outline: 2px solid var(--sf-accent-tint);
     outline-offset: 1px;
+  }
+  .sf-field:hover:not(:disabled):not(:focus) {
+    border-color: var(--sf-border-strong);
+  }
+  .sf-field:disabled,
+  .sf-field[readonly] {
+    cursor: not-allowed;
+    background: var(--sf-surface-3);
+    color: var(--sf-muted);
+    opacity: 0.72;
+  }
+  textarea.sf-field {
+    min-height: 76px;
+    resize: vertical;
+    line-height: 1.55;
+  }
+  select.sf-field {
+    appearance: none;
+    cursor: pointer;
+    padding-right: 34px;
+    background-image: linear-gradient(45deg, transparent 50%, var(--sf-faint) 50%),
+      linear-gradient(135deg, var(--sf-faint) 50%, transparent 50%);
+    background-position: calc(100% - 16px) 50%, calc(100% - 11px) 50%;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+  }
+  select.sf-field:disabled {
+    cursor: not-allowed;
+  }
+  select.sf-field option {
+    background: var(--sf-surface);
+    color: var(--sf-ink);
+  }
+
+  .sf-field-label {
+    display: block;
+    color: var(--sf-muted);
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.4;
+  }
+
+  .sf-section-label {
+    color: var(--sf-faint);
+    font-size: 11px;
+    font-weight: 650;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+  }
+
+  .sf-popover {
+    border: 1px solid var(--sf-border-strong);
+    border-radius: 6px;
+    background: var(--sf-surface);
+    box-shadow: 0 12px 32px rgb(23 21 15 / 0.14), var(--sf-shadow);
   }
 
   .sf-login-shell {
@@ -347,4 +407,46 @@ body {
     box-shadow: var(--sf-shadow);
     backdrop-filter: blur(18px);
   }
+}
+
+/* Keep operational copy readable without loosening compact metadata. */
+:where(main, [role="dialog"]) [class~="text-[9.5px]"],
+:where(main, [role="dialog"]) [class~="text-[10px]"] {
+  font-size: 11px;
+  line-height: 1.4;
+}
+:where(main, [role="dialog"]) [class~="text-[10.5px]"] {
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+:where(main, [role="dialog"]) [class~="text-[11px]"] {
+  font-size: 12px;
+  line-height: 1.45;
+}
+:where(main, [role="dialog"]) label {
+  line-height: 1.4;
+}
+:where(main) h1 {
+  font-size: 20px;
+  line-height: 1.25;
+}
+:where(main) h1 + p {
+  max-width: 72ch;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+:where(main, [role="dialog"]) select:not(.sf-field) {
+  min-height: 36px;
+  padding-right: 34px;
+  border-color: var(--sf-border);
+  background-color: var(--sf-surface-2);
+  background-image: linear-gradient(45deg, transparent 50%, var(--sf-faint) 50%),
+    linear-gradient(135deg, var(--sf-faint) 50%, transparent 50%);
+  background-position: calc(100% - 16px) 50%, calc(100% - 11px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  color: var(--sf-ink);
+  font-size: 13px;
+  appearance: none;
 }

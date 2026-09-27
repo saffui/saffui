@@ -73,8 +73,11 @@ function moment(token: ShownToken, key: string): string {
     </p>
     <p v-if="failed" class="mt-3 text-xs text-danger" role="alert">{{ failed }}</p>
 
-    <form class="mt-4 flex max-w-3xl items-end gap-2 text-xs" @submit.prevent="ask">
-      <label class="flex-1 text-[11px] font-medium text-muted">
+    <form
+      class="mt-4 grid max-w-4xl gap-3 text-xs sm:grid-cols-2 xl:grid-cols-[repeat(3,minmax(0,1fr))_auto]"
+      @submit.prevent="ask"
+    >
+      <label class="min-w-0 text-[11px] font-medium text-muted">
         {{ say("signin-col-who") }}
         <UserSubjectField
           v-model="userId"
@@ -83,7 +86,7 @@ function moment(token: ShownToken, key: string): string {
           class="sf-field mt-1 font-mono"
         />
       </label>
-      <label class="flex-1 text-[11px] font-medium text-muted">
+      <label class="min-w-0 text-[11px] font-medium text-muted">
         {{ say("clients-title") }}
         <select v-model="clientId" class="sf-field mt-1 font-mono">
           <option value="" disabled>{{ say("authz-pick-client") }}</option>
@@ -92,11 +95,16 @@ function moment(token: ShownToken, key: string): string {
           </option>
         </select>
       </label>
-      <label class="flex-1 text-[11px] font-medium text-muted">
+      <label class="min-w-0 text-[11px] font-medium text-muted">
         {{ say("preview-scope") }} <AppHint name="preview-scope-help" />
         <input v-model="scope" class="sf-field mt-1 font-mono" spellcheck="false" />
       </label>
-      <button type="submit" class="sf-button sf-button-primary">{{ say("preview-ask") }}</button>
+      <button
+        type="submit"
+        class="sf-button sf-button-primary self-end sm:col-span-2 sm:justify-center xl:col-span-1"
+      >
+        {{ say("preview-ask") }}
+      </button>
     </form>
 
     <div v-if="foreseen" class="mt-5 grid gap-4 xl:grid-cols-2">

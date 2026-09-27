@@ -10,6 +10,7 @@ import oktaLogo from "@/assets/idp/okta.svg";
 import paypalLogo from "@/assets/idp/paypal.svg";
 import stackoverflowLogo from "@/assets/idp/stackoverflow.svg";
 import xLogo from "@/assets/idp/x.svg";
+import type { GlyphName } from "@/components/AppIcon.vue";
 import { emptyProviderDraft, type ProviderDraft } from "./forms";
 
 export type ProviderAvailability = "ready" | "manual" | "backend";
@@ -18,7 +19,7 @@ export interface ProviderPreset {
   id: string;
   name: string;
   logo?: string;
-  glyph?: "preview" | "server" | "verified";
+  glyph?: GlyphName;
   protocol: string;
   availability: ProviderAvailability;
   draft?: Partial<ProviderDraft>;
@@ -207,7 +208,7 @@ export const PROVIDER_CATALOG: ProviderPreset[] = [
   {
     id: "oidc",
     name: "Generic OIDC",
-    glyph: "preview",
+    glyph: "issuer",
     protocol: "Discovery or endpoints",
     availability: "manual",
     draft: { scope: "openid email profile", algorithms: "RS256 ES256" },

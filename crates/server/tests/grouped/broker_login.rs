@@ -13,7 +13,7 @@ const ALIAS: &str = "upstream";
 /// The one mount both sides share: the in-process side answers the browser,
 /// and the spawned side answers the broker's own dials. Egress is open
 /// because the upstream lives on the loopback here.
-fn mounted(plane: &Plane) -> Mounted {
+pub(crate) fn mounted(plane: &Plane) -> Mounted {
     Mounted {
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
@@ -30,7 +30,7 @@ fn mounted(plane: &Plane) -> Mounted {
     }
 }
 
-async fn asked(
+pub(crate) async fn asked(
     plane: &Plane,
     method: Method,
     path: &str,
@@ -53,7 +53,7 @@ async fn asked(
 }
 
 /// One query value out of a location header.
-fn param(location: &str, name: &str) -> Option<String> {
+pub(crate) fn param(location: &str, name: &str) -> Option<String> {
     let (_, query) = location.split_once('?')?;
     query.split('&').find_map(|pair| {
         let (held, value) = pair.split_once('=')?;
@@ -78,7 +78,7 @@ fn param(location: &str, name: &str) -> Option<String> {
 }
 
 /// Open this realm's own login and hand back its cookie.
-async fn opened_login(plane: &Plane) -> String {
+pub(crate) async fn opened_login(plane: &Plane) -> String {
     let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
     let response = test::call_service(
         &app,
@@ -955,6 +955,38 @@ async fn plain_provider(plane: &Plane, bearer: &str, alias: &str, base: &str, ex
     assert_eq!(status, StatusCode::CREATED, "{told}");
 }
 
+/// A provider speaking OpenID Connect: this very world, its tokens naming the
+/// realm's own issuer.
+async fn create_oidc_provider(plane: &Plane, bearer: &str, alias: &str, base: &str, extra: Value) {
+    let mut configs = json!({
+        "issuer": { "Str": support::origin().issuer(REALM) },
+        "authorization_endpoint": { "Str": format!("{base}/auth") },
+        "token_endpoint": { "Str": format!("{base}/token") },
+        "jwks_uri": { "Str": format!("{base}/certs") },
+        "client_id": { "Str": support::CONFIDENTIAL },
+        "client_secret": { "Str": support::CLIENT_SECRET },
+    });
+    for (key, value) in extra.as_object().expect("extra configs") {
+        configs[key] = value.clone();
+    }
+    let (status, told) = asked(
+        plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers"),
+        bearer,
+        Some(json!({
+            "provider_id": alias,
+            "name": alias,
+            "display_name": alias,
+            "description": "",
+            "trust_email": false,
+            "configs": configs,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+}
+
 /// This world, answering on a real socket for the broker's own dials.
 fn served_upstream(plane: &Plane) -> String {
     let served = mounted(plane);
@@ -998,17 +1030,29 @@ async fn crossed(plane: &Plane, alias: &str) -> (StatusCode, Option<String>, Str
         .to_owned();
     let state = param(&departure, "state").expect("a state");
     let challenge = param(&departure, "code_challenge");
-    let code = plane
-        .mint_code(
-            support::CONFIDENTIAL,
-            &format!(
-                "{}/protocol/openid-connect/broker/{alias}/endpoint",
-                support::origin().issuer(REALM)
-            ),
-            "openid",
-            challenge.as_deref().map(|held| (held, "S256")),
-        )
-        .await;
+    let landing = format!(
+        "{}/protocol/openid-connect/broker/{alias}/endpoint",
+        support::origin().issuer(REALM)
+    );
+    let challenged = challenge.as_deref().map(|held| (held, "S256"));
+    let code = match param(&departure, "nonce") {
+        Some(nonce) => {
+            plane
+                .mint_code_with_nonce(
+                    support::CONFIDENTIAL,
+                    &landing,
+                    "openid",
+                    challenged,
+                    &nonce,
+                )
+                .await
+        }
+        None => {
+            plane
+                .mint_code(support::CONFIDENTIAL, &landing, "openid", challenged)
+                .await
+        }
+    };
     let response = test::call_service(
         &app,
         test::TestRequest::get()
@@ -1558,6 +1602,134 @@ async fn a_way_back_is_refused_in_a_browser_that_did_not_leave() {
         response.status(),
         StatusCode::SEE_OTHER,
         "the refused ways back spent what the browser that left still needed"
+    );
+}
+
+/// A way back naming another issuer, RFC 9207, is refused before anything is
+/// spent: a code carried there from another provider does not reach this
+/// one's token endpoint, and the same way back naming this provider's issuer
+/// then lands admitted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_way_back_naming_another_issuer_is_refused() {
+    let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = served_upstream(&plane);
+    create_oidc_provider(&plane, &bearer, ALIAS, &base, json!({})).await;
+    let issuer = support::origin().issuer(REALM);
+
+    let cookie = opened_login(&plane).await;
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{REALM}/protocol/openid-connect/broker/{ALIAS}/login"
+            ))
+            .insert_header((
+                "cookie",
+                format!("{}={cookie}", support::AUTH_SESSION_COOKIE),
+            ))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let departure = response
+        .headers()
+        .get("location")
+        .and_then(|held| held.to_str().ok())
+        .expect("a departure")
+        .to_owned();
+    let state = param(&departure, "state").expect("a state");
+    let nonce = param(&departure, "nonce").expect("a nonce");
+    let challenge = param(&departure, "code_challenge").expect("a challenge");
+    let code = plane
+        .mint_code_with_nonce(
+            support::CONFIDENTIAL,
+            &format!("{issuer}/protocol/openid-connect/broker/{ALIAS}/endpoint"),
+            "openid",
+            Some((&challenge, "S256")),
+            &nonce,
+        )
+        .await;
+
+    for (answered_by, expected) in [
+        ("https://elsewhere.example", StatusCode::BAD_REQUEST),
+        (issuer.as_str(), StatusCode::SEE_OTHER),
+    ] {
+        let response = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!(
+                    "/realms/{REALM}/protocol/openid-connect/broker/{ALIAS}/endpoint?code={}&state={}&iss={}",
+                    support::urlencode(&code),
+                    support::urlencode(&state),
+                    support::urlencode(answered_by),
+                ))
+                .insert_header((
+                    "cookie",
+                    format!("{}={cookie}", support::AUTH_SESSION_COOKIE),
+                ))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), expected, "answered by {answered_by}");
+    }
+}
+
+/// A provider that pairs the contexts it answers with the realm's admits a
+/// login at the level the realm gives the paired name, not at the one the
+/// upstream's own name carries here; one answering a context it pairs with
+/// nothing is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_login_is_admitted_at_the_level_its_paired_context_holds() {
+    let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = served_upstream(&plane);
+    // The upstream is this world, which signs a password login in as such.
+    let upstream_context = support::PASSWORD_ACR;
+    create_oidc_provider(
+        &plane,
+        &bearer,
+        "paired",
+        &base,
+        json!({ "accepted_acrs": { "Str": format!("{upstream_context}={}", support::STRONG_ACR) } }),
+    )
+    .await;
+    create_oidc_provider(
+        &plane,
+        &bearer,
+        "unpaired",
+        &base,
+        json!({ "accepted_acrs": { "Str": format!("{0}={0}", support::STRONG_ACR) } }),
+    )
+    .await;
+
+    let (status, landing, _) = crossed(&plane, "unpaired").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{landing:?}");
+
+    let (status, landing, _) = crossed(&plane, "paired").await;
+    assert_eq!(status, StatusCode::SEE_OTHER, "{landing:?}");
+    let transaction = plane
+        .scoped(&store::tenancy::TenantContext::new(support::TENANT, REALM))
+        .await;
+    let linked = store::providers::federation::brokering::linked_user(
+        &transaction,
+        "paired",
+        support::SUBJECT,
+    )
+    .await
+    .expect("the links")
+    .expect("a link was written");
+    let logins = store::providers::protocol::sessions::load_for_user(&transaction, &linked)
+        .await
+        .expect("the logins");
+    assert_eq!(
+        logins.iter().map(|login| login.loa).collect::<Vec<_>>(),
+        [Some(2)],
+        "the login was not admitted at the level the realm gives {}",
+        support::STRONG_ACR
     );
 }
 

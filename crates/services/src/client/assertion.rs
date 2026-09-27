@@ -130,6 +130,79 @@ pub fn read_against(
     Ok(payload.claims_set().clone())
 }
 
+/// Read a token against a published key set, the key named by the header's
+/// `kid` and by nothing else.
+///
+/// [`read_against`] passes over a key whose stated `alg` is not the token's.
+/// Here a key of the same family is read under an algorithm the allow list
+/// names: an RSA key a provider labels PS256 verifies the RS256 token it signs,
+/// which is how eSignet 2.0 signs its userinfo. The allow list still decides
+/// which algorithms are taken, no key crosses from one family to another, and
+/// a token naming no key is refused rather than tried against each.
+pub fn read_against_named_key(
+    keys: &Value,
+    token: &str,
+    allowed: &[SignAlg],
+) -> Result<serde_json::Map<String, Value>, Unverifiable> {
+    let algorithm = algorithm_of(token, false)?;
+    if !allowed.contains(&algorithm) {
+        return Err(Unverifiable::BadSignature);
+    }
+    let set = JwkSet::from_map(
+        keys.as_object()
+            .cloned()
+            .ok_or(Unverifiable::Unregistered)?,
+    )
+    .map_err(|_| Unverifiable::Unregistered)?;
+    let header = jwt::decode_header(token).map_err(|_| Unverifiable::Malformed)?;
+    let named = header
+        .claim("kid")
+        .and_then(Value::as_str)
+        .ok_or(Unverifiable::BadSignature)?;
+    let mut jwk = set
+        .keys()
+        .into_iter()
+        .find(|key| key.key_id() == Some(named) && key.key_use().is_none_or(|held| held == "sig"))
+        .cloned()
+        .ok_or(Unverifiable::BadSignature)?;
+    let family = key_type_of_algorithm(algorithm);
+    if jwk.key_type() != family
+        || jwk
+            .algorithm()
+            .is_some_and(|stated| key_type_of_stated_algorithm(stated) != Some(family))
+    {
+        return Err(Unverifiable::BadSignature);
+    }
+    jwk.set_algorithm(algorithm.name());
+    let verifier = verifier_for(algorithm, &jwk).ok_or(Unverifiable::Unregistered)?;
+    let payload = jwt::decode_with_verifier(token, &*verifier)
+        .map_err(|_| Unverifiable::BadSignature)?
+        .0;
+    Ok(payload.claims_set().clone())
+}
+
+/// The key type an algorithm signs with.
+fn key_type_of_algorithm(algorithm: SignAlg) -> &'static str {
+    match algorithm {
+        SignAlg::Rs256
+        | SignAlg::Rs384
+        | SignAlg::Rs512
+        | SignAlg::Ps256
+        | SignAlg::Ps384
+        | SignAlg::Ps512 => "RSA",
+        SignAlg::Es256 | SignAlg::Es384 | SignAlg::Es512 => "EC",
+        SignAlg::EdDsa => "OKP",
+    }
+}
+
+/// The key type an algorithm a key states signs with, when it is one this
+/// build verifies.
+fn key_type_of_stated_algorithm(stated: &str) -> Option<&'static str> {
+    serde_json::from_value::<SignAlg>(Value::String(stated.to_owned()))
+        .ok()
+        .map(key_type_of_algorithm)
+}
+
 /// The client's key the header names, or its only one of that algorithm.
 fn published_key(keys: &Value, token: &str, algorithm: SignAlg) -> Result<Jwk, Unverifiable> {
     let set = JwkSet::from_map(

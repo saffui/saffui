@@ -141,7 +141,11 @@ fn assertion(
 ) -> Result<String, Unanswered> {
     services::token::assertion::client_assertion(
         provider,
-        &settings.key,
+        &services::token::assertion::AssertionKey {
+            kid: &settings.key.kid,
+            private_pem: &settings.key.private_pem,
+            algorithm: services::token::assertion::AssertionAlgorithm::Es256,
+        },
         &settings.client_id,
         endpoint,
         Utc::now(),

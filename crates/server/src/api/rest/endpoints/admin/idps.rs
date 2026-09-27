@@ -119,6 +119,7 @@ pub async fn update(
     .map_err(|_| internal())?;
     let rewritten = idps::update_provider(
         &transaction,
+        sealing.provider.as_ref(),
         &ring,
         &sealing.envelope,
         &alias,

@@ -12,9 +12,10 @@ use store::providers::federation::brokering;
 use store::tenancy::UnitOfWork;
 
 use crate::federation::brokering::{
-    ATTRIBUTE_IDP_MAPPER, ATTRIBUTE_NAME, ATTRIBUTE_VALUE, CLAIM, KNOWN_IDP_MAPPERS, ROLE,
-    ROLE_IDP_MAPPER, SAML_ATTRIBUTE_IDP_MAPPER, SAML_ROLE_IDP_MAPPER, SYNC_MODE, USER_ATTRIBUTE,
-    Upstream, rule_fits_provider,
+    ATTRIBUTE_IDP_MAPPER, ATTRIBUTE_NAME, ATTRIBUTE_VALUE, CLAIM, KNOWN_IDP_MAPPERS,
+    PROVIDER_ASSERTION_ALGORITHM, ProviderKey, ROLE, ROLE_IDP_MAPPER, SAML_ATTRIBUTE_IDP_MAPPER,
+    SAML_ROLE_IDP_MAPPER, SYNC_MODE, USER_ATTRIBUTE, Upstream, list_needed_provider_keys,
+    rule_fits_provider,
 };
 
 /// What the sealed upstream secret is scoped to.
@@ -86,6 +87,12 @@ fn conceal(provider: &mut IdentityProviderModel) {
                     AttributeValue::Str("**********".to_owned()),
                 );
             }
+        }
+        // Drawn here and never typed, so there is nothing to mask: the private
+        // halves simply never leave, and the public ones are what the operator
+        // registers at the provider.
+        for key in ProviderKey::ALL {
+            bag.remove(key.sealed_field_name());
         }
     }
 }
@@ -159,7 +166,9 @@ pub async fn create_provider(
         AuditableModel::from_creator(tenant.to_owned(), by.to_owned()),
     );
     check_configuration(&provider)?;
+    check_accepted_acrs_against_realm(transaction, &provider).await?;
     seal_secret(ring, envelope, &mut provider).await?;
+    keep_or_draw_provider_keys(crypto, ring, envelope, &mut provider, None).await?;
     brokering::create_provider(transaction, &provider)
         .await
         .map_err(|why| match why {
@@ -170,8 +179,13 @@ pub async fn create_provider(
     Ok(provider)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one rewrite"
+)]
 pub async fn update_provider(
     transaction: &UnitOfWork,
+    crypto: &dyn CryptoProvider,
     ring: &RealmKeyring,
     envelope: &Envelope,
     alias: &str,
@@ -231,7 +245,9 @@ pub async fn update_provider(
         }
     }
     check_configuration(&rewritten)?;
+    check_accepted_acrs_against_realm(transaction, &rewritten).await?;
     seal_secret(ring, envelope, &mut rewritten).await?;
+    keep_or_draw_provider_keys(crypto, ring, envelope, &mut rewritten, Some(&standing)).await?;
     if !brokering::update_provider(transaction, &rewritten)
         .await
         .map_err(|_| Unwritable::Backend)?
@@ -239,6 +255,147 @@ pub async fn update_provider(
         return Err(Unwritable::NotFound);
     }
     get_provider(transaction, alias).await
+}
+
+/// The upstream a plain OpenID Connect or OAuth 2.0 provider is, and nothing for
+/// the other kinds a provider row can hold.
+fn read_plain_upstream(provider: &IdentityProviderModel) -> Option<Upstream> {
+    let other_kind = crate::federation::workload::is_workload(provider)
+        || crate::scim::outbound::is_outbound(provider)
+        || crate::messaging::caep::is_receiver(provider)
+        || crate::messaging::webhook::is_webhook(provider)
+        || crate::federation::saml_brokering::is_saml(provider);
+    if other_kind {
+        return None;
+    }
+    Upstream::parse(provider).ok()
+}
+
+/// Keep the keys this realm holds for a provider, and draw those it now needs.
+///
+/// Whatever a request says about them is dropped first: the private halves are
+/// only ever drawn here, and a public half that did not come from here would
+/// not be the one the private half signs for. A rewrite keeps the standing
+/// pair, since the provider registered its public half once and a new one is a
+/// new registration there. A key no longer needed stays, for the day the
+/// setting comes back.
+async fn keep_or_draw_provider_keys(
+    crypto: &dyn CryptoProvider,
+    ring: &RealmKeyring,
+    envelope: &Envelope,
+    provider: &mut IdentityProviderModel,
+    standing: Option<&IdentityProviderModel>,
+) -> Result<(), Unwritable> {
+    let needed = read_plain_upstream(provider)
+        .map(|upstream| list_needed_provider_keys(&upstream))
+        .unwrap_or_default();
+    let internal_id = provider.internal_id.clone();
+    let bag = provider.configs.get_or_insert_with(Default::default);
+    for key in ProviderKey::ALL {
+        bag.remove(key.sealed_field_name());
+        bag.remove(key.public_field_name());
+        let kept = standing
+            .and_then(|standing| standing.configs.as_ref())
+            .and_then(|held| {
+                Some((
+                    held.get(key.sealed_field_name())?,
+                    held.get(key.public_field_name())?,
+                ))
+            });
+        if let Some((sealed, public)) = kept {
+            bag.insert(key.sealed_field_name().to_owned(), sealed.clone());
+            bag.insert(key.public_field_name().to_owned(), public.clone());
+        } else if needed.contains(&key) {
+            let (private_pem, public) = draw_provider_key(crypto, key)?;
+            let sealed = ring
+                .seal(envelope, key.sealing_purpose(), &internal_id, &private_pem)
+                .await
+                .map_err(|_| Unwritable::Backend)?;
+            bag.insert(
+                key.sealed_field_name().to_owned(),
+                AttributeValue::Str(BASE64.encode(&sealed)),
+            );
+            bag.insert(
+                key.public_field_name().to_owned(),
+                AttributeValue::Str(public),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// A fresh pair for one of a provider's keys, the private half as PEM and the
+/// public half as the JWK the provider is given, named by its thumbprint.
+///
+/// Both are RSA at 3072 bits, because a provider will not let either be
+/// replaced without a new registration: the assertion key an RSA-PSS pair for
+/// PS256, the encryption key the only kind eSignet encrypts to.
+fn draw_provider_key(
+    crypto: &dyn CryptoProvider,
+    which: ProviderKey,
+) -> Result<(Vec<u8>, String), Unwritable> {
+    use crypto::jose::jwk::KeyPair as _;
+    use crypto::jose::util::HashAlgorithm;
+    let (private, private_pem) = match which {
+        ProviderKey::Assertion => {
+            let pair = crypto::jose::jwk::alg::rsapss::RsaPssKeyPair::generate(
+                3072,
+                HashAlgorithm::Sha256,
+                HashAlgorithm::Sha256,
+                32,
+            )
+            .map_err(|_| Unwritable::Backend)?;
+            (pair.to_jwk_key_pair(), pair.to_pem_private_key())
+        }
+        ProviderKey::Encryption => {
+            let pair = crypto::jose::jwk::alg::rsa::RsaKeyPair::generate(3072)
+                .map_err(|_| Unwritable::Backend)?;
+            (pair.to_jwk_key_pair(), pair.to_pem_private_key())
+        }
+    };
+    let mut public = private.to_public_key().map_err(|_| Unwritable::Backend)?;
+    let kid = crypto::thumbprint::jwk_sha256_thumbprint(crypto, &public)
+        .map_err(|_| Unwritable::Backend)?;
+    public.set_key_id(&kid);
+    match which {
+        ProviderKey::Assertion => {
+            public.set_algorithm(PROVIDER_ASSERTION_ALGORITHM.name());
+            public.set_key_use("sig");
+        }
+        ProviderKey::Encryption => {
+            public.set_algorithm("RSA-OAEP-256");
+            public.set_key_use("enc");
+        }
+    }
+    let public = serde_json::to_string(public.as_ref()).map_err(|_| Unwritable::Backend)?;
+    Ok((private_pem, public))
+}
+
+/// The contexts a provider pairs with the realm's are refused unless the realm
+/// counts each of them: a pairing onto a name the realm does not know would
+/// attest a level the realm never defined.
+async fn check_accepted_acrs_against_realm(
+    transaction: &UnitOfWork,
+    provider: &IdentityProviderModel,
+) -> Result<(), Unwritable> {
+    let Some(upstream) = read_plain_upstream(provider) else {
+        return Ok(());
+    };
+    if upstream.accepted_acrs.is_empty() {
+        return Ok(());
+    }
+    let map = store::providers::realms::of_context(transaction)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .and_then(|realm| realm.acr_loa_map);
+    for (_, ours) in &upstream.accepted_acrs {
+        if map.as_ref().and_then(|map| map.loa_of(ours)).is_none() {
+            return Err(Unwritable::Invalid(format!(
+                "this realm counts no authentication context named {ours}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Read a provider's configuration the way its use will read it, by the kind of

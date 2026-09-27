@@ -606,6 +606,8 @@ async fn a_provider_linked_to_an_existing_account_is_told() {
                     email: Some(email.to_owned()),
                     email_verified: true,
                     claims: serde_json::Map::new(),
+                    userinfo: serde_json::Map::new(),
+                    vouched_acr: None,
                 },
                 chrono::Utc::now(),
             )

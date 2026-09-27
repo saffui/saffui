@@ -18,7 +18,7 @@ export interface ProviderPreset {
   id: string;
   name: string;
   logo?: string;
-  glyph?: "preview" | "server";
+  glyph?: "preview" | "server" | "verified";
   protocol: string;
   availability: ProviderAvailability;
   draft?: Partial<ProviderDraft>;
@@ -184,6 +184,26 @@ export const PROVIDER_CATALOG: ProviderPreset[] = [
   },
   { id: "stackoverflow", name: "Stack Overflow", logo: stackoverflowLogo, protocol: "OAuth 2.0", availability: "backend" },
   { id: "paypal", name: "PayPal", logo: paypalLogo, protocol: "OpenID Connect", availability: "backend" },
+  {
+    id: "esignet",
+    name: "MOSIP eSignet",
+    glyph: "verified",
+    protocol: "OpenID Connect",
+    availability: "manual",
+    draft: {
+      scope: "openid profile",
+      algorithms: "PS256",
+      tokenAuth: "private_key_jwt",
+      userinfoForm: "jwe",
+      // eSignet 2.0.0 signs the userinfo RS256 under a key it labels PS256.
+      userinfoAlgorithms: "RS256 PS256",
+      claimsRequest: JSON.stringify(
+        { userinfo: { name: { essential: true }, birthdate: { essential: false } } },
+        null,
+        2,
+      ),
+    },
+  },
   {
     id: "oidc",
     name: "Generic OIDC",

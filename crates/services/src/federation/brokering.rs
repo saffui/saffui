@@ -30,6 +30,13 @@ pub struct Upstream {
     /// Whether the departure carries a PKCE challenge: on, unless the operator
     /// turned it off for a provider that mishandles it.
     pub pkce: bool,
+    /// An OpenID Connect claims request, Core §5.5, sent as written: how a
+    /// provider such as eSignet is told which of the person's claims to hand
+    /// over, and which the person may decline.
+    pub claims: Option<String>,
+    /// The upstream's authentication contexts this realm accepts, each with the
+    /// realm's own context it counts as. Empty, no context is asked or weighed.
+    pub accepted_acrs: Vec<(String, String)>,
     pub identity: Identity,
 }
 
@@ -40,6 +47,8 @@ pub enum TokenAuth {
     Basic,
     /// The client id and secret as form fields.
     Post,
+    /// An assertion, RFC 7523, signed with a key drawn for this provider alone.
+    PrivateKeyJwt,
 }
 
 /// How the upstream says who arrived.
@@ -58,6 +67,28 @@ pub struct SignedIdentity {
     /// The algorithms an upstream token may be signed with. Bounded by
     /// configuration, never by the token's own header.
     pub allowed_algs: Vec<SignAlg>,
+    /// Where the provider says more about the person than its identity token
+    /// does. Absent, the identity token alone says who arrived.
+    pub userinfo: Option<SignedUserinfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SignedUserinfo {
+    pub endpoint: String,
+    pub form: UserinfoForm,
+    /// Bounded like the identity token's, and apart from them: a provider may
+    /// sign the two differently.
+    pub allowed_algs: Vec<SignAlg>,
+}
+
+/// The one form a provider's userinfo is taken in. Any other is refused, so a
+/// provider registered to encrypt cannot be answered for in the clear.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserinfoForm {
+    Json,
+    Signed,
+    /// Signed, then encrypted to a key drawn for this provider alone.
+    Encrypted,
 }
 
 /// Where a plain OAuth 2.0 provider says who holds an access token, and the
@@ -100,6 +131,18 @@ pub enum Unusable {
     UnknownTokenAuth(String),
     #[error("{0} is not a JSON pointer")]
     NotAPointer(&'static str),
+    #[error("claims is not an OpenID Connect claims request")]
+    NotAClaimsRequest,
+    #[error("{0} does not pair an upstream context with one of this realm's")]
+    NotAnAcrPairing(String),
+    #[error("the upstream context {0} is paired twice")]
+    AcrPairedTwice(String),
+    #[error("no userinfo form answers to {0}")]
+    UnknownUserinfoForm(String),
+    #[error(
+        "accepted_acrs needs an identity token, which a plain OAuth 2.0 provider does not give"
+    )]
+    AcrsWithoutIdentityToken,
 }
 
 pub(crate) fn text<'a>(bag: &'a AttributesMap, key: &str) -> Option<&'a str> {
@@ -129,12 +172,19 @@ impl Upstream {
         let token_auth = match text(bag, "token_auth").unwrap_or("client_secret_basic") {
             "client_secret_basic" => TokenAuth::Basic,
             "client_secret_post" => TokenAuth::Post,
+            "private_key_jwt" => TokenAuth::PrivateKeyJwt,
             other => return Err(Unusable::UnknownTokenAuth(other.to_owned())),
         };
         let unsaid_scope = match identity {
             Identity::Signed(_) => "openid",
             Identity::Asked(_) => "",
         };
+        // A context is vouched for in an identity token alone: paired on a
+        // provider that gives none, the pairing would never be checked.
+        let accepted_acrs = read_accepted_acrs(bag)?;
+        if !accepted_acrs.is_empty() && matches!(identity, Identity::Asked(_)) {
+            return Err(Unusable::AcrsWithoutIdentityToken);
+        }
         Ok(Self {
             authorization_endpoint: addressed(bag, "authorization_endpoint")?,
             token_endpoint: addressed(bag, "token_endpoint")?,
@@ -145,22 +195,97 @@ impl Upstream {
             token_auth,
             pkce: !matches!(bag.get("pkce"), Some(AttributeValue::Bool(false)))
                 && text(bag, "pkce") != Some("false"),
+            claims: read_claims_request(bag)?,
+            accepted_acrs,
             identity,
         })
     }
 }
 
+/// A claims request is an object naming `userinfo`, `id_token` or both, each
+/// an object of claim names, as Core §5.5 writes it. Read here so a request
+/// the provider would refuse is refused before anybody's login carries it.
+fn read_claims_request(bag: &AttributesMap) -> Result<Option<String>, Unusable> {
+    let Some(written) = text(bag, "claims").filter(|written| !written.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let Ok(Value::Object(members)) = serde_json::from_str::<Value>(written) else {
+        return Err(Unusable::NotAClaimsRequest);
+    };
+    let sound = !members.is_empty()
+        && members.iter().all(|(target, asked)| {
+            matches!(target.as_str(), "userinfo" | "id_token")
+                && asked
+                    .as_object()
+                    .is_some_and(|names| names.values().all(|one| one.is_null() || one.is_object()))
+        });
+    if !sound {
+        return Err(Unusable::NotAClaimsRequest);
+    }
+    Ok(Some(Value::Object(members).to_string()))
+}
+
+/// The contexts the upstream may vouch for, each `upstream=realm`, space
+/// separated: `mosip:idp:acr:biometrics=mfa` counts the provider's biometric
+/// check as the realm's own `mfa`. Whether the realm knows that name is weighed
+/// where the realm can be read, at the door and again at each arrival.
+fn read_accepted_acrs(bag: &AttributesMap) -> Result<Vec<(String, String)>, Unusable> {
+    let mut paired: Vec<(String, String)> = Vec::new();
+    for pairing in text(bag, "accepted_acrs")
+        .unwrap_or_default()
+        .split_whitespace()
+    {
+        let Some((theirs, ours)) = pairing
+            .split_once('=')
+            .filter(|(theirs, ours)| !theirs.is_empty() && !ours.is_empty() && !ours.contains('='))
+        else {
+            return Err(Unusable::NotAnAcrPairing(pairing.to_owned()));
+        };
+        if paired.iter().any(|(held, _)| held == theirs) {
+            return Err(Unusable::AcrPairedTwice(theirs.to_owned()));
+        }
+        paired.push((theirs.to_owned(), ours.to_owned()));
+    }
+    Ok(paired)
+}
+
+/// The algorithms a bag names under `key`, each refused by name when this
+/// build cannot verify it, or `fallback` when it names none.
+fn read_named_algorithms(
+    bag: &AttributesMap,
+    key: &str,
+    fallback: Vec<SignAlg>,
+) -> Result<Vec<SignAlg>, Unusable> {
+    match text(bag, key) {
+        None => Ok(fallback),
+        Some(named) => named
+            .split_whitespace()
+            .map(|name| {
+                serde_json::from_value(Value::String(name.to_owned()))
+                    .map_err(|_| Unusable::UnknownAlgorithm(name.to_owned()))
+            })
+            .collect(),
+    }
+}
+
 impl SignedIdentity {
     fn parse(bag: &AttributesMap) -> Result<Self, Unusable> {
-        let allowed_algs = match text(bag, "allowed_algs") {
-            None => vec![SignAlg::Rs256, SignAlg::Es256],
-            Some(named) => named
-                .split_whitespace()
-                .map(|name| {
-                    serde_json::from_value(Value::String(name.to_owned()))
-                        .map_err(|_| Unusable::UnknownAlgorithm(name.to_owned()))
-                })
-                .collect::<Result<Vec<SignAlg>, _>>()?,
+        let allowed_algs =
+            read_named_algorithms(bag, "allowed_algs", vec![SignAlg::Rs256, SignAlg::Es256])?;
+        let form = match text(bag, "userinfo_response").filter(|said| !said.is_empty()) {
+            None => None,
+            Some("json") => Some(UserinfoForm::Json),
+            Some("jws") => Some(UserinfoForm::Signed),
+            Some("jwe") => Some(UserinfoForm::Encrypted),
+            Some(other) => return Err(Unusable::UnknownUserinfoForm(other.to_owned())),
+        };
+        let userinfo = match form {
+            None => None,
+            Some(form) => Some(SignedUserinfo {
+                endpoint: addressed(bag, "userinfo_endpoint")?,
+                form,
+                allowed_algs: read_named_algorithms(bag, "userinfo_algs", allowed_algs.clone())?,
+            }),
         };
         Ok(Self {
             issuer: text(bag, "issuer")
@@ -168,6 +293,7 @@ impl SignedIdentity {
                 .to_owned(),
             jwks_uri: addressed(bag, "jwks_uri")?,
             allowed_algs,
+            userinfo,
         })
     }
 }
@@ -207,6 +333,100 @@ fn pointer(bag: &AttributesMap, key: &'static str) -> Result<Option<String>, Unu
         Some(given) if given.starts_with('/') => Ok(Some(given.to_owned())),
         Some(_) => Err(Unusable::NotAPointer(key)),
     }
+}
+
+/// A key this realm holds for one provider alone, drawn when the provider is
+/// written. The private half is sealed in the provider's bag, the public half
+/// sits beside it in the clear for the operator to register at the provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderKey {
+    /// Signs this realm's client assertions, when the provider takes
+    /// `private_key_jwt`.
+    Assertion,
+    /// Opens the userinfo the provider encrypts to this realm.
+    Encryption,
+}
+
+impl ProviderKey {
+    pub const ALL: [Self; 2] = [Self::Assertion, Self::Encryption];
+
+    pub const fn sealed_field_name(self) -> &'static str {
+        match self {
+            Self::Assertion => "assertion_key_sealed",
+            Self::Encryption => "encryption_key_sealed",
+        }
+    }
+
+    pub const fn public_field_name(self) -> &'static str {
+        match self {
+            Self::Assertion => "assertion_jwk",
+            Self::Encryption => "encryption_jwk",
+        }
+    }
+
+    /// What the sealing is scoped to, beside the provider's own identifier.
+    pub const fn sealing_purpose(self) -> &'static str {
+        match self {
+            Self::Assertion => "identity-provider-assertion-key",
+            Self::Encryption => "identity-provider-encryption-key",
+        }
+    }
+}
+
+/// What a provider's own assertion key signs with: PS256 under RSA, which
+/// eSignet takes where it refuses RS256.
+pub const PROVIDER_ASSERTION_ALGORITHM: crate::token::assertion::AssertionAlgorithm =
+    crate::token::assertion::AssertionAlgorithm::Ps256;
+
+/// The keys an upstream needs this realm to hold for it.
+pub fn list_needed_provider_keys(upstream: &Upstream) -> Vec<ProviderKey> {
+    let mut needed = Vec::new();
+    if upstream.token_auth == TokenAuth::PrivateKeyJwt {
+        needed.push(ProviderKey::Assertion);
+    }
+    if let Identity::Signed(signed) = &upstream.identity
+        && signed
+            .userinfo
+            .as_ref()
+            .is_some_and(|userinfo| userinfo.form == UserinfoForm::Encrypted)
+    {
+        needed.push(ProviderKey::Encryption);
+    }
+    needed
+}
+
+/// A provider's own key, opened for one use.
+pub struct OpenedProviderKey {
+    pub kid: String,
+    pub private_pem: secrecy::SecretBox<Vec<u8>>,
+}
+
+/// Open one of the keys a provider holds, or nothing when it holds none.
+pub async fn open_provider_key(
+    ring: &store::keyring::RealmKeyring,
+    envelope: &crypto::envelope::Envelope,
+    provider: &IdentityProviderModel,
+    which: ProviderKey,
+) -> Option<OpenedProviderKey> {
+    let bag = provider.configs.as_ref()?;
+    let sealed = data_encoding::BASE64
+        .decode(text(bag, which.sealed_field_name())?.as_bytes())
+        .ok()?;
+    let public: Value = serde_json::from_str(text(bag, which.public_field_name())?).ok()?;
+    let kid = public.get("kid")?.as_str()?.to_owned();
+    let opened = ring
+        .open(
+            envelope,
+            which.sealing_purpose(),
+            &provider.internal_id,
+            &sealed,
+        )
+        .await
+        .ok()?;
+    Some(OpenedProviderKey {
+        kid,
+        private_pem: opened,
+    })
 }
 
 /// What leaves for the upstream: where the browser goes, and the row that
@@ -291,6 +511,17 @@ pub fn depart(
             encoded(&challenge)
         ));
     }
+    if let Some(claims) = &upstream.claims {
+        location.push_str(&format!("&claims={}", encoded(claims)));
+    }
+    if !upstream.accepted_acrs.is_empty() {
+        let asked: Vec<&str> = upstream
+            .accepted_acrs
+            .iter()
+            .map(|(theirs, _)| theirs.as_str())
+            .collect();
+        location.push_str(&format!("&acr_values={}", encoded(&asked.join(" "))));
+    }
     Ok(Departure {
         location,
         state: BrokerLoginState {
@@ -338,6 +569,20 @@ pub struct Arrival {
     /// Every verified claim, whole: what the named fields above read from,
     /// and what the provider's mappers read beside them.
     pub claims: Map<String, Value>,
+    /// What the provider's userinfo added, apart from the identity token's
+    /// claims: the token is kept as the person's claim source, and must not be
+    /// credited with names it does not carry.
+    pub userinfo: Map<String, Value>,
+    /// The realm's own context the upstream's check counts as, when the
+    /// provider pairs contexts.
+    pub vouched_acr: Option<String>,
+}
+
+impl Arrival {
+    /// A claim the identity token carries, or else one the userinfo added.
+    pub fn find_claim(&self, name: &str) -> Option<&Value> {
+        self.claims.get(name).or_else(|| self.userinfo.get(name))
+    }
 }
 
 /// Read the upstream's identity token against its published keys, bounded
@@ -377,6 +622,19 @@ pub fn arrived(
     if text("nonce") != Some(state.nonce.as_str()) {
         return Err(Unbrokered::Refused);
     }
+    // A provider that answers with a context it was not asked for, eSignet
+    // among them when none of those asked is registered, has not checked what
+    // this realm asked it to.
+    let vouched_acr = match upstream.accepted_acrs.as_slice() {
+        [] => None,
+        accepted => Some(
+            accepted
+                .iter()
+                .find(|(theirs, _)| Some(theirs.as_str()) == text("acr"))
+                .map(|(_, ours)| ours.clone())
+                .ok_or(Unbrokered::Refused)?,
+        ),
+    };
 
     Ok(Arrival {
         external_user_id: text("sub").ok_or(Unbrokered::Refused)?.to_owned(),
@@ -387,7 +645,133 @@ pub fn arrived(
             .and_then(Value::as_bool)
             .unwrap_or(false),
         claims,
+        userinfo: Map::new(),
+        vouched_acr,
     })
+}
+
+/// Where a client assertion for this upstream is addressed: its issuer when it
+/// names one, as the 2025 advisory on audience injection recommends and eSignet
+/// requires, and its token endpoint otherwise.
+pub fn choose_assertion_audience(upstream: &Upstream) -> &str {
+    match &upstream.identity {
+        Identity::Signed(signed) => &signed.issuer,
+        Identity::Asked(_) => &upstream.token_endpoint,
+    }
+}
+
+/// What the userinfo encryption may name. RSA-OAEP with SHA-1 and the CBC
+/// content encryptions are refused whatever the provider offers.
+const USERINFO_ENCRYPTIONS: [&str; 3] = ["A128GCM", "A192GCM", "A256GCM"];
+
+/// Read the provider's userinfo in the one form it was registered for, and add
+/// what it says to the arrival, Core §5.3.
+///
+/// The subject must be the identity token's, an issuer and audience it states
+/// must be the provider's and this client's, and an encrypted answer is opened
+/// with the provider's own key, only under RSA-OAEP-256 and AES-GCM, before the
+/// signed answer inside is read. What the identity token already says is never
+/// overwritten.
+pub fn read_upstream_userinfo(
+    upstream: &Upstream,
+    keys: &Value,
+    answer: &str,
+    decryption_pem: Option<&[u8]>,
+    arrival: &mut Arrival,
+) -> Result<(), Unbrokered> {
+    let Identity::Signed(signed) = &upstream.identity else {
+        return Err(Unbrokered::Refused);
+    };
+    let Some(userinfo) = &signed.userinfo else {
+        return Ok(());
+    };
+    let answer = answer.trim();
+    let told = match userinfo.form {
+        UserinfoForm::Json => match serde_json::from_str::<Value>(answer) {
+            Ok(Value::Object(told)) => told,
+            _ => return Err(Unbrokered::Refused),
+        },
+        UserinfoForm::Signed => {
+            if answer.split('.').count() != 3 {
+                return Err(Unbrokered::Refused);
+            }
+            crate::client::assertion::read_against_named_key(keys, answer, &userinfo.allowed_algs)
+                .map_err(|_| Unbrokered::Refused)?
+        }
+        UserinfoForm::Encrypted => {
+            let signed_inside = decrypt_userinfo(answer, decryption_pem)?;
+            crate::client::assertion::read_against_named_key(
+                keys,
+                &signed_inside,
+                &userinfo.allowed_algs,
+            )
+            .map_err(|_| Unbrokered::Refused)?
+        }
+    };
+
+    let text = |name: &str| told.get(name).and_then(Value::as_str);
+    if text("sub") != Some(arrival.external_user_id.as_str()) {
+        return Err(Unbrokered::Refused);
+    }
+    if userinfo.form != UserinfoForm::Json {
+        if told.get("iss").is_some() && text("iss") != Some(signed.issuer.as_str()) {
+            return Err(Unbrokered::Refused);
+        }
+        let audience_holds = match told.get("aud") {
+            None => true,
+            Some(Value::String(one)) => one == &upstream.client_id,
+            Some(Value::Array(many)) => many
+                .iter()
+                .any(|one| one.as_str() == Some(upstream.client_id.as_str())),
+            Some(_) => false,
+        };
+        if !audience_holds {
+            return Err(Unbrokered::Refused);
+        }
+    }
+
+    if arrival.username.is_none() {
+        arrival.username = text("preferred_username").map(str::to_owned);
+    }
+    if arrival.email.is_none()
+        && let Some(email) = text("email")
+    {
+        arrival.email = Some(email.to_owned());
+        arrival.email_verified = told
+            .get("email_verified")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    }
+    for (name, value) in told {
+        if !SPOKEN_FOR_NOBODY.contains(&name.as_str()) && !arrival.claims.contains_key(&name) {
+            arrival.userinfo.insert(name, value);
+        }
+    }
+    Ok(())
+}
+
+/// The signed userinfo inside an encrypted answer, opened only under what this
+/// realm accepts: the key management and content encryption are read from the
+/// header and judged before anything is decrypted.
+fn decrypt_userinfo(answer: &str, decryption_pem: Option<&[u8]>) -> Result<String, Unbrokered> {
+    let pem = decryption_pem.ok_or(Unbrokered::Refused)?;
+    if answer.split('.').count() != 5 {
+        return Err(Unbrokered::Refused);
+    }
+    let header = crypto::jose::jwt::decode_header(answer).map_err(|_| Unbrokered::Refused)?;
+    let said = |name: &str| header.claim(name).and_then(Value::as_str);
+    if said("alg") != Some("RSA-OAEP-256")
+        || !said("enc").is_some_and(|enc| USERINFO_ENCRYPTIONS.contains(&enc))
+        || !said("cty").is_some_and(|cty| cty.eq_ignore_ascii_case("JWT"))
+    {
+        return Err(Unbrokered::Refused);
+    }
+    let decrypter = crypto::jose::jwe::RSA_OAEP_256
+        .decrypter_from_pem(pem)
+        .map_err(|_| Unbrokered::Refused)?;
+    let (inside, _) = crypto::jose::jwe::deserialize_compact(answer, &decrypter)
+        .map_err(|_| Unbrokered::Refused)?;
+    String::from_utf8(inside).map_err(|_| Unbrokered::Refused)
 }
 
 /// What redeems a code at the upstream's token endpoint.
@@ -405,6 +789,7 @@ pub fn compose_code_exchange(
     redirect_uri: String,
     verifier: &str,
     secret: Option<String>,
+    assertion: Option<String>,
 ) -> CodeExchange {
     let mut form = vec![
         ("grant_type".to_owned(), "authorization_code".to_owned()),
@@ -415,6 +800,19 @@ pub fn compose_code_exchange(
         form.push(("code_verifier".to_owned(), verifier.to_owned()));
     }
     let basic = match (upstream.token_auth, secret) {
+        // No secret travels: the assertion is the proof, and one that could not
+        // be made leaves the client id alone for the provider to refuse.
+        (TokenAuth::PrivateKeyJwt, _) => {
+            form.push(("client_id".to_owned(), upstream.client_id.clone()));
+            if let Some(assertion) = assertion {
+                form.push((
+                    "client_assertion_type".to_owned(),
+                    crate::client::assertion::JWT_BEARER.to_owned(),
+                ));
+                form.push(("client_assertion".to_owned(), assertion));
+            }
+            None
+        }
         (TokenAuth::Basic, Some(held)) => Some((upstream.client_id.clone(), held)),
         (TokenAuth::Post, Some(held)) => {
             form.push(("client_id".to_owned(), upstream.client_id.clone()));
@@ -483,6 +881,8 @@ pub fn answered_by_account(
         email,
         email_verified,
         claims: claims.clone(),
+        userinfo: Map::new(),
+        vouched_acr: None,
     })
 }
 
@@ -698,7 +1098,7 @@ fn read_rule<'a>(
     let configs = &rule.configs;
     match rule.mapper_type.as_str() {
         ATTRIBUTE_IDP_MAPPER => {
-            let value = match arrival.claims.get(config_str(configs, CLAIM)?)? {
+            let value = match arrival.find_claim(config_str(configs, CLAIM)?)? {
                 Value::String(text) => AttributeValue::Str(text.clone()),
                 Value::Bool(flag) => AttributeValue::Bool(*flag),
                 Value::Number(number) => AttributeValue::Int(number.as_i64()?),
@@ -1279,8 +1679,8 @@ mod tests {
             ),
             (("protocol", "saml"), "no protocol answers to saml"),
             (
-                ("token_auth", "private_key_jwt"),
-                "no token endpoint authentication answers to private_key_jwt",
+                ("token_auth", "tls_client_auth"),
+                "no token endpoint authentication answers to tls_client_auth",
             ),
         ] {
             let refused = Upstream::parse(&plain_provider(&[said])).expect_err("a refusal");
@@ -1314,6 +1714,7 @@ mod tests {
                 "https://id.example/landing".into(),
                 "the-verifier",
                 secret.map(str::to_owned),
+                None,
             )
         };
         let field = |exchange: &CodeExchange, key: &str| {
@@ -1445,6 +1846,8 @@ mod tests {
             email: None,
             email_verified: false,
             claims: claims.as_object().cloned().unwrap_or_default(),
+            userinfo: Map::new(),
+            vouched_acr: None,
         }
     }
 
@@ -1696,6 +2099,582 @@ mod tests {
                     role_id: "role-audit"
                 }),
                 "{decided:?}"
+            );
+        }
+    }
+
+    mod national_sign_in {
+        //! What an OpenID Connect provider such as MOSIP eSignet asks of the
+        //! broker: a signed assertion at its token endpoint, a claims request, a
+        //! context to vouch for, and a userinfo signed or encrypted.
+
+        use super::*;
+        use crypto::jose::jwe::{self, JweHeader, RSA_OAEP, RSA_OAEP_256};
+        use crypto::jose::jwk::alg::ec::EcKeyPair;
+        use crypto::jose::jwk::alg::rsa::RsaKeyPair;
+        use crypto::jose::jwk::{KeyPair, P_256};
+        use crypto::jose::jws::{ES256, JwsHeader, RS256};
+        use crypto::jose::jwt::{self, JwtPayload};
+
+        const ISSUER: &str = "https://esignet.example";
+        const CLIENT: &str = "saffui";
+        const SUBJECT: &str = "kdN4mcbpgo3q8FyWl9lAbZJ";
+        const NONCE: &str = "the-nonce";
+
+        fn national_provider(said: &[(&str, &str)]) -> IdentityProviderModel {
+            let configs: AttributesMap = [
+                ("issuer", ISSUER),
+                ("client_id", CLIENT),
+                (
+                    "authorization_endpoint",
+                    "https://esignet.example/oauth2/authorize",
+                ),
+                ("token_endpoint", "https://esignet.example/oauth2/token"),
+                ("jwks_uri", "https://esignet.example/oauth2/jwks"),
+                ("token_auth", "private_key_jwt"),
+                ("allowed_algs", "ES256"),
+            ]
+            .iter()
+            .chain(said.iter())
+            .map(|(key, value)| ((*key).to_owned(), AttributeValue::Str((*value).to_owned())))
+            .collect();
+            IdentityProviderMutationModel {
+                provider_id: "national".into(),
+                name: "national".into(),
+                display_name: "National ID".into(),
+                description: String::new(),
+                enabled: Some(true),
+                trust_email: Some(false),
+                configs: Some(configs),
+            }
+            .into_model(
+                "idp-9".into(),
+                "main".into(),
+                AuditableModel::from_creator("local".into(), "root".into()),
+            )
+        }
+
+        fn national(said: &[(&str, &str)]) -> Upstream {
+            Upstream::parse(&national_provider(said)).expect("a national provider")
+        }
+
+        fn state() -> BrokerLoginState {
+            BrokerLoginState {
+                state_hash: "hash".into(),
+                provider_alias: "national".into(),
+                auth_session: "login".into(),
+                code_verifier: "verifier".into(),
+                nonce: NONCE.into(),
+                expires_at: Utc::now() + Duration::minutes(5),
+            }
+        }
+
+        /// The provider's keys, drawn by the crate for this test: P-256 for the
+        /// identity token, and an RSA key its set labels PS256 while the
+        /// userinfo is signed RS256 under it, as eSignet 2.0 does.
+        struct Published {
+            identity: EcKeyPair,
+            userinfo: RsaKeyPair,
+            set: Value,
+        }
+
+        fn published() -> Published {
+            let identity = EcKeyPair::generate(P_256).expect("an EC key");
+            let userinfo = RsaKeyPair::generate(2048).expect("an RSA key");
+            let mut identity_jwk = identity.to_jwk_public_key();
+            identity_jwk.set_key_id("identity-key");
+            identity_jwk.set_algorithm("ES256");
+            let mut userinfo_jwk = userinfo.to_jwk_public_key();
+            userinfo_jwk.set_key_id("userinfo-key");
+            userinfo_jwk.set_algorithm("PS256");
+            let set = serde_json::json!({ "keys": [
+                serde_json::to_value(identity_jwk.as_ref()).expect("a JWK"),
+                serde_json::to_value(userinfo_jwk.as_ref()).expect("a JWK"),
+            ]});
+            Published {
+                identity,
+                userinfo,
+                set,
+            }
+        }
+
+        fn signed_es256(keys: &Published, claims: Value) -> String {
+            let mut header = JwsHeader::new();
+            header.set_token_type("JWT");
+            header.set_key_id("identity-key");
+            let payload = JwtPayload::from_map(claims.as_object().cloned().expect("claims"))
+                .expect("a payload");
+            let signer = ES256
+                .signer_from_pem(keys.identity.to_pem_private_key())
+                .expect("a signer");
+            jwt::encode_with_signer(&payload, &header, &signer).expect("a token")
+        }
+
+        fn signed_rs256(keys: &Published, kid: Option<&str>, claims: Value) -> String {
+            let mut header = JwsHeader::new();
+            if let Some(kid) = kid {
+                header.set_key_id(kid);
+            }
+            let payload = JwtPayload::from_map(claims.as_object().cloned().expect("claims"))
+                .expect("a payload");
+            let signer = RS256
+                .signer_from_pem(keys.userinfo.to_pem_private_key())
+                .expect("a signer");
+            jwt::encode_with_signer(&payload, &header, &signer).expect("a token")
+        }
+
+        fn identity_token(keys: &Published, acr: Option<&str>) -> String {
+            let mut claims = serde_json::json!({
+                "iss": ISSUER, "aud": CLIENT, "sub": SUBJECT, "nonce": NONCE,
+                "exp": Utc::now().timestamp() + 120, "name": "From the identity token",
+            });
+            if let Some(acr) = acr {
+                claims["acr"] = Value::String(acr.to_owned());
+            }
+            signed_es256(keys, claims)
+        }
+
+        fn told(overrides: Value) -> Value {
+            let mut claims = serde_json::json!({
+                "sub": SUBJECT, "iss": ISSUER, "aud": CLIENT,
+                "name": "Ama Mensah", "email": "ama.mensah@example.test",
+                "birthdate": "1990/03/14",
+            });
+            for (name, value) in overrides.as_object().cloned().unwrap_or_default() {
+                claims[name] = value;
+            }
+            claims
+        }
+
+        /// An RSA key this realm would hold to open the userinfo, and what the
+        /// provider encrypts to it.
+        fn encrypted_to(recipient: &RsaKeyPair, alg: &str, enc: &str, inside: &str) -> String {
+            let mut header = JweHeader::new();
+            header.set_algorithm(alg);
+            header.set_content_encryption(enc);
+            header.set_content_type("JWT");
+            let public = recipient.to_jwk_public_key();
+            let encrypter: Box<dyn crypto::jose::jwe::JweEncrypter> = match alg {
+                "RSA-OAEP" => Box::new(RSA_OAEP.encrypter_from_jwk(&public).expect("an encrypter")),
+                _ => Box::new(
+                    RSA_OAEP_256
+                        .encrypter_from_jwk(&public)
+                        .expect("an encrypter"),
+                ),
+            };
+            jwe::serialize_compact(inside.as_bytes(), &header, &*encrypter).expect("a JWE")
+        }
+
+        /// A provider is read with the assertion, the claims request, the
+        /// contexts and the userinfo it names, and needs the keys those call for.
+        #[test]
+        fn a_national_provider_names_what_it_asks_and_answers() {
+            let upstream = national(&[
+                (
+                    "claims",
+                    r#"{"userinfo":{"name":{"essential":true},"email":null},"id_token":{}}"#,
+                ),
+                (
+                    "accepted_acrs",
+                    "mosip:idp:acr:biometrics=mfa mosip:idp:acr:knowledge=password",
+                ),
+                ("userinfo_response", "jwe"),
+                (
+                    "userinfo_endpoint",
+                    "https://esignet.example/oauth2/userinfo",
+                ),
+                ("userinfo_algs", "RS256 PS256"),
+            ]);
+            assert_eq!(upstream.token_auth, TokenAuth::PrivateKeyJwt);
+            assert_eq!(
+                upstream.accepted_acrs,
+                vec![
+                    ("mosip:idp:acr:biometrics".to_owned(), "mfa".to_owned()),
+                    ("mosip:idp:acr:knowledge".to_owned(), "password".to_owned()),
+                ]
+            );
+            assert!(
+                upstream
+                    .claims
+                    .as_deref()
+                    .is_some_and(|claims| claims.contains("essential"))
+            );
+            let Identity::Signed(signed) = &upstream.identity else {
+                panic!("an OpenID Connect provider read as plain OAuth 2.0");
+            };
+            let userinfo = signed.userinfo.as_ref().expect("a userinfo");
+            assert_eq!(userinfo.form, UserinfoForm::Encrypted);
+            assert_eq!(userinfo.allowed_algs, vec![SignAlg::Rs256, SignAlg::Ps256]);
+            assert_eq!(
+                list_needed_provider_keys(&upstream),
+                vec![ProviderKey::Assertion, ProviderKey::Encryption]
+            );
+            assert_eq!(choose_assertion_audience(&upstream), ISSUER);
+            let plain = Upstream::parse(&plain_provider(&[("token_auth", "private_key_jwt")]))
+                .expect("a plain provider");
+            assert_eq!(choose_assertion_audience(&plain), plain.token_endpoint);
+            assert_eq!(
+                list_needed_provider_keys(&plain),
+                vec![ProviderKey::Assertion]
+            );
+
+            let signed_only = national(&[
+                ("userinfo_response", "jws"),
+                (
+                    "userinfo_endpoint",
+                    "https://esignet.example/oauth2/userinfo",
+                ),
+            ]);
+            let Identity::Signed(signed) = &signed_only.identity else {
+                panic!("an OpenID Connect provider read as plain OAuth 2.0");
+            };
+            assert_eq!(
+                signed
+                    .userinfo
+                    .as_ref()
+                    .map(|userinfo| userinfo.allowed_algs.clone()),
+                Some(vec![SignAlg::Es256]),
+                "the userinfo does not fall back on the identity token's algorithms"
+            );
+
+            for (said, refusal) in [
+                (
+                    ("claims", "not json"),
+                    "claims is not an OpenID Connect claims request",
+                ),
+                (
+                    ("claims", "[]"),
+                    "claims is not an OpenID Connect claims request",
+                ),
+                (
+                    ("claims", "{}"),
+                    "claims is not an OpenID Connect claims request",
+                ),
+                (
+                    ("claims", r#"{"access_token":{}}"#),
+                    "claims is not an OpenID Connect claims request",
+                ),
+                (
+                    ("claims", r#"{"userinfo":{"name":true}}"#),
+                    "claims is not an OpenID Connect claims request",
+                ),
+                (
+                    ("accepted_acrs", "mosip:idp:acr:biometrics"),
+                    "mosip:idp:acr:biometrics does not pair an upstream context with one of this realm's",
+                ),
+                (
+                    ("accepted_acrs", "=mfa"),
+                    "=mfa does not pair an upstream context with one of this realm's",
+                ),
+                (
+                    ("accepted_acrs", "a=b=c"),
+                    "a=b=c does not pair an upstream context with one of this realm's",
+                ),
+                (
+                    ("accepted_acrs", "a=mfa a=password"),
+                    "the upstream context a is paired twice",
+                ),
+                (
+                    ("userinfo_response", "xml"),
+                    "no userinfo form answers to xml",
+                ),
+                (
+                    ("userinfo_response", "jwe"),
+                    "the provider names no userinfo_endpoint",
+                ),
+            ] {
+                let refused = Upstream::parse(&national_provider(&[said])).expect_err("a refusal");
+                assert_eq!(refused.to_string(), refusal, "{said:?}");
+            }
+            assert_eq!(
+                Upstream::parse(&plain_provider(&[(
+                    "accepted_acrs",
+                    "mosip:idp:acr:biometrics=mfa"
+                )]))
+                .expect_err("a pairing no identity token would check")
+                .to_string(),
+                "accepted_acrs needs an identity token, which a plain OAuth 2.0 provider does not give"
+            );
+        }
+
+        /// The departure asks for the claims and every context the realm
+        /// accepts, and the code is redeemed with the assertion alone.
+        #[test]
+        fn a_departure_asks_and_the_exchange_proves_with_the_assertion() {
+            let upstream = national(&[
+                ("claims", r#"{"userinfo":{"name":{"essential":true}}}"#),
+                (
+                    "accepted_acrs",
+                    "mosip:idp:acr:biometrics=mfa mosip:idp:acr:knowledge=password",
+                ),
+            ]);
+            let provider = crypto::provider::openssl::OpenSslProvider::new(
+                &crypto::provider::CryptoConfig::default(),
+            )
+            .expect("a provider");
+            let departure = depart(
+                &provider,
+                &upstream,
+                "national",
+                "login",
+                "https://id.example/back",
+                Utc::now(),
+            )
+            .expect("a departure");
+            assert!(
+                departure.location.contains(
+                    "&claims=%7B%22userinfo%22%3A%7B%22name%22%3A%7B%22essential%22%3Atrue%7D%7D%7D"
+                ),
+                "{}",
+                departure.location
+            );
+            assert!(
+                departure.location.contains(
+                    "&acr_values=mosip%3Aidp%3Aacr%3Abiometrics%20mosip%3Aidp%3Aacr%3Aknowledge"
+                ),
+                "{}",
+                departure.location
+            );
+
+            let exchange = compose_code_exchange(
+                &upstream,
+                "the-code".into(),
+                "https://id.example/back".into(),
+                "the-verifier",
+                Some("a secret nobody should send".into()),
+                Some("the.signed.assertion".into()),
+            );
+            let field = |key: &str| {
+                exchange
+                    .form
+                    .iter()
+                    .find(|(name, _)| name == key)
+                    .map(|(_, value)| value.as_str())
+            };
+            assert_eq!(field("client_id"), Some(CLIENT));
+            assert_eq!(
+                field("client_assertion_type"),
+                Some(crate::client::assertion::JWT_BEARER)
+            );
+            assert_eq!(field("client_assertion"), Some("the.signed.assertion"));
+            assert_eq!(field("client_secret"), None);
+            assert!(exchange.basic.is_none());
+        }
+
+        /// An identity token answering a context the realm accepts vouches for
+        /// the realm's own; one answering another context, or none, is refused.
+        #[test]
+        fn only_an_accepted_context_is_vouched_for() {
+            let keys = published();
+            let upstream = national(&[(
+                "accepted_acrs",
+                "mosip:idp:acr:biometrics=mfa mosip:idp:acr:knowledge=password",
+            )]);
+            let arrival = arrived(
+                &upstream,
+                &keys.set,
+                &identity_token(&keys, Some("mosip:idp:acr:knowledge")),
+                &state(),
+                Utc::now(),
+            )
+            .expect("an arrival");
+            assert_eq!(arrival.vouched_acr.as_deref(), Some("password"));
+
+            for answered in [Some("mosip:idp:acr:password"), None] {
+                assert!(
+                    arrived(
+                        &upstream,
+                        &keys.set,
+                        &identity_token(&keys, answered),
+                        &state(),
+                        Utc::now()
+                    )
+                    .is_err(),
+                    "{answered:?} was taken"
+                );
+            }
+            let unpaired = national(&[]);
+            let arrival = arrived(
+                &unpaired,
+                &keys.set,
+                &identity_token(&keys, Some("mosip:idp:acr:password")),
+                &state(),
+                Utc::now(),
+            )
+            .expect("an arrival");
+            assert_eq!(arrival.vouched_acr, None);
+        }
+
+        fn arrival_for(upstream: &Upstream, keys: &Published) -> Arrival {
+            arrived(
+                upstream,
+                &keys.set,
+                &identity_token(keys, None),
+                &state(),
+                Utc::now(),
+            )
+            .expect("an arrival")
+        }
+
+        /// A signed userinfo is read under a key labelled for the other RSA
+        /// padding, when the provider's list allows the one it is signed with,
+        /// and adds what the identity token does not say.
+        #[test]
+        fn a_signed_userinfo_adds_what_the_identity_token_does_not_say() {
+            let keys = published();
+            let upstream = national(&[
+                ("userinfo_response", "jws"),
+                (
+                    "userinfo_endpoint",
+                    "https://esignet.example/oauth2/userinfo",
+                ),
+                ("userinfo_algs", "RS256"),
+            ]);
+            let mut arrival = arrival_for(&upstream, &keys);
+            let answer = signed_rs256(&keys, Some("userinfo-key"), told(Value::Null));
+            read_upstream_userinfo(&upstream, &keys.set, &answer, None, &mut arrival)
+                .expect("a userinfo");
+            assert_eq!(arrival.email.as_deref(), Some("ama.mensah@example.test"));
+            assert!(!arrival.email_verified);
+            assert_eq!(arrival.userinfo["birthdate"], "1990/03/14");
+            assert_eq!(
+                arrival.find_claim("name"),
+                Some(&Value::String("From the identity token".into())),
+                "the userinfo overwrote the identity token"
+            );
+            assert!(!arrival.userinfo.contains_key("sub"));
+            assert!(!arrival.userinfo.contains_key("iss"));
+
+            let ps256_only = national(&[
+                ("userinfo_response", "jws"),
+                (
+                    "userinfo_endpoint",
+                    "https://esignet.example/oauth2/userinfo",
+                ),
+                ("userinfo_algs", "PS256"),
+            ]);
+            let mut arrival = arrival_for(&ps256_only, &keys);
+            assert!(
+                read_upstream_userinfo(&ps256_only, &keys.set, &answer, None, &mut arrival)
+                    .is_err(),
+                "an algorithm the provider's list leaves out was taken"
+            );
+        }
+
+        /// A signed userinfo is refused when it names no key, speaks for another
+        /// subject, issuer or audience, or comes in another form than registered.
+        #[test]
+        fn a_userinfo_is_refused_in_every_way_it_can_mislead() {
+            let keys = published();
+            let recipient = RsaKeyPair::generate(2048).expect("an RSA key");
+            let pem = recipient.to_pem_private_key();
+            let signed = national(&[
+                ("userinfo_response", "jws"),
+                (
+                    "userinfo_endpoint",
+                    "https://esignet.example/oauth2/userinfo",
+                ),
+                ("userinfo_algs", "RS256"),
+            ]);
+            let encrypted = national(&[
+                ("userinfo_response", "jwe"),
+                (
+                    "userinfo_endpoint",
+                    "https://esignet.example/oauth2/userinfo",
+                ),
+                ("userinfo_algs", "RS256"),
+            ]);
+            let sound = signed_rs256(&keys, Some("userinfo-key"), told(Value::Null));
+            let refusals: Vec<(&Upstream, String, &str)> = vec![
+                (
+                    &signed,
+                    signed_rs256(&keys, None, told(Value::Null)),
+                    "naming no key",
+                ),
+                (
+                    &signed,
+                    signed_rs256(&keys, Some("identity-key"), told(Value::Null)),
+                    "naming a key of another family",
+                ),
+                (
+                    &signed,
+                    signed_rs256(
+                        &keys,
+                        Some("userinfo-key"),
+                        told(serde_json::json!({ "sub": "someone-else" })),
+                    ),
+                    "for another subject",
+                ),
+                (
+                    &signed,
+                    signed_rs256(
+                        &keys,
+                        Some("userinfo-key"),
+                        told(serde_json::json!({ "iss": "https://elsewhere.example" })),
+                    ),
+                    "from another issuer",
+                ),
+                (
+                    &signed,
+                    signed_rs256(
+                        &keys,
+                        Some("userinfo-key"),
+                        told(serde_json::json!({ "aud": "another-client" })),
+                    ),
+                    "for another client",
+                ),
+                (
+                    &signed,
+                    told(Value::Null).to_string(),
+                    "in the clear when signed was registered",
+                ),
+                (
+                    &signed,
+                    encrypted_to(&recipient, "RSA-OAEP-256", "A256GCM", &sound),
+                    "encrypted when signed was registered",
+                ),
+                (
+                    &encrypted,
+                    sound.clone(),
+                    "signed alone when encrypted was registered",
+                ),
+                (
+                    &encrypted,
+                    encrypted_to(&recipient, "RSA-OAEP", "A256GCM", &sound),
+                    "under RSA-OAEP with SHA-1",
+                ),
+                (
+                    &encrypted,
+                    encrypted_to(&recipient, "RSA-OAEP-256", "A128CBC-HS256", &sound),
+                    "under a CBC content encryption",
+                ),
+            ];
+            for (upstream, answer, how) in refusals {
+                let mut arrival = arrival_for(upstream, &keys);
+                assert!(
+                    read_upstream_userinfo(upstream, &keys.set, &answer, Some(&pem), &mut arrival)
+                        .is_err(),
+                    "a userinfo {how} was taken"
+                );
+            }
+
+            let mut arrival = arrival_for(&encrypted, &keys);
+            let answer = encrypted_to(&recipient, "RSA-OAEP-256", "A256GCM", &sound);
+            read_upstream_userinfo(&encrypted, &keys.set, &answer, Some(&pem), &mut arrival)
+                .expect("an encrypted userinfo");
+            assert_eq!(arrival.userinfo["birthdate"], "1990/03/14");
+            let stranger = RsaKeyPair::generate(2048).expect("an RSA key");
+            let mut arrival = arrival_for(&encrypted, &keys);
+            assert!(
+                read_upstream_userinfo(
+                    &encrypted,
+                    &keys.set,
+                    &answer,
+                    Some(&stranger.to_pem_private_key()),
+                    &mut arrival
+                )
+                .is_err(),
+                "a userinfo encrypted to another key was opened"
             );
         }
     }

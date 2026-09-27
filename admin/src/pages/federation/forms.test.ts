@@ -9,12 +9,14 @@ import {
   emptyMapperDraft,
   emptyProviderDraft,
   findProviderBlocker,
+  listNeededProviderKeys,
   mapperDraft,
   mapperMutation,
   mapperTypeLabel,
   mapperTypesFor,
   providerDraft,
   providerMutation,
+  readProviderPublicKey,
   samlMetadataAddress,
 } from "./forms";
 
@@ -68,6 +70,89 @@ describe("identity provider forms", () => {
     });
     draft.clientSecret = "new-secret";
     expect(providerMutation(draft).configs.client_secret).toEqual({ Str: "new-secret" });
+  });
+});
+
+describe("national sign-in provider forms", () => {
+  const assertionJwk = '{"kty":"RSA","kid":"k-1","alg":"PS256","use":"sig","n":"AQAB","e":"AQAB"}';
+  const row: IdpRow = {
+    internal_id: "idp-4",
+    provider_id: "national",
+    name: "national",
+    display_name: "National ID",
+    description: "",
+    enabled: true,
+    trust_email: false,
+    configs: {
+      issuer: { Str: "https://esignet.example" },
+      authorization_endpoint: { Str: "https://esignet.example/authorize" },
+      token_endpoint: { Str: "https://esignet.example/oauth2/token" },
+      jwks_uri: { Str: "https://esignet.example/oauth2/jwks" },
+      userinfo_endpoint: { Str: "https://esignet.example/oauth2/userinfo" },
+      client_id: { Str: "saffui" },
+      scope: { Str: "openid profile" },
+      allowed_algs: { Str: "PS256" },
+      token_auth: { Str: "private_key_jwt" },
+      userinfo_response: { Str: "jwe" },
+      userinfo_algs: { Str: "RS256 PS256" },
+      claims: { Str: '{"userinfo":{"name":{"essential":true}}}' },
+      accepted_acrs: { Str: "mosip:idp:acr:biometrics=mfa" },
+      assertion_jwk: { Str: assertionJwk },
+      encryption_jwk: { Str: '{"kty":"RSA","kid":"k-2","alg":"RSA-OAEP-256","use":"enc","n":"AQAB","e":"AQAB"}' },
+    },
+  };
+
+  test("round-trips what the provider is asked and answers, and never sends a key back", () => {
+    const draft = providerDraft(row);
+    expect(draft.tokenAuth).toBe("private_key_jwt");
+    expect(draft.userinfoForm).toBe("jwe");
+    expect(draft.claimsRequest).toBe('{\n  "userinfo": {\n    "name": {\n      "essential": true\n    }\n  }\n}');
+    draft.clientSecret = "typed-by-mistake";
+    const configs = providerMutation(draft).configs;
+    expect(configs).toEqual({
+      protocol: { Str: "oidc" },
+      issuer: { Str: "https://esignet.example" },
+      authorization_endpoint: { Str: "https://esignet.example/authorize" },
+      token_endpoint: { Str: "https://esignet.example/oauth2/token" },
+      jwks_uri: { Str: "https://esignet.example/oauth2/jwks" },
+      client_id: { Str: "saffui" },
+      scope: { Str: "openid profile" },
+      allowed_algs: { Str: "PS256" },
+      token_auth: { Str: "private_key_jwt" },
+      userinfo_response: { Str: "jwe" },
+      userinfo_endpoint: { Str: "https://esignet.example/oauth2/userinfo" },
+      userinfo_algs: { Str: "RS256 PS256" },
+      claims: { Str: draft.claimsRequest },
+      accepted_acrs: { Str: "mosip:idp:acr:biometrics=mfa" },
+    });
+  });
+
+  test("reads a plain JSON userinfo with no algorithm of its own", () => {
+    const draft = { ...providerDraft(row), userinfoForm: "json" as const };
+    const configs = providerMutation(draft).configs;
+    expect(configs.userinfo_response).toEqual({ Str: "json" });
+    expect(configs.userinfo_algs).toBeUndefined();
+    const unread = providerMutation({ ...draft, userinfoForm: "" }).configs;
+    expect(unread.userinfo_response).toBeUndefined();
+    expect(unread.userinfo_endpoint).toBeUndefined();
+  });
+
+  test("names the keys a provider needs and shows those already drawn", () => {
+    const draft = providerDraft(row);
+    expect(listNeededProviderKeys(draft)).toEqual(["assertion_jwk", "encryption_jwk"]);
+    expect(listNeededProviderKeys({ ...draft, tokenAuth: "client_secret_basic", userinfoForm: "jws" })).toEqual([]);
+    expect(listNeededProviderKeys({ ...draft, protocol: "oauth2", userinfoForm: "jwe" })).toEqual(["assertion_jwk"]);
+    expect(JSON.parse(readProviderPublicKey(row, "assertion_jwk"))).toEqual(JSON.parse(assertionJwk));
+    expect(readProviderPublicKey(undefined, "assertion_jwk")).toBe("");
+  });
+
+  test("keeps a claims request that is not a JSON object from being saved", () => {
+    const draft = providerDraft(row);
+    expect(findProviderBlocker(draft)).toBeNull();
+    for (const written of ["not json", "[]", "null", '"name"']) {
+      expect(findProviderBlocker({ ...draft, claimsRequest: written })).toBe("idp-claims-not-an-object");
+    }
+    expect(findProviderBlocker({ ...draft, claimsRequest: " " })).toBeNull();
   });
 });
 

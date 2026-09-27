@@ -167,7 +167,7 @@ async function changePassword() {
       <p v-if="!passwordKeptHere(user)" class="mt-2 text-xs text-muted">
         {{ say("profile-password-directory") }}
       </p>
-      <form v-else class="mt-2 flex flex-wrap items-end gap-2" @submit.prevent="changePassword">
+      <form v-else class="relative mt-2 flex flex-wrap items-end gap-2" @submit.prevent="changePassword">
         <input
           type="text"
           autocomplete="username"

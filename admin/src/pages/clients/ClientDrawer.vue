@@ -298,13 +298,15 @@ async function detachMapper(mapperId: string) {
   >
     <p v-if="failed" class="text-xs text-danger" role="alert">{{ failed }}</p>
 
-    <div class="flex gap-1 border-b border-border pb-2">
+    <div class="flex h-9 gap-0.5 overflow-x-auto border-b border-border" role="tablist">
       <button
         v-for="held in TABS"
         :key="held"
         type="button"
-        class="rounded-md px-2.5 py-1 text-xs text-muted hover:bg-surface-2 hover:text-ink"
-        :class="tab === held && 'bg-surface-2 font-medium text-ink'"
+        role="tab"
+        :aria-selected="tab === held"
+        class="h-9 shrink-0 border-b-2 px-3 text-[13px] font-medium transition-colors"
+        :class="tab === held ? 'border-accent text-ink' : 'border-transparent text-muted hover:text-ink'"
         @click="tab = held"
       >
         {{ say(`client-tab-${held}`) }}
@@ -343,11 +345,11 @@ async function detachMapper(mapperId: string) {
           <input
             v-model="grantDraft"
             :placeholder="say('agent-grant-placeholder')"
-            class="w-full rounded-md border border-border bg-surface-2 px-2.5 py-1 font-mono text-[11px] text-ink"
+            class="sf-field font-mono"
           />
           <button
             type="submit"
-            class="rounded-md border border-border px-2.5 py-1 text-[11px] hover:bg-surface-2"
+            class="sf-button sf-button-secondary"
           >
             {{ say("agent-grant") }}
           </button>
@@ -451,12 +453,20 @@ async function detachMapper(mapperId: string) {
         <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
           {{ say("client-grants") }} <AppHint name="client-grants-help" />
         </div>
-        <AppToggle v-model="draft.deviceGrant">
-          {{ say("client-grant-device") }} <AppHint name="client-grant-device-help" />
-        </AppToggle>
-        <AppToggle v-model="draft.tokenExchange">
-          {{ say("client-grant-exchange") }} <AppHint name="client-grant-exchange-help" />
-        </AppToggle>
+        <div class="grid gap-2 sm:grid-cols-2">
+          <div class="sf-toggle-card">
+            <AppToggle v-model="draft.deviceGrant">
+              <span class="min-w-0 flex-1">{{ say("client-grant-device") }}</span>
+              <AppHint name="client-grant-device-help" />
+            </AppToggle>
+          </div>
+          <div class="sf-toggle-card">
+            <AppToggle v-model="draft.tokenExchange">
+              <span class="min-w-0 flex-1">{{ say("client-grant-exchange") }}</span>
+              <AppHint name="client-grant-exchange-help" />
+            </AppToggle>
+          </div>
+        </div>
         <label class="block text-[11px] font-medium text-muted">
           {{ say("client-grant-ciba") }} <AppHint name="client-grant-ciba-help" />
           <select
@@ -702,8 +712,8 @@ async function detachMapper(mapperId: string) {
 
     <div v-if="tab === 'roles'" class="mt-4 flex flex-col gap-3">
       <p class="text-[11px] text-muted">{{ say("client-roles-lede") }}</p>
-      <form class="flex max-w-xl flex-wrap items-end gap-2 text-xs" @submit.prevent="makeClientRole">
-        <label class="flex-1 text-[11px] font-medium text-muted">
+      <form class="grid gap-3 text-xs sm:grid-cols-2" @submit.prevent="makeClientRole">
+        <label class="min-w-0 text-[11px] font-medium text-muted">
           {{ say("settings-name") }}
           <input
             v-model="roleDraft.name"
@@ -711,7 +721,7 @@ async function detachMapper(mapperId: string) {
             spellcheck="false"
           />
         </label>
-        <label class="flex-1 text-[11px] font-medium text-muted">
+        <label class="min-w-0 text-[11px] font-medium text-muted">
           {{ say("scopes-col-description") }}
           <input
             v-model="roleDraft.description"
@@ -720,7 +730,7 @@ async function detachMapper(mapperId: string) {
         </label>
         <button
           type="submit"
-          class="sf-button sf-button-primary"
+          class="sf-button sf-button-primary w-fit sm:col-span-2"
         >
           {{ say("realm-create") }}
         </button>

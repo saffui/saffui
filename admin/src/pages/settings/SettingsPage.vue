@@ -1273,7 +1273,7 @@ async function saveSmsTemplate() {
                       {{ say("settings-partial-import-lede") }}
                     </p>
                   </div>
-                  <label class="sf-button sf-button-secondary shrink-0 cursor-pointer">
+                  <label class="sf-button sf-button-secondary relative shrink-0 cursor-pointer">
                     {{ say("settings-partial-import-select") }}
                     <input
                       type="file"
@@ -1346,61 +1346,68 @@ async function saveSmsTemplate() {
           </template>
 
           <template v-if="group === 'login'">
-            <AppToggle v-for="held in LOGIN_TOGGLES" :key="held[0]" v-model="draft[held[0]]">
-              {{ say(held[1]) }} <AppHint :name="held[1] + '-help'" />
-            </AppToggle>
-
-            <label class="mt-2 block text-[11px] font-medium text-muted">
-              {{ say("settings-client-registration") }} <AppHint name="settings-client-registration-help" />
-              <select
-                v-model="draft.client_registration"
-                class="sf-field mt-1"
-              >
-                <option value="disabled">disabled</option>
-                <option value="open">open</option>
-                <option value="protected">protected</option>
-              </select>
-            </label>
-            <div v-if="draft.client_registration !== 'disabled'" class="flex flex-col gap-3">
-              <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <label class="block text-[11px] font-medium text-muted">
-                  {{ say("settings-max-clients") }} <AppHint name="settings-max-clients-help" />
-                  <input
-                    v-model="draft.bounds_max_clients"
-                    type="number"
-                    min="0"
-                    :placeholder="say('settings-unbounded-plain')"
-                    class="sf-field mt-1 font-mono"
-                  />
-                </label>
-                <div class="flex items-end pb-1.5">
-                  <AppToggle v-model="draft.bounds_requires_consent">
-                    {{ say("settings-requires-consent") }}
-                    <AppHint name="settings-requires-consent-help" />
-                  </AppToggle>
-                </div>
+            <div class="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+              <div v-for="held in LOGIN_TOGGLES" :key="held[0]" class="sf-toggle-card">
+                <AppToggle v-model="draft[held[0]]">
+                  <span class="min-w-0 flex-1">{{ say(held[1]) }}</span>
+                  <AppHint :name="held[1] + '-help'" />
+                </AppToggle>
               </div>
-              <label class="block text-[11px] font-medium text-muted">
-                {{ say("settings-trusted-hosts") }} <AppHint name="settings-trusted-hosts-help" />
-                <textarea
-                  v-model="draft.bounds_trusted_hosts"
-                  rows="3"
-                  :placeholder="say('settings-trusted-hosts-hint')"
-                  class="sf-field mt-1 font-mono"
-                  spellcheck="false"
-                ></textarea>
-              </label>
-              <p
-                v-if="draft.client_registration === 'open' && !draft.bounds_trusted_hosts.trim()"
-                class="rounded border border-warn/40 px-2 py-1 text-[11px] text-warn"
-              >
-                {{ say("settings-unbounded") }}
-              </p>
             </div>
+
+            <section class="rounded-lg border border-border bg-surface p-4">
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("settings-client-registration") }} <AppHint name="settings-client-registration-help" />
+                <select
+                  v-model="draft.client_registration"
+                  class="sf-field mt-1"
+                >
+                  <option value="disabled">disabled</option>
+                  <option value="open">open</option>
+                  <option value="protected">protected</option>
+                </select>
+              </label>
+              <div v-if="draft.client_registration !== 'disabled'" class="mt-3 flex flex-col gap-3">
+                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <label class="block text-[11px] font-medium text-muted">
+                    {{ say("settings-max-clients") }} <AppHint name="settings-max-clients-help" />
+                    <input
+                      v-model="draft.bounds_max_clients"
+                      type="number"
+                      min="0"
+                      :placeholder="say('settings-unbounded-plain')"
+                      class="sf-field mt-1 font-mono"
+                    />
+                  </label>
+                  <div class="sf-toggle-card self-end">
+                    <AppToggle v-model="draft.bounds_requires_consent">
+                      <span class="min-w-0 flex-1">{{ say("settings-requires-consent") }}</span>
+                      <AppHint name="settings-requires-consent-help" />
+                    </AppToggle>
+                  </div>
+                </div>
+                <label class="block text-[11px] font-medium text-muted">
+                  {{ say("settings-trusted-hosts") }} <AppHint name="settings-trusted-hosts-help" />
+                  <textarea
+                    v-model="draft.bounds_trusted_hosts"
+                    rows="3"
+                    :placeholder="say('settings-trusted-hosts-hint')"
+                    class="sf-field mt-1 font-mono"
+                    spellcheck="false"
+                  ></textarea>
+                </label>
+                <p
+                  v-if="draft.client_registration === 'open' && !draft.bounds_trusted_hosts.trim()"
+                  class="rounded border border-warn/40 px-2 py-1 text-[11px] text-warn"
+                >
+                  {{ say("settings-unbounded") }}
+                </p>
+              </div>
+            </section>
           </template>
 
           <template v-if="group === 'sessions'">
-            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <label class="block text-[11px] font-medium text-muted">
                 {{ say("settings-session-ceiling") }}
                 <AppHint name="settings-session-ceiling-help" />
@@ -1461,12 +1468,15 @@ async function saveSmsTemplate() {
               </label>
             </div>
             <p class="text-[10.5px] text-faint">{{ say("settings-zero-unbounded") }}</p>
-            <AppToggle v-model="draft.remember_me">
-              {{ say("settings-remember-me") }} <AppHint name="settings-remember-me-help" />
-            </AppToggle>
+            <div class="sf-toggle-card max-w-xl">
+              <AppToggle v-model="draft.remember_me">
+                <span class="min-w-0 flex-1">{{ say("settings-remember-me") }}</span>
+                <AppHint name="settings-remember-me-help" />
+              </AppToggle>
+            </div>
           </template>
           <template v-if="group === 'tokens'">
-            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <label class="block text-[11px] font-medium text-muted">
                 {{ say("settings-access-lifespan") }} <AppHint name="settings-access-lifespan-help" />
                 <input
@@ -1564,19 +1574,29 @@ async function saveSmsTemplate() {
               </label>
             </div>
             <p class="text-[10.5px] text-faint">{{ say("settings-zero-unbounded") }}</p>
-            <AppToggle v-model="draft.revoke_refresh_token">
-              {{ say("settings-refresh-rotation") }}
-              <AppHint name="settings-refresh-rotation-help" />
-            </AppToggle>
-            <AppToggle v-model="draft.require_pushed_authorization_requests">
-              {{ say("settings-require-par") }} <AppHint name="settings-require-par-help" />
-            </AppToggle>
+            <div class="grid gap-2 sm:grid-cols-2">
+              <div class="sf-toggle-card">
+                <AppToggle v-model="draft.revoke_refresh_token">
+                  <span class="min-w-0 flex-1">{{ say("settings-refresh-rotation") }}</span>
+                  <AppHint name="settings-refresh-rotation-help" />
+                </AppToggle>
+              </div>
+              <div class="sf-toggle-card">
+                <AppToggle v-model="draft.require_pushed_authorization_requests">
+                  <span class="min-w-0 flex-1">{{ say("settings-require-par") }}</span>
+                  <AppHint name="settings-require-par-help" />
+                </AppToggle>
+              </div>
+            </div>
           </template>
 
           <template v-if="group === 'security'">
-            <AppToggle v-model="draft.agent_exchange_enabled">
-              {{ say("settings-agents") }} <AppHint name="settings-agents-help" />
-            </AppToggle>
+            <div class="sf-toggle-card max-w-xl">
+              <AppToggle v-model="draft.agent_exchange_enabled">
+                <span class="min-w-0 flex-1">{{ say("settings-agents") }}</span>
+                <AppHint name="settings-agents-help" />
+              </AppToggle>
+            </div>
             <label class="mt-2 block text-[11px] font-medium text-muted">
               {{ say("settings-ssl") }} <AppHint name="settings-ssl-help" />
               <select
@@ -1590,13 +1610,15 @@ async function saveSmsTemplate() {
               </select>
             </label>
 
-            <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+            <div class="sf-section-label mt-2 border-t border-border pt-4">
               {{ say("settings-brute-force") }}
             </div>
-            <AppToggle v-model="draft.bf_protected">
-              {{ say("settings-lockout-protected") }}
-              <AppHint name="settings-lockout-protected-help" />
-            </AppToggle>
+            <div class="sf-toggle-card max-w-xl">
+              <AppToggle v-model="draft.bf_protected">
+                <span class="min-w-0 flex-1">{{ say("settings-lockout-protected") }}</span>
+                <AppHint name="settings-lockout-protected-help" />
+              </AppToggle>
+            </div>
             <div v-if="draft.bf_protected" class="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <label class="block text-[11px] font-medium text-muted">
                 {{ say("settings-lockout-failures") }} <AppHint name="settings-lockout-failures-help" />
@@ -1636,13 +1658,15 @@ async function saveSmsTemplate() {
               </label>
             </div>
 
-            <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+            <div class="sf-section-label mt-2 border-t border-border pt-4">
               {{ say("settings-throttle-title") }}
             </div>
-            <AppToggle v-model="draft.source_throttled">
-              {{ say("settings-throttle-enabled") }}
-              <AppHint name="settings-throttle-enabled-help" />
-            </AppToggle>
+            <div class="sf-toggle-card max-w-xl">
+              <AppToggle v-model="draft.source_throttled">
+                <span class="min-w-0 flex-1">{{ say("settings-throttle-enabled") }}</span>
+                <AppHint name="settings-throttle-enabled-help" />
+              </AppToggle>
+            </div>
             <div
               v-if="draft.source_throttled"
               class="grid grid-cols-1 items-end gap-3 sm:grid-cols-3"
@@ -1681,21 +1705,27 @@ async function saveSmsTemplate() {
               </label>
             </div>
 
-            <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+            <div class="sf-section-label mt-2 border-t border-border pt-4">
               {{ say("signin-events-title") }} <AppHint name="signin-events-title-help" />
             </div>
-            <AppToggle v-model="draft.events_enabled">
-              {{ say("signin-events-toggle") }} <AppHint name="signin-events-toggle-help" />
-            </AppToggle>
+            <div class="sf-toggle-card max-w-xl">
+              <AppToggle v-model="draft.events_enabled">
+                <span class="min-w-0 flex-1">{{ say("signin-events-toggle") }}</span>
+                <AppHint name="signin-events-toggle-help" />
+              </AppToggle>
+            </div>
 
-            <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+            <div class="sf-section-label mt-2 border-t border-border pt-4">
               {{ say("security-notices-title") }} <AppHint name="security-notices-title-help" />
             </div>
-            <AppToggle v-model="draft.security_notices_enabled">
-              {{ say("security-notices-toggle") }} <AppHint name="security-notices-toggle-help" />
-            </AppToggle>
+            <div class="sf-toggle-card max-w-xl">
+              <AppToggle v-model="draft.security_notices_enabled">
+                <span class="min-w-0 flex-1">{{ say("security-notices-toggle") }}</span>
+                <AppHint name="security-notices-toggle-help" />
+              </AppToggle>
+            </div>
 
-            <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+            <div class="sf-section-label mt-2 border-t border-border pt-4">
               {{ say("settings-privacy-door") }} <AppHint name="settings-privacy-door-help" />
             </div>
             <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1721,7 +1751,7 @@ async function saveSmsTemplate() {
               </label>
             </div>
 
-            <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+            <div class="sf-section-label mt-2 border-t border-border pt-4">
               {{ say("settings-assurance") }} <AppHint name="settings-assurance-help" />
             </div>
             <div v-for="(row, at) in acrRows" :key="at" class="grid grid-cols-[1fr_110px_28px] gap-2">
@@ -1756,7 +1786,7 @@ async function saveSmsTemplate() {
             </button>
 
             <template v-if="draft.client_registration === 'protected'">
-              <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              <div class="sf-section-label mt-2 border-t border-border pt-4">
                 {{ say("settings-registration-secret") }}
                 <AppHint name="settings-registration-secret-help" />
               </div>
@@ -1797,7 +1827,7 @@ async function saveSmsTemplate() {
           </template>
 
           <template v-if="group === 'credentials'">
-            <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+            <div class="sf-section-label">
               {{ say("otp-title") }} <AppHint name="otp-title-help" />
             </div>
             <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -1848,7 +1878,7 @@ async function saveSmsTemplate() {
               </label>
             </div>
 
-            <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+            <div class="sf-section-label mt-2 border-t border-border pt-4">
               {{ say("webauthn-title") }} <AppHint name="webauthn-title-help" />
             </div>
             <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1861,23 +1891,27 @@ async function saveSmsTemplate() {
                   class="sf-field mt-1"
                 />
               </label>
-              <div class="flex items-end pb-1.5">
+              <div class="sf-toggle-card self-end">
                 <AppToggle v-model="webauthn.allow_subdomains">
-                  {{ say("webauthn-subdomains") }} <AppHint name="webauthn-subdomains-help" />
+                  <span class="min-w-0 flex-1">{{ say("webauthn-subdomains") }}</span>
+                  <AppHint name="webauthn-subdomains-help" />
                 </AppToggle>
               </div>
             </div>
             <p class="text-[10.5px] text-faint">{{ say("webauthn-fixed-line") }}</p>
 
-            <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+            <div class="sf-section-label mt-2 border-t border-border pt-4">
               {{ say("passwordless-title") }} <AppHint name="passwordless-title-help" />
             </div>
-            <AppToggle
-              v-model="passwordless"
-              :disabled="!passwordless && passwordlessReady !== true"
-            >
-              {{ say("passwordless-enable") }} <AppHint name="passwordless-enable-help" />
-            </AppToggle>
+            <div class="sf-toggle-card max-w-xl">
+              <AppToggle
+                v-model="passwordless"
+                :disabled="!passwordless && passwordlessReady !== true"
+              >
+                <span class="min-w-0 flex-1">{{ say("passwordless-enable") }}</span>
+                <AppHint name="passwordless-enable-help" />
+              </AppToggle>
+            </div>
             <div
               v-if="passwordlessReady !== true"
               class="flex flex-wrap items-center gap-2 rounded-md border border-warn/40 bg-warn/5 px-3 py-2 text-[11px] text-muted"
@@ -1894,7 +1928,7 @@ async function saveSmsTemplate() {
             </div>
             <p class="text-[10.5px] text-faint">{{ say("passwordless-fixed-line") }}</p>
 
-            <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+            <div class="sf-section-label mt-2 border-t border-border pt-4">
               {{ say("settings-password-policy") }} <AppHint name="settings-password-policy-help" />
             </div>
             <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -1913,9 +1947,14 @@ async function saveSmsTemplate() {
                 />
               </label>
             </div>
-            <AppToggle v-for="held in POLICY_CHECKS" :key="held[0]" v-model="policy[held[0]]">
-              {{ say(held[1]) }} <AppHint :name="held[1] + '-help'" />
-            </AppToggle>
+            <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              <div v-for="held in POLICY_CHECKS" :key="held[0]" class="sf-toggle-card">
+                <AppToggle v-model="policy[held[0]]">
+                  <span class="min-w-0 flex-1">{{ say(held[1]) }}</span>
+                  <AppHint :name="held[1] + '-help'" />
+                </AppToggle>
+              </div>
+            </div>
             <label class="block text-[11px] font-medium text-muted">
               {{ say("policy-regex") }} <AppHint name="policy-regex-help" />
               <input

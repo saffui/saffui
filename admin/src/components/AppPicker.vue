@@ -1,8 +1,5 @@
 <script setup lang="ts">
-// The compact picker popover: a filter over rows the caller already holds,
-// each row addable unless already held. Filters this list only; the server
-// does not search, and a search box that lies is worse than none.
-import { computed, ref } from "vue";
+import { computed, ref, useId } from "vue";
 import { say } from "@/i18n";
 
 const props = defineProps<{
@@ -11,41 +8,45 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ add: [id: string]; close: [] }>();
 const typed = ref("");
+const titleId = useId();
 const shown = computed(() => {
   const needle = typed.value.trim().toLowerCase();
   const rows = needle
     ? props.rows.filter((row) => row.label.toLowerCase().includes(needle))
     : props.rows;
-  return rows.slice(0, 8);
+  return rows.slice(0, 12);
 });
 </script>
 
 <template>
   <div
-    class="absolute top-full left-0 z-40 mt-1 w-64 rounded-md border border-border bg-surface p-1.5 shadow-(--sf-shadow)"
+    role="dialog"
+    :aria-labelledby="titleId"
+    class="sf-popover absolute top-full left-0 z-40 mt-1 w-80 max-w-[calc(100vw-2rem)] p-2"
   >
-    <p class="px-1 pb-1 text-[10.5px] font-semibold tracking-[0.08em] text-faint uppercase">
+    <p :id="titleId" class="sf-section-label px-1 pb-1.5">
       {{ title }}
     </p>
     <input
       v-model="typed"
       :placeholder="say('picker-filter')"
-      class="w-full rounded-md border border-border bg-surface-2 px-2 py-1 font-mono text-[11px] text-ink"
+      class="sf-field font-mono"
+      autofocus
       spellcheck="false"
     />
-    <div class="mt-1 max-h-48 overflow-y-auto">
+    <div class="mt-1.5 max-h-64 overflow-y-auto">
       <div
         v-for="row in shown"
         :key="row.id"
-        class="flex items-center gap-2 rounded px-1.5 py-1 text-[11.5px]"
+        class="flex min-h-9 items-center gap-2 rounded px-2 text-xs"
         :class="row.held ? 'text-faint' : 'hover:bg-surface-2'"
       >
         <span class="min-w-0 flex-1 truncate font-mono">{{ row.label }}</span>
-        <span v-if="row.held" class="text-[10px]">{{ say("picker-held") }}</span>
+        <span v-if="row.held" class="text-[11px]">{{ say("picker-held") }}</span>
         <button
           v-else
           type="button"
-          class="rounded border border-border px-1.5 text-[10.5px] text-accent hover:bg-surface-3"
+          class="sf-button min-h-7 px-2 text-[11.5px] text-accent hover:bg-surface-3"
           @click="emit('add', row.id)"
         >
           {{ say("picker-add") }}
@@ -57,7 +58,7 @@ const shown = computed(() => {
     </div>
     <button
       type="button"
-      class="mt-1 w-full rounded border border-border px-2 py-1 text-[10.5px] text-muted hover:bg-surface-2"
+      class="sf-button sf-button-secondary mt-1.5 w-full justify-center"
       @click="emit('close')"
     >
       {{ say("action-cancel") }}

@@ -322,7 +322,7 @@ async function drop() {
       </p>
     </section>
 
-    <div v-if="tab === 'directories'" class="mt-5 flex max-w-3xl items-center gap-3">
+    <div v-if="tab === 'directories'" class="mt-5 flex items-center gap-3">
       <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
         {{ say("federation-directories") }}
       </h2>
@@ -335,7 +335,7 @@ async function drop() {
       </button>
     </div>
     <template v-if="tab === 'directories'">
-      <div class="mt-3 max-w-3xl rounded-lg border border-border bg-surface px-3 py-3 text-xs">
+      <div class="mt-3 rounded-lg border border-border bg-surface px-4 py-3 text-xs">
         <div class="flex flex-wrap items-center gap-2">
           <h3 class="font-semibold text-ink">{{ say("spnego-title") }}</h3>
           <AppHint name="federation-kerberos-help" />
@@ -351,7 +351,7 @@ async function drop() {
       <p v-if="!directories.length" class="mt-2 text-xs text-muted">
         {{ say("federation-no-directories") }}
       </p>
-      <div v-else class="mt-2 grid max-w-3xl gap-2">
+      <div v-else class="mt-2 grid gap-2 lg:grid-cols-2">
       <button
         v-for="row in directories"
         :key="row.alias"
@@ -370,13 +370,13 @@ async function drop() {
       </div>
     </template>
 
-    <div v-if="tab === 'platforms'" class="mt-5 flex max-w-3xl flex-wrap items-center gap-2">
+    <div v-if="tab === 'platforms'" class="mt-5 flex flex-wrap items-center gap-2">
       <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
         {{ say("federation-platforms") }} <AppHint name="federation-platforms-help" />
       </h2>
       <button
         type="button"
-        class="ml-auto rounded-md border border-border px-2.5 py-1 text-[11px] text-muted hover:bg-surface-2 hover:text-ink"
+        class="sf-button sf-button-secondary ml-auto"
         @click="openCreate"
       >
         {{ say("federation-add-platform") }}
@@ -386,7 +386,7 @@ async function drop() {
       <p v-if="!platforms.length" class="mt-2 text-xs text-muted">
         {{ say("federation-no-platforms") }}
       </p>
-      <div v-else class="mt-2 grid max-w-3xl gap-2">
+      <div v-else class="mt-2 grid gap-2 lg:grid-cols-2">
       <div
         v-for="row in platforms"
         :key="row.internal_id"

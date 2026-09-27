@@ -116,6 +116,7 @@ users-pending-owing = quelque chose à faire
 filters-any = tous
 filters-clear = tout effacer
 users-search = nom d'utilisateur, courriel…
+users-empty = Aucun utilisateur ne correspond à ces filtres.
 users-enabled = actif
 users-email-verified = Vérifié
 users-disabled = Désactivé
@@ -265,6 +266,7 @@ scopes-default = défaut
 
 directory-col-display = Nom affiché
 directory-nobody = Personne.
+directory-empty = Aucun élément ne correspond à cette page.
 roles-title = Rôles
 role-held-by-users = Détenu par les utilisateurs
 role-held-by-groups = Détenu par les groupes

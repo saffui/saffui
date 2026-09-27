@@ -18,14 +18,14 @@ onUnmounted(() => document.removeEventListener("keydown", onKey));
   <div class="fixed inset-0 z-40">
     <div class="absolute inset-0 bg-black/30" @click="emit('close')"></div>
     <aside
-      class="absolute inset-y-0 right-0 flex w-[560px] max-w-full flex-col border-l border-border bg-surface"
+      class="absolute inset-y-0 right-0 flex w-[600px] max-w-full flex-col border-l border-border bg-surface shadow-2xl"
       role="dialog"
       aria-modal="true"
       :aria-label="props.title"
     >
-      <header class="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
+      <header class="flex items-start justify-between gap-3 border-b border-border px-5 py-[18px] sm:px-6">
         <div class="min-w-0">
-          <h2 class="truncate text-sm font-semibold tracking-tight">{{ props.title }}</h2>
+          <h2 class="truncate text-base font-semibold tracking-tight">{{ props.title }}</h2>
           <div v-if="props.subtitle" class="mt-0.5 truncate font-mono text-[11px] text-faint">
             {{ props.subtitle }}
           </div>
@@ -38,7 +38,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKey));
           Esc
         </button>
       </header>
-      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6">
         <slot />
       </div>
     </aside>

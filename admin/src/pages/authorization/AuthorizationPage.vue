@@ -856,7 +856,7 @@ function nodeStroke(row: PolicyRow): string {
         <select
           id="authorization-client"
           v-model="clientId"
-          class="w-44 rounded-md border border-border bg-surface-2 px-2 py-1 font-mono text-xs text-ink"
+          class="sf-field w-52 font-mono"
           :disabled="!clients.length"
           @change="chooseClient"
         >
@@ -869,14 +869,14 @@ function nodeStroke(row: PolicyRow): string {
         <button
           type="submit"
           :disabled="!clientId"
-          class="rounded-md border border-border px-2 py-1 text-xs hover:bg-surface-2"
+          class="sf-button sf-button-secondary"
         >
           {{ say("authz-load") }}
         </button>
         <button
           type="button"
           :disabled="!clientId"
-          class="rounded-md border border-border px-2 py-1 text-xs hover:bg-surface-2"
+          class="sf-button sf-button-secondary"
           @click="openProtection()"
         >
           {{ protectedServer ? say("authz-protection") : say("authz-protect") }}
@@ -1123,7 +1123,7 @@ function nodeStroke(row: PolicyRow): string {
               {{ say("authz-policy") }}
               <select
                 v-model="askedPolicy"
-                class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs text-ink"
+                class="sf-field mt-1 font-mono"
               >
                 <option
                   v-for="row in policies"

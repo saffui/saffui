@@ -37,7 +37,7 @@ function remove(at: number) {
       />
       <button
         type="button"
-        class="grid w-8 shrink-0 place-items-center rounded-md border border-border text-sm text-muted hover:border-danger/40 hover:text-danger"
+        class="grid w-9 shrink-0 place-items-center rounded-md border border-border text-base text-muted hover:border-danger/40 hover:bg-danger-tint hover:text-danger"
         :aria-label="`${removeLabel}: ${inputLabel} ${at + 1}`"
         @click="remove(at)"
       >
@@ -46,7 +46,7 @@ function remove(at: number) {
     </div>
     <button
       type="button"
-      class="w-fit rounded-md border border-border px-2.5 py-1 text-[11px] text-muted hover:bg-surface-2 hover:text-ink"
+      class="sf-button sf-button-secondary h-8 min-h-8 w-fit px-2.5 text-xs"
       @click="emit('update:modelValue', [...modelValue, ''])"
     >
       + {{ addLabel }}

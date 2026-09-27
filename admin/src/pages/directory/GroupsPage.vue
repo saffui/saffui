@@ -229,10 +229,10 @@ async function flipDefault(group: GroupRow) {
 
     <form
       v-if="making"
-      class="mt-3 flex max-w-xl flex-wrap items-end gap-2 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
+      class="mt-3 grid max-w-6xl items-end gap-3 rounded-lg border border-border bg-surface p-4 text-xs sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_minmax(0,1fr)_auto]"
       @submit.prevent="makeGroup"
     >
-      <label class="flex-1 text-[11px] font-medium text-muted">
+      <label class="min-w-0 text-[11px] font-medium text-muted">
         {{ say("settings-name") }}
         <input
           v-model="newName"
@@ -240,14 +240,14 @@ async function flipDefault(group: GroupRow) {
           spellcheck="false"
         />
       </label>
-      <label class="flex-1 text-[11px] font-medium text-muted">
+      <label class="min-w-0 text-[11px] font-medium text-muted">
         {{ say("scopes-col-description") }}
         <input
           v-model="newDescription"
           class="sf-field mt-1"
         />
       </label>
-      <label class="min-w-0 flex-1 text-[11px] font-medium text-muted sm:w-44 sm:flex-none">
+      <label class="min-w-0 text-[11px] font-medium text-muted">
         {{ say("group-parent") }} <AppHint name="group-parent-help" />
         <select
           v-model="newParent"
@@ -261,7 +261,7 @@ async function flipDefault(group: GroupRow) {
       </label>
       <button
         type="submit"
-        class="sf-button sf-button-primary"
+        class="sf-button sf-button-primary sm:col-span-2 sm:w-fit xl:col-span-1"
       >
         {{ say("realm-create") }}
       </button>
@@ -338,12 +338,13 @@ async function flipDefault(group: GroupRow) {
           </button>
         </div>
       </form>
-      <div class="mt-3">
+      <div class="sf-toggle-card mt-3">
         <AppToggle
           :model-value="opened.is_default"
           @update:model-value="flipDefault(opened)"
         >
-          {{ say("group-default") }} <AppHint name="group-default-help" />
+          <span class="min-w-0 flex-1">{{ say("group-default") }}</span>
+          <AppHint name="group-default-help" />
           <span
             v-if="opened.is_default"
             class="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted"
@@ -376,7 +377,7 @@ async function flipDefault(group: GroupRow) {
           </span>
           <button
             type="button"
-            class="rounded border border-border px-1.5 py-0.5 text-[10.5px] text-accent hover:bg-surface-2"
+            class="sf-button sf-button-secondary h-8 min-h-8 px-2.5 text-xs"
             @click="openPicker('member')"
           >
             {{ say("group-add-member") }}
@@ -415,7 +416,7 @@ async function flipDefault(group: GroupRow) {
           </span>
           <button
             type="button"
-            class="rounded border border-border px-1.5 py-0.5 text-[10.5px] text-accent hover:bg-surface-2"
+            class="sf-button sf-button-secondary h-8 min-h-8 px-2.5 text-xs"
             @click="openPicker('role')"
           >
             {{ say("group-grant-role") }}

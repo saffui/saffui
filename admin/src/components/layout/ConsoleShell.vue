@@ -9,12 +9,12 @@ const navOpen = ref(false);
 </script>
 
 <template>
-  <div class="flex h-full">
+  <div class="flex h-full overflow-hidden">
     <SideNav :open="navOpen" @close="navOpen = false" />
     <AppToasts />
-    <div class="flex min-w-0 flex-1 flex-col">
+    <div class="flex min-h-0 min-w-0 flex-1 flex-col">
       <TopBar @toggle-nav="navOpen = !navOpen" />
-      <main class="min-h-0 flex-1 overflow-y-auto bg-bg p-4 md:p-6">
+      <main class="min-h-0 flex-1 overflow-y-auto bg-bg p-4 sm:p-5 lg:p-7">
         <router-view />
       </main>
       <StatusBar />

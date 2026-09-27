@@ -506,13 +506,15 @@ function instant(epoch: number | null | undefined): string {
   >
     <p v-if="failed" class="text-xs text-danger" role="alert">{{ failed }}</p>
 
-    <div class="flex flex-wrap gap-1 border-b border-border pb-2">
+    <div class="flex h-9 gap-0.5 overflow-x-auto border-b border-border" role="tablist">
       <button
         v-for="held in TABS"
         :key="held"
         type="button"
-        class="rounded-md px-2.5 py-1 text-xs text-muted hover:bg-surface-2 hover:text-ink"
-        :class="tab === held && 'bg-surface-2 font-medium text-ink'"
+        role="tab"
+        :aria-selected="tab === held"
+        class="h-9 shrink-0 border-b-2 px-3 text-[13px] font-medium transition-colors"
+        :class="tab === held ? 'border-accent text-ink' : 'border-transparent text-muted hover:text-ink'"
         @click="tab = held"
       >
         {{ say(`user-tab-${held}`) }}
@@ -788,7 +790,7 @@ function instant(epoch: number | null | undefined): string {
               v-model="newPassword"
               :type="showPassword ? 'text' : 'password'"
               autocomplete="new-password"
-              class="w-full rounded-md border border-border bg-surface-2 py-1.5 pr-7 pl-2.5 text-xs text-ink"
+              class="sf-field pr-9"
             />
             <button
               type="button"
@@ -808,7 +810,7 @@ function instant(epoch: number | null | undefined): string {
               v-model="newPasswordAgain"
               :type="showAgain ? 'text' : 'password'"
               autocomplete="new-password"
-              class="w-full rounded-md border border-border bg-surface-2 py-1.5 pr-7 pl-2.5 text-xs text-ink"
+              class="sf-field pr-9"
             />
             <button
               type="button"

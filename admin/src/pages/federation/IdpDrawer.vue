@@ -227,7 +227,7 @@ async function dropMapper(row: IdpMapperRow) {
     :subtitle="props.row?.provider_id || say(protocolLabel)"
     @close="emit('close')"
   >
-    <div class="flex h-8 items-center gap-0.5 border-b border-border" role="tablist">
+    <div class="flex h-9 items-center gap-0.5 border-b border-border" role="tablist">
       <button
         v-for="tab in ['configuration', 'mappers'] as const"
         :key="tab"
@@ -235,7 +235,7 @@ async function dropMapper(row: IdpMapperRow) {
         role="tab"
         :aria-selected="current === tab"
         :disabled="tab === 'mappers' && !props.row"
-        class="h-8 border-b-2 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-40"
+        class="h-9 border-b-2 px-3 text-[13px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40"
         :class="current === tab ? 'border-accent text-ink' : 'border-transparent text-muted hover:text-ink'"
         @click="current = tab"
       >

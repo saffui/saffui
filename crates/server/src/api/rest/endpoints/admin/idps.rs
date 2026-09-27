@@ -223,6 +223,35 @@ pub async fn prove(
     })))
 }
 
+#[derive(serde::Deserialize)]
+pub struct DiscoveryAsked {
+    issuer: String,
+}
+
+/// What an issuer's discovery document says, for an operator filling in a
+/// provider: the endpoints follow from the issuer rather than being typed.
+/// Fetched under the egress policy like every call that leaves the house.
+pub async fn discover(
+    egress: web::Data<config::serving::Egress>,
+    body: web::Json<DiscoveryAsked>,
+) -> Result<HttpResponse, ApiError> {
+    use services::federation::discovery;
+    let issuer = body.into_inner().issuer;
+    let undiscovered = |why: discovery::Undiscoverable| {
+        ApiError::with_detail(ErrorCode::ValidationError, why.to_string())
+    };
+    let located = discovery::locate_discovery_document(&issuer).map_err(undiscovered)?;
+    let Some(document) = outbound::egress::fetch(located.clone(), **egress).await else {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            format!("the discovery document at {located} could not be read"),
+        ));
+    };
+    let discovered =
+        discovery::read_discovery_document(&issuer, &document).map_err(undiscovered)?;
+    Ok(HttpResponse::Ok().json(discovered))
+}
+
 fn refused(why: Unwritable) -> ApiError {
     match why {
         Unwritable::AlreadyExists => ApiError::new(ErrorCode::IdentityProviderAlreadyExists),

@@ -226,11 +226,21 @@ pub async fn conclude(
     let Ok(upstream) = Upstream::parse(&provider) else {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };
-    if let (Identity::Signed(signed), Some(answered_by)) = (&upstream.identity, &came.iss)
-        && answered_by != &signed.issuer
-    {
-        tracing::warn!(alias, "a brokered login came back from another issuer");
-        return refused();
+    if let Identity::Signed(signed) = &upstream.identity {
+        match &came.iss {
+            Some(answered_by) if answered_by != &signed.issuer => {
+                tracing::warn!(alias, "a brokered login came back from another issuer");
+                return refused();
+            }
+            None if signed.iss_required => {
+                tracing::warn!(
+                    alias,
+                    "a brokered login came back without naming its issuer"
+                );
+                return refused();
+            }
+            _ => {}
+        }
     }
 
     // 1. Spend the state: keyed on its hash and this provider, once, and only for

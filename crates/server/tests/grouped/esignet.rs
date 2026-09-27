@@ -142,8 +142,27 @@ async fn plant_national_person() -> NationalPerson {
     person
 }
 
-/// The provider over the admin plane, with what eSignet asks for, and the two
-/// public keys it drew for the operator to register there.
+/// What eSignet publishes about itself, read through the admin plane the way
+/// the console reads it when an operator names the issuer.
+async fn discover_esignet(plane: &Plane, bearer: &str, esignet: &str) -> Value {
+    let (status, found) = asked(
+        plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/provider-discovery"),
+        bearer,
+        Some(json!({ "issuer": esignet })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{found}");
+    assert_eq!(found["iss_parameter"], true, "{found}");
+    assert_eq!(found["gaps"], json!([]), "{found}");
+    assert_eq!(found["id_token_algs"], json!(["PS256"]), "{found}");
+    found
+}
+
+/// The provider over the admin plane, its endpoints from eSignet's discovery
+/// document and the rest from what eSignet asks for, and the two public keys
+/// it drew for the operator to register there.
 async fn create_national_provider(
     plane: &Plane,
     bearer: &str,
@@ -151,6 +170,7 @@ async fn create_national_provider(
     client_id: &str,
     accepted_acrs: &str,
 ) -> (Value, Value) {
+    let found = discover_esignet(plane, bearer, esignet).await;
     let (status, told) = asked(
         plane,
         Method::POST,
@@ -163,11 +183,12 @@ async fn create_national_provider(
             "description": "",
             "trust_email": false,
             "configs": {
-                "issuer": { "Str": esignet },
-                "authorization_endpoint": { "Str": format!("{esignet}/oauth2/authorize") },
-                "token_endpoint": { "Str": format!("{esignet}/oauth2/token") },
-                "jwks_uri": { "Str": format!("{esignet}/oauth2/jwks") },
-                "userinfo_endpoint": { "Str": format!("{esignet}/oauth2/userinfo") },
+                "issuer": { "Str": found["issuer"] },
+                "authorization_endpoint": { "Str": found["authorization_endpoint"] },
+                "token_endpoint": { "Str": found["token_endpoint"] },
+                "jwks_uri": { "Str": found["jwks_uri"] },
+                "userinfo_endpoint": { "Str": found["userinfo_endpoint"] },
+                "iss_parameter": { "Str": "required" },
                 "client_id": { "Str": client_id },
                 "token_auth": { "Str": "private_key_jwt" },
                 "scope": { "Str": "openid profile email" },

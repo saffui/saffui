@@ -16,6 +16,8 @@ mod ldap_front;
 mod ldap_login;
 #[path = "grouped/outbound.rs"]
 mod outbound;
+#[path = "grouped/provider_discovery.rs"]
+mod provider_discovery;
 #[path = "grouped/scim.rs"]
 mod scim;
 #[path = "grouped/spnego_login.rs"]

@@ -70,6 +70,9 @@ pub struct SignedIdentity {
     /// Where the provider says more about the person than its identity token
     /// does. Absent, the identity token alone says who arrived.
     pub userinfo: Option<SignedUserinfo>,
+    /// Whether a way back must name its issuer, as a provider announcing RFC
+    /// 9207 always does.
+    pub iss_required: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -143,6 +146,12 @@ pub enum Unusable {
         "accepted_acrs needs an identity token, which a plain OAuth 2.0 provider does not give"
     )]
     AcrsWithoutIdentityToken,
+    #[error("iss_parameter is required or left out, not {0}")]
+    UnknownIssParameter(String),
+    #[error(
+        "iss_parameter needs an issuer to compare, which a plain OAuth 2.0 provider is not given"
+    )]
+    IssParameterWithoutIssuer,
 }
 
 pub(crate) fn text<'a>(bag: &'a AttributesMap, key: &str) -> Option<&'a str> {
@@ -184,6 +193,9 @@ impl Upstream {
         let accepted_acrs = read_accepted_acrs(bag)?;
         if !accepted_acrs.is_empty() && matches!(identity, Identity::Asked(_)) {
             return Err(Unusable::AcrsWithoutIdentityToken);
+        }
+        if text(bag, "iss_parameter").is_some() && matches!(identity, Identity::Asked(_)) {
+            return Err(Unusable::IssParameterWithoutIssuer);
         }
         Ok(Self {
             authorization_endpoint: addressed(bag, "authorization_endpoint")?,
@@ -287,6 +299,11 @@ impl SignedIdentity {
                 allowed_algs: read_named_algorithms(bag, "userinfo_algs", allowed_algs.clone())?,
             }),
         };
+        let iss_required = match text(bag, "iss_parameter").filter(|said| !said.is_empty()) {
+            None => false,
+            Some("required") => true,
+            Some(other) => return Err(Unusable::UnknownIssParameter(other.to_owned())),
+        };
         Ok(Self {
             issuer: text(bag, "issuer")
                 .ok_or(Unusable::Missing("issuer"))?
@@ -294,6 +311,7 @@ impl SignedIdentity {
             jwks_uri: addressed(bag, "jwks_uri")?,
             allowed_algs,
             userinfo,
+            iss_required,
         })
     }
 }
@@ -662,7 +680,7 @@ pub fn choose_assertion_audience(upstream: &Upstream) -> &str {
 
 /// What the userinfo encryption may name. RSA-OAEP with SHA-1 and the CBC
 /// content encryptions are refused whatever the provider offers.
-const USERINFO_ENCRYPTIONS: [&str; 3] = ["A128GCM", "A192GCM", "A256GCM"];
+pub(crate) const USERINFO_ENCRYPTIONS: [&str; 3] = ["A128GCM", "A192GCM", "A256GCM"];
 
 /// Read the provider's userinfo in the one form it was registered for, and add
 /// what it says to the arrival, Core §5.3.
@@ -2382,10 +2400,32 @@ mod tests {
                     ("userinfo_response", "jwe"),
                     "the provider names no userinfo_endpoint",
                 ),
+                (
+                    ("iss_parameter", "sometimes"),
+                    "iss_parameter is required or left out, not sometimes",
+                ),
             ] {
                 let refused = Upstream::parse(&national_provider(&[said])).expect_err("a refusal");
                 assert_eq!(refused.to_string(), refusal, "{said:?}");
             }
+            for (said, required) in [(None, false), (Some(""), false), (Some("required"), true)] {
+                let upstream = national(
+                    &said
+                        .map(|held| ("iss_parameter", held))
+                        .into_iter()
+                        .collect::<Vec<_>>(),
+                );
+                let Identity::Signed(signed) = &upstream.identity else {
+                    panic!("an OpenID Connect provider read as plain OAuth 2.0");
+                };
+                assert_eq!(signed.iss_required, required, "{said:?}");
+            }
+            assert_eq!(
+                Upstream::parse(&plain_provider(&[("iss_parameter", "required")]))
+                    .expect_err("an issuer nobody holds to compare")
+                    .to_string(),
+                "iss_parameter needs an issuer to compare, which a plain OAuth 2.0 provider is not given"
+            );
             assert_eq!(
                 Upstream::parse(&plain_provider(&[(
                     "accepted_acrs",

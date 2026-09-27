@@ -139,6 +139,10 @@ pub enum Unusable {
     AcrPairedTwice(String),
     #[error("no userinfo form answers to {0}")]
     UnknownUserinfoForm(String),
+    #[error(
+        "accepted_acrs needs an identity token, which a plain OAuth 2.0 provider does not give"
+    )]
+    AcrsWithoutIdentityToken,
 }
 
 pub(crate) fn text<'a>(bag: &'a AttributesMap, key: &str) -> Option<&'a str> {
@@ -175,6 +179,12 @@ impl Upstream {
             Identity::Signed(_) => "openid",
             Identity::Asked(_) => "",
         };
+        // A context is vouched for in an identity token alone: paired on a
+        // provider that gives none, the pairing would never be checked.
+        let accepted_acrs = read_accepted_acrs(bag)?;
+        if !accepted_acrs.is_empty() && matches!(identity, Identity::Asked(_)) {
+            return Err(Unusable::AcrsWithoutIdentityToken);
+        }
         Ok(Self {
             authorization_endpoint: addressed(bag, "authorization_endpoint")?,
             token_endpoint: addressed(bag, "token_endpoint")?,
@@ -186,7 +196,7 @@ impl Upstream {
             pkce: !matches!(bag.get("pkce"), Some(AttributeValue::Bool(false)))
                 && text(bag, "pkce") != Some("false"),
             claims: read_claims_request(bag)?,
-            accepted_acrs: read_accepted_acrs(bag)?,
+            accepted_acrs,
             identity,
         })
     }
@@ -2376,6 +2386,15 @@ mod tests {
                 let refused = Upstream::parse(&national_provider(&[said])).expect_err("a refusal");
                 assert_eq!(refused.to_string(), refusal, "{said:?}");
             }
+            assert_eq!(
+                Upstream::parse(&plain_provider(&[(
+                    "accepted_acrs",
+                    "mosip:idp:acr:biometrics=mfa"
+                )]))
+                .expect_err("a pairing no identity token would check")
+                .to_string(),
+                "accepted_acrs needs an identity token, which a plain OAuth 2.0 provider does not give"
+            );
         }
 
         /// The departure asks for the claims and every context the realm

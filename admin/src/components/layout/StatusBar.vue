@@ -18,7 +18,7 @@ const realm = computed(() => String(route.params.realm ?? ""));
 /// What the console has actually observed, and nothing more. Green means the
 /// realm answered the reading the bar itself makes; before that reading it
 /// claims nothing.
-const dot = computed(() => {
+const signal = computed(() => {
   if (standing.answering === null) return "bg-faint";
   return standing.answering ? "bg-ok" : "bg-danger";
 });
@@ -48,13 +48,12 @@ afterWrites(() => realm.value && standing.read(realm.value, true));
     class="flex h-[26px] shrink-0 items-center gap-2 border-t border-border bg-surface px-[18px] text-[11.5px] text-faint"
   >
     <span
-      class="size-[6px] shrink-0 rounded-full"
-      :class="dot"
+      class="h-3 w-0.5 shrink-0 rounded-sm"
+      :class="signal"
       :title="say(`status-${standing.answering === null ? 'asking' : standing.answering ? 'answering' : 'silent'}`)"
     ></span>
     <span class="truncate font-mono">{{ host }}</span>
-    <span aria-hidden="true">·</span>
-    <span class="truncate font-mono">{{ say("status-realm", { realm }) }}</span>
+    <span class="truncate border-l border-border pl-2 font-mono">{{ say("status-realm", { realm }) }}</span>
 
     <span class="flex-1"></span>
 
@@ -67,4 +66,3 @@ afterWrites(() => realm.value && standing.read(realm.value, true));
     <span class="shrink-0 font-mono tabular-nums">{{ now }}</span>
   </footer>
 </template>
-

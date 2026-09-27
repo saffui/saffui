@@ -853,11 +853,11 @@ function edgeWords(item: CampaignItem): string {
             </button>
           </template>
         </div>
-        <p class="mt-1 text-[10px] text-faint">
-          {{ say("req-asked-by") }} {{ request.asked_by }}<template v-if="request.decided_by">
-            · {{ say("req-decided-by") }} {{ request.decided_by }}</template
-          ><template v-if="request.decided_reason"> · {{ request.decided_reason }}</template
-          ><template v-if="request.expires_at"> · {{ say("iga-until") }} {{ untilShort(request.expires_at) }}</template>
+        <p class="sf-meta-list mt-1 text-[10px] text-faint">
+          <span>{{ say("req-asked-by") }} {{ request.asked_by }}</span>
+          <span v-if="request.decided_by">{{ say("req-decided-by") }} {{ request.decided_by }}</span>
+          <span v-if="request.decided_reason">{{ request.decided_reason }}</span>
+          <span v-if="request.expires_at">{{ say("iga-until") }} {{ untilShort(request.expires_at) }}</span>
         </p>
         <form
           v-if="denying === request.request_id"

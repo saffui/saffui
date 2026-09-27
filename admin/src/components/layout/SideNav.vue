@@ -62,11 +62,12 @@ function active(leaf: string): boolean {
             class="h-[29px] w-0.5 shrink-0"
             :class="active(item.leaf) ? 'bg-accent' : 'bg-transparent'"
           ></span>
-          <AppIcon
-            :name="item.icon"
-            :size="14"
-            :class="active(item.leaf) ? 'text-accent' : 'text-faint'"
-          />
+          <span
+            class="grid size-6 shrink-0 place-items-center rounded-[3px]"
+            :class="active(item.leaf) ? 'bg-surface text-accent' : 'text-faint'"
+          >
+            <AppIcon :name="item.icon" :size="15" />
+          </span>
           <span
             class="truncate text-[13.5px]"
             :class="active(item.leaf) ? 'font-medium text-ink' : 'text-muted'"

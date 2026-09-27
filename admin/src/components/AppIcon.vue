@@ -4,7 +4,7 @@
 // tree-shaken: only the glyphs named here ship.
 import {
   LayoutDashboard,
-  Users,
+  UserRound,
   UsersRound,
   Building2,
   IdCard,
@@ -46,7 +46,7 @@ import type { FunctionalComponent } from "vue";
 // names its glyph, that is the one here.
 const GLYPHS = {
   overview: LayoutDashboard,
-  users: Users,
+  users: UserRound,
   groups: UsersRound,
   organizations: Building2,
   roles: IdCard,

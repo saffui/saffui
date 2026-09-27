@@ -514,7 +514,7 @@ function jumpTo(event: MouseEvent) {
       >
         {{ say("flow-add-step") }}
       </button>
-      <h1 class="font-mono text-sm font-semibold tracking-tight">
+      <h1 class="font-mono text-sm font-medium tracking-tight">
         {{ held?.flow.alias ?? flowId }}
       </h1>
       <span
@@ -689,9 +689,9 @@ function jumpTo(event: MouseEvent) {
                 :y="node.y + 41"
                 fill="var(--sf-muted)"
                 font-size="10.5"
-                font-family="JetBrains Mono, monospace"
+                font-family="IBM Plex Mono, monospace"
               >
-                {{ stepName(node.row) }} &middot; {{ say(`flow-req-${node.row.requirement}`) }}
+                {{ stepName(node.row) }} ({{ say(`flow-req-${node.row.requirement}`) }})
               </text>
               <!-- A container shows what it holds, one small row per inner
                    step, and its title row opens the flow it names. -->
@@ -740,7 +740,7 @@ function jumpTo(event: MouseEvent) {
                     :y="node.y + 39 + at * 18"
                     fill="var(--sf-muted)"
                     font-size="10"
-                    font-family="JetBrains Mono, monospace"
+                    font-family="IBM Plex Mono, monospace"
                     :opacity="step.requirement === 'disabled' ? 0.5 : 1"
                   >
                     {{ step.alias }}

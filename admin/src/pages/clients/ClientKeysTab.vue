@@ -180,7 +180,7 @@ async function copyFreshSecret() {
               v-for="choice in responseSigningChoices(client.key_capabilities.response_signing_algorithms, draft.idTokenSigning)"
               :key="choice.algorithm"
               :value="choice.algorithm"
-            >{{ choice.held ? choice.algorithm : `${choice.algorithm} · ${say("client-keys-no-active-key")}` }}</option>
+            >{{ choice.held ? choice.algorithm : `${choice.algorithm} (${say("client-keys-no-active-key")})` }}</option>
           </select>
         </label>
         <label class="text-[11px] font-medium text-muted">
@@ -191,7 +191,7 @@ async function copyFreshSecret() {
               v-for="choice in responseSigningChoices(client.key_capabilities.response_signing_algorithms, draft.userinfoSigning)"
               :key="choice.algorithm"
               :value="choice.algorithm"
-            >{{ choice.held ? choice.algorithm : `${choice.algorithm} · ${say("client-keys-no-active-key")}` }}</option>
+            >{{ choice.held ? choice.algorithm : `${choice.algorithm} (${say("client-keys-no-active-key")})` }}</option>
           </select>
         </label>
         <label class="text-[11px] font-medium text-muted">

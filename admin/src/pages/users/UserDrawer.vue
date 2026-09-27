@@ -893,9 +893,11 @@ function instant(epoch: number | null | undefined): string {
         class="mt-2 rounded-lg border border-border px-3 py-2.5 text-xs"
       >
         <div class="flex items-center gap-2">
-          <span class="font-medium">
-            {{ [session.browser, session.system].filter(Boolean).join(" · ") || say("user-session-unknown") }}
+          <span v-if="session.browser || session.system" class="sf-meta-list font-medium">
+            <span v-if="session.browser">{{ session.browser }}</span>
+            <span v-if="session.system">{{ session.system }}</span>
           </span>
+          <span v-else class="font-medium">{{ say("user-session-unknown") }}</span>
           <span v-if="session.ip_address" class="font-mono text-[10.5px] text-faint">{{
             session.ip_address
           }}</span>
@@ -920,7 +922,8 @@ function instant(epoch: number | null | undefined): string {
             :key="grant.client_id"
             class="flex items-center gap-2 rounded border border-border px-2 py-1 font-mono text-[10.5px] text-muted"
           >
-            {{ grant.client_id }}<template v-if="grant.offline"> &middot; offline</template>
+            {{ grant.client_id }}
+            <span v-if="grant.offline" class="sf-badge font-sans">offline</span>
             <button
               type="button"
               class="ml-auto inline-flex items-center gap-1 font-sans text-[10.5px] text-faint hover:text-danger"
@@ -1096,7 +1099,10 @@ function instant(epoch: number | null | undefined): string {
           <span class="font-mono text-[11.5px]">{{ link.provider_alias }}</span>
           <span class="ml-auto font-mono text-[10.5px] text-faint">{{ stamp(link.created_at) }}</span>
         </div>
-        <div class="mt-1 font-mono text-[11px] text-muted">{{ link.external_username }} · {{ link.external_user_id }}</div>
+        <div class="sf-meta-list mt-1 font-mono text-[11px] text-muted">
+          <span>{{ link.external_username }}</span>
+          <span>{{ link.external_user_id }}</span>
+        </div>
       </div>
     </div>
 
@@ -1234,7 +1240,10 @@ function instant(epoch: number | null | undefined): string {
             {{ delivery.delivered ? say("user-message-delivered") : say("user-message-failed") }}
           </span>
         </div>
-        <div class="mt-1 text-[11px] text-muted">{{ delivery.recipient }} · {{ stamp(delivery.attempted_at) }}</div>
+        <div class="sf-meta-list mt-1 text-[11px] text-muted">
+          <span>{{ delivery.recipient }}</span>
+          <span>{{ stamp(delivery.attempted_at) }}</span>
+        </div>
         <div v-if="delivery.detail" class="mt-1 text-[11px] text-faint">{{ delivery.detail }}</div>
       </div>
     </div>

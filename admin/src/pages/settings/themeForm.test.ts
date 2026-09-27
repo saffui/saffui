@@ -25,6 +25,11 @@ describe("theme form", () => {
     expect(themeDocument(draft)).toEqual({ light: { "brand-primary": "#123456" } });
   });
 
+  test("keeps hosted pages on the console type family by default", () => {
+    expect(THEME_DEFAULTS.light["font-sans"]).toContain("IBM Plex Sans");
+    expect(THEME_DEFAULTS.dark["font-sans"]).toBe(THEME_DEFAULTS.light["font-sans"]);
+  });
+
   test("drops blank overrides", () => {
     expect(themeDocument({ light: { bg: "  " }, dark: { ink: "#EFECE7" } })).toEqual({
       dark: { ink: "#EFECE7" },

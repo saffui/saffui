@@ -3,6 +3,7 @@ import { createPinia } from "pinia";
 import App from "./App.vue";
 import { router } from "./router";
 import { installMessages } from "./i18n";
+import "./assets/fonts.css";
 import "./assets/tokens.css";
 
 const app = createApp(App);

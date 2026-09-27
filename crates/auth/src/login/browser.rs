@@ -557,9 +557,11 @@ pub async fn answer_step(
 
 /// Admit a login somebody proved at an upstream provider this realm accepts.
 ///
-/// The flow's own steps never ran, so nothing local is recorded as reached:
-/// the realm's level map speaks about its own factors, and a level guessed
-/// for somebody else's would be a false attestation. Consent is not asked
+/// The flow's own steps never ran, so no level is guessed for somebody else's
+/// factors. The one level recorded is the one the provider's operator declared:
+/// `vouched_acr` is the realm's own context the upstream's check counts as,
+/// read through the realm's map, and a context the map no longer counts
+/// refuses the login rather than admitting it at no level. Consent is not asked
 /// either, which is a named limit of brokered logins for now rather than a
 /// decision that they need none.
 #[allow(
@@ -575,6 +577,7 @@ pub async fn admit_federated(
     user_name: &str,
     provider_alias: &str,
     external_user_id: &str,
+    vouched_acr: Option<&str>,
     seen: &crate::provenance::Provenance,
     now: DateTime<Utc>,
 ) -> Result<Step, Unanswerable> {
@@ -586,6 +589,16 @@ pub async fn admit_federated(
         .await
         .map_err(|_| Unanswerable::Unreadable)?
         .ok_or(Unanswerable::Unreadable)?;
+    let reached = match vouched_acr {
+        None => None,
+        Some(vouched) => Some(
+            realm
+                .acr_loa_map
+                .as_ref()
+                .and_then(|map| map.loa_of(vouched))
+                .ok_or(Unanswerable::Unrunnable)?,
+        ),
+    };
 
     admit(
         transaction,
@@ -594,7 +607,7 @@ pub async fn admit_federated(
         &login,
         user_id,
         user_name,
-        None,
+        reached,
         &realm,
         String::new(),
         None,

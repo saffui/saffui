@@ -8,7 +8,9 @@ use data_encoding::BASE64;
 use models::entities::authz::IdentityProviderModel;
 use serde::Deserialize;
 use serde_json::Value;
-use services::federation::brokering::{self, Arrival, Identity, Upstream};
+use services::federation::brokering::{
+    self, Arrival, Identity, ProviderKey, TokenAuth, Upstream, UserinfoForm,
+};
 use services::federation::saml_brokering::{self, SamlUpstream};
 use services::oidc::landing::Landing;
 use store::error::StoreError;
@@ -171,6 +173,9 @@ pub struct CameBack {
     pub code: Option<String>,
     pub state: Option<String>,
     pub error: Option<String>,
+    /// RFC 9207: the issuer that answered, which a provider that sends it
+    /// must name as the one this login left for.
+    pub iss: Option<String>,
 }
 
 /// Where the browser comes back. The security boundary of the whole slice:
@@ -221,6 +226,12 @@ pub async fn conclude(
     let Ok(upstream) = Upstream::parse(&provider) else {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };
+    if let (Identity::Signed(signed), Some(answered_by)) = (&upstream.identity, &came.iss)
+        && answered_by != &signed.issuer
+    {
+        tracing::warn!(alias, "a brokered login came back from another issuer");
+        return refused();
+    }
 
     // 1. Spend the state: keyed on its hash and this provider, once, and only for
     //    the browser that started the login. A refusal commits nothing, so a way
@@ -243,11 +254,61 @@ pub async fn conclude(
         return refused();
     }
 
-    // 2. Redeem the code with the verifier from that row, never the request.
+    // 2. Redeem the code with the verifier from that row, never the request,
+    //    and the client's proof: its secret, or an assertion signed with the key
+    //    this realm holds for the provider.
+    let Ok(ring) = store::keyring::load(
+        &transaction,
+        &sealing.envelope,
+        &context.tenant,
+        &context.realm_id,
+    )
+    .await
+    else {
+        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    };
     let secret = opened_secret(&transaction, &sealing, &context, &provider).await;
+    let assertion = match upstream.token_auth {
+        TokenAuth::PrivateKeyJwt => {
+            let Some(key) = brokering::open_provider_key(
+                &ring,
+                &sealing.envelope,
+                &provider,
+                ProviderKey::Assertion,
+            )
+            .await
+            else {
+                tracing::warn!(
+                    alias,
+                    "a provider taking private_key_jwt holds no key to sign with"
+                );
+                return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+            };
+            let Ok(assertion) = services::token::assertion::client_assertion(
+                sealing.provider.as_ref(),
+                &services::token::assertion::AssertionKey {
+                    kid: &key.kid,
+                    private_pem: &key.private_pem,
+                },
+                &upstream.client_id,
+                brokering::choose_assertion_audience(&upstream),
+                now,
+            ) else {
+                return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+            };
+            Some(assertion)
+        }
+        TokenAuth::Basic | TokenAuth::Post => None,
+    };
     let landing = callback_of(&origin, &context.realm_id, &alias);
-    let exchange =
-        brokering::compose_code_exchange(&upstream, code, landing, &spent.code_verifier, secret);
+    let exchange = brokering::compose_code_exchange(
+        &upstream,
+        code,
+        landing,
+        &spent.code_verifier,
+        secret,
+        assertion,
+    );
     let Some(answered) = post_form(
         upstream.token_endpoint.clone(),
         **egress,
@@ -279,10 +340,46 @@ pub async fn conclude(
             let Ok(keys) = serde_json::from_str::<Value>(&keys) else {
                 return refused();
             };
-            let Ok(arrival) = brokering::arrived(&upstream, &keys, id_token, &spent, now) else {
+            let Ok(mut arrival) = brokering::arrived(&upstream, &keys, id_token, &spent, now)
+            else {
                 tracing::warn!(alias, "the upstream's identity token did not verify");
                 return refused();
             };
+            if let Some(userinfo) = &signed.userinfo {
+                let Some(access_token) = answered.get("access_token").and_then(Value::as_str)
+                else {
+                    tracing::warn!(alias, "the upstream answered without an access token");
+                    return refused();
+                };
+                let Some(told) =
+                    fetch_upstream_userinfo(userinfo.endpoint.clone(), **egress, access_token)
+                        .await
+                else {
+                    tracing::warn!(alias, "the upstream's userinfo could not be read");
+                    return refused();
+                };
+                let opened = match userinfo.form {
+                    UserinfoForm::Encrypted => {
+                        brokering::open_provider_key(
+                            &ring,
+                            &sealing.envelope,
+                            &provider,
+                            ProviderKey::Encryption,
+                        )
+                        .await
+                    }
+                    UserinfoForm::Json | UserinfoForm::Signed => None,
+                };
+                let pem = opened.as_ref().map(|key| {
+                    crypto::secrecy::ExposeSecret::expose_secret(&key.private_pem).as_slice()
+                });
+                if brokering::read_upstream_userinfo(&upstream, &keys, &told, pem, &mut arrival)
+                    .is_err()
+                {
+                    tracing::warn!(alias, "the upstream's userinfo did not verify");
+                    return refused();
+                }
+            }
             (arrival, Some(id_token.to_owned()))
         }
         Identity::Asked(api) => {
@@ -346,30 +443,23 @@ pub async fn conclude(
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     }
 
-    let ring = store::keyring::load(
-        &transaction,
-        &sealing.envelope,
-        &context.tenant,
-        &context.realm_id,
-    )
-    .await
-    .ok();
-    let signing = ring.as_ref().map(|ring| store::keyring::Signing {
+    let signing = store::keyring::Signing {
         provider: sealing.provider.as_ref(),
-        ring,
+        ring: &ring,
         envelope: &sealing.envelope,
-    });
+    };
     let (admitted, landed) = match admit_arrival(
         &transaction,
         &sealing,
         &origin,
         &context,
-        signing.as_ref(),
+        Some(&signing),
         &read_provenance(&request),
         &spent.auth_session,
         &alias,
         &user_id,
         &arrival.external_user_id,
+        arrival.vouched_acr.as_deref(),
         now,
     )
     .await
@@ -457,6 +547,7 @@ pub(crate) async fn admit_arrival(
     alias: &str,
     user_id: &str,
     external_user_id: &str,
+    vouched_acr: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<(Admission, Landing), HttpResponse> {
     let Ok(Some(person)) = services::directory::read_person(transaction, user_id).await else {
@@ -471,6 +562,7 @@ pub(crate) async fn admit_arrival(
         &person.user_name,
         alias,
         external_user_id,
+        vouched_acr,
         seen,
         now,
     )
@@ -650,6 +742,42 @@ async fn asked_json(uri: String, egress: Egress, access_token: &str) -> Option<V
     .ok()
     .flatten()?;
     serde_json::from_str(&answered).ok()
+}
+
+/// Read an OpenID Connect provider's userinfo with the access token, under the
+/// same guardrails as the token exchange, as the text it answered: a JSON
+/// object, or a signed or encrypted one, which the service reads by the form the
+/// provider was registered for.
+async fn fetch_upstream_userinfo(
+    uri: String,
+    egress: Egress,
+    access_token: &str,
+) -> Option<String> {
+    if !may_dial(&uri, egress) {
+        return None;
+    }
+    let bearer = format!("Bearer {access_token}");
+    tokio::task::spawn_blocking(move || {
+        let agent = outward_agent(egress, PATIENCE);
+        let mut response = agent
+            .get(&uri)
+            .header("authorization", &bearer)
+            .header("accept", "application/jwt, application/json")
+            .call()
+            .ok()?;
+        if response.status() != 200 {
+            return None;
+        }
+        response
+            .body_mut()
+            .with_config()
+            .limit(64 * 1024)
+            .read_to_string()
+            .ok()
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// What the upstream posts when somebody it vouched for logs out there.

@@ -408,6 +408,8 @@ pub fn arrive(upstream: &SamlUpstream, accepted: &Accepted) -> Result<Arrival, U
         email_verified: email.is_some(),
         email,
         claims,
+        userinfo: serde_json::Map::new(),
+        vouched_acr: None,
     })
 }
 

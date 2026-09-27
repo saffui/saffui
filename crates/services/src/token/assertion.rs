@@ -5,24 +5,30 @@ use chrono::{DateTime, Utc};
 use crypto::jose::jws::{ES256, JwsHeader};
 use crypto::jose::jwt::{self, JwtPayload};
 use crypto::provider::CryptoProvider;
-use models::entities::sim_swap::SimSwapKey;
-use secrecy::ExposeSecret;
+use secrecy::{ExposeSecret, SecretBox};
 
 /// How long an assertion stands. CAMARA refuses one standing past 300
 /// seconds; one minute leaves room for a clock that runs slow.
 const LIFESPAN: i64 = 60;
 
+/// A P-256 key this realm signs its assertions with, and the name the other
+/// server registered it under.
+pub struct AssertionKey<'a> {
+    pub kid: &'a str,
+    pub private_pem: &'a SecretBox<Vec<u8>>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the assertion could not be signed")]
 pub struct Unsigned;
 
-/// An assertion for `client_id`, addressed to the one endpoint it is sent
-/// to, with an identifier of its own so a server can refuse it twice.
+/// An assertion for `client_id`, addressed to `audience` alone, with an
+/// identifier of its own so a server can refuse it twice.
 pub fn client_assertion(
     provider: &dyn CryptoProvider,
-    key: &SimSwapKey,
+    key: &AssertionKey<'_>,
     client_id: &str,
-    endpoint: &str,
+    audience: &str,
     now: DateTime<Utc>,
 ) -> Result<String, Unsigned> {
     let mut drawn = [0u8; 16];
@@ -32,12 +38,12 @@ pub fn client_assertion(
     let mut header = JwsHeader::new();
     header.set_algorithm("ES256");
     header.set_token_type("JWT");
-    header.set_key_id(&key.kid);
+    header.set_key_id(key.kid);
 
     let mut payload = JwtPayload::new();
     payload.set_issuer(client_id);
     payload.set_subject(client_id);
-    payload.set_audience(vec![endpoint]);
+    payload.set_audience(vec![audience]);
     payload.set_jwt_id(&jti);
     // Whole seconds, as the realm's own tokens carry them: a fraction is
     // lawful and still not what every server reads.

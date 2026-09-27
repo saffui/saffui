@@ -249,6 +249,7 @@ pub async fn consume_assertion(
         &alias,
         &user_id,
         &taken.arrival.external_user_id,
+        None,
         now,
     )
     .await

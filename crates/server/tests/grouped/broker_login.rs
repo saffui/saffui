@@ -13,7 +13,7 @@ const ALIAS: &str = "upstream";
 /// The one mount both sides share: the in-process side answers the browser,
 /// and the spawned side answers the broker's own dials. Egress is open
 /// because the upstream lives on the loopback here.
-fn mounted(plane: &Plane) -> Mounted {
+pub(crate) fn mounted(plane: &Plane) -> Mounted {
     Mounted {
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
@@ -30,7 +30,7 @@ fn mounted(plane: &Plane) -> Mounted {
     }
 }
 
-async fn asked(
+pub(crate) async fn asked(
     plane: &Plane,
     method: Method,
     path: &str,
@@ -53,7 +53,7 @@ async fn asked(
 }
 
 /// One query value out of a location header.
-fn param(location: &str, name: &str) -> Option<String> {
+pub(crate) fn param(location: &str, name: &str) -> Option<String> {
     let (_, query) = location.split_once('?')?;
     query.split('&').find_map(|pair| {
         let (held, value) = pair.split_once('=')?;
@@ -78,7 +78,7 @@ fn param(location: &str, name: &str) -> Option<String> {
 }
 
 /// Open this realm's own login and hand back its cookie.
-async fn opened_login(plane: &Plane) -> String {
+pub(crate) async fn opened_login(plane: &Plane) -> String {
     let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
     let response = test::call_service(
         &app,

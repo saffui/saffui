@@ -49,7 +49,9 @@ Checked against this rig on 2026-09-27.
   without `kid`, is refused as an invalid client. It is taken signed PS256,
   ES256, ES256K or EdDSA, never RS256.
 - The ID token is signed PS256. The userinfo is signed RS256, with a key the
-  published key set labels PS256 (upstream issue #2533).
+  published key set labels PS256 (upstream issue #2533), and the discovery
+  document announces PS256 for it too. Reading a provider from its issuer
+  therefore leaves the userinfo algorithms as they were set.
 - Encrypted, the userinfo is a JWE with `RSA-OAEP-256` and `A256GCM`, carrying
   the signed userinfo inside (`cty: JWT`).
 - The userinfo is signed by the mock identity system, under its own issuer
@@ -68,9 +70,11 @@ SAFFUI_TEST_ESIGNET=http://localhost:18080 \
 cargo test -p server --test suite_federation -- --include-ignored --test-threads=1 esignet
 ```
 
-Each journey plants its own person and registers its own client, with the
-public keys the provider drew, then walks eSignet's sign-in the way its page
-does. The mock identity system is reached at
+Each journey reads eSignet's discovery document through the admin plane for
+the provider's endpoints, plants its own person and registers its own client,
+with the public keys the provider drew, then walks eSignet's sign-in the way
+its page does. The way back is required to name its issuer, which eSignet
+announces. The mock identity system is reached at
 `http://localhost:8082/v1/mock-identity-system` unless
 `SAFFUI_TEST_ESIGNET_IDENTITY` names another address. Without
 `SAFFUI_TEST_ESIGNET`, the journeys are skipped.

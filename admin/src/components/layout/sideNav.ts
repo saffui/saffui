@@ -23,7 +23,7 @@ export const SIDE_NAV_GROUPS = [
   {
     label: "nav-cap-observe",
     items: [
-      { label: "nav-metrics", icon: "activity", leaf: "metrics" },
+      { label: "nav-metrics", icon: "metrics", leaf: "metrics" },
       { label: "nav-events", icon: "events", leaf: "events" },
     ],
   },

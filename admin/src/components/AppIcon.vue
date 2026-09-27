@@ -17,12 +17,14 @@ import {
   Palette,
   FileText,
   Scale,
+  ChartNoAxesColumn,
   Activity,
   ScrollText,
   Settings,
   Key,
   MonitorSmartphone,
   Server,
+  Globe,
   Search,
   ChevronRight,
   ChevronsUpDown,
@@ -42,7 +44,7 @@ import type { FunctionalComponent } from "vue";
 
 // The names the deck gives each place, not the library's. Where a board
 // names its glyph, that is the one here.
-const GLYPHS: Record<string, FunctionalComponent<LucideProps>> = {
+const GLYPHS = {
   overview: LayoutDashboard,
   users: Users,
   groups: UsersRound,
@@ -57,12 +59,14 @@ const GLYPHS: Record<string, FunctionalComponent<LucideProps>> = {
   appearance: Palette,
   pages: FileText,
   governance: Scale,
+  metrics: ChartNoAxesColumn,
   events: Activity,
   journal: ScrollText,
   settings: Settings,
   key: Key,
   sessions: MonitorSmartphone,
   server: Server,
+  issuer: Globe,
   search: Search,
   chevron: ChevronRight,
   "chevron-pick": ChevronsUpDown,
@@ -76,9 +80,13 @@ const GLYPHS: Record<string, FunctionalComponent<LucideProps>> = {
   close: X,
   remove: Trash2,
   menu: Menu,
-};
+} satisfies Record<string, FunctionalComponent<LucideProps>>;
 
-const props = defineProps<{ name: keyof typeof GLYPHS; size?: number }>();
+// Literal keys, so a name with no glyph here fails the type check instead of
+// rendering an empty box.
+export type GlyphName = keyof typeof GLYPHS;
+
+const props = defineProps<{ name: GlyphName; size?: number }>();
 </script>
 
 <template>

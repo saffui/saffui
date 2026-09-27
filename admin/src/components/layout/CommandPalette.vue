@@ -45,7 +45,6 @@ const PAGES: { leaf: string; name: () => string }[] = [
 ];
 
 interface Hit {
-  kind: "page" | "realm";
   label: string;
   hint: string;
   go: () => void;
@@ -55,7 +54,6 @@ const hits = computed<Hit[]>(() => {
   const realm = String(route.params.realm ?? "main");
   const needle = typed.value.trim().toLowerCase();
   const pages: Hit[] = PAGES.map((page) => ({
-    kind: "page" as const,
     label: page.name(),
     hint: `/${realm}/${page.leaf}`,
     go: () => router.push(`/${realm}/${page.leaf}`),
@@ -128,7 +126,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKey));
           :class="at === 0 && 'bg-surface-2'"
           @click="pick(hit)"
         >
-          <AppIcon :name="hit.kind === 'realm' ? 'directory' : 'chevron'" :size="13" class="text-faint" />
+          <AppIcon name="chevron" :size="13" class="text-faint" />
           <span class="text-ink">{{ hit.label }}</span>
           <span class="ml-auto font-mono text-[10.5px] text-faint">{{ hit.hint }}</span>
         </button>

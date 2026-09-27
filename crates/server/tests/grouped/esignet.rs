@@ -407,7 +407,8 @@ async fn a_person_signs_in_through_esignet_at_the_level_it_vouched_for() {
         "mosip:idp:acr:knowledge=password",
     )
     .await;
-    assert_eq!(assertion_jwk["crv"], "P-256");
+    assert_eq!(assertion_jwk["kty"], "RSA");
+    assert_eq!(assertion_jwk["alg"], "PS256");
     assert_eq!(encryption_jwk["kty"], "RSA");
     register_esignet_client(
         &esignet,

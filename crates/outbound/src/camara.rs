@@ -144,6 +144,7 @@ fn assertion(
         &services::token::assertion::AssertionKey {
             kid: &settings.key.kid,
             private_pem: &settings.key.private_pem,
+            algorithm: services::token::assertion::AssertionAlgorithm::Es256,
         },
         &settings.client_id,
         endpoint,

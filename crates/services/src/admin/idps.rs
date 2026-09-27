@@ -12,9 +12,10 @@ use store::providers::federation::brokering;
 use store::tenancy::UnitOfWork;
 
 use crate::federation::brokering::{
-    ATTRIBUTE_IDP_MAPPER, ATTRIBUTE_NAME, ATTRIBUTE_VALUE, CLAIM, KNOWN_IDP_MAPPERS, ProviderKey,
-    ROLE, ROLE_IDP_MAPPER, SAML_ATTRIBUTE_IDP_MAPPER, SAML_ROLE_IDP_MAPPER, SYNC_MODE,
-    USER_ATTRIBUTE, Upstream, list_needed_provider_keys, rule_fits_provider,
+    ATTRIBUTE_IDP_MAPPER, ATTRIBUTE_NAME, ATTRIBUTE_VALUE, CLAIM, KNOWN_IDP_MAPPERS,
+    PROVIDER_ASSERTION_ALGORITHM, ProviderKey, ROLE, ROLE_IDP_MAPPER, SAML_ATTRIBUTE_IDP_MAPPER,
+    SAML_ROLE_IDP_MAPPER, SYNC_MODE, USER_ATTRIBUTE, Upstream, list_needed_provider_keys,
+    rule_fits_provider,
 };
 
 /// What the sealed upstream secret is scoped to.
@@ -326,19 +327,24 @@ async fn keep_or_draw_provider_keys(
 /// A fresh pair for one of a provider's keys, the private half as PEM and the
 /// public half as the JWK the provider is given, named by its thumbprint.
 ///
-/// The assertion key is P-256, which eSignet takes and which the realm's own
-/// assertions already use. The encryption key is RSA, the only kind eSignet
-/// encrypts to, at 3072 bits because a provider will not let it be replaced
-/// without a new registration.
+/// Both are RSA at 3072 bits, because a provider will not let either be
+/// replaced without a new registration: the assertion key an RSA-PSS pair for
+/// PS256, the encryption key the only kind eSignet encrypts to.
 fn draw_provider_key(
     crypto: &dyn CryptoProvider,
     which: ProviderKey,
 ) -> Result<(Vec<u8>, String), Unwritable> {
     use crypto::jose::jwk::KeyPair as _;
+    use crypto::jose::util::HashAlgorithm;
     let (private, private_pem) = match which {
         ProviderKey::Assertion => {
-            let pair = crypto::jose::jwk::alg::ec::EcKeyPair::generate(crypto::jose::jwk::P_256)
-                .map_err(|_| Unwritable::Backend)?;
+            let pair = crypto::jose::jwk::alg::rsapss::RsaPssKeyPair::generate(
+                3072,
+                HashAlgorithm::Sha256,
+                HashAlgorithm::Sha256,
+                32,
+            )
+            .map_err(|_| Unwritable::Backend)?;
             (pair.to_jwk_key_pair(), pair.to_pem_private_key())
         }
         ProviderKey::Encryption => {
@@ -353,7 +359,7 @@ fn draw_provider_key(
     public.set_key_id(&kid);
     match which {
         ProviderKey::Assertion => {
-            public.set_algorithm("ES256");
+            public.set_algorithm(PROVIDER_ASSERTION_ALGORITHM.name());
             public.set_key_use("sig");
         }
         ProviderKey::Encryption => {

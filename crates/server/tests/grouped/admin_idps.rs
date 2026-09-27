@@ -357,3 +357,221 @@ async fn the_idp_capabilities_split_where_they_should() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+/// A provider taking `private_key_jwt` and an encrypted userinfo gets its own
+/// two keys, drawn at the door: whatever a request says about them is dropped,
+/// the private halves never ride out, a rewrite keeps the pair the provider
+/// registered, and each opens to the public half it was shown with.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_provider_s_own_keys_are_drawn_here_and_kept_dark() {
+    use crypto::jose::jwe::{self, JweHeader, RSA_OAEP_256};
+    use crypto::jose::jwk::Jwk;
+    use crypto::jose::jws::PS256;
+    use services::federation::brokering::{self, ProviderKey};
+    use store::tenancy::TenantContext;
+
+    let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = format!("/admin/realms/{REALM}/identity-providers");
+    let planted = r#"{"kty":"RSA","kid":"planted","n":"AQAB","e":"AQAB"}"#;
+    let national = |accepted_acrs: &str| {
+        let mut asked_for = upstream("national");
+        let bag = asked_for["configs"].as_object_mut().expect("a bag");
+        bag.remove("client_secret");
+        for (field, value) in [
+            ("token_auth", "private_key_jwt"),
+            ("userinfo_endpoint", "https://op.example/userinfo"),
+            ("userinfo_response", "jwe"),
+            ("userinfo_algs", "RS256 PS256"),
+            ("accepted_acrs", accepted_acrs),
+            ("assertion_key_sealed", "AAAA"),
+            ("assertion_jwk", planted),
+            ("encryption_key_sealed", "AAAA"),
+        ] {
+            bag.insert(field.to_owned(), json!({ "Str": value }));
+        }
+        asked_for
+    };
+
+    // A context the realm does not count is refused, naming it.
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        Some(national("mosip:idp:acr:biometrics=platinum")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(
+        told["message"]
+            .as_str()
+            .is_some_and(|why| why.contains("no authentication context named platinum")),
+        "{told}"
+    );
+
+    let (status, born) = asked(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        Some(national(&format!(
+            "mosip:idp:acr:knowledge={}",
+            support::PASSWORD_ACR
+        ))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+    let shown = |answer: &Value, field: &str| -> Value {
+        let written = answer["configs"][field]["Str"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no {field} shown: {answer}"));
+        serde_json::from_str(written).expect("a JWK")
+    };
+    let assertion_jwk = shown(&born, "assertion_jwk");
+    let encryption_jwk = shown(&born, "encryption_jwk");
+    assert_ne!(assertion_jwk["kid"], "planted", "a planted key was kept");
+    assert_eq!(
+        (
+            &assertion_jwk["kty"],
+            &assertion_jwk["alg"],
+            &assertion_jwk["use"]
+        ),
+        (&json!("RSA"), &json!("PS256"), &json!("sig"))
+    );
+    assert_eq!(
+        (
+            &encryption_jwk["kty"],
+            &encryption_jwk["alg"],
+            &encryption_jwk["use"]
+        ),
+        (&json!("RSA"), &json!("RSA-OAEP-256"), &json!("enc"))
+    );
+    assert!(
+        assertion_jwk.get("d").is_none() && encryption_jwk.get("d").is_none(),
+        "a private half was shown: {born}"
+    );
+    for (method, path) in [
+        (Method::GET, format!("{base}/national")),
+        (Method::GET, base.clone()),
+    ] {
+        let (status, told) = asked(&plane, method, &path, &bearer, None).await;
+        assert_eq!(status, StatusCode::OK, "{told}");
+        let text = told.to_string();
+        assert!(
+            !text.contains("assertion_key_sealed") && !text.contains("encryption_key_sealed"),
+            "a sealed key rode out: {told}"
+        );
+    }
+
+    // A rewrite, even one naming other keys, keeps the registered pair.
+    let (status, rewritten) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{base}/national"),
+        &bearer,
+        Some(national(&format!(
+            "mosip:idp:acr:knowledge={}",
+            support::PASSWORD_ACR
+        ))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{rewritten}");
+    assert_eq!(shown(&rewritten, "assertion_jwk"), assertion_jwk);
+    assert_eq!(shown(&rewritten, "encryption_jwk"), encryption_jwk);
+
+    // What is sealed is the private half of what was shown.
+    let transaction = plane
+        .scoped(&TenantContext::new(support::TENANT, REALM))
+        .await;
+    let sealing = support::sealing();
+    let ring = store::keyring::load(&transaction, &sealing.envelope, support::TENANT, REALM)
+        .await
+        .expect("the realm's keyring");
+    let stored = brokering::read_provider(&transaction, "national")
+        .await
+        .expect("the store")
+        .expect("the provider");
+    let opened = |which| brokering::open_provider_key(&ring, &sealing.envelope, &stored, which);
+    let signing = opened(ProviderKey::Assertion)
+        .await
+        .expect("the assertion key");
+    assert_eq!(Some(signing.kid.as_str()), assertion_jwk["kid"].as_str());
+    let assertion = services::token::assertion::client_assertion(
+        &support::provider(),
+        &services::token::assertion::AssertionKey {
+            kid: &signing.kid,
+            private_pem: &signing.private_pem,
+            algorithm: brokering::PROVIDER_ASSERTION_ALGORITHM,
+        },
+        "saffui-at-op",
+        "https://op.example/realms/main",
+        chrono::Utc::now(),
+    )
+    .expect("an assertion");
+    let registered: Jwk =
+        Jwk::from_bytes(assertion_jwk.to_string().as_bytes()).expect("the shown key");
+    crypto::jose::jwt::decode_with_verifier(
+        &assertion,
+        &PS256.verifier_from_jwk(&registered).expect("a verifier"),
+    )
+    .expect("an assertion the shown key verifies");
+
+    let opening = opened(ProviderKey::Encryption)
+        .await
+        .expect("the encryption key");
+    let recipient: Jwk =
+        Jwk::from_bytes(encryption_jwk.to_string().as_bytes()).expect("the shown key");
+    let mut header = JweHeader::new();
+    header.set_content_encryption("A256GCM");
+    let sealed = jwe::serialize_compact(
+        b"for the realm",
+        &header,
+        &RSA_OAEP_256
+            .encrypter_from_jwk(&recipient)
+            .expect("an encrypter"),
+    )
+    .expect("a JWE");
+    let (inside, _) = jwe::deserialize_compact(
+        &sealed,
+        &RSA_OAEP_256
+            .decrypter_from_pem(secrecy::ExposeSecret::expose_secret(&opening.private_pem))
+            .expect("a decrypter"),
+    )
+    .expect("a JWE the held key opens");
+    assert_eq!(inside, b"for the realm");
+    drop(transaction);
+
+    // A provider proving itself with a secret, its userinfo unsigned, holds
+    // no key of its own, whatever its request planted.
+    let mut plain = upstream("plain");
+    let bag = plain["configs"].as_object_mut().expect("a bag");
+    for field in ["assertion_key_sealed", "encryption_key_sealed"] {
+        bag.insert(field.to_owned(), json!({ "Str": "AAAA" }));
+    }
+    for field in ["assertion_jwk", "encryption_jwk"] {
+        bag.insert(field.to_owned(), json!({ "Str": planted }));
+    }
+    let (status, plain) = asked(&plane, Method::POST, &base, &bearer, Some(plain)).await;
+    assert_eq!(status, StatusCode::CREATED, "{plain}");
+    assert!(
+        plain["configs"].get("assertion_jwk").is_none()
+            && plain["configs"].get("encryption_jwk").is_none(),
+        "{plain}"
+    );
+    let transaction = plane
+        .scoped(&TenantContext::new(support::TENANT, REALM))
+        .await;
+    let stored = brokering::read_provider(&transaction, "plain")
+        .await
+        .expect("the store")
+        .expect("the provider");
+    let bag = stored.configs.expect("a bag");
+    for field in ProviderKey::ALL
+        .iter()
+        .flat_map(|key| [key.sealed_field_name(), key.public_field_name()])
+    {
+        assert!(!bag.contains_key(field), "{field} was kept as planted");
+    }
+}

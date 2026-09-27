@@ -363,6 +363,11 @@ impl ProviderKey {
     }
 }
 
+/// What a provider's own assertion key signs with: PS256 under RSA, which
+/// eSignet takes where it refuses RS256.
+pub const PROVIDER_ASSERTION_ALGORITHM: crate::token::assertion::AssertionAlgorithm =
+    crate::token::assertion::AssertionAlgorithm::Ps256;
+
 /// The keys an upstream needs this realm to hold for it.
 pub fn list_needed_provider_keys(upstream: &Upstream) -> Vec<ProviderKey> {
     let mut needed = Vec::new();

@@ -46,7 +46,8 @@ Checked against this rig on 2026-09-27.
 
 - The client assertion must name the issuer as its audience and carry a `kid`
   in its header. The token endpoint's address as audience, or a header
-  without `kid`, is refused as an invalid client.
+  without `kid`, is refused as an invalid client. It is taken signed PS256,
+  ES256, ES256K or EdDSA, never RS256.
 - The ID token is signed PS256. The userinfo is signed RS256, with a key the
   published key set labels PS256 (upstream issue #2533).
 - Encrypted, the userinfo is a JWE with `RSA-OAEP-256` and `A256GCM`, carrying
@@ -56,6 +57,27 @@ Checked against this rig on 2026-09-27.
   to eSignet's issuer.
 - A birth date comes as `YYYY/MM/DD`.
 - The `sub` is pairwise per relying party, not per client.
+
+## Benching the broker against it
+
+With the rig up and the test database the other suites use:
+
+```
+SAFFUI_TEST_PG="host=localhost port=55455 user=postgres password=saffui dbname=saffui" \
+SAFFUI_TEST_ESIGNET=http://localhost:18080 \
+cargo test -p server --test suite_federation -- --include-ignored --test-threads=1 esignet
+```
+
+Each journey plants its own person and registers its own client, with the
+public keys the provider drew, then walks eSignet's sign-in the way its page
+does. The mock identity system is reached at
+`http://localhost:8082/v1/mock-identity-system` unless
+`SAFFUI_TEST_ESIGNET_IDENTITY` names another address. Without
+`SAFFUI_TEST_ESIGNET`, the journeys are skipped.
+
+Walking the sign-in by hand through its API, the consent answer carries an
+approval of its own beside each purpose's and each claim's; without it, eSignet
+denies every claim.
 
 ## Stopping it
 

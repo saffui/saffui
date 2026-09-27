@@ -102,7 +102,9 @@ async function save() {
           >
             <td class="font-mono text-[11.5px]">{{ agent.client_id }}</td>
             <td>
-              <span class="line-clamp-2 text-[11px] text-muted">{{ agent.capabilities.join(" · ") }}</span>
+              <div class="flex flex-wrap gap-1">
+                <span v-for="capability in agent.capabilities" :key="capability" class="sf-badge font-mono">{{ capability }}</span>
+              </div>
             </td>
             <td class="font-mono text-[11px]">{{ agent.session_seconds ?? say("agents-session-default") }}</td>
             <td>

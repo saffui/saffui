@@ -2039,7 +2039,7 @@ async function saveSmsTemplate() {
                   <select v-model="defaultTongue" class="sf-field mt-1" :disabled="!offeredTongues.length">
                     <option value="">{{ say("locales-default-first") }}</option>
                     <option v-for="tongue in offeredTongues" :key="tongue" :value="tongue">
-                      {{ tongue }} · {{ say(`locale-${tongue}`) }}
+                      {{ tongue }} ({{ say(`locale-${tongue}`) }})
                     </option>
                   </select>
                 </label>
@@ -2101,7 +2101,7 @@ async function saveSmsTemplate() {
                   class="sf-field mt-1 font-mono"
                 >
                   <option v-for="tongue in offeredTongues" :key="tongue" :value="tongue">
-                    {{ tongue }} · {{ say(`locale-${tongue}`) }}
+                    {{ tongue }} ({{ say(`locale-${tongue}`) }})
                   </option>
                 </select>
               </label>

@@ -31,7 +31,7 @@ onMounted(load);
 afterWrites(load);
 
 function shown(count: number | null | undefined): string {
-  if (count === null || count === undefined) return "··";
+  if (count === null || count === undefined) return say("value-no-data");
   return new Intl.NumberFormat().format(count);
 }
 
@@ -60,7 +60,7 @@ function needs(held: string[]): string {
 }
 
 function duration(micros: number | null): string {
-  return micros === null ? "··" : `${Math.round(micros)} µs`;
+  return micros === null ? say("value-no-data") : `${Math.round(micros)} µs`;
 }
 </script>
 
@@ -106,9 +106,9 @@ function duration(micros: number | null): string {
         <div class="rounded border border-border/70 px-3 py-2.5">
           <div class="text-[11px] text-muted">{{ say("overview-decisions") }}</div>
           <div class="mt-1 font-mono text-lg tabular-nums">{{ shown(told.businessMetrics.decisions.total) }}</div>
-          <div class="mt-1 text-[10.5px] text-faint">
-            {{ shown(told.businessMetrics.decisions.permits) }} {{ say("overview-permits") }} ·
-            {{ shown(told.businessMetrics.decisions.denials) }} {{ say("overview-denials") }}
+          <div class="sf-meta-list mt-1 text-[10.5px] text-faint">
+            <span>{{ shown(told.businessMetrics.decisions.permits) }} {{ say("overview-permits") }}</span>
+            <span>{{ shown(told.businessMetrics.decisions.denials) }} {{ say("overview-denials") }}</span>
           </div>
         </div>
         <div class="rounded border border-border/70 px-3 py-2.5">
@@ -119,19 +119,19 @@ function duration(micros: number | null): string {
         <div class="rounded border border-border/70 px-3 py-2.5">
           <div class="text-[11px] text-muted">{{ say("overview-logins") }}</div>
           <div class="mt-1 font-mono text-lg tabular-nums">{{ shown(told.businessMetrics.logins.total) }}</div>
-          <div class="mt-1 text-[10.5px] text-faint">
-            {{ shown(told.businessMetrics.logins.signed_in) }} {{ say("overview-signed-in") }} ·
-            {{ shown(told.businessMetrics.logins.sign_in_failed) }} {{ say("overview-sign-in-failed") }}
+          <div class="sf-meta-list mt-1 text-[10.5px] text-faint">
+            <span>{{ shown(told.businessMetrics.logins.signed_in) }} {{ say("overview-signed-in") }}</span>
+            <span>{{ shown(told.businessMetrics.logins.sign_in_failed) }} {{ say("overview-sign-in-failed") }}</span>
           </div>
         </div>
         <div class="rounded border border-border/70 px-3 py-2.5">
           <div class="text-[11px] text-muted">{{ say("overview-decision-latency") }}</div>
           <div class="mt-1 font-mono text-lg tabular-nums">{{ duration(told.businessMetrics.decisions.p95_duration_us) }}</div>
-          <div class="mt-1 text-[10.5px] text-faint">
-            {{ say("overview-p95") }}
-            <template v-if="told.businessMetrics.decisions.total > told.businessMetrics.decisions.p95_sample">
-              · {{ say("metrics-p95-sample", { count: told.businessMetrics.decisions.p95_sample }) }}
-            </template>
+          <div class="sf-meta-list mt-1 text-[10.5px] text-faint">
+            <span>{{ say("overview-p95") }}</span>
+            <span v-if="told.businessMetrics.decisions.total > told.businessMetrics.decisions.p95_sample">
+              {{ say("metrics-p95-sample", { count: told.businessMetrics.decisions.p95_sample }) }}
+            </span>
           </div>
         </div>
       </div>
@@ -167,9 +167,9 @@ function duration(micros: number | null): string {
                       :class="held.kind === 'sign_in_failed' ? 'border-danger/40 text-danger' : 'border-border text-muted'"
                     >{{ held.kind }}</span>
                   </td>
-                  <td class="font-mono text-[11px]">{{ held.user_id || "·" }}</td>
-                  <td class="font-mono text-[11px]">{{ held.client_id || "·" }}</td>
-                  <td class="font-mono text-[10.5px] text-faint">{{ held.ip || "·" }}</td>
+                  <td :class="held.user_id ? 'font-mono text-[11px]' : 'text-[11px] text-faint'">{{ held.user_id || say("value-not-recorded") }}</td>
+                  <td :class="held.client_id ? 'font-mono text-[11px]' : 'text-[11px] text-faint'">{{ held.client_id || say("value-not-recorded") }}</td>
+                  <td :class="held.ip ? 'font-mono text-[10.5px] text-faint' : 'text-[11px] text-faint'">{{ held.ip || say("value-not-recorded") }}</td>
                   <td class="text-right font-mono text-[10.5px] text-faint">{{ instant(held.recorded_at) }}</td>
                 </tr>
               </tbody>

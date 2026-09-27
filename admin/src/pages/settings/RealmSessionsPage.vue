@@ -129,8 +129,9 @@ function instant(epoch: number | null | undefined): string {
               <span v-if="held.ip_address" class="font-mono text-[10.5px]">{{
                 held.ip_address
               }}</span>
-              <div class="mt-0.5 text-[10.5px] text-faint">
-                {{ [held.browser, held.system].filter(Boolean).join(" · ") }}
+              <div class="sf-meta-list mt-0.5 text-[10.5px] text-faint">
+                <span v-if="held.browser">{{ held.browser }}</span>
+                <span v-if="held.system">{{ held.system }}</span>
               </div>
             </td>
             <td>{{ held.auth_method || say("user-session-unknown") }}</td>

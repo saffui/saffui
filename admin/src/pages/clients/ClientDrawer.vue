@@ -355,11 +355,9 @@ async function detachMapper(mapperId: string) {
           </button>
         </form>
         <p v-if="agentNotice" class="mt-1.5 text-[11px] text-danger">{{ agentNotice }}</p>
-        <p class="mt-1.5 text-[10.5px] text-muted">
-          {{ say("agent-keyless") }}
-          <template v-if="agentFace.session_seconds"
-            >· {{ say("agent-session", { seconds: String(agentFace.session_seconds) }) }}</template
-          >
+        <p class="sf-meta-list mt-1.5 text-[10.5px] text-muted">
+          <span>{{ say("agent-keyless") }}</span>
+          <span v-if="agentFace.session_seconds">{{ say("agent-session", { seconds: String(agentFace.session_seconds) }) }}</span>
         </p>
       </div>
       <form class="flex flex-col gap-3 text-xs" @submit.prevent="saveClient">

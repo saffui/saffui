@@ -573,9 +573,9 @@ async function prove(row: IdpRow) {
                 >{{ held.kind }}</span
               >
             </td>
-            <td class="font-mono text-[11px]">{{ held.user_id || "·" }}</td>
-            <td class="font-mono text-[11px]">{{ held.client_id || "·" }}</td>
-            <td class="font-mono text-[10.5px] text-faint">{{ held.ip || "·" }}</td>
+            <td :class="held.user_id ? 'font-mono text-[11px]' : 'text-[11px] text-faint'">{{ held.user_id || say("value-not-recorded") }}</td>
+            <td :class="held.client_id ? 'font-mono text-[11px]' : 'text-[11px] text-faint'">{{ held.client_id || say("value-not-recorded") }}</td>
+            <td :class="held.ip ? 'font-mono text-[10.5px] text-faint' : 'text-[11px] text-faint'">{{ held.ip || say("value-not-recorded") }}</td>
             <td class="text-right font-mono text-[10.5px] text-faint">
               {{ instant(held.recorded_at) }}
             </td>

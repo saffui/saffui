@@ -177,7 +177,7 @@ async function pruneDecisions() {
               <td class="font-mono text-[11px]">{{ row.subject_id }}</td>
               <td class="font-mono text-[10.5px] break-all">{{ row.action }} {{ row.resource_kind }}<template v-if="row.resource_ref">:{{ row.resource_ref }}</template></td>
               <td class="font-mono text-[10.5px]">{{ row.reported }}</td>
-              <td class="font-mono text-[10.5px] font-semibold text-danger">{{ row.computed }}</td>
+              <td class="font-mono text-[10.5px] font-medium text-danger">{{ row.computed }}</td>
             </tr>
           </tbody>
         </table>

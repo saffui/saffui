@@ -5,6 +5,7 @@ import { installMessages } from "./i18n";
 import { createAccountRouter } from "./router";
 import { composeThemePath, readRealm } from "./services/place";
 import { holdRealm } from "./services/session";
+import "./assets/fonts.css";
 import "./assets/account.css";
 
 const realm = readRealm(location.pathname);

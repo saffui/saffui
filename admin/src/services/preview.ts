@@ -490,7 +490,7 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
     return answer({
       items: [
         { id: null, kind: "password", label: null, detail: "argon2id", created_at: iso(12) },
-        { id: "cred-totp", kind: "totp", label: "Authenticator app", detail: "SHA1 · 6 digits · 30 s", created_at: iso(240) },
+        { id: "cred-totp", kind: "totp", label: "Authenticator app", detail: "SHA1, 6 digits, 30 s", created_at: iso(240) },
         { id: "a2V5LTE", kind: "webauthn", label: "Work laptop", detail: null, created_at: iso(401) },
         { id: "cred-codes", kind: "recovery-code", label: "Printed set", detail: "8 still unused", created_at: iso(401) },
       ].filter((held) => !held.id || !TAKEN_AWAY.has(held.id)),

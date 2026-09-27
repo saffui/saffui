@@ -140,7 +140,7 @@ async function disable(key: RealmKeyView) {
             <div class="flex items-center justify-between border-b border-border bg-surface-2 px-3 py-2">
               <div class="flex items-center gap-2">
                 <AppIcon name="key" :size="13" class="text-accent" />
-                <span class="font-mono text-xs font-semibold text-ink">{{ grouped.algorithm }}</span>
+                <span class="font-mono text-xs font-medium text-ink">{{ grouped.algorithm }}</span>
               </div>
               <span class="text-[10.5px] text-faint">{{ say("keys-count", { count: grouped.keys.length }) }}</span>
             </div>
@@ -196,7 +196,7 @@ async function disable(key: RealmKeyView) {
           <div v-for="grouped in encryptionGroups" :key="grouped.algorithm" class="mt-3 overflow-hidden rounded-lg border border-border bg-surface">
             <div class="flex items-center gap-2 border-b border-border bg-surface-2 px-3 py-2">
               <AppIcon name="key" :size="13" class="text-faint" />
-              <span class="font-mono text-xs font-semibold">{{ grouped.algorithm }}</span>
+              <span class="font-mono text-xs font-medium">{{ grouped.algorithm }}</span>
             </div>
             <div class="overflow-x-auto">
               <table class="sf-table min-w-[620px]">

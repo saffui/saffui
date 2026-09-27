@@ -31,11 +31,11 @@ onMounted(load);
 watch(windowSeconds, load);
 
 function shown(value: number | null): string {
-  return value === null ? "··" : new Intl.NumberFormat().format(value);
+  return value === null ? say("value-no-data") : new Intl.NumberFormat().format(value);
 }
 
 function latency(value: number | null): string {
-  return value === null ? "··" : `${Math.round(value)} µs`;
+  return value === null ? say("value-no-data") : `${Math.round(value)} µs`;
 }
 </script>
 
@@ -63,9 +63,9 @@ function latency(value: number | null): string {
         <section class="rounded-lg border border-border bg-surface p-4">
           <div class="text-[11px] text-muted">{{ say("overview-decisions") }}</div>
           <div class="mt-2 font-mono text-2xl tabular-nums">{{ shown(metrics.decisions.total) }}</div>
-          <div class="mt-2 text-[10.5px] text-faint">
-            {{ shown(metrics.decisions.permits) }} {{ say("overview-permits") }} ·
-            {{ shown(metrics.decisions.denials) }} {{ say("overview-denials") }}
+          <div class="sf-meta-list mt-2 text-[10.5px] text-faint">
+            <span>{{ shown(metrics.decisions.permits) }} {{ say("overview-permits") }}</span>
+            <span>{{ shown(metrics.decisions.denials) }} {{ say("overview-denials") }}</span>
           </div>
         </section>
         <section class="rounded-lg border border-border bg-surface p-4">
@@ -78,9 +78,9 @@ function latency(value: number | null): string {
         <section class="rounded-lg border border-border bg-surface p-4">
           <div class="text-[11px] text-muted">{{ say("overview-logins") }}</div>
           <div class="mt-2 font-mono text-2xl tabular-nums">{{ shown(metrics.logins.total) }}</div>
-          <div class="mt-2 text-[10.5px] text-faint">
-            {{ shown(metrics.logins.signed_in) }} {{ say("overview-signed-in") }} ·
-            {{ shown(metrics.logins.sign_in_failed) }} {{ say("overview-sign-in-failed") }}
+          <div class="sf-meta-list mt-2 text-[10.5px] text-faint">
+            <span>{{ shown(metrics.logins.signed_in) }} {{ say("overview-signed-in") }}</span>
+            <span>{{ shown(metrics.logins.sign_in_failed) }} {{ say("overview-sign-in-failed") }}</span>
           </div>
         </section>
         <section class="rounded-lg border border-border bg-surface p-4">
@@ -88,11 +88,11 @@ function latency(value: number | null): string {
             {{ say("overview-decision-latency") }} <AppHint name="metrics-p95-help" />
           </div>
           <div class="mt-2 font-mono text-2xl tabular-nums">{{ latency(metrics.decisions.p95_duration_us) }}</div>
-          <div class="mt-2 text-[10.5px] text-faint">
-            {{ say("overview-p95") }}
-            <template v-if="metrics.decisions.total > metrics.decisions.p95_sample">
-              · {{ say("metrics-p95-sample", { count: metrics.decisions.p95_sample }) }}
-            </template>
+          <div class="sf-meta-list mt-2 text-[10.5px] text-faint">
+            <span>{{ say("overview-p95") }}</span>
+            <span v-if="metrics.decisions.total > metrics.decisions.p95_sample">
+              {{ say("metrics-p95-sample", { count: metrics.decisions.p95_sample }) }}
+            </span>
           </div>
         </section>
       </div>

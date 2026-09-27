@@ -1055,7 +1055,7 @@ function nodeStroke(row: PolicyRow): string {
               :y="one.y + 41"
               fill="var(--sf-muted)"
               font-size="10.5"
-              font-family="JetBrains Mono, monospace"
+              font-family="IBM Plex Mono, monospace"
             >
               {{ one.row.policy_type }}
             </text>
@@ -1144,7 +1144,7 @@ function nodeStroke(row: PolicyRow): string {
 
           <div v-if="verdict" class="mt-3">
             <div
-              class="rounded-md border px-3 py-2 text-center text-sm font-bold tracking-wide"
+              class="rounded-md border px-3 py-2 text-center text-sm font-semibold tracking-wide"
               :class="
                 verdict.computed === 'permit'
                   ? 'border-ok/50 text-ok'
@@ -1188,8 +1188,9 @@ function nodeStroke(row: PolicyRow): string {
             <dt v-if="selected.resources.length" class="text-muted">
               {{ say("authz-binds") }}
             </dt>
-            <dd v-if="selected.resources.length" class="font-mono text-[10.5px]">
-              {{ selected.resources.length }} &middot; {{ selected.scopes.length }}
+            <dd v-if="selected.resources.length" class="sf-meta-list font-mono text-[10.5px]">
+              <span>{{ selected.resources.length }} {{ say("authz-board-resources") }}</span>
+              <span>{{ selected.scopes.length }} {{ say("authz-board-scopes") }}</span>
             </dd>
           </dl>
           <p v-if="selected.description" class="mt-2 text-[11px] text-muted">

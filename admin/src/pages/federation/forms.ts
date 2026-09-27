@@ -12,7 +12,13 @@ export const SAML_ATTRIBUTE_MAPPER: IdpMapperType = "saml-user-attribute-idp-map
 export const SAML_ROLE_MAPPER: IdpMapperType = "saml-role-idp-mapper";
 
 export type BrokerProtocol = "oidc" | "oauth2" | "saml";
-export type TokenAuth = "client_secret_basic" | "client_secret_post";
+export type TokenAuth = "client_secret_basic" | "client_secret_post" | "private_key_jwt";
+/// How an OpenID provider's userinfo is read: not at all, the identity token
+/// saying enough, or as plain JSON, signed, or signed then encrypted.
+export type UserinfoForm = "" | "json" | "jws" | "jwe";
+
+/// A key this realm draws and holds for one provider, shown by its public half.
+export type ProviderKeyField = "assertion_jwk" | "encryption_jwk";
 
 export const PERSISTENT_NAME_ID = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent";
 
@@ -40,6 +46,10 @@ export interface ProviderDraft {
   clientSecret: string;
   scope: string;
   algorithms: string;
+  userinfoForm: UserinfoForm;
+  userinfoAlgorithms: string;
+  claimsRequest: string;
+  acceptedContexts: string;
   tokenAuth: TokenAuth;
   pkce: boolean;
   subjectPointer: string;
@@ -97,6 +107,10 @@ export function emptyProviderDraft(): ProviderDraft {
     clientSecret: "",
     scope: "openid profile email",
     algorithms: "RS256 ES256",
+    userinfoForm: "",
+    userinfoAlgorithms: "",
+    claimsRequest: "",
+    acceptedContexts: "",
     tokenAuth: "client_secret_basic",
     pkce: true,
     subjectPointer: "",
@@ -143,10 +157,11 @@ export function providerDraft(row: IdpRow): ProviderDraft {
     clientSecret: "",
     scope: configText(row, "scope") || (protocol === "oidc" ? "openid" : ""),
     algorithms: configText(row, "allowed_algs"),
-    tokenAuth:
-      configText(row, "token_auth") === "client_secret_post"
-        ? "client_secret_post"
-        : "client_secret_basic",
+    userinfoForm: readUserinfoForm(configText(row, "userinfo_response")),
+    userinfoAlgorithms: configText(row, "userinfo_algs"),
+    claimsRequest: indentClaimsRequest(configText(row, "claims")),
+    acceptedContexts: configText(row, "accepted_acrs"),
+    tokenAuth: readTokenAuth(configText(row, "token_auth")),
     pkce: configText(row, "pkce") !== "false",
     subjectPointer: configText(row, "subject_pointer"),
     usernamePointer: configText(row, "username_pointer"),
@@ -165,6 +180,46 @@ export function providerDraft(row: IdpRow): ProviderDraft {
     emailAttribute: configText(row, "email_attribute"),
     spEntityId: configText(row, "sp_entity_id"),
   };
+}
+
+function readTokenAuth(said: string): TokenAuth {
+  return said === "client_secret_post" || said === "private_key_jwt" ? said : "client_secret_basic";
+}
+
+function readUserinfoForm(said: string): UserinfoForm {
+  return said === "json" || said === "jws" || said === "jwe" ? said : "";
+}
+
+/// The stored claims request laid out to be edited, or as stored when it does
+/// not read as JSON, for the server to name what is wrong with it.
+function indentClaimsRequest(stored: string): string {
+  try {
+    return stored ? JSON.stringify(JSON.parse(stored), null, 2) : "";
+  } catch {
+    return stored;
+  }
+}
+
+/// The keys this realm holds for a provider as drafted: one to sign its
+/// assertions, one its userinfo is encrypted to.
+export function listNeededProviderKeys(draft: ProviderDraft): ProviderKeyField[] {
+  if (draft.protocol === "saml") return [];
+  const needed: ProviderKeyField[] = [];
+  if (draft.tokenAuth === "private_key_jwt") needed.push("assertion_jwk");
+  if (draft.protocol === "oidc" && draft.userinfoForm === "jwe") needed.push("encryption_jwk");
+  return needed;
+}
+
+/// The public half of a key the realm holds for a saved provider, laid out to
+/// be read and copied, or nothing until one is drawn.
+export function readProviderPublicKey(row: IdpRow | undefined, field: ProviderKeyField): string {
+  const held = row ? configText(row, field) : "";
+  if (!held) return "";
+  try {
+    return JSON.stringify(JSON.parse(held), null, 2);
+  } catch {
+    return held;
+  }
 }
 
 export function providerMutation(draft: ProviderDraft): IdpMutation {
@@ -196,6 +251,13 @@ function brokerConfigs(draft: ProviderDraft): IdpMutation["configs"] {
     configs.jwks_uri = { Str: draft.jwksUri.trim() };
     configs.scope = { Str: draft.scope.trim() || "openid" };
     written("allowed_algs", draft.algorithms);
+    if (draft.userinfoForm) {
+      configs.userinfo_response = { Str: draft.userinfoForm };
+      configs.userinfo_endpoint = { Str: draft.userinfoEndpoint.trim() };
+      if (draft.userinfoForm !== "json") written("userinfo_algs", draft.userinfoAlgorithms);
+    }
+    written("claims", draft.claimsRequest);
+    written("accepted_acrs", draft.acceptedContexts);
   } else {
     configs.userinfo_endpoint = { Str: draft.userinfoEndpoint.trim() };
     configs.subject_pointer = { Str: draft.subjectPointer.trim() };
@@ -212,7 +274,9 @@ function brokerConfigs(draft: ProviderDraft): IdpMutation["configs"] {
     }
   }
   if (!draft.pkce) configs.pkce = { Str: "false" };
-  if (draft.clientSecret) configs.client_secret = { Str: draft.clientSecret };
+  if (draft.clientSecret && draft.tokenAuth !== "private_key_jwt") {
+    configs.client_secret = { Str: draft.clientSecret };
+  }
   return configs;
 }
 
@@ -238,12 +302,25 @@ function samlConfigs(draft: ProviderDraft): IdpMutation["configs"] {
 /// What keeps a provider from being saved as it stands, as a message key, or
 /// nothing: only what the page can tell by itself, the server checking the rest.
 export function findProviderBlocker(draft: ProviderDraft): string | null {
+  if (draft.protocol === "oidc") return findClaimsRequestBlocker(draft.claimsRequest);
   if (draft.protocol !== "saml") return null;
   if (!draft.idpMetadata.trim()) return "idp-saml-metadata-needed";
   const principal = draft.principalAttribute.trim();
   if (!principal && draft.nameIdFormat !== PERSISTENT_NAME_ID) return "idp-saml-principal-needed";
   if (principal && principal === draft.emailAttribute.trim()) return "idp-saml-principal-is-email";
   return null;
+}
+
+/// A claims request is a JSON object, as OpenID Connect Core writes it; what it
+/// asks for is the server's to weigh.
+function findClaimsRequestBlocker(written: string): string | null {
+  if (!written.trim()) return null;
+  try {
+    const read: unknown = JSON.parse(written);
+    return read !== null && typeof read === "object" && !Array.isArray(read) ? null : "idp-claims-not-an-object";
+  } catch {
+    return "idp-claims-not-an-object";
+  }
 }
 
 /// Where the realm describes itself to a SAML provider, for the provider to import.

@@ -23,8 +23,10 @@ import {
   SAML_ATTRIBUTE_MAPPER,
   SAML_ROLE_MAPPER,
   type BrokerProtocol,
+  type ProviderKeyField,
   emptyMapperDraft,
   findProviderBlocker,
+  listNeededProviderKeys,
   mapperDraft,
   mapperMutation,
   mapperTypeLabel,
@@ -32,6 +34,7 @@ import {
   providerDraft,
   providerMutation,
   readProtocol,
+  readProviderPublicKey,
   samlMetadataAddress,
 } from "./forms";
 import { presetDraft, type ProviderPreset } from "./providerCatalog";
@@ -55,6 +58,11 @@ const alias = computed(() => props.row?.provider_id ?? draft.value.alias.trim())
 const savedProtocol = computed(() => (props.row ? readProtocol(props.row) : draft.value.protocol));
 const mapperTypes = computed(() => mapperTypesFor(savedProtocol.value));
 const blocker = computed(() => findProviderBlocker(draft.value));
+const neededKeys = computed(() => listNeededProviderKeys(draft.value));
+const KEY_LABELS: Record<ProviderKeyField, string> = {
+  assertion_jwk: "idp-key-assertion",
+  encryption_jwk: "idp-key-encryption",
+};
 const metadataAddress = computed(() =>
   props.row ? samlMetadataAddress(window.location.origin, props.realm, props.row.provider_id) : "",
 );
@@ -144,6 +152,14 @@ async function dropProvider() {
 async function copyMetadataAddress() {
   try {
     await navigator.clipboard.writeText(metadataAddress.value);
+  } catch {
+    // Selectable by hand.
+  }
+}
+
+async function copyProviderKey(field: ProviderKeyField) {
+  try {
+    await navigator.clipboard.writeText(readProviderPublicKey(props.row, field));
   } catch {
     // Selectable by hand.
   }
@@ -268,6 +284,70 @@ async function dropMapper(row: IdpMapperRow) {
         </div>
       </section>
 
+      <section v-if="draft.protocol === 'oidc'" class="border-t border-border pt-4">
+        <h3 class="inline-flex items-center gap-1 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+          {{ say("idp-person") }} <AppHint name="idp-person-help" />
+        </h3>
+        <div class="mt-3 grid gap-3 sm:grid-cols-2">
+          <label class="text-[11px] font-medium text-muted">
+            <span class="inline-flex items-center gap-1">
+              {{ say("idp-userinfo-form") }} <AppHint name="idp-userinfo-form-help" />
+            </span>
+            <select v-model="draft.userinfoForm" class="sf-field mt-1">
+              <option value="">{{ say("idp-userinfo-form-none") }}</option>
+              <option value="json">{{ say("idp-userinfo-form-json") }}</option>
+              <option value="jws">{{ say("idp-userinfo-form-jws") }}</option>
+              <option value="jwe">{{ say("idp-userinfo-form-jwe") }}</option>
+            </select>
+          </label>
+          <label v-if="draft.userinfoForm === 'jws' || draft.userinfoForm === 'jwe'" class="text-[11px] font-medium text-muted">
+            <span class="inline-flex items-center gap-1">
+              {{ say("idp-userinfo-algs") }} <AppHint name="idp-userinfo-algs-help" />
+            </span>
+            <input
+              v-model="draft.userinfoAlgorithms"
+              spellcheck="false"
+              :placeholder="draft.algorithms"
+              class="sf-field mt-1 font-mono"
+            />
+          </label>
+          <label v-if="draft.userinfoForm" class="text-[11px] font-medium text-muted sm:col-span-2">
+            {{ say("idp-oidc-userinfo-endpoint") }}
+            <input
+              v-model="draft.userinfoEndpoint"
+              type="url"
+              required
+              spellcheck="false"
+              placeholder="https://"
+              class="sf-field mt-1 font-mono"
+            />
+          </label>
+          <label class="text-[11px] font-medium text-muted sm:col-span-2">
+            <span class="inline-flex items-center gap-1">
+              {{ say("idp-claims-request") }} <AppHint name="idp-claims-request-help" />
+            </span>
+            <textarea
+              v-model="draft.claimsRequest"
+              rows="5"
+              spellcheck="false"
+              placeholder='{ "userinfo": { "name": { "essential": true } } }'
+              class="sf-field mt-1 font-mono text-[11px]"
+            ></textarea>
+          </label>
+          <label class="text-[11px] font-medium text-muted sm:col-span-2">
+            <span class="inline-flex items-center gap-1">
+              {{ say("idp-accepted-contexts") }} <AppHint name="idp-accepted-contexts-help" />
+            </span>
+            <input
+              v-model="draft.acceptedContexts"
+              spellcheck="false"
+              placeholder="mosip:idp:acr:biometrics=mfa"
+              class="sf-field mt-1 font-mono"
+            />
+          </label>
+        </div>
+      </section>
+
       <section v-if="draft.protocol === 'oauth2'" class="border-t border-border pt-4">
         <h3 class="inline-flex items-center gap-1 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
           {{ say("idp-identity") }} <AppHint name="idp-identity-help" />
@@ -376,7 +456,7 @@ async function dropMapper(row: IdpMapperRow) {
             {{ say("idp-client-id") }}
             <input v-model="draft.clientId" required spellcheck="false" class="sf-field mt-1 font-mono" />
           </label>
-          <label class="text-[11px] font-medium text-muted">
+          <label v-if="draft.tokenAuth !== 'private_key_jwt'" class="text-[11px] font-medium text-muted">
             <span class="inline-flex items-center gap-1">
               {{ say("idp-client-secret") }} <AppHint name="idp-client-secret-help" />
             </span>
@@ -409,12 +489,37 @@ async function dropMapper(row: IdpMapperRow) {
             <select v-model="draft.tokenAuth" class="sf-field mt-1">
               <option value="client_secret_basic">{{ say("idp-token-auth-basic") }}</option>
               <option value="client_secret_post">{{ say("idp-token-auth-post") }}</option>
+              <option value="private_key_jwt">{{ say("idp-token-auth-private-key-jwt") }}</option>
             </select>
           </label>
           <span class="inline-flex items-center gap-1 sm:col-span-2">
             <AppToggle v-model="draft.pkce">{{ say("idp-pkce") }}</AppToggle>
             <AppHint name="idp-pkce-help" />
           </span>
+        </div>
+      </section>
+
+      <section v-if="neededKeys.length" class="border-t border-border pt-4">
+        <h3 class="inline-flex items-center gap-1 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+          {{ say("idp-keys") }} <AppHint name="idp-keys-help" />
+        </h3>
+        <div v-for="field in neededKeys" :key="field" class="mt-3 space-y-1">
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-[11px] font-medium text-muted">{{ say(KEY_LABELS[field]) }}</span>
+            <button
+              v-if="readProviderPublicKey(props.row, field)"
+              type="button"
+              class="sf-button sf-button-secondary"
+              @click="copyProviderKey(field)"
+            >
+              {{ say("action-copy") }}
+            </button>
+          </div>
+          <pre
+            v-if="readProviderPublicKey(props.row, field)"
+            class="max-h-40 overflow-auto sf-field font-mono text-[11px] leading-4 whitespace-pre"
+          >{{ readProviderPublicKey(props.row, field) }}</pre>
+          <p v-else class="text-[11px] text-muted">{{ say("idp-key-drawn-on-save") }}</p>
         </div>
       </section>
 

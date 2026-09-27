@@ -8,11 +8,11 @@ describe("identity provider catalogue", () => {
     expect(ids).toEqual(expect.arrayContaining(["google", "microsoft", "github", "gitlab", "twitter", "oidc", "saml"]));
   });
 
-  test("uses local logos for branded providers", () => {
-    const protocols = new Set(["oidc", "saml"]);
+  test("uses local logos for branded providers, and a glyph where no mark is shipped", () => {
+    const unmarked = new Set(["oidc", "saml", "esignet"]);
 
     for (const provider of PROVIDER_CATALOG) {
-      if (protocols.has(provider.id)) {
+      if (unmarked.has(provider.id)) {
         expect(provider.logo).toBeUndefined();
         expect(provider.glyph).toBeTruthy();
       } else {
@@ -40,6 +40,16 @@ describe("identity provider catalogue", () => {
       expect(PROVIDER_CATALOG.find((provider) => provider.id === id)?.availability).toBe("ready");
     }
     expect(PROVIDER_CATALOG.some((provider) => provider.id === "instagram")).toBe(false);
+  });
+
+  test("prefills eSignet with what it takes: a signed assertion and an encrypted userinfo", () => {
+    const esignet = presetDraft(PROVIDER_CATALOG.find((provider) => provider.id === "esignet"));
+    expect(esignet.protocol).toBe("oidc");
+    expect(esignet.tokenAuth).toBe("private_key_jwt");
+    expect(esignet.algorithms).toBe("PS256");
+    expect(esignet.userinfoForm).toBe("jwe");
+    expect(JSON.parse(esignet.claimsRequest).userinfo.name).toEqual({ essential: true });
+    expect(esignet.issuer).toBe("");
   });
 
   test("opens SAML 2.0 on the SAML form", () => {

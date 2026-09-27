@@ -949,6 +949,18 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
         configs: { protocol: { Str: "saml" },
           idp_metadata: { Str: '<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://sso.partner.example/metadata"/>' },
           name_id_format: { Str: "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent" }, email_attribute: { Str: "mail" } } },
+      { internal_id: "i-7", provider_id: "national-id", name: "national-id", display_name: "National ID", description: "", enabled: true, trust_email: false,
+        configs: { issuer: { Str: "https://esignet.id.example" },
+          authorization_endpoint: { Str: "https://esignet.id.example/authorize" },
+          token_endpoint: { Str: "https://esignet.id.example/v1/esignet/oauth/v2/token" },
+          jwks_uri: { Str: "https://esignet.id.example/v1/esignet/oauth/.well-known/jwks.json" },
+          userinfo_endpoint: { Str: "https://esignet.id.example/v1/esignet/oidc/userinfo" },
+          client_id: { Str: "saffui-national" }, scope: { Str: "openid profile" }, allowed_algs: { Str: "PS256" },
+          token_auth: { Str: "private_key_jwt" }, userinfo_response: { Str: "jwe" }, userinfo_algs: { Str: "RS256 PS256" },
+          claims: { Str: '{"userinfo":{"name":{"essential":true},"birthdate":{"essential":false}}}' },
+          accepted_acrs: { Str: "mosip:idp:acr:biometrics=mfa mosip:idp:acr:knowledge=password" },
+          assertion_jwk: { Str: '{"kty":"RSA","e":"AQAB","use":"sig","kid":"hKrqtAOSedkENSeYLOp6eOdhYi2fwyOhDAWRQrT4VT8","alg":"PS256","n":"wbf4izL-jHsqjMpLUl_B1jJuLV8NvDjNT-YUP5PGwjVJx9Z01TK4lyfCYsRQ4IzfrezIeyeZBK1KEDLf27s2eiA2JDjw-iS-_t7i35VyGkkdlQcsCRuMOd4LdZG2EXkRUA80ZoF7ia0GbvOt9-tdsCo6dKwxWm96WowLMhkK44XMyNhSR5Clq4KyMa8c6rxypUK9VuwA8yJ_TZtegA4PiK3-xRvG6OXqlMhNjG97LUTzeAumEDMVq7vFRUAFubmsEEtK_n7bzsOgjUtuRb7H2sWnIOc2x3wEMuuBr-nI5ecX9TSbpi4V2r2TUr7VlxdqlcLqSa1pfgTimf9Z8XBk9Le-Eugo4YfhZw65TEUNO4cKMwz2rswObmhj5sVqieHjpPZtoiSYV6etUKplmAHQHXIRsZ6x1zp53nYdbZjgN0jA3HryS5DxWUPxgf1TJZwS0NmqGmIOVYlOUZtEY-9a4KVdJS5KayswsOdp4gTw93cCAEzm0fqHpaWLK7LEoesx"}' },
+          encryption_jwk: { Str: '{"kty":"RSA","e":"AQAB","use":"enc","kid":"3lDdQ1_2Sa5WOnQl7AqHpkDuLPcAlgKjY95o821drZQ","alg":"RSA-OAEP-256","n":"u7niNXW1sG0jMfVRx_-4JZBqwyO9PAkJoA3t3FNn2Cp2DVe7_XH3lYit0AbJVznMg0-jX1QzuPriZqxVl4T2FNWhXH-wD_tmMgk3sm3Rp55fUSGqSiqlu-Zbwx6VvDJ2xmI4Ju1d-ElxB-uQNdHaUqerzSK10dg3vGGkeMgGcNJ_VxWhnkYFQyPDeAJB_k_NnJj-XAV7FyQ4oN5RTo01ksTVZgIJy5SxRO3s0gGclKU4_FWA-z5GnDPiDKxKc3YEhm9bUPLCmY3CcbRPmfyWxIHBOxFhO_of9Y7hnDlIGjPnbfZ-KULsOg7Fcohw3ejo7HQcaXkjgAJ8HOzXvwzyBa3zW2gdHmt6zWL-gpk0kpDn0O3XvyQfJy8b65IUyFo5BcX5oYwwTPJEGZlOiBaDNKtbAKlrXC2qx2CPHl6adHWE3zhLlt-qm4DO8hl8ug69FvvM1Y3GuV-yCX90QXc6KKtLZv1bGnaJ6Uywf3kMEin6fuScOT8wlZH5f3oBUMo7"}' } } },
     ]);
   }
   if (/\/federations\/[^/]+$/.test(path) && method !== "GET") {

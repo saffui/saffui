@@ -18,6 +18,7 @@ import { keepAnswer, REALM } from "./answers";
 
 const PROVIDER = "contract-oidc";
 const PLAIN = "contract-oauth2";
+const NATIONAL = "contract-national";
 const SAML = "contract-saml";
 const HOOK = "contract-hook";
 const DIRECTORY = "contract-ldap";
@@ -68,6 +69,39 @@ describe("federation", () => {
     expect(mappers.some((held) => held.mapper_id === mapper.mapper_id)).toBe(true);
     await deleteIdpMapper(REALM, PROVIDER, mapper.mapper_id);
     await deleteIdp(REALM, PROVIDER);
+  });
+
+  test("keeps a national sign-in provider, showing the public halves of the keys it holds", async () => {
+    const provider = {
+      provider_id: NATIONAL,
+      name: NATIONAL,
+      display_name: "Contract national ID",
+      description: "",
+      enabled: false,
+      trust_email: false,
+      configs: {
+        issuer: { Str: "https://esignet.example.test" },
+        authorization_endpoint: { Str: "https://esignet.example.test/authorize" },
+        token_endpoint: { Str: "https://esignet.example.test/oauth2/token" },
+        jwks_uri: { Str: "https://esignet.example.test/oauth2/jwks" },
+        userinfo_endpoint: { Str: "https://esignet.example.test/oauth2/userinfo" },
+        client_id: { Str: "saffui" },
+        scope: { Str: "openid profile" },
+        allowed_algs: { Str: "PS256" },
+        token_auth: { Str: "private_key_jwt" },
+        userinfo_response: { Str: "jwe" },
+        userinfo_algs: { Str: "RS256 PS256" },
+        claims: { Str: '{"userinfo":{"name":{"essential":true}}}' },
+        accepted_acrs: { Str: "mosip:idp:acr:knowledge=password" },
+      },
+    };
+    const created = await keepAnswer(createIdp, REALM, provider);
+    const shown = Object.keys(created.configs ?? {});
+    expect(shown).toEqual(expect.arrayContaining(["assertion_jwk", "encryption_jwk"]));
+    expect(shown.filter((field) => field.endsWith("_sealed"))).toEqual([]);
+    const rewritten = await keepAnswer(updateIdp, REALM, NATIONAL, { ...provider, display_name: "National ID" });
+    expect(rewritten.configs?.assertion_jwk).toEqual(created.configs?.assertion_jwk);
+    await deleteIdp(REALM, NATIONAL);
   });
 
   test("keeps a SAML provider with an attribute mapper, and removes both", async () => {

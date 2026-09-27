@@ -42,6 +42,27 @@ export interface IdpMapperMutation {
   configs: Record<string, { Str: string }>;
 }
 
+/// What a provider does not announce that a setting here may need.
+export type DiscoveryGap =
+  | "no-private-key-jwt"
+  | "no-assertion-algorithm"
+  | "no-userinfo-encryption"
+  | "no-claims-parameter"
+  | "no-pkce-s256";
+
+/// What `POST .../provider-discovery` read from an issuer's discovery document.
+export interface DiscoveredProvider {
+  issuer: string;
+  authorization_endpoint: string;
+  token_endpoint: string;
+  jwks_uri: string;
+  userinfo_endpoint: string | null;
+  id_token_algs: string[];
+  acr_values: string[];
+  iss_parameter: boolean;
+  gaps: DiscoveryGap[];
+}
+
 /// What `POST .../identity-providers/{alias}/prove` answers: whether the
 /// pipe held, how it was exercised, and the far side's words.
 export interface DeliveryProof {

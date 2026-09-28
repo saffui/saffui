@@ -62,6 +62,7 @@ import type {
 import type { ClientBrief } from "@/models/client";
 import { authorizationClients, selectedClient } from "./authorizationClients";
 import { canWriteAuthorization } from "./authorizationSetup";
+import { clientScopeChoices } from "./policyChoices";
 import { listGroups, listRoles } from "@/services/directory";
 import { listScopeCatalogue } from "@/services/scopes";
 import { applyPolicyTerms, termsFromPolicy, uniquePolicyTerms } from "./policyTerms";
@@ -833,12 +834,7 @@ async function loadPolicyChoices(kind: string) {
         held: held.has(row.client_id),
       }));
     } else if (kind === "client-scope") {
-      const found = await listScopeCatalogue(realm.value);
-      policyChoices.value = found.map((row) => ({
-        id: row.name,
-        label: row.name,
-        held: held.has(row.name),
-      }));
+      policyChoices.value = clientScopeChoices(await listScopeCatalogue(realm.value), held);
     } else if (kind === "aggregated") {
       policyChoices.value = policies.value
         .filter((row) => row.policy_id !== editing.value)

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { permissionReady, permissionWrite, type PermissionDraft } from "./permissionForm";
+import {
+  conditionCandidates,
+  isPermission,
+  permissionReady,
+  permissionWrite,
+  type PermissionDraft,
+} from "./permissionForm";
 
 const BASE: PermissionDraft = {
   name: "documents",
@@ -19,6 +25,28 @@ describe("authorization permission form", () => {
     expect(permissionReady(BASE)).toBe(true);
     expect(permissionReady({ ...BASE, policies: [] })).toBe(false);
     expect(permissionReady({ ...BASE, resourceType: "", resources: [] })).toBe(false);
+  });
+
+  it("knows a permission by its kind, even one bound to a type alone", () => {
+    expect(isPermission({ policy_type: "resource-permission" })).toBe(true);
+    expect(isPermission({ policy_type: "scope-permission" })).toBe(true);
+    expect(isPermission({ policy_type: "aggregated" })).toBe(false);
+  });
+
+  it("offers every policy but a permission, and never the one being edited", () => {
+    const listed = [
+      { policy_id: "editors", policy_type: "role" },
+      { policy_id: "combined", policy_type: "aggregated" },
+      { policy_id: "documents", policy_type: "resource-permission" },
+      { policy_id: "reading", policy_type: "scope-permission" },
+    ];
+    expect(conditionCandidates(listed, "combined").map((held) => held.policy_id)).toEqual([
+      "editors",
+    ]);
+    expect(conditionCandidates(listed, "").map((held) => held.policy_id)).toEqual([
+      "editors",
+      "combined",
+    ]);
   });
 
   it("requires a scope only for scope permissions", () => {

@@ -72,6 +72,8 @@ import {
   uniquePolicyTerms,
 } from "./policyTerms";
 import {
+  conditionCandidates,
+  isPermission,
   permissionReady,
   permissionWrite,
   type PermissionDraft,
@@ -145,15 +147,10 @@ function chooseClient() {
   void load();
 }
 
-/// A policy that binds a resource or a scope is a permission; one that binds
-/// neither is a rule a permission can be built from. One door answers for
-/// both, so the two boards are one listing read two ways.
-const binding = computed(() =>
-  policies.value.filter((held) => held.resources.length > 0 || held.scopes.length > 0),
-);
-const unbound = computed(() =>
-  policies.value.filter((held) => held.resources.length === 0 && held.scopes.length === 0),
-);
+/// Permissions, and the rules a permission can be built from. One door answers
+/// for both, so the two boards are one listing read two ways.
+const binding = computed(() => policies.value.filter(isPermission));
+const unbound = computed(() => policies.value.filter((held) => !isPermission(held)));
 
 const view = ref({ x: -40, y: -200, zoom: 0.95 });
 const dragging = ref<{ px: number; py: number; ox: number; oy: number } | null>(null);
@@ -346,7 +343,7 @@ const edges = computed<{ d: string; lit: boolean }[]>(() => {
 });
 
 function stripe(row: PolicyRow): string {
-  if (row.resources.length || row.scopes.length) return "var(--sf-accent)";
+  if (isPermission(row)) return "var(--sf-accent)";
   if (row.policy_type === "aggregated" || row.policies.length) return "var(--sf-info)";
   return "var(--sf-muted)";
 }
@@ -514,9 +511,7 @@ function emptyPermissionDraft(): PermissionDraft {
 
 const permissionDraft = ref<PermissionDraft>(emptyPermissionDraft());
 const permissionCanSave = computed(() => permissionReady(permissionDraft.value));
-const permissionPolicies = computed(() =>
-  unbound.value.filter((row) => row.policy_id !== editing.value),
-);
+const permissionPolicies = computed(() => conditionCandidates(policies.value, editing.value));
 
 /// The relation graph as published, and as it is being rewritten. Held apart
 /// so what is on screen is never mistaken for what the engine decides by.
@@ -613,7 +608,7 @@ async function openNew(which: "policy" | "resource" | "scope") {
 }
 
 async function openPolicy(held: PolicyRow) {
-  if (held.policy_type === "resource-permission" || held.policy_type === "scope-permission") {
+  if (isPermission(held)) {
     openPermission(held);
     return;
   }
@@ -848,13 +843,11 @@ async function loadPolicyChoices(kind: string) {
         held: held.has(row.name),
       }));
     } else if (kind === "aggregated") {
-      policyChoices.value = policies.value
-        .filter((row) => row.policy_id !== editing.value)
-        .map((row) => ({
-          id: row.policy_id,
-          label: row.name,
-          held: held.has(row.policy_id),
-        }));
+      policyChoices.value = conditionCandidates(policies.value, editing.value).map((row) => ({
+        id: row.policy_id,
+        label: row.name,
+        held: held.has(row.policy_id),
+      }));
     } else {
       policyChoices.value = [];
     }
@@ -1638,7 +1631,7 @@ function nodeStroke(row: PolicyRow): string {
           <tr v-for="held in binding" :key="held.policy_id">
               <td>{{ held.name }}</td>
               <td>{{ policyTypeLabel(held.policy_type) }}</td>
-              <td class="text-muted">{{ held.resources.length + held.scopes.length }}</td>
+              <td class="text-muted">{{ held.resources.length + held.scopes.length || held.resource_type || 0 }}</td>
               <td class="text-right whitespace-nowrap">
                 <button
                   type="button"

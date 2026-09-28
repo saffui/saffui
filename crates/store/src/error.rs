@@ -104,6 +104,11 @@ pub enum StoreError {
     #[error("{policy_id} is a condition of another policy")]
     PolicyIsACondition { policy_id: String },
 
+    /// A permission named as a condition. It decides what it applies to, and
+    /// nothing is built from it.
+    #[error("{named} is a permission, and a permission is never a condition")]
+    PermissionAsCondition { named: String },
+
     /// A time window no instant can satisfy.
     #[error("the time window names no instant that could satisfy it")]
     UnusableWindow {

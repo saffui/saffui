@@ -332,6 +332,58 @@ async fn what_the_store_refuses_reaches_the_caller_in_its_own_words() {
             .is_some_and(|held| held.contains("condition of another policy")),
         "{told}"
     );
+
+    // A permission is never a condition, even one that binds no row because it
+    // names only a resource type. The table's own check answered 500.
+    let (status, permission) = asked(
+        &plane,
+        Method::POST,
+        &format!("{base}/policies"),
+        &bearer,
+        Some(json!({
+            "name": "documents", "description": "",
+            "decision": "unanimous", "logic": "positive",
+            "policy_owner": "app",
+            "policies": [condition_id], "resources": [], "scopes": [],
+            "policy_type": "resource-permission", "resource_type": "document",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{permission}");
+    let permission_id = permission["policy_id"]
+        .as_str()
+        .expect("an identity")
+        .to_owned();
+    let aggregate_id = aggregate["policy_id"]
+        .as_str()
+        .expect("an identity")
+        .to_owned();
+    for (method, path) in [
+        (Method::POST, format!("{base}/policies")),
+        (Method::PUT, format!("{base}/policies/{aggregate_id}")),
+    ] {
+        let (status, told) = asked(
+            &plane,
+            method,
+            &path,
+            &bearer,
+            Some(json!({
+                "name": "over-documents", "description": "",
+                "decision": "unanimous", "logic": "positive",
+                "policy_owner": "app",
+                "policies": [condition_id, permission_id], "resources": [], "scopes": [],
+                "policy_type": "aggregated",
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{path}: {told}");
+        assert!(
+            told["message"]
+                .as_str()
+                .is_some_and(|held| held.contains(&format!("{permission_id} is a permission"))),
+            "the permission is not named: {told}"
+        );
+    }
 }
 
 /// Reading the surface is not rewriting it, and the decision log has its own

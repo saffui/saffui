@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { applyPolicyTerms, termsFromPolicy, uniquePolicyTerms } from "./policyTerms";
+import {
+  applyPolicyTerms,
+  emptyPolicyDraft,
+  policyDraftFrom,
+  policyWrite,
+  termsFromPolicy,
+  uniquePolicyTerms,
+} from "./policyTerms";
 
 describe("authorization policy terms", () => {
   it("normalizes pasted identifiers without changing their spelling", () => {
@@ -30,5 +37,33 @@ describe("authorization policy terms", () => {
       roles: ["role-1"],
     };
     expect(termsFromPolicy(policy, "roles")).toEqual(["role-1"]);
+  });
+
+  it("writes back the fold, the logic and the owner an edited policy holds", () => {
+    const held = {
+      policy_id: "p-1",
+      name: "not-contractors",
+      description: "",
+      policy_type: "group",
+      policies: [],
+      resources: [],
+      scopes: [],
+      decision: "affirmative",
+      logic: "negative",
+      policy_owner: "alice",
+      groups: ["contractors"],
+    };
+    const body = policyWrite(policyDraftFrom(held), "groups", ["contractors"], "app");
+    expect(body.decision).toBe("affirmative");
+    expect(body.logic).toBe("negative");
+    expect(body.policy_owner).toBe("alice");
+    expect(body.groups).toEqual(["contractors"]);
+  });
+
+  it("writes a new policy positive, unanimous and owned by the resource server", () => {
+    const body = policyWrite({ ...emptyPolicyDraft(), name: "editors" }, "roles", ["role-1"], "app");
+    expect(body.decision).toBe("unanimous");
+    expect(body.logic).toBe("positive");
+    expect(body.policy_owner).toBe("app");
   });
 });

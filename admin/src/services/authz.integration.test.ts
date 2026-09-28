@@ -50,6 +50,9 @@ describe("authorization evaluator transport", () => {
       policies: ["editors"],
       resources: ["archive"],
       scopes: ["edit"],
+      decision: "unanimous",
+      logic: "positive",
+      owner: "",
     }, "web-dashboard"));
 
     expect(fetch).toHaveBeenCalledWith(

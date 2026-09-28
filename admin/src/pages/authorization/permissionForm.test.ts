@@ -9,6 +9,9 @@ const BASE: PermissionDraft = {
   policies: ["editors"],
   resources: [],
   scopes: [],
+  decision: "unanimous",
+  logic: "positive",
+  owner: "",
 };
 
 describe("authorization permission form", () => {
@@ -27,5 +30,19 @@ describe("authorization permission form", () => {
 
   it("does not leak scope bindings into a resource permission", () => {
     expect(permissionWrite({ ...BASE, scopes: ["read"] }, "app").scopes).toEqual([]);
+  });
+
+  it("writes back the fold, the logic and the owner it was opened with", () => {
+    const body = permissionWrite(
+      { ...BASE, decision: "affirmative", logic: "negative", owner: "alice" },
+      "app",
+    );
+    expect(body.decision).toBe("affirmative");
+    expect(body.logic).toBe("negative");
+    expect(body.policy_owner).toBe("alice");
+  });
+
+  it("gives a new permission to the resource server", () => {
+    expect(permissionWrite(BASE, "app").policy_owner).toBe("app");
   });
 });

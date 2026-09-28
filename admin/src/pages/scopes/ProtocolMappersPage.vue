@@ -3,6 +3,8 @@ import { computed, onMounted, ref } from "vue";
 import { useRoute, RouterLink } from "vue-router";
 import AppHint from "@/components/AppHint.vue";
 import AppToggle from "@/components/AppToggle.vue";
+import AppDrawer from "@/components/AppDrawer.vue";
+import DangerDialog from "@/components/DangerDialog.vue";
 import { say } from "@/i18n";
 import { afterWrites } from "@/services/writes";
 import {
@@ -26,6 +28,7 @@ import {
   type Kinds,
   type Switch,
 } from "./mapperForm";
+import { mapperFieldKey, mapperKindKey } from "./mapperLabels";
 import type { AttributeValue, ProtocolMapper } from "@/models/client";
 
 const route = useRoute();
@@ -35,6 +38,7 @@ const kinds = ref<Kinds>({ kinds: [], target_flags: [] });
 const failed = ref("");
 const editor = ref<ProtocolMapper | null>(null);
 const editorOpen = ref(false);
+const pendingDelete = ref<ProtocolMapper | null>(null);
 // The text box is a second reading of the same bag, never a second copy.
 const asText = ref(false);
 const jsonText = ref("{}");
@@ -171,22 +175,39 @@ async function save() {
 async function remove(row: ProtocolMapper) {
   try {
     await deleteRealmMapper(realm(), row.mapper_id);
+    pendingDelete.value = null;
     await load();
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
 }
+
+function kindLabel(kind: string): string {
+  const key = mapperKindKey(kind);
+  return key === "mapper-kind-custom" ? kind : say(key);
+}
+
+function fieldLabel(field: string): string {
+  const key = mapperFieldKey(field);
+  return key === "mapper-field-custom" ? field : say(key);
+}
 </script>
 
 <template>
   <div>
-    <div class="flex flex-wrap items-center gap-3">
-      <div>
+    <div class="flex flex-wrap items-start justify-between gap-4">
+      <div class="min-w-0">
         <h1 class="text-lg font-semibold tracking-tight">{{ say("mappers-title") }}</h1>
         <p class="mt-1 text-xs text-muted">{{ say("mappers-lede") }}</p>
       </div>
-      <RouterLink :to="`/${realm()}/client-scopes`" class="text-xs text-muted hover:text-ink">{{ say("scopes-title") }}</RouterLink>
-      <button type="button" class="sf-button sf-button-primary ml-auto" @click="open()">{{ say("mappers-new") }}</button>
+      <div class="flex items-center gap-2">
+        <RouterLink :to="`/${realm()}/client-scopes`" class="sf-button sf-button-secondary">
+          {{ say("scopes-title") }}
+        </RouterLink>
+        <button type="button" class="sf-button sf-button-primary" @click="open()">
+          {{ say("mappers-new") }}
+        </button>
+      </div>
     </div>
     <p v-if="failed" class="mt-3 text-xs text-danger" role="alert">{{ failed }}</p>
     <div class="sf-list mt-4 overflow-x-auto">
@@ -194,28 +215,54 @@ async function remove(row: ProtocolMapper) {
         <thead><tr><th>{{ say("mappers-col-name") }}</th><th>{{ say("mappers-col-type") }}</th><th>{{ say("mappers-col-protocol") }}</th><th></th></tr></thead>
         <tbody>
           <tr v-for="row in rows" :key="row.mapper_id" class="border-b border-border/60 last:border-0">
-            <td class="font-mono text-[11px]">{{ row.name }}</td>
-            <td class="font-mono text-[10.5px] text-muted">{{ row.mapper_type }}</td>
+            <td class="font-medium">{{ row.name }}</td>
+            <td>
+              <span class="block text-xs text-ink">{{ kindLabel(row.mapper_type) }}</span>
+              <span class="mt-0.5 block font-mono text-[10px] text-faint">{{ row.mapper_type }}</span>
+            </td>
             <td class="font-mono text-[10.5px] text-muted">{{ row.protocol }}</td>
             <td class="text-right whitespace-nowrap">
               <button type="button" class="text-xs text-accent hover:underline" @click="open(row)">{{ say("authz-route-edit") }}</button>
-              <button type="button" class="ml-3 text-xs text-danger hover:underline" @click="remove(row)">{{ say("authz-route-delete") }}</button>
+              <button type="button" class="ml-3 text-xs text-danger hover:underline" @click="pendingDelete = row">{{ say("authz-route-delete") }}</button>
             </td>
           </tr>
           <tr v-if="!rows.length"><td colspan="4" class="text-muted">{{ say("mappers-none") }}</td></tr>
         </tbody>
       </table>
     </div>
-    <div v-if="editorOpen" class="mt-4 rounded-lg border border-border bg-surface p-4">
-      <div class="flex items-center justify-between"><h2 class="text-sm font-semibold">{{ editor ? say("mappers-edit") : say("mappers-new") }}</h2><button type="button" class="text-xs text-muted" @click="editorOpen = false">×</button></div>
-      <form class="mt-3 grid gap-3 sm:grid-cols-2" @submit.prevent="save">
-        <label class="text-[11px] font-medium text-muted">{{ say("mappers-col-name") }} <AppHint name="mappers-col-name-help" /><input v-model="draft.name" class="sf-field mt-1 font-mono" /></label>
-        <label class="text-[11px] font-medium text-muted">{{ say("mappers-col-protocol") }} <AppHint name="mappers-col-protocol-help" /><select v-model="draft.protocol" class="sf-field mt-1 font-mono"><option value="openid-connect">openid-connect</option></select></label>
-        <label class="text-[11px] font-medium text-muted sm:col-span-2">{{ say("mappers-col-type") }} <AppHint name="mappers-col-type-help" /><select v-model="draft.mapper_type" class="sf-field mt-1 font-mono"><option v-for="kind in kinds.kinds" :key="kind.mapper_type" :value="kind.mapper_type">{{ kind.mapper_type }}</option></select></label>
+    <AppDrawer
+      v-if="editorOpen"
+      wide
+      :title="editor ? say('mappers-edit') : say('mappers-new')"
+      :subtitle="editor?.name"
+      @close="editorOpen = false"
+    >
+      <form class="grid gap-5 sm:grid-cols-2" @submit.prevent="save">
+        <label class="text-[11px] font-medium text-muted">
+          {{ say("mappers-col-name") }} <AppHint name="mappers-col-name-help" />
+          <input v-model="draft.name" required class="sf-field mt-1" />
+        </label>
+        <label class="text-[11px] font-medium text-muted">
+          {{ say("mappers-col-protocol") }} <AppHint name="mappers-col-protocol-help" />
+          <select v-model="draft.protocol" class="sf-field mt-1 font-mono">
+            <option value="openid-connect">openid-connect</option>
+          </select>
+        </label>
+        <label class="text-[11px] font-medium text-muted sm:col-span-2">
+          {{ say("mappers-col-type") }} <AppHint name="mappers-col-type-help" />
+          <select v-model="draft.mapper_type" class="sf-field mt-1">
+            <option v-for="kind in kinds.kinds" :key="kind.mapper_type" :value="kind.mapper_type">
+              {{ kindLabel(kind.mapper_type) }} ({{ kind.mapper_type }})
+            </option>
+          </select>
+        </label>
 
-        <div class="sm:col-span-2 rounded-md border border-border/60 p-3">
+        <section class="sm:col-span-2 rounded-lg border border-border bg-bg p-4">
           <div class="flex flex-wrap items-center gap-3">
-            <span class="text-[11px] font-medium text-muted">{{ say("mappers-fields") }} <AppHint name="mappers-fields-help" /></span>
+            <div>
+              <h3 class="text-sm font-semibold">{{ say("mappers-fields") }}</h3>
+              <p class="mt-1 text-[11px] text-muted">{{ say("mappers-fields-help") }}</p>
+            </div>
             <button type="button" class="ml-auto text-xs text-accent hover:underline" @click="asText ? (asText = false) : showJson()">{{ asText ? say("mappers-json-close") : say("mappers-json-open") }}</button>
           </div>
           <template v-if="asText">
@@ -225,29 +272,38 @@ async function remove(row: ProtocolMapper) {
           </template>
           <template v-else>
             <p v-if="!fields.length && !switches.length" class="mt-2 text-[10.5px] text-muted">{{ say("mappers-fields-none") }}</p>
-            <div v-if="fields.length" class="mt-2 grid gap-3 sm:grid-cols-2">
+            <div v-if="fields.length" class="mt-4 grid gap-4 sm:grid-cols-2">
               <label v-for="field in fields" :key="field.key" class="text-[11px] font-medium text-muted">
-                <span class="font-mono">{{ field.key }}</span> <AppHint :name="hintOf(field.key)" />
+                <span class="text-ink">{{ fieldLabel(field.key) }}</span> <AppHint :name="hintOf(field.key)" />
                 <span v-if="field.required || field.alternative" class="ml-1 text-[9.5px] text-faint uppercase">{{ say("mappers-required-mark") }}</span>
+                <span class="mt-0.5 block font-mono text-[10px] font-normal text-faint">{{ field.key }}</span>
                 <input :value="textOf(field.key)" class="sf-field mt-1 font-mono" @input="sayText(field.key, ($event.target as HTMLInputElement).value)" />
               </label>
             </div>
-            <div v-if="switches.length" class="mt-3 flex flex-col gap-2">
-              <AppToggle v-for="held in switches" :key="held.key" :model-value="flagOf(held)" @update:model-value="sayFlag(held, $event)">
-                <span class="font-mono">{{ held.key }}</span> <AppHint :name="hintOf(held.key)" />
-              </AppToggle>
+            <div v-if="switches.length" class="mt-4 grid gap-2 sm:grid-cols-2">
+              <div v-for="held in switches" :key="held.key" class="rounded-md border border-border bg-surface px-3 py-2.5">
+                <AppToggle :model-value="flagOf(held)" @update:model-value="sayFlag(held, $event)">
+                  <span>{{ fieldLabel(held.key) }}</span>
+                  <span class="ml-1 font-mono text-[10px] text-faint">{{ held.key }}</span>
+                  <AppHint :name="hintOf(held.key)" />
+                </AppToggle>
+              </div>
             </div>
           </template>
-        </div>
+        </section>
 
-        <div v-if="!asText" class="sm:col-span-2 rounded-md border border-border/60 p-3">
-          <span class="text-[11px] font-medium text-muted">{{ say("mappers-where") }} <AppHint name="mappers-where-help" /></span>
-          <div class="mt-2 flex flex-wrap gap-4">
-            <AppToggle v-for="flag in kinds.target_flags" :key="flag.key" :model-value="flagOf(flag)" @update:model-value="sayFlag(flag, $event)">
-              <span class="font-mono">{{ flag.key }}</span> <AppHint :name="hintOf(flag.key)" />
-            </AppToggle>
+        <section v-if="!asText" class="sm:col-span-2 rounded-lg border border-border bg-bg p-4">
+          <h3 class="text-sm font-semibold">{{ say("mappers-where") }}</h3>
+          <p class="mt-1 text-[11px] text-muted">{{ say("mappers-where-help") }}</p>
+          <div class="mt-4 grid gap-2 sm:grid-cols-3">
+            <div v-for="flag in kinds.target_flags" :key="flag.key" class="rounded-md border border-border bg-surface px-3 py-2.5">
+              <AppToggle :model-value="flagOf(flag)" @update:model-value="sayFlag(flag, $event)">
+                <span>{{ fieldLabel(flag.key) }}</span>
+                <span class="mt-0.5 block font-mono text-[10px] text-faint">{{ flag.key }}</span>
+              </AppToggle>
+            </div>
           </div>
-        </div>
+        </section>
 
         <ul v-if="refusals.length" class="sm:col-span-2 flex flex-col gap-1">
           <li v-for="said in refusals" :key="said" class="flex items-center gap-2 text-[10.5px] text-danger">
@@ -256,8 +312,23 @@ async function remove(row: ProtocolMapper) {
           </li>
         </ul>
 
-        <button type="submit" class="sf-button sf-button-primary sm:col-span-2">{{ editor ? say("settings-save") : say("realm-create") }}</button>
+        <div class="sm:col-span-2 flex justify-end gap-2 border-t border-border pt-4">
+          <button type="button" class="sf-button sf-button-secondary" @click="editorOpen = false">{{ say("action-cancel") }}</button>
+          <button type="submit" class="sf-button sf-button-primary">{{ editor ? say("settings-save") : say("realm-create") }}</button>
+        </div>
       </form>
-    </div>
+    </AppDrawer>
+
+    <DangerDialog
+      :open="pendingDelete !== null"
+      :title="say('mapper-delete-title')"
+      :named="pendingDelete?.name ?? ''"
+      :lede="say('mapper-delete-lede')"
+      :facts="pendingDelete ? [{ value: kindLabel(pendingDelete.mapper_type), label: say('mappers-col-type') }] : []"
+      :warning="say('mapper-delete-warning')"
+      :confirm-label="say('authz-route-delete')"
+      @close="pendingDelete = null"
+      @confirm="pendingDelete && remove(pendingDelete)"
+    />
   </div>
 </template>

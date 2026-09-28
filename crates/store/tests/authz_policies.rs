@@ -669,6 +669,79 @@ async fn a_condition_that_leads_back_is_refused() {
     );
 }
 
+/// A permission decides what it applies to and nothing is built from it,
+/// whether an aggregate or another permission names it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_permission_is_refused_as_a_condition() {
+    let fixture = Fixture::with_user_and_client().await;
+    plant_surface(&fixture).await;
+
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
+
+    authz_policies::create(
+        &transaction,
+        &stored(
+            "editors",
+            terms(
+                "editors",
+                PolicyRule::Role {
+                    roles: vec!["editor".to_owned()],
+                },
+            ),
+        ),
+    )
+    .await
+    .unwrap();
+    // Named by its resource type alone, it binds no row and is a permission
+    // all the same.
+    let by_type = |id: &str, conditions: &[&str]| {
+        stored(
+            id,
+            PolicyTerms {
+                policies: conditions.iter().map(|id| (*id).to_owned()).collect(),
+                ..terms(
+                    id,
+                    PolicyRule::ResourcePermission {
+                        resource_type: "urn:doc".to_owned(),
+                    },
+                )
+            },
+        )
+    };
+    authz_policies::create(&transaction, &by_type("documents", &["editors"]))
+        .await
+        .unwrap();
+
+    let refused = Err(StoreError::PermissionAsCondition {
+        named: "documents".to_owned(),
+    });
+    assert_eq!(
+        authz_policies::create(
+            &transaction,
+            &aggregate("combined", &["editors", "documents"])
+        )
+        .await,
+        refused
+    );
+    assert_eq!(
+        authz_policies::create(&transaction, &by_type("stacked", &["documents"])).await,
+        refused
+    );
+
+    // Refused before anything was written, so the same transaction still takes
+    // the aggregate once the permission is left out.
+    authz_policies::create(&transaction, &aggregate("combined", &["editors"]))
+        .await
+        .unwrap();
+    assert_eq!(
+        authz_policies::update(&transaction, &aggregate("combined", &["documents"])).await,
+        Err(StoreError::PermissionAsCondition {
+            named: "documents".to_owned(),
+        })
+    );
+}
+
 /// Everything the write path refuses is refused before it writes, so a refusal
 /// leaves nothing behind and does not abort the transaction it was asked in.
 #[tokio::test]

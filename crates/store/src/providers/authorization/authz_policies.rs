@@ -756,6 +756,13 @@ async fn resolve_conditions(
                 asked: condition.clone(),
             });
         };
+        // The table refuses the edge as well, but only after the policy row has
+        // landed, and as a backend fault the caller cannot read.
+        if is_permission(kind) {
+            return Err(StoreError::PermissionAsCondition {
+                named: condition.clone(),
+            });
+        }
         resolved.push((condition.clone(), kind));
     }
     Ok(resolved)

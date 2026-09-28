@@ -1445,6 +1445,7 @@ fn describe_store_refusal(why: StoreError, item: &str) -> Unportable {
         | StoreError::UnappliedPermission
         | StoreError::UnreadBinding { .. }
         | StoreError::PolicyIsACondition { .. }
+        | StoreError::PermissionAsCondition { .. }
         | StoreError::UnusableWindow { .. }
         | StoreError::BadPattern(_)
         | StoreError::PolicyKindChanged

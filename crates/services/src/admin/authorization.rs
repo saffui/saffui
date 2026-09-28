@@ -56,6 +56,7 @@ fn carried(why: StoreError) -> Unwritable {
         | StoreError::UnconditionalPermission
         | StoreError::UnappliedPermission
         | StoreError::UnreadBinding { .. }
+        | StoreError::PermissionAsCondition { .. }
         | StoreError::UnusableWindow { .. }
         | StoreError::BadPattern(_)
         | StoreError::PolicyKindChanged

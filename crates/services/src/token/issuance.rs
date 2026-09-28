@@ -301,10 +301,22 @@ pub fn sign_claims(
     key: &RealmSigningKey,
     claims: &serde_json::Map<String, Value>,
 ) -> Result<String, Unmintable> {
+    sign_claims_as(key, claims, "JWT", &key.kid)
+}
+
+/// Sign a set of claims under a type and a key identifier of the caller's:
+/// a request object says what it is in its `typ`, and names its key by
+/// whatever identifier the reader resolves keys by.
+pub fn sign_claims_as(
+    key: &RealmSigningKey,
+    claims: &serde_json::Map<String, Value>,
+    token_type: &str,
+    key_id: &str,
+) -> Result<String, Unmintable> {
     let mut header = JwsHeader::new();
     header.set_algorithm(jws_algorithm_name(key.algorithm));
-    header.set_token_type("JWT");
-    header.set_key_id(&key.kid);
+    header.set_token_type(token_type);
+    header.set_key_id(key_id);
 
     let mut payload = JwtPayload::new();
     for (claim, value) in claims {

@@ -685,6 +685,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V113__credential_issuers.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 114,
+            name: "presentation_requests",
+            sql: include_str!("../migrations/V114__presentation_requests.sql"),
+            transactional: true,
+        }),
     ]
 }
 

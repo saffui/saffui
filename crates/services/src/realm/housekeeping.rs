@@ -3,7 +3,8 @@ use store::providers::directory::one_time_tokens;
 use store::providers::events::{caep_queue, deliveries, notices, outbox};
 use store::providers::federation::{brokering, saml_brokering};
 use store::providers::protocol::{
-    backchannel, devices, dpop, form_post, login, oidc, pushed, replay, sessions, source_failures,
+    backchannel, devices, dpop, form_post, login, oidc, presentations, pushed, replay, sessions,
+    source_failures,
 };
 use store::providers::realms::{page_previews, sms, ussd};
 use store::tenancy::UnitOfWork;
@@ -24,6 +25,10 @@ pub const DELIVERED_EVENTS_KEPT_DAYS: i32 = 30;
 /// How long a settled security notice is kept. It names what changed on whose
 /// account, and a month is long enough to answer whether someone was told.
 pub const NOTICES_KEPT_DAYS: i64 = 30;
+
+/// How long a presentation request is kept past its window, answered or not:
+/// long enough for whoever asked to read what it came to.
+pub const PRESENTATIONS_KEPT_HOURS: i64 = 24;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the sweep could not run")]
@@ -68,6 +73,8 @@ pub struct Swept {
     pub security_notices: u64,
     /// Logout notices settled past their window.
     pub logout_notices: u64,
+    /// Presentation requests a day past their window.
+    pub presentation_requests: u64,
 }
 
 impl Swept {
@@ -98,6 +105,7 @@ impl Swept {
             + self.client_sessions
             + self.security_notices
             + self.logout_notices
+            + self.presentation_requests
     }
 
     pub fn add(&mut self, other: Swept) {
@@ -127,6 +135,7 @@ impl Swept {
         self.client_sessions += other.client_sessions;
         self.security_notices += other.security_notices;
         self.logout_notices += other.logout_notices;
+        self.presentation_requests += other.presentation_requests;
     }
 }
 
@@ -207,6 +216,12 @@ pub async fn drop_expired_rows(
         login_events: store::providers::events::login_events::drop_older_than(
             transaction,
             (now - chrono::Duration::days(LOGIN_EVENTS_KEPT_DAYS)).timestamp(),
+        )
+        .await
+        .map_err(failed)?,
+        presentation_requests: presentations::drop_expired(
+            transaction,
+            now - chrono::Duration::hours(PRESENTATIONS_KEPT_HOURS),
         )
         .await
         .map_err(failed)?,

@@ -1,7 +1,7 @@
 use crypto::provider::CryptoProvider;
 use models::auditable::AuditableModel;
-use models::entities::client::{ClientScopeModel, ClientScopeMutationModel, ConfigurationUse};
-use models::paging::{Page, Window};
+use models::entities::client::{ClientScopeModel, ClientScopeMutationModel, ScopeUsage};
+use models::paging::Window;
 use store::error::StoreError;
 use store::providers::clients;
 use store::providers::clients::client_scopes;
@@ -70,16 +70,36 @@ pub async fn get_scope(
         .ok_or(Unwritable::NotFound)
 }
 
+/// What still reads a scope. Authorization policies are named only for a
+/// caller who may read them, and counted for any other.
 pub async fn usage(
     transaction: &UnitOfWork,
     client_scope_id: &str,
+    names_policies: bool,
     window: Window,
     with_total: bool,
-) -> Result<Page<ConfigurationUse>, Unwritable> {
+) -> Result<ScopeUsage, Unwritable> {
     get_scope(transaction, client_scope_id).await?;
-    client_scopes::scope_usage(transaction, client_scope_id, window, with_total)
-        .await
-        .map_err(|_| Unwritable::Backend)
+    let page = client_scopes::scope_usage(
+        transaction,
+        client_scope_id,
+        names_policies,
+        window,
+        with_total,
+    )
+    .await
+    .map_err(|_| Unwritable::Backend)?;
+    let withheld_policies = if names_policies {
+        0
+    } else {
+        client_scopes::count_policies_holding_scope(transaction, client_scope_id)
+            .await
+            .map_err(|_| Unwritable::Backend)?
+    };
+    Ok(ScopeUsage {
+        page,
+        withheld_policies,
+    })
 }
 
 pub async fn create_scope(

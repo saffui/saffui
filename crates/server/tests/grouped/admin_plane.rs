@@ -1058,6 +1058,44 @@ async fn a_client_is_born_reshaped_and_retired_over_the_plane() {
     assert_eq!(searched["total"], 1);
     assert_eq!(searched["items"][0]["client_id"], "shop");
 
+    // What is typed is matched as itself: a percent or an underscore is never
+    // a wildcard, nor is an underscore behind a typed backslash.
+    let (status, born) = written(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        serde_json::json!({
+            "client_id": "desk",
+            "name": "Web\\Desk",
+            "confidential": true,
+            "redirect_uris": ["https://desk.example/cb"],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+    for (typed, found) in [("sh%25", 0), ("sh_p", 0), ("Web%5C_", 0), ("Web%5CD", 1)] {
+        let (status, searched) = fetched(
+            &plane,
+            Method::GET,
+            &format!("{base}?search={typed}&count=true"),
+            &bearer,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{searched}");
+        assert_eq!(searched["total"], found, "{typed}: {searched}");
+    }
+    assert_eq!(
+        request(
+            &plane,
+            Method::DELETE,
+            &format!("{base}/desk"),
+            Some(&bearer)
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+
     assert_eq!(
         request(
             &plane,

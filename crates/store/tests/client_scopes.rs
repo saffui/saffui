@@ -321,7 +321,7 @@ async fn usage_names_what_keeps_catalogue_entries_attached() {
         .await
         .unwrap();
 
-    let scope_usage = client_scopes::scope_usage(&transaction, "scope-1", window, true)
+    let scope_usage = client_scopes::scope_usage(&transaction, "scope-1", true, window, true)
         .await
         .unwrap();
     assert_eq!(scope_usage.total, Some(2));
@@ -334,6 +334,41 @@ async fn usage_names_what_keeps_catalogue_entries_attached() {
         ConfigurationUse::Policy { server_id, policy_id, .. }
             if server_id == "app" && policy_id == "needs-profile"
     )));
+
+    // Policies left unnamed are left out of the page and its total, and counted
+    // apart; the next page holds what the first one left.
+    let clients_only = client_scopes::scope_usage(&transaction, "scope-1", false, window, true)
+        .await
+        .unwrap();
+    assert_eq!(clients_only.total, Some(1));
+    assert!(matches!(
+        clients_only.items.as_slice(),
+        [ConfigurationUse::Client { client_id, .. }] if client_id == "app"
+    ));
+    assert_eq!(
+        client_scopes::count_policies_holding_scope(&transaction, "scope-1")
+            .await
+            .unwrap(),
+        1
+    );
+    let second = client_scopes::scope_usage(
+        &transaction,
+        "scope-1",
+        true,
+        Window {
+            first: 1,
+            max: 1,
+            clamped: false,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(second.total, None);
+    assert!(matches!(
+        second.items.as_slice(),
+        [ConfigurationUse::Policy { policy_id, .. }] if policy_id == "needs-profile"
+    ));
 
     let mapper_usage = client_scopes::mapper_usage(&transaction, "mapper-1", window, true)
         .await

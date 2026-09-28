@@ -622,3 +622,161 @@ async fn a_scope_of_another_protocol_is_no_part_of_an_openid_grant() {
         "a docker scope was granted: {granted}"
     );
 }
+
+/// What still reads a scope is named to a caller who may read it: its clients
+/// under the capability this route costs, its authorization policies only to a
+/// caller who also holds uma:read, and counted for any other, so a refused
+/// deletion still says why. Pages are bounded, and an absent scope is named.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_scope_s_policies_are_named_only_to_who_may_read_them() {
+    use models::auditable::AuditableModel;
+    use models::entities::authz::RoleMutationModel;
+    use store::providers::directory::roles;
+    use store::tenancy::TenantContext;
+
+    let plane = Plane::with_actions(&[AdminAction::ClientRead, AdminAction::ClientWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = format!("/admin/realms/{REALM}/client-scopes");
+    let client = support::CONFIDENTIAL;
+
+    let (status, born) = asked(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        Some(json!({ "name": "clearance" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+    let scope_id = born["client_scope_id"]
+        .as_str()
+        .expect("an identity")
+        .to_owned();
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/clients/{client}/scopes/{scope_id}"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+    {
+        let transaction = plane
+            .scoped(&TenantContext::new(support::TENANT, REALM))
+            .await;
+        transaction
+            .execute(
+                "INSERT INTO resource_servers (tenant, realm_id, server_id) \
+                 VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+                &[&support::TENANT, &REALM, &client],
+            )
+            .await
+            .unwrap();
+        let rule = json!({ "policy_type": "client-scope", "client_scopes": [scope_id] });
+        transaction
+            .execute(
+                "INSERT INTO policies \
+                     (tenant, realm_id, server_id, policy_id, name, policy_type, rule, \
+                      policy_owner) \
+                 VALUES ($1, $2, $3, 'needs-clearance', 'Needs clearance', 'client-scope', \
+                         $4, $3)",
+                &[&support::TENANT, &REALM, &client, &rule],
+            )
+            .await
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO policies_client_scopes \
+                     (tenant, realm_id, server_id, policy_id, policy_type, client_scope_id) \
+                 VALUES ($1, $2, $3, 'needs-clearance', 'client-scope', $4)",
+                &[&support::TENANT, &REALM, &client, &scope_id],
+            )
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+    }
+
+    let usage = format!("{base}/{scope_id}/usage");
+    let (status, told) = asked(
+        &plane,
+        Method::GET,
+        &format!("{usage}?count=true"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["total"], 1, "{told}");
+    assert_eq!(told["items"].as_array().map(Vec::len), Some(1), "{told}");
+    assert_eq!(told["items"][0]["kind"], "client");
+    assert_eq!(
+        told["withheld_policies"], 1,
+        "a policy holding the scope went unsaid: {told}"
+    );
+
+    {
+        let transaction = plane
+            .scoped(&TenantContext::new(support::TENANT, REALM))
+            .await;
+        let role = RoleMutationModel {
+            name: "policy-readers".into(),
+            display_name: "Policy readers".into(),
+            description: String::new(),
+            client_id: None,
+            admin_actions: Some(vec![AdminAction::UmaRead]),
+        }
+        .into_model(
+            "policy-readers".into(),
+            REALM.into(),
+            AuditableModel::from_creator(support::TENANT.to_owned(), "root".to_owned()),
+        );
+        roles::create(&transaction, &role).await.unwrap();
+        roles::grant_to_user(&transaction, support::SUBJECT, "policy-readers")
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+    }
+    let (status, told) = asked(
+        &plane,
+        Method::GET,
+        &format!("{usage}?count=true"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["total"], 2, "{told}");
+    assert_eq!(told["withheld_policies"], 0, "{told}");
+    assert_eq!(told["items"][1]["kind"], "policy", "{told}");
+    assert_eq!(told["items"][1]["server_id"], client);
+    assert_eq!(told["items"][1]["policy_id"], "needs-clearance");
+    assert_eq!(told["items"][1]["name"], "Needs clearance");
+
+    let (status, told) = asked(
+        &plane,
+        Method::GET,
+        &format!("{usage}?first=1&max=1"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["items"].as_array().map(Vec::len), Some(1), "{told}");
+    assert_eq!(
+        told["items"][0]["kind"], "policy",
+        "the second page is not the second entry: {told}"
+    );
+
+    let (status, told) = asked(
+        &plane,
+        Method::GET,
+        &format!("{base}/nobody/usage"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{told}");
+    assert_eq!(told["error_code"], "client.scope.not_found");
+}

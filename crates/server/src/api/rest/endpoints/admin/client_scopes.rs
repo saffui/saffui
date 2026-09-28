@@ -82,9 +82,23 @@ pub async fn usage(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let used = client_scopes::usage(&transaction, &scope_id, window, paging.wants_count())
-        .await
-        .map_err(refused)?;
+    // Policies are read under uma:read, not under the capability this route
+    // costs, so they are named only for a caller who holds that one too.
+    let names_policies = crate::middleware::admin_guard::holds_action(
+        &transaction,
+        &admin.context,
+        models::entities::authz::AdminAction::UmaRead,
+    )
+    .await?;
+    let used = client_scopes::usage(
+        &transaction,
+        &scope_id,
+        names_policies,
+        window,
+        paging.wants_count(),
+    )
+    .await
+    .map_err(refused)?;
     Ok(HttpResponse::Ok().json(used))
 }
 

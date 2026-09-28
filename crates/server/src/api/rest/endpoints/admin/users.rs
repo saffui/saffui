@@ -5,7 +5,7 @@ use commons::http::ApiError;
 use models::paging::PagingParams;
 use secrecy::SecretBox;
 use services::admin::users::{self as people, Spec, Uncreatable};
-use store::query::list_query::{ListQuery, SortDirection};
+use store::query::list_query::{ListQuery, SortDirection, build_prefix_pattern};
 use store::tenancy::{Tenancy, UnitOfWork};
 
 use crate::api::rest::endpoints::admin::dto::{PasswordSpec, UserBrief, UserSpec};
@@ -46,7 +46,7 @@ pub async fn list(
         .as_deref()
         .map(str::trim)
         .filter(|held| !held.is_empty())
-        .map(|held| format!("{}%", held.replace('%', "\\%").replace('_', "\\_")));
+        .map(build_prefix_pattern);
     let mut query = ListQuery::new(window).sorted_by("user_name", SortDirection::Ascending);
     if let Some(enabled) = narrowing.enabled.as_ref() {
         query = query.filter(vec![store::query::write_set::col("enabled", enabled)]);

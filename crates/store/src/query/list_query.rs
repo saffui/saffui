@@ -197,6 +197,21 @@ impl<'a> ListQuery<'a> {
     }
 }
 
+/// The value a typed search binds for `starting_with`: every character matched
+/// as itself, then the trailing `%`.
+///
+/// `ILIKE` escapes with `\`, so a typed backslash is doubled before `%` and `_`
+/// are escaped; left as typed, `\_` would give the wildcard back.
+pub fn build_prefix_pattern(typed: &str) -> String {
+    format!(
+        "{}%",
+        typed
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    )
+}
+
 #[cfg(test)]
 mod prefixes {
     use super::*;
@@ -245,6 +260,14 @@ mod prefixes {
                 .replace("             ", "")
         );
         assert_eq!(query.bound().len(), 2);
+    }
+
+    #[test]
+    fn a_typed_search_matches_as_itself() {
+        assert_eq!(build_prefix_pattern("Web"), "Web%");
+        assert_eq!(build_prefix_pattern("a%b_c"), "a\\%b\\_c%");
+        assert_eq!(build_prefix_pattern("a\\_b"), "a\\\\\\_b%");
+        assert_eq!(build_prefix_pattern("a\\"), "a\\\\%");
     }
 
     #[test]

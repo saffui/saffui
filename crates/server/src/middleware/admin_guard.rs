@@ -240,6 +240,18 @@ async fn action_still_runs(transaction: &UnitOfWork, action: AdminAction) -> boo
     crate::api::feature::runs_for_realm(transaction, behind).await
 }
 
+/// Whether this caller also holds `action` where it is acting, and the realm
+/// still runs it: the guard's own rule, for a handler whose answer says more to
+/// a caller holding a second capability.
+pub(crate) async fn holds_action(
+    transaction: &UnitOfWork,
+    context: &Context,
+    action: AdminAction,
+) -> Result<bool, commons::http::ApiError> {
+    Ok(capabilities(transaction, context).await?.contains(&action)
+        && action_still_runs(transaction, action).await)
+}
+
 /// What this caller may do, where it is acting.
 ///
 /// A caller acting across the realm holds what the realm granted it. One acting

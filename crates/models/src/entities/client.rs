@@ -6,6 +6,7 @@ use crypto::provider::SignAlg;
 use crate::auditable::AuditableModel;
 use crate::entities::attributes::AttributesMap;
 use crate::entities::keys::{JweAlgorithm, JweEncryption};
+use crate::paging::Page;
 use crate::str_enum::str_enum;
 
 str_enum! {
@@ -301,6 +302,17 @@ pub enum ConfigurationUse {
         policy_id: String,
         name: String,
     },
+}
+
+/// What still reads a scope, one page at a time, and how many authorization
+/// policies hold it that the caller may not read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ScopeUsage {
+    #[serde(flatten)]
+    pub page: Page<ConfigurationUse>,
+    /// Counted rather than named for a caller without `uma:read`, so a refused
+    /// deletion still says why.
+    pub withheld_policies: i64,
 }
 
 /// The create and update payload for a scope. Everything but the name has a

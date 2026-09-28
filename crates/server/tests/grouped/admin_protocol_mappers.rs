@@ -318,6 +318,16 @@ async fn a_mapper_shapes_what_the_realm_answers() {
         assert_eq!(usage["total"], 1);
         assert_eq!(usage["items"][0]["kind"], kind);
     }
+    let (status, told) = asked(
+        &plane,
+        Method::GET,
+        &format!("{base}/nobody/usage"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{told}");
+    assert_eq!(told["error_code"], "protocol_mapper.not_found");
 
     // Held rules are not deleted; released ones are.
     let (status, told) = asked(

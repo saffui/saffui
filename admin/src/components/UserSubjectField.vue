@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
-import { userSubjects, userSubjectValue } from "./userSubjects";
+import { suggestionList, userSubjects, userSubjectValue } from "./userSubjects";
 import type { UserBrief } from "@/models/user";
 
 const props = defineProps<{
@@ -8,13 +8,15 @@ const props = defineProps<{
   modelValue: string;
   idOnly?: boolean;
   placeholder?: string;
+  /// Given, Enter hands the field's value to the caller once a highlighted
+  /// suggestion is chosen, and never submits the surrounding form.
+  onCommit?: () => void;
 }>();
 const emit = defineEmits<{ "update:modelValue": [value: string] }>();
 defineOptions({ inheritAttrs: false });
 const listId = useId();
-const users = ref<UserBrief[]>([]);
+const { users, active, show, step, highlighted } = suggestionList();
 const open = ref(false);
-const active = ref(-1);
 const activeId = computed(() => active.value < 0 ? undefined : `${listId}-option-${active.value}`);
 let timer: ReturnType<typeof setTimeout> | undefined;
 let closeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -24,9 +26,9 @@ async function load() {
   const current = ++request;
   try {
     const found = await userSubjects(props.realm, props.modelValue);
-    if (current === request) users.value = found;
+    if (current === request) show(found);
   } catch {
-    if (current === request) users.value = [];
+    if (current === request) show([]);
   }
 }
 
@@ -48,10 +50,10 @@ function choose(user: UserBrief) {
   active.value = -1;
 }
 
-function move(step: number) {
+function move(by: 1 | -1) {
   if (!users.value.length) return;
   open.value = true;
-  active.value = (active.value + step + users.value.length) % users.value.length;
+  step(by);
   nextTick(() => document.getElementById(activeId.value ?? "")?.scrollIntoView({ block: "nearest" }));
 }
 
@@ -62,10 +64,16 @@ function onKeydown(event: KeyboardEvent) {
   } else if (event.key === "ArrowUp") {
     event.preventDefault();
     move(-1);
-  } else if (event.key === "Enter" && open.value && active.value >= 0) {
-    event.preventDefault();
-    const user = users.value[active.value];
-    if (user) choose(user);
+  } else if (event.key === "Enter") {
+    const user = open.value ? highlighted() : undefined;
+    if (user) {
+      event.preventDefault();
+      choose(user);
+    }
+    if (props.onCommit) {
+      event.preventDefault();
+      props.onCommit();
+    }
   } else if (event.key === "Escape") {
     open.value = false;
     active.value = -1;
@@ -82,7 +90,7 @@ function deferClose() {
 
 onMounted(load);
 watch(() => props.realm, () => {
-  users.value = [];
+  show([]);
   schedule();
 });
 watch(() => props.modelValue, schedule);

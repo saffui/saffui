@@ -2002,6 +2002,7 @@ function nodeStroke(row: PolicyRow): string {
               id-only
               :placeholder="say('subject-username-or-id')"
               class="sf-field font-mono"
+              @commit="addPolicyTerm()"
             />
             <input
               v-else

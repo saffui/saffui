@@ -24,6 +24,7 @@ import {
   listPageKeys,
   listRealmFeatures,
   listSignInEvents,
+  listCredentialIssuers,
   listTrustAnchors,
   previewPartialImport,
   readRelayRefusals,
@@ -137,6 +138,14 @@ describe("realm settings", () => {
     const held = await keepAnswer(listTrustAnchors, REALM);
     expect(held.items.map((anchor) => anchor.id)).toContain(deposited.id);
     await withdrawTrustAnchor(REALM, deposited.id);
+  });
+
+  // Naming one reads its keys from the issuer, which this server may not dial
+  // here; the listing is what the console reads on every visit.
+  test("lists the credential issuers and whether the verifier runs", async () => {
+    const named = await keepAnswer(listCredentialIssuers, REALM);
+    expect(typeof named.running).toBe("boolean");
+    expect(Array.isArray(named.items)).toBe(true);
   });
 
   test("lists features, page keys and sign-in events", async () => {

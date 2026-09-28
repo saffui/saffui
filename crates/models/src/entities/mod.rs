@@ -6,6 +6,7 @@ pub mod backchannel;
 pub mod brokering;
 pub mod client;
 pub mod consent;
+pub mod credential_issuers;
 pub mod credentials;
 pub mod device;
 pub mod export;

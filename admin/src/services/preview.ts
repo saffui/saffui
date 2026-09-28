@@ -1362,6 +1362,29 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
       running: false,
     });
   }
+  if (/\/credential-issuers\/[^/]+$/.test(path) && method === "DELETE") {
+    return answer(undefined);
+  }
+  if (path.endsWith("/credential-issuers") || /\/credential-issuers\/[^/]+\/keys$/.test(path)) {
+    const named = {
+      id: "4d2a7c9e1b3f5a6d8c0e2b4a6c8e0f1a",
+      name: "Registre civil",
+      issuer: "https://certify.registre.example/v1/certify",
+      keys: [
+        {
+          kty: "OKP",
+          crv: "Ed25519",
+          x: "O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik",
+          kid: "registre-2026",
+        },
+      ],
+      read_from: "https://certify.registre.example/.well-known/jwt-vc-issuer/v1/certify",
+      read_at: "2026-09-28T09:30:00Z",
+      created_by: "ada",
+      created_at: "2026-09-28T09:30:00Z",
+    };
+    return answer(method === "POST" ? named : { running: false, items: [named] });
+  }
   if (/\/trust-anchors\/[^/]+$/.test(path) && method === "DELETE") {
     return answer(undefined);
   }

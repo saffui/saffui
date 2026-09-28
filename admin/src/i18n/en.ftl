@@ -1670,6 +1670,17 @@ trust-anchors-withdraw = Withdraw
 trust-anchors-certificate = Authority certificate (PEM)
 trust-anchors-certificate-help = One certificate, the authority's own, as its operator publishes it. It must be a certification authority's and unexpired, holding an RSA key of 2048 bits or more, or a key on P-256, P-384 or P-521.
 trust-anchors-deposit = Trust this authority
+credential-issuers-title = Credential issuers
+credential-issuers-help = The issuers whose credentials this realm accepts, named by the address their credentials carry. Their keys are read when an issuer is named, or read again on demand, and never while a person presents a credential.
+credential-issuers-not-running = Stored, and not running: the process must run wallet-verifier (SAFFUI_FEATURES=+wallet-verifier).
+credential-issuers-empty = This realm names no issuer yet.
+credential-issuers-read = Keys read { $at }: { $count }
+credential-issuers-read-again = Read the keys again
+credential-issuers-forget = Remove
+credential-issuers-name = Name
+credential-issuers-issuer = Issuer
+credential-issuers-issuer-help = An https address, as the issuer's credentials name it, or a did:web. An https issuer's keys are read from its /.well-known/jwt-vc-issuer metadata, a did:web issuer's from its DID document, among the keys it asserts with.
+credential-issuers-name-it = Name this issuer
 sms-today-title = Today
 sms-today-help = What this realm has spent on texts today, and what its brakes held back. Both come off what the sending path itself writes, so this screen and the brakes cannot disagree about the same day.
 sms-today-sent = Sent

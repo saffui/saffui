@@ -1670,6 +1670,17 @@ trust-anchors-withdraw = Retirer
 trust-anchors-certificate = Certificat de l'autorité (PEM)
 trust-anchors-certificate-help = Un seul certificat, celui de l'autorité elle-même, tel que son exploitant le publie. Il doit être celui d'une autorité de certification, non expiré, et porter une clé RSA de 2048 bits ou plus, ou une clé sur P-256, P-384 ou P-521.
 trust-anchors-deposit = Faire confiance à cette autorité
+credential-issuers-title = Émetteurs d'attestations
+credential-issuers-help = Les émetteurs dont ce realm accepte les attestations, nommés par l'adresse que portent leurs attestations. Leurs clés sont lues quand un émetteur est nommé, ou relues à la demande, et jamais pendant qu'une personne présente une attestation.
+credential-issuers-not-running = Enregistré, mais inactif : le processus doit faire tourner wallet-verifier (SAFFUI_FEATURES=+wallet-verifier).
+credential-issuers-empty = Ce realm ne nomme encore aucun émetteur.
+credential-issuers-read = Clés lues le { $at } : { $count }
+credential-issuers-read-again = Relire les clés
+credential-issuers-forget = Retirer
+credential-issuers-name = Nom
+credential-issuers-issuer = Émetteur
+credential-issuers-issuer-help = Une adresse https, telle que les attestations de l'émetteur la nomment, ou un did:web. Les clés d'un émetteur https sont lues dans ses métadonnées /.well-known/jwt-vc-issuer, celles d'un did:web dans son document DID, parmi les clés dont il se sert pour attester.
+credential-issuers-name-it = Nommer cet émetteur
 sms-today-title = Aujourd'hui
 sms-today-help = Ce que ce realm a dépensé en SMS aujourd'hui, et ce que ses freins ont retenu. Les deux viennent de ce que le chemin d'envoi écrit lui-même, donc cet écran et les freins ne peuvent pas diverger sur la même journée.
 sms-today-sent = Envoyés

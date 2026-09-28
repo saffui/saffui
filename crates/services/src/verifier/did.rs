@@ -10,9 +10,10 @@ use models::entities::keys::RealmSigningKeyView;
 use serde_json::{Value, json};
 use url::Url;
 
+use super::base58;
+
 /// The multicodec prefix of an Ed25519 public key.
 const ED25519_MULTICODEC: [u8; 2] = [0xed, 0x01];
-const BASE58_ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
 /// The `did:web` a realm answers to, read from its issuer.
 ///
@@ -83,35 +84,7 @@ fn multibase_of(jwk: &Value) -> Option<String> {
     }
     let mut prefixed = ED25519_MULTICODEC.to_vec();
     prefixed.extend_from_slice(&raw);
-    Some(format!("z{}", base58btc(&prefixed)))
-}
-
-/// Base58 in the Bitcoin alphabet: the bytes read as one big-endian number,
-/// written in base 58, each leading zero byte kept as a leading `1`.
-fn base58btc(bytes: &[u8]) -> String {
-    let zeros = bytes.iter().take_while(|byte| **byte == 0).count();
-    // Least significant digit first while the number is built.
-    let mut digits: Vec<u8> = Vec::with_capacity(bytes.len() * 138 / 100 + 1);
-    for &byte in bytes {
-        let mut carry = u32::from(byte);
-        for digit in &mut digits {
-            carry += u32::from(*digit) << 8;
-            *digit = (carry % 58) as u8;
-            carry /= 58;
-        }
-        while carry > 0 {
-            digits.push((carry % 58) as u8);
-            carry /= 58;
-        }
-    }
-    std::iter::repeat_n('1', zeros)
-        .chain(
-            digits
-                .iter()
-                .rev()
-                .map(|digit| char::from(BASE58_ALPHABET[usize::from(*digit)])),
-        )
-        .collect()
+    Some(format!("z{}", base58::encode(&prefixed)))
 }
 
 #[cfg(test)]
@@ -156,8 +129,6 @@ mod tests {
             multibase_of(&jwk).as_deref(),
             Some("z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp")
         );
-        assert_eq!(base58btc(&[0, 0, 1]), "112");
-        assert_eq!(base58btc(&[]), "");
     }
 
     #[test]

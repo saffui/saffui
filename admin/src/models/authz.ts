@@ -23,6 +23,7 @@ export interface PolicyRow {
   users?: string[];
   clients?: string[];
   client_scopes?: string[];
+  resource_type?: string;
   not_before?: number | null;
   not_on_or_after?: number | null;
   year?: number | null;

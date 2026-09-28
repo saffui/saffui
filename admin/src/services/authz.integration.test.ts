@@ -5,6 +5,7 @@ vi.mock("@/stores/session", () => ({
 }));
 
 const { createPolicy, evaluate } = await import("@/services/authz");
+const { permissionWrite } = await import("@/pages/authorization/permissionForm");
 const { emptyTimeDraft, timeWindowFrom } = await import("@/pages/authorization/timePolicy");
 
 afterEach(() => vi.unstubAllGlobals());
@@ -33,6 +34,40 @@ describe("authorization evaluator transport", () => {
       expect.objectContaining({
         method: "POST",
         body: expect.stringContaining('"hour_end":17'),
+      }),
+    );
+  });
+
+  test("sends permission bindings in the policy contract", async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response("{}", { status: 201 }));
+    vi.stubGlobal("fetch", fetch);
+
+    await createPolicy("main", "web-dashboard", permissionWrite({
+      name: "edit documents",
+      description: "",
+      policyType: "scope-permission",
+      resourceType: "document",
+      policies: ["editors"],
+      resources: ["archive"],
+      scopes: ["edit"],
+    }, "web-dashboard"));
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/admin/realms/main/authz/servers/web-dashboard/policies",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          name: "edit documents",
+          description: "",
+          decision: "unanimous",
+          logic: "positive",
+          policy_owner: "web-dashboard",
+          policies: ["editors"],
+          resources: ["archive"],
+          scopes: ["edit"],
+          policy_type: "scope-permission",
+          resource_type: "document",
+        }),
       }),
     );
   });

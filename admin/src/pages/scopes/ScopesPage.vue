@@ -1,8 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { afterWrites } from "@/services/writes";
 import { RouterLink, useRoute } from "vue-router";
+import AppDrawer from "@/components/AppDrawer.vue";
+import AppHint from "@/components/AppHint.vue";
+import AppPicker from "@/components/AppPicker.vue";
+import AppToggle from "@/components/AppToggle.vue";
+import DangerDialog from "@/components/DangerDialog.vue";
 import { say } from "@/i18n";
+import type { ClientScope, ProtocolMapper } from "@/models/client";
 import {
   attachMapperToScope,
   createScope,
@@ -13,161 +18,143 @@ import {
   listScopeMappers,
   updateScope,
 } from "@/services/scopes";
-import AppHint from "@/components/AppHint.vue";
-import AppPicker from "@/components/AppPicker.vue";
-import type { ClientScope, ProtocolMapper } from "@/models/client";
+import { afterWrites } from "@/services/writes";
+import { mapperKindKey } from "./mapperLabels";
+import { scopeWrite, type ScopeDraft } from "./scopeForm";
 
 const route = useRoute();
 const realm = computed(() => String(route.params.realm));
 const scopes = ref<ClientScope[]>([]);
 const failed = ref("");
-const unfolded = ref<string | null>(null);
-const mappers = ref<Record<string, ProtocolMapper[]>>({});
+const editorOpen = ref(false);
+const selected = ref<ClientScope | null>(null);
+const pendingDelete = ref<ClientScope | null>(null);
+const attached = ref<ProtocolMapper[]>([]);
+const pickerOpen = ref(false);
+const pickRows = ref<{ id: string; label: string; held: boolean }[]>([]);
+const draft = ref<ScopeDraft>({ name: "", description: "", defaultScope: false });
 
 async function load() {
   try {
     scopes.value = await listScopeCatalogue(realm.value);
+    failed.value = "";
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
 }
+
 onMounted(load);
 afterWrites(load);
 
-const making = ref(false);
-const newName = ref("");
-const newSentence = ref("");
-async function makeScope() {
-  if (!newName.value.trim()) return;
-  try {
-    await createScope(realm.value, {
-      name: newName.value.trim(),
-      description: newSentence.value.trim(),
-    });
-    making.value = false;
-    newName.value = "";
-    newSentence.value = "";
-    scopes.value = await listScopeCatalogue(realm.value);
-  } catch {
-    // The toast already said.
+async function openScope(scope?: ClientScope) {
+  selected.value = scope ?? null;
+  draft.value = {
+    name: scope?.name ?? "",
+    description: scope?.description ?? "",
+    defaultScope: Boolean(scope?.default_scope),
+  };
+  attached.value = [];
+  pickerOpen.value = false;
+  editorOpen.value = true;
+  if (scope) {
+    try {
+      attached.value = await listScopeMappers(realm.value, scope.client_scope_id);
+    } catch (refused) {
+      failed.value = refused instanceof Error ? refused.message : String(refused);
+    }
   }
 }
 
-const sentenceDraft = ref("");
-async function saveSentence(scope: ClientScope) {
+async function saveScope() {
+  const body = scopeWrite(draft.value);
+  if (!body.name) return;
   try {
-    await updateScope(realm.value, scope.client_scope_id, {
-      name: scope.name,
-      description: sentenceDraft.value,
-    });
-    scope.description = sentenceDraft.value;
+    if (selected.value) {
+      await updateScope(realm.value, selected.value.client_scope_id, body);
+    } else {
+      await createScope(realm.value, body);
+    }
+    editorOpen.value = false;
+    await load();
   } catch {
-    // The toast already said.
+    // The request toast contains the refusal.
   }
 }
 
-async function dropScope(scope: ClientScope) {
+async function confirmDelete() {
+  if (!pendingDelete.value) return;
   try {
-    await deleteScope(realm.value, scope.client_scope_id);
-    unfolded.value = null;
-    scopes.value = await listScopeCatalogue(realm.value);
+    await deleteScope(realm.value, pendingDelete.value.client_scope_id);
+    pendingDelete.value = null;
+    editorOpen.value = false;
+    await load();
   } catch {
-    // The toast already said.
+    // The request toast contains the refusal.
   }
 }
 
-const picker = ref("");
-const pickRows = ref<{ id: string; label: string; held: boolean }[]>([]);
-async function openMapperPicker(scope: ClientScope) {
-  picker.value = scope.client_scope_id;
+async function openMapperPicker() {
+  if (!selected.value) return;
   const catalogue = await listRealmMappers(realm.value);
-  const held = new Set((mappers.value[scope.client_scope_id] ?? []).map((row) => row.mapper_id));
+  const held = new Set(attached.value.map((row) => row.mapper_id));
   pickRows.value = catalogue.map((row) => ({
     id: row.mapper_id,
     label: row.name,
     held: held.has(row.mapper_id),
   }));
-}
-async function pickMapper(scopeId: string, mapperId: string) {
-  try {
-    await attachMapperToScope(realm.value, scopeId, mapperId);
-    picker.value = "";
-    mappers.value[scopeId] = await listScopeMappers(realm.value, scopeId);
-  } catch {
-    // The toast already said.
-  }
-}
-async function dropMapper(scopeId: string, mapperId: string) {
-  await detachMapperFromScope(realm.value, scopeId, mapperId);
-  mappers.value[scopeId] = await listScopeMappers(realm.value, scopeId);
+  pickerOpen.value = true;
 }
 
-async function unfold(scope: ClientScope) {
-  if (unfolded.value === scope.client_scope_id) {
-    unfolded.value = null;
-    return;
+async function addMapper(mapperId: string) {
+  if (!selected.value) return;
+  try {
+    await attachMapperToScope(realm.value, selected.value.client_scope_id, mapperId);
+    pickerOpen.value = false;
+    attached.value = await listScopeMappers(realm.value, selected.value.client_scope_id);
+  } catch {
+    // The request toast contains the refusal.
   }
-  unfolded.value = scope.client_scope_id;
-  sentenceDraft.value = scope.description;
-  picker.value = "";
-  if (!mappers.value[scope.client_scope_id]) {
-    mappers.value[scope.client_scope_id] = await listScopeMappers(
-      realm.value,
-      scope.client_scope_id,
-    );
+}
+
+async function removeMapper(mapperId: string) {
+  if (!selected.value) return;
+  try {
+    await detachMapperFromScope(realm.value, selected.value.client_scope_id, mapperId);
+    attached.value = await listScopeMappers(realm.value, selected.value.client_scope_id);
+  } catch {
+    // The request toast contains the refusal.
   }
+}
+
+function kindLabel(kind: string): string {
+  const key = mapperKindKey(kind);
+  return key === "mapper-kind-custom" ? kind : say(key);
 }
 </script>
 
 <template>
   <div>
-    <div class="flex flex-wrap items-center justify-between gap-3">
-      <h1 class="text-lg font-semibold tracking-tight">{{ say("scopes-title") }}</h1>
-      <button
-        type="button"
-        class="sf-button sf-button-primary"
-        @click="making = !making"
-      >
-        {{ say("scope-new") }}
-      </button>
-      <span v-if="scopes.length" class="font-mono text-[11px] text-faint">{{
-        scopes.length
-      }}</span>
-      <RouterLink :to="`/${realm}/protocol-mappers`" class="text-xs text-muted hover:text-ink">
-        {{ say("mappers-title") }}
-      </RouterLink>
+    <div class="flex flex-wrap items-start justify-between gap-4">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2">
+          <h1 class="text-lg font-semibold tracking-tight">{{ say("scopes-title") }}</h1>
+          <span v-if="scopes.length" class="rounded-md bg-neutral-tint px-2 py-0.5 font-mono text-[10px] text-muted">
+            {{ scopes.length }}
+          </span>
+        </div>
+        <p class="mt-1 text-xs text-muted">{{ say("scopes-lede") }}</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <RouterLink :to="`/${realm}/protocol-mappers`" class="sf-button sf-button-secondary">
+          {{ say("mappers-title") }}
+        </RouterLink>
+        <button type="button" class="sf-button sf-button-primary" @click="openScope()">
+          {{ say("scope-new") }}
+        </button>
+      </div>
     </div>
-    <p class="mt-1 text-xs text-muted">{{ say("scopes-lede") }}</p>
 
     <p v-if="failed" class="mt-4 text-xs text-danger" role="alert">{{ failed }}</p>
-
-    <form
-      v-if="making"
-      class="mt-3 flex max-w-2xl flex-wrap items-end gap-2 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
-      @submit.prevent="makeScope"
-    >
-      <label class="min-w-0 flex-1 text-[11px] font-medium text-muted sm:w-44 sm:flex-none">
-        {{ say("settings-name") }} <AppHint name="scope-name-help" />
-        <input
-          v-model="newName"
-          class="sf-field mt-1 font-mono"
-          spellcheck="false"
-        />
-      </label>
-      <label class="flex-1 text-[11px] font-medium text-muted">
-        {{ say("scope-sentence") }} <AppHint name="scope-sentence-help" />
-        <input
-          v-model="newSentence"
-          class="sf-field mt-1"
-        />
-      </label>
-      <button
-        type="submit"
-        class="sf-button sf-button-primary"
-      >
-        {{ say("realm-create") }}
-      </button>
-    </form>
 
     <div class="sf-list mt-4 overflow-x-auto">
       <table class="sf-table">
@@ -176,98 +163,128 @@ async function unfold(scope: ClientScope) {
             <th>{{ say("scopes-col-name") }}</th>
             <th>{{ say("scopes-col-description") }}</th>
             <th>{{ say("scopes-col-default") }}</th>
+            <th><span class="sr-only">{{ say("authz-route-edit") }}</span></th>
           </tr>
         </thead>
         <tbody>
-          <template v-for="scope in scopes" :key="scope.client_scope_id">
-            <tr
-              class="cursor-pointer border-b border-border/60 hover:bg-surface-2"
-              :class="unfolded === scope.client_scope_id && 'bg-surface-2'"
-              @click="unfold(scope)"
-            >
-              <td class="font-mono text-[11.5px]">{{ scope.name }}</td>
-              <td class="text-muted">{{ scope.description }}</td>
-              <td>
-                <span v-if="scope.default_scope" class="text-[10.5px] text-accent">{{
-                  say("scopes-default")
-                }}</span>
-              </td>
-            </tr>
-            <tr v-if="unfolded === scope.client_scope_id" class="border-b border-border/60">
-              <td colspan="3" class="bg-bg px-3 py-2.5">
-                <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
-                  {{ say("client-tab-mappers") }}
-                </div>
-                <p
-                  v-if="!(mappers[scope.client_scope_id] ?? []).length"
-                  class="mt-1.5 text-xs text-muted"
-                >
-                  {{ say("mappers-none") }}
-                </p>
-                <div class="relative mt-1.5 flex flex-wrap items-center gap-1.5">
-                  <span
-                    v-for="mapper in mappers[scope.client_scope_id] ?? []"
-                    :key="mapper.mapper_id"
-                    class="rounded border border-border px-1.5 py-0.5 text-[10.5px]"
-                  >
-                    {{ mapper.name }}
-                    <span class="ml-1 font-mono text-faint">{{ mapper.mapper_type }}
-                    <button
-                      type="button"
-                      class="text-faint hover:text-danger"
-                      :aria-label="say('action-remove')"
-                      @click.stop="dropMapper(scope.client_scope_id, mapper.mapper_id)"
-                    >
-                      &times;
-                    </button></span>
-                  </span>
-                  <button
-                    type="button"
-                    class="rounded border border-border px-1.5 py-0.5 text-[10.5px] text-accent hover:bg-surface-2"
-                    @click.stop="openMapperPicker(scope)"
-                  >
-                    {{ say("scope-attach-mapper") }}
-                  </button>
-                  <AppPicker
-                    v-if="picker === scope.client_scope_id"
-                    :rows="pickRows"
-                    :title="say('scope-attach-mapper')"
-                    @add="(id) => pickMapper(scope.client_scope_id, id)"
-                    @close="picker = ''"
-                  />
-                </div>
-
-                <form
-                  class="mt-3 flex max-w-xl items-end gap-2"
-                  @click.stop
-                  @submit.prevent="saveSentence(scope)"
-                >
-                  <label class="flex-1 text-[11px] font-medium text-muted">
-                    {{ say("scope-sentence") }} <AppHint name="scope-sentence-help" />
-                    <input
-                      v-model="sentenceDraft"
-                      class="sf-field mt-1"
-                    />
-                  </label>
-                  <button
-                    type="submit"
-                    class="sf-button sf-button-primary"
-                  >
-                    {{ say("settings-save") }}
-                  </button>
-                  <button
-                    type="button"
-                    class="rounded-md border border-danger/40 px-3 py-1.5 text-[11px] text-danger hover:bg-surface-2"
-                    @click="dropScope(scope)"
-                  >
-                    {{ say("scope-delete") }}
-                  </button>
-                </form>
-              </td>
-            </tr>
-          </template>
+          <tr v-for="scope in scopes" :key="scope.client_scope_id" class="border-b border-border/60 last:border-0">
+            <td class="font-mono text-[11.5px] text-ink">{{ scope.name }}</td>
+            <td class="max-w-xl text-muted">{{ scope.description || say("value-none") }}</td>
+            <td>
+              <span v-if="scope.default_scope" class="rounded-md bg-accent/10 px-2 py-1 text-[10.5px] text-accent">
+                {{ say("scopes-default") }}
+              </span>
+              <span v-else class="text-faint">{{ say("value-none") }}</span>
+            </td>
+            <td class="text-right">
+              <button
+                type="button"
+                class="text-xs text-accent hover:underline"
+                :aria-label="`${say('authz-route-edit')} ${scope.name}`"
+                @click="openScope(scope)"
+              >
+                {{ say("authz-route-edit") }}
+              </button>
+            </td>
+          </tr>
+          <tr v-if="!scopes.length">
+            <td colspan="4" class="text-muted">{{ say("client-scopes-none") }}</td>
+          </tr>
         </tbody>
       </table>
     </div>
+
+    <AppDrawer
+      v-if="editorOpen"
+      wide
+      :title="selected ? say('scope-edit') : say('scope-new')"
+      :subtitle="selected?.name"
+      @close="editorOpen = false"
+    >
+      <form class="flex flex-col gap-5" @submit.prevent="saveScope">
+        <section class="grid gap-4 rounded-lg border border-border bg-bg p-4 sm:grid-cols-2">
+          <label class="text-[11px] font-medium text-muted">
+            {{ say("settings-name") }} <AppHint name="scope-name-help" />
+            <input v-model="draft.name" required class="sf-field mt-1 font-mono" spellcheck="false" />
+          </label>
+          <label class="text-[11px] font-medium text-muted">
+            {{ say("scope-sentence") }} <AppHint name="scope-sentence-help" />
+            <input v-model="draft.description" class="sf-field mt-1" />
+          </label>
+          <div class="sm:col-span-2 rounded-md border border-border bg-surface px-3 py-2.5">
+            <AppToggle v-model="draft.defaultScope">
+              <span class="font-medium text-ink">{{ say("scope-default-title") }}</span>
+              <span class="mt-0.5 block text-[10.5px] text-muted">{{ say("scope-default-help") }}</span>
+            </AppToggle>
+          </div>
+        </section>
+
+        <section v-if="selected" class="rounded-lg border border-border bg-bg p-4">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 class="text-sm font-semibold">{{ say("client-tab-mappers") }}</h3>
+              <p class="mt-1 text-[11px] text-muted">{{ say("scope-mappers-help") }}</p>
+            </div>
+            <div class="relative">
+              <button type="button" class="sf-button sf-button-secondary" @click="openMapperPicker">
+                {{ say("scope-attach-mapper") }}
+              </button>
+              <AppPicker
+                v-if="pickerOpen"
+                :rows="pickRows"
+                :title="say('scope-attach-mapper')"
+                @add="addMapper"
+                @close="pickerOpen = false"
+              />
+            </div>
+          </div>
+          <div class="mt-4 overflow-x-auto rounded-md border border-border bg-surface">
+            <table class="sf-table">
+              <thead><tr><th>{{ say("mappers-col-name") }}</th><th>{{ say("mappers-col-type") }}</th><th></th></tr></thead>
+              <tbody>
+                <tr v-for="mapper in attached" :key="mapper.mapper_id" class="border-b border-border/60 last:border-0">
+                  <td class="font-medium">{{ mapper.name }}</td>
+                  <td>
+                    <span class="block text-xs">{{ kindLabel(mapper.mapper_type) }}</span>
+                    <span class="font-mono text-[10px] text-faint">{{ mapper.mapper_type }}</span>
+                  </td>
+                  <td class="text-right">
+                    <button type="button" class="text-xs text-danger hover:underline" @click="removeMapper(mapper.mapper_id)">
+                      {{ say("action-remove") }}
+                    </button>
+                  </td>
+                </tr>
+                <tr v-if="!attached.length"><td colspan="3" class="text-muted">{{ say("mappers-none") }}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section v-if="selected" class="rounded-lg border border-danger/30 bg-danger-tint/30 p-4">
+          <h3 class="text-sm font-semibold text-danger">{{ say("scope-danger-zone") }}</h3>
+          <p class="mt-1 text-[11px] text-muted">{{ say("scope-delete-lede") }}</p>
+          <button type="button" class="sf-button sf-button-danger mt-3" @click="pendingDelete = selected">
+            {{ say("scope-delete") }}
+          </button>
+        </section>
+
+        <div class="flex justify-end gap-2 border-t border-border pt-4">
+          <button type="button" class="sf-button sf-button-secondary" @click="editorOpen = false">{{ say("action-cancel") }}</button>
+          <button type="submit" class="sf-button sf-button-primary">{{ selected ? say("settings-save") : say("realm-create") }}</button>
+        </div>
+      </form>
+    </AppDrawer>
+
+    <DangerDialog
+      :open="pendingDelete !== null"
+      :title="say('scope-delete-title')"
+      :named="pendingDelete?.name ?? ''"
+      :lede="say('scope-delete-lede')"
+      :facts="[{ value: String(attached.length), label: say('client-tab-mappers') }]"
+      :warning="say('scope-delete-warning')"
+      :confirm-label="say('scope-delete')"
+      @close="pendingDelete = null"
+      @confirm="confirmDelete"
+    />
   </div>
 </template>

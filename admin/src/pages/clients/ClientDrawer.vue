@@ -22,10 +22,12 @@ import AppToggle from "@/components/AppToggle.vue";
 import AppHint from "@/components/AppHint.vue";
 import AppPicker from "@/components/AppPicker.vue";
 import AppStringList from "@/components/AppStringList.vue";
-import { useRouter } from "vue-router";
+import AppIcon from "@/components/AppIcon.vue";
+import { RouterLink, useRouter } from "vue-router";
 import type { ClientDetail, ClientScope, ProtocolMapper } from "@/models/client";
 import ClientKeysTab from "./ClientKeysTab.vue";
 import { clientMapperPickerRows } from "@/pages/adminActionPickers";
+import { mapperKindKey } from "@/pages/scopes/mapperLabels";
 
 const props = defineProps<{ realm: string; clientId: string }>();
 const emit = defineEmits<{ close: [] }>();
@@ -96,6 +98,20 @@ onMounted(async () => {
 // Required is granted without being asked for; offered waits to be asked.
 const required = computed(() => scopes.value.filter((held) => !held.optional));
 const offered = computed(() => scopes.value.filter((held) => held.optional));
+const scopeGroups = computed(() => [
+  {
+    kind: "required" as const,
+    rows: required.value,
+    title: say("client-scopes-required"),
+    action: say("client-attach-required"),
+  },
+  {
+    kind: "offered" as const,
+    rows: offered.value,
+    title: say("client-scopes-offered"),
+    action: say("client-attach-offered"),
+  },
+]);
 
 const router = useRouter();
 const draft = ref({
@@ -288,29 +304,43 @@ async function detachMapper(mapperId: string) {
     // The toast already said.
   }
 }
+
+function mapperKindLabel(kind: string): string {
+  const key = mapperKindKey(kind);
+  return key === "mapper-kind-custom" ? kind : say(key);
+}
 </script>
 
 <template>
   <AppDrawer
+    wide
     :title="client?.name || props.clientId"
     :subtitle="props.clientId"
     @close="emit('close')"
   >
     <p v-if="failed" class="text-xs text-danger" role="alert">{{ failed }}</p>
 
-    <div class="flex h-9 gap-0.5 overflow-x-auto border-b border-border" role="tablist">
-      <button
-        v-for="held in TABS"
-        :key="held"
-        type="button"
-        role="tab"
-        :aria-selected="tab === held"
-        class="h-9 shrink-0 border-b-2 px-3 text-[13px] font-medium transition-colors"
-        :class="tab === held ? 'border-accent text-ink' : 'border-transparent text-muted hover:text-ink'"
-        @click="tab = held"
+    <div class="sticky top-0 z-10 flex items-center gap-3 border-b border-border bg-surface">
+      <div class="flex h-10 min-w-0 flex-1 gap-0.5 overflow-x-auto" role="tablist">
+        <button
+          v-for="held in TABS"
+          :key="held"
+          type="button"
+          role="tab"
+          :aria-selected="tab === held"
+          class="h-10 shrink-0 border-b-2 px-3 text-[13px] font-medium transition-colors"
+          :class="tab === held ? 'border-accent text-ink' : 'border-transparent text-muted hover:text-ink'"
+          @click="tab = held"
+        >
+          {{ say(`client-tab-${held}`) }}
+        </button>
+      </div>
+      <RouterLink
+        :to="`/${props.realm}/authorization?client=${encodeURIComponent(props.clientId)}`"
+        class="shrink-0 text-[11px] text-accent hover:underline"
       >
-        {{ say(`client-tab-${held}`) }}
-      </button>
+        {{ say("authz-title") }}
+      </RouterLink>
     </div>
 
     <div v-if="tab === 'overview' && client" class="mt-4 flex flex-col gap-4">
@@ -556,114 +586,86 @@ async function detachMapper(mapperId: string) {
       @updated="refreshClient"
     />
 
-    <div v-if="tab === 'scopes'" class="mt-4 flex flex-col gap-5">
-      <div>
-        <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
-          {{ say("client-scopes-required") }}
+    <div v-if="tab === 'scopes'" class="mt-4 grid gap-4 lg:grid-cols-2">
+      <section
+        v-for="group in scopeGroups"
+        :key="group.kind"
+        class="min-w-0 rounded-lg border border-border bg-bg p-4"
+      >
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <div class="flex items-center gap-2">
+              <h3 class="text-sm font-semibold">{{ group.title }}</h3>
+              <span class="rounded-md bg-neutral-tint px-1.5 py-0.5 font-mono text-[10px] text-muted">{{ group.rows.length }}</span>
+            </div>
+            <p class="mt-1 text-[11px] text-muted">{{ say(`client-scopes-${group.kind}-help`) }}</p>
+          </div>
+          <div class="relative">
+            <button type="button" class="sf-button sf-button-secondary" @click="openPicker(group.kind)">
+              {{ group.action }}
+            </button>
+            <AppPicker
+              v-if="picker === group.kind"
+              :rows="pickRows"
+              :title="group.action"
+              @add="pickAdd"
+              @close="picker = ''"
+            />
+          </div>
         </div>
-        <p v-if="!required.length" class="mt-1.5 text-xs text-muted">
-          {{ say("client-scopes-none") }}
-        </p>
-        <div class="relative mt-1.5 flex flex-wrap items-center gap-1.5">
-          <span
-            v-for="scope in required"
+        <div class="mt-4 overflow-hidden rounded-md border border-border bg-surface">
+          <div
+            v-for="scope in group.rows"
             :key="scope.client_scope_id"
-            class="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 font-mono text-[11px]"
-            :title="scope.description"
+            class="flex items-center gap-3 border-b border-border/60 px-3 py-2.5 last:border-0"
           >
-            {{ scope.name }}
+            <div class="min-w-0 flex-1">
+              <div class="truncate font-mono text-[11.5px] text-ink">{{ scope.name }}</div>
+              <div class="mt-0.5 truncate text-[10.5px] text-muted">{{ scope.description || say("value-none") }}</div>
+            </div>
+            <span v-if="scope.default_scope" class="rounded-md bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent">{{ say("scopes-default") }}</span>
             <button
               type="button"
-              class="text-faint hover:text-danger"
-              :aria-label="say('action-remove')"
+              class="text-[10.5px] text-danger hover:underline"
+              :aria-label="`${say('action-remove')} ${scope.name}`"
               @click="dropScope(scope.name)"
             >
-              &times;
+              {{ say("action-remove") }}
             </button>
-          </span>
-          <button
-            type="button"
-            class="rounded border border-border px-1.5 py-0.5 text-[10.5px] text-accent hover:bg-surface-2"
-            @click="openPicker('required')"
-          >
-            {{ say("client-attach-required") }}
-          </button>
-          <AppPicker
-            v-if="picker === 'required'"
-            :rows="pickRows"
-            :title="say('client-attach-required')"
-            @add="pickAdd"
-            @close="picker = ''"
-          />
+          </div>
+          <p v-if="!group.rows.length" class="px-3 py-4 text-xs text-muted">{{ say("client-scopes-none") }}</p>
         </div>
-      </div>
-      <div>
-        <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
-          {{ say("client-scopes-offered") }}
-        </div>
-        <p v-if="!offered.length" class="mt-1.5 text-xs text-muted">
-          {{ say("client-scopes-none") }}
-        </p>
-        <div class="relative mt-1.5 flex flex-wrap items-center gap-1.5">
-          <span
-            v-for="scope in offered"
-            :key="scope.client_scope_id"
-            class="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 font-mono text-[11px] text-muted"
-            :title="scope.description"
-          >
-            {{ scope.name }}
-            <button
-              type="button"
-              class="text-faint hover:text-danger"
-              :aria-label="say('action-remove')"
-              @click="dropScope(scope.name)"
-            >
-              &times;
-            </button>
-          </span>
-          <button
-            type="button"
-            class="rounded border border-border px-1.5 py-0.5 text-[10.5px] text-accent hover:bg-surface-2"
-            @click="openPicker('offered')"
-          >
-            {{ say("client-attach-offered") }}
-          </button>
-          <AppPicker
-            v-if="picker === 'offered'"
-            :rows="pickRows"
-            :title="say('client-attach-offered')"
-            @add="pickAdd"
-            @close="picker = ''"
-          />
-        </div>
-      </div>
+      </section>
     </div>
 
     <div v-if="tab === 'mappers'" class="relative mt-4">
-      <div class="mb-3 flex flex-wrap items-center gap-2">
-        <p class="min-w-0 flex-1 text-[11px] text-muted">
-          {{ say("client-mappers-lede") }}
+      <div class="mb-4 flex flex-wrap items-start justify-between gap-3 rounded-lg border border-border bg-bg p-4">
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center gap-2">
+            <h3 class="text-sm font-semibold">{{ say("client-mappers-direct") }}</h3>
+            <span class="rounded-md bg-neutral-tint px-1.5 py-0.5 font-mono text-[10px] text-muted">{{ mappers.length }}</span>
+          </div>
+          <p class="mt-1 text-[11px] text-muted">{{ say("client-mappers-lede") }}</p>
+          <p class="mt-1 text-[10.5px] text-faint">{{ say("client-mappers-inherited-help") }}</p>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
           <RouterLink
             :to="`/${props.realm}/protocol-mappers`"
-            class="text-accent hover:underline"
+            class="sf-button sf-button-secondary"
           >
             {{ say("client-mappers-catalogue") }}
           </RouterLink>
           <RouterLink
             :to="`/${props.realm}/token-preview?client=${encodeURIComponent(props.clientId)}`"
-            class="ml-2 text-accent hover:underline"
+            class="sf-button sf-button-secondary"
           >
             {{ say("preview-title") }}
           </RouterLink>
-        </p>
-        <AppHint name="client-mapper-attach-help" />
-        <button
-          type="button"
-          class="sf-button sf-button-secondary"
-          @click="openMapperPicker"
-        >
-          {{ say("client-mapper-attach") }}
-        </button>
+          <AppHint name="client-mapper-attach-help" />
+          <button type="button" class="sf-button sf-button-primary" @click="openMapperPicker">
+            {{ say("client-mapper-attach") }}
+          </button>
+        </div>
       </div>
       <p v-if="!mappers.length" class="text-xs text-muted">{{ say("mappers-none") }}</p>
       <div v-else class="overflow-x-auto rounded-lg border border-border">
@@ -681,9 +683,10 @@ async function detachMapper(mapperId: string) {
               :key="mapper.mapper_id"
               class="border-b border-border/60 last:border-0"
             >
-              <td>{{ mapper.name }}</td>
-              <td class="font-mono text-[10.5px] text-muted">
-                {{ mapper.mapper_type }}
+              <td class="font-medium">{{ mapper.name }}</td>
+              <td>
+                <span class="block text-xs text-ink">{{ mapperKindLabel(mapper.mapper_type) }}</span>
+                <span class="mt-0.5 block font-mono text-[10px] text-faint">{{ mapper.mapper_type }}</span>
               </td>
               <td class="text-right">
                 <button

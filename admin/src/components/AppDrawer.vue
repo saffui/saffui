@@ -4,7 +4,7 @@
 // frame.
 import { onMounted, onUnmounted } from "vue";
 
-const props = defineProps<{ title: string; subtitle?: string }>();
+const props = defineProps<{ title: string; subtitle?: string; wide?: boolean }>();
 const emit = defineEmits<{ close: [] }>();
 
 function onKey(event: KeyboardEvent) {
@@ -18,7 +18,8 @@ onUnmounted(() => document.removeEventListener("keydown", onKey));
   <div class="fixed inset-0 z-40">
     <div class="absolute inset-0 bg-black/30" @click="emit('close')"></div>
     <aside
-      class="absolute inset-y-0 right-0 flex w-[600px] max-w-full flex-col border-l border-border bg-surface shadow-2xl"
+      class="absolute inset-y-0 right-0 flex max-w-full flex-col border-l border-border bg-surface shadow-2xl"
+      :class="props.wide ? 'w-[760px]' : 'w-[600px]'"
       role="dialog"
       aria-modal="true"
       :aria-label="props.title"

@@ -12,6 +12,7 @@ import DangerDialog from "@/components/DangerDialog.vue";
 import AppHint from "@/components/AppHint.vue";
 import AppPaging from "@/components/AppPaging.vue";
 import AppToggle from "@/components/AppToggle.vue";
+import AppPicker from "@/components/AppPicker.vue";
 import UserSubjectField from "@/components/UserSubjectField.vue";
 import PageTabs from "@/components/PageTabs.vue";
 import {
@@ -61,6 +62,15 @@ import type {
 import type { ClientBrief } from "@/models/client";
 import { authorizationClients, selectedClient } from "./authorizationClients";
 import { canWriteAuthorization } from "./authorizationSetup";
+import { listGroups, listRoles } from "@/services/directory";
+import { listScopeCatalogue } from "@/services/scopes";
+import { applyPolicyTerms, termsFromPolicy, uniquePolicyTerms } from "./policyTerms";
+import {
+  permissionReady,
+  permissionWrite,
+  type PermissionDraft,
+  type PermissionType,
+} from "./permissionForm";
 import {
   composeShare,
   emptyShareDraft,
@@ -395,7 +405,14 @@ function listNameOf(kind: string): string {
   return EVALUATORS.find((held) => held.type === kind)?.list ?? "";
 }
 
-const drawer = ref<"" | "protect" | "policy" | "resource" | "scope" | "relation" | "palette" | "route">("");
+function policyTypeLabel(kind: string): string {
+  if (EVALUATORS.some((held) => held.type === kind)) return say(`authz-policy-type-${kind}`);
+  if (kind === "resource-permission") return say("authz-resource-permission");
+  if (kind === "scope-permission") return say("authz-scope-permission");
+  return kind;
+}
+
+const drawer = ref<"" | "protect" | "policy" | "permission" | "resource" | "scope" | "relation" | "palette" | "route">("");
 const routes = ref<AuthzRoute[]>([]);
 const routeEditing = ref<AuthzRoute | null>(null);
 const routeDraft = ref<Omit<AuthzRoute, "route_id">>({
@@ -473,6 +490,24 @@ const erasing = ref<{ leaf: "policies" | "resources" | "scopes"; id: string; nam
   null,
 );
 const scopeDraft = ref({ name: "", display_name: "" });
+
+function emptyPermissionDraft(): PermissionDraft {
+  return {
+    name: "",
+    description: "",
+    policyType: "resource-permission",
+    resourceType: "",
+    policies: [],
+    resources: [],
+    scopes: [],
+  };
+}
+
+const permissionDraft = ref<PermissionDraft>(emptyPermissionDraft());
+const permissionCanSave = computed(() => permissionReady(permissionDraft.value));
+const permissionPolicies = computed(() =>
+  unbound.value.filter((row) => row.policy_id !== editing.value),
+);
 
 /// The relation graph as published, and as it is being rewritten. Held apart
 /// so what is on screen is never mistaken for what the engine decides by.
@@ -552,31 +587,85 @@ async function lookAtTuples() {
   }
 }
 
-function openNew(which: "policy" | "resource" | "scope") {
+async function openNew(which: "policy" | "resource" | "scope") {
   if (!canWrite.value) return;
   editing.value = "";
   if (which === "policy") {
-    policyDraft.value = { name: "", policy_type: "role", description: "", terms: "" };
+    policyDraft.value = { name: "", policy_type: "role", description: "" };
+    policyTerms.value = [];
+    policyTermDraft.value = "";
     timeDraft.value = emptyTimeDraft();
     timeFailed.value = false;
+    await loadPolicyChoices("role");
   }
   if (which === "resource") resourceDraft.value = { name: "", resource_type: "", uris: "", owner: "", shareable: false };
   if (which === "scope") scopeDraft.value = { name: "", display_name: "" };
   drawer.value = which;
 }
 
-function openPolicy(held: PolicyRow) {
+async function openPolicy(held: PolicyRow) {
+  if (held.policy_type === "resource-permission" || held.policy_type === "scope-permission") {
+    openPermission(held);
+    return;
+  }
   editing.value = held.policy_id;
   const listed = listNameOf(held.policy_type);
-  const carried = listed ? ((held as unknown as Record<string, string[]>)[listed] ?? []) : [];
   policyDraft.value = {
     name: held.name,
     policy_type: held.policy_type,
     description: held.description,
-    terms: carried.join("\n"),
   };
+  policyTerms.value = termsFromPolicy(held, listed);
+  policyTermDraft.value = "";
+  await loadPolicyChoices(held.policy_type);
   timeDraft.value = timeDraftFrom(held as unknown as Record<string, unknown>);
   drawer.value = "policy";
+}
+
+function openNewPermission() {
+  if (!canWrite.value) return;
+  editing.value = "";
+  permissionDraft.value = emptyPermissionDraft();
+  drawer.value = "permission";
+}
+
+function openPermission(held: PolicyRow) {
+  editing.value = held.policy_id;
+  permissionDraft.value = {
+    name: held.name,
+    description: held.description,
+    policyType: held.policy_type as PermissionType,
+    resourceType: held.resource_type ?? "",
+    policies: [...held.policies],
+    resources: [...held.resources],
+    scopes: [...held.scopes],
+  };
+  drawer.value = "permission";
+}
+
+function togglePermission(which: "policies" | "resources" | "scopes", id: string) {
+  const held = permissionDraft.value[which];
+  permissionDraft.value[which] = held.includes(id)
+    ? held.filter((one) => one !== id)
+    : [...held, id];
+}
+
+async function savePermission() {
+  if (!canWrite.value || !permissionReady(permissionDraft.value)) return;
+  const body = permissionWrite(permissionDraft.value, clientId.value);
+  try {
+    if (editing.value) {
+      await reworkPolicy(realm.value, clientId.value, editing.value, body);
+    } else {
+      await createPolicy(realm.value, clientId.value, body);
+    }
+    drawer.value = "";
+    editing.value = "";
+    permissionDraft.value = emptyPermissionDraft();
+    await load();
+  } catch {
+    // The request toast contains the refusal.
+  }
 }
 
 function openResource(held: ResourceRow) {
@@ -703,16 +792,96 @@ async function writeShare(held: boolean) {
   }
 }
 
-const policyDraft = ref({ name: "", policy_type: "role", description: "", terms: "" });
+const policyDraft = ref({ name: "", policy_type: "role", description: "" });
+const policyTerms = ref<string[]>([]);
+const policyTermDraft = ref("");
+const policyPickerOpen = ref(false);
+const policyChoices = ref<{ id: string; label: string; held: boolean }[]>([]);
 const timeDraft = ref(emptyTimeDraft());
 const timeFailed = ref(false);
+const policyTypeSupported = computed(() =>
+  EVALUATORS.some((held) => held.type === policyDraft.value.policy_type),
+);
+const policyNeedsTerms = computed(
+  () =>
+    !policyTypeSupported.value ||
+    (policyDraft.value.policy_type !== "time" && policyTerms.value.length === 0),
+);
+
+async function loadPolicyChoices(kind: string) {
+  policyPickerOpen.value = false;
+  const held = new Set(policyTerms.value);
+  try {
+    if (kind === "role") {
+      const found = await listRoles(realm.value, 0, 200);
+      policyChoices.value = found.items.map((row) => ({
+        id: row.role_id,
+        label: row.display_name || row.name,
+        held: held.has(row.role_id),
+      }));
+    } else if (kind === "group") {
+      const found = await listGroups(realm.value, 0, 200);
+      policyChoices.value = found.items.map((row) => ({
+        id: row.group_id,
+        label: row.display_name || row.name,
+        held: held.has(row.group_id),
+      }));
+    } else if (kind === "client") {
+      policyChoices.value = clients.value.map((row) => ({
+        id: row.client_id,
+        label: row.name || row.client_id,
+        held: held.has(row.client_id),
+      }));
+    } else if (kind === "client-scope") {
+      const found = await listScopeCatalogue(realm.value);
+      policyChoices.value = found.map((row) => ({
+        id: row.name,
+        label: row.name,
+        held: held.has(row.name),
+      }));
+    } else if (kind === "aggregated") {
+      policyChoices.value = policies.value
+        .filter((row) => row.policy_id !== editing.value)
+        .map((row) => ({
+          id: row.policy_id,
+          label: row.name,
+          held: held.has(row.policy_id),
+        }));
+    } else {
+      policyChoices.value = [];
+    }
+  } catch (refused) {
+    failed.value = refused instanceof Error ? refused.message : String(refused);
+    policyChoices.value = [];
+  }
+}
+
+function addPolicyTerm(term = policyTermDraft.value) {
+  policyTerms.value = uniquePolicyTerms([...policyTerms.value, term]);
+  policyTermDraft.value = "";
+  policyPickerOpen.value = false;
+  void loadPolicyChoices(policyDraft.value.policy_type);
+}
+
+function removePolicyTerm(term: string) {
+  policyTerms.value = policyTerms.value.filter((held) => held !== term);
+  void loadPolicyChoices(policyDraft.value.policy_type);
+}
+
+function policyTermLabel(term: string): string {
+  return policyChoices.value.find((row) => row.id === term)?.label ?? term;
+}
+
+async function changePolicyType() {
+  policyTerms.value = [];
+  policyTermDraft.value = "";
+  timeDraft.value = emptyTimeDraft();
+  await loadPolicyChoices(policyDraft.value.policy_type);
+}
+
 async function makePolicy() {
   if (!canWrite.value) return;
   if (!policyDraft.value.name.trim()) return;
-  const named = policyDraft.value.terms
-    .split(/[\n,]/)
-    .map((held) => held.trim())
-    .filter(Boolean);
   try {
     // The whole of what a policy carries. A partial body is not an edit of
     // some of the terms: the server takes the terms it is given, so anything
@@ -729,7 +898,7 @@ async function makePolicy() {
       scopes: [],
       policy_type: policyDraft.value.policy_type,
     };
-    if (listed) body[listed] = named;
+    applyPolicyTerms(body, policyDraft.value.policy_type, listed, policyTerms.value);
     if (policyDraft.value.policy_type === "time") {
       const window = timeWindowFrom(timeDraft.value);
       if (!window) {
@@ -746,7 +915,8 @@ async function makePolicy() {
     }
     drawer.value = "";
     editing.value = "";
-    policyDraft.value = { name: "", policy_type: "role", description: "", terms: "" };
+    policyDraft.value = { name: "", policy_type: "role", description: "" };
+    policyTerms.value = [];
     timeDraft.value = emptyTimeDraft();
     await load();
   } catch {
@@ -839,79 +1009,51 @@ function nodeStroke(row: PolicyRow): string {
 
 <template>
   <div class="flex min-h-full min-w-0 flex-col">
-    <div class="flex flex-wrap items-center gap-3">
-      <h1 class="text-lg font-semibold tracking-tight">{{ say("authz-title") }}</h1>
-      <RouterLink
-        :to="`/${realm}/decision-journal`"
-        class="rounded-md border border-border px-2.5 py-1.5 text-xs text-muted hover:text-ink"
-      >
-        {{ say("decision-journal-title") }}
-      </RouterLink>
-      <form
-        v-if="board !== 'routes' && board !== 'graph'"
-        class="flex flex-wrap items-center gap-2 xl:ml-auto"
-        @submit.prevent="load"
-      >
-        <label for="authorization-client" class="text-[11px] text-muted">{{ say("authz-server") }}</label>
+    <div class="flex flex-wrap items-start justify-between gap-4">
+      <div>
+        <h1 class="text-lg font-semibold tracking-tight">{{ say("authz-title") }}</h1>
+        <p class="mt-1 text-xs text-muted">{{ say("authz-lede") }}</p>
+      </div>
+      <div class="flex flex-wrap items-center gap-2">
+        <RouterLink :to="`/${realm}/decision-journal`" class="sf-button sf-button-secondary">
+          {{ say("decision-journal-title") }}
+        </RouterLink>
+        <button type="button" class="sf-button sf-button-secondary" @click="drawer = 'relation'">
+          {{ say("authz-write-relation") }}
+        </button>
+        <button type="button" class="sf-button sf-button-secondary" @click="drawer = 'palette'">
+          {{ say("authz-palette") }}
+        </button>
+      </div>
+    </div>
+
+    <div
+      v-if="board !== 'routes' && board !== 'graph'"
+      class="mt-4 flex flex-wrap items-end gap-3 rounded-lg border border-border bg-bg p-3"
+    >
+      <label for="authorization-client" class="min-w-64 flex-1 text-[11px] font-medium text-muted">
+        {{ say("authz-server") }}
         <select
           id="authorization-client"
           v-model="clientId"
-          class="sf-field w-52 font-mono"
+          class="sf-field mt-1 font-mono"
           :disabled="!clients.length"
           @change="chooseClient"
         >
           <option v-if="!clients.length" value="">{{ say("authz-no-clients") }}</option>
           <option v-else value="" disabled>{{ say("authz-pick-client") }}</option>
           <option v-for="client in clients" :key="client.client_id" :value="client.client_id">
-            {{ client.client_id }}
+            {{ client.name || client.client_id }} ({{ client.client_id }})
           </option>
         </select>
-        <button
-          type="submit"
-          :disabled="!clientId"
-          class="sf-button sf-button-secondary"
-        >
-          {{ say("authz-load") }}
-        </button>
-        <button
-          type="button"
-          :disabled="!clientId"
-          class="sf-button sf-button-secondary"
-          @click="openProtection()"
-        >
-          {{ protectedServer ? say("authz-protection") : say("authz-protect") }}
-        </button>
-        <button
-          type="button"
-          :disabled="!canWrite"
-          class="rounded-md border border-border px-2 py-1 text-xs hover:bg-surface-2"
-          @click="drawer = 'policy'"
-        >
-          {{ say("authz-new-policy") }}
-        </button>
-        <button
-          type="button"
-          :disabled="!canWrite"
-          class="rounded-md border border-border px-2 py-1 text-xs hover:bg-surface-2"
-          @click="drawer = 'resource'"
-        >
-          {{ say("authz-new-resource") }}
-        </button>
-        <button
-          type="button"
-          class="rounded-md border border-border px-2 py-1 text-xs hover:bg-surface-2"
-          @click="drawer = 'relation'"
-        >
-          {{ say("authz-write-relation") }}
-        </button>
-        <button
-          type="button"
-          class="rounded-md border border-border px-2 py-1 text-xs text-muted hover:bg-surface-2"
-          @click="drawer = 'palette'"
-        >
-          {{ say("authz-palette") }}
-        </button>
-      </form>
+      </label>
+      <div v-if="clientId" class="flex min-h-9 items-center gap-2 rounded-md border border-border bg-surface px-3 text-[11px]">
+        <span class="h-1.5 w-1.5 rounded-full" :class="protectedServer ? 'bg-ok' : 'bg-faint'"></span>
+        <span>{{ protectedServer ? say("authz-protected-status") : say("authz-unprotected-status") }}</span>
+      </div>
+      <button type="button" :disabled="!clientId" class="sf-button sf-button-secondary" @click="openProtection()">
+        {{ protectedServer ? say("authz-protection") : say("authz-protect") }}
+      </button>
     </div>
 
     <PageTabs
@@ -923,7 +1065,13 @@ function nodeStroke(row: PolicyRow): string {
     />
 
     <p v-if="failed" class="mt-2 text-xs text-danger" role="alert">{{ failed }}</p>
-    <p v-if="clients.length > 1 && !clientId && board !== 'routes' && board !== 'graph'" class="mt-2 text-xs text-muted">{{ say("authz-pick-client") }}</p>
+    <div
+      v-if="!clientId && board !== 'routes' && board !== 'graph'"
+      class="mt-4 rounded-lg border border-dashed border-border bg-bg px-5 py-10 text-center"
+    >
+      <h2 class="text-sm font-semibold">{{ say("authz-pick-client") }}</h2>
+      <p class="mx-auto mt-1 max-w-lg text-xs text-muted">{{ say("authz-pick-client-help") }}</p>
+    </div>
     <div v-if="unprotected && clientId" class="mt-3 flex flex-wrap items-center gap-3 rounded-md border border-accent/40 bg-accent/5 px-3 py-2.5 text-xs">
       <p class="min-w-0 flex-1 text-ink">{{ say("authz-unprotected") }}</p>
       <button type="button" class="sf-button sf-button-primary" @click="openProtection()">
@@ -983,7 +1131,7 @@ function nodeStroke(row: PolicyRow): string {
       </div>
     </div>
 
-    <div v-if="board === 'models'" class="mt-3 flex min-h-0 flex-1 flex-col gap-3 xl:flex-row">
+    <div v-if="board === 'models' && clientId" class="mt-3 flex min-h-0 flex-1 flex-col gap-3 xl:flex-row">
       <div class="min-w-0 flex-1 overflow-hidden rounded-lg border border-border bg-surface">
         <svg
           class="h-full w-full cursor-grab active:cursor-grabbing"
@@ -1178,7 +1326,7 @@ function nodeStroke(row: PolicyRow): string {
           <div class="mt-0.5 font-mono text-[10.5px] text-faint">{{ selected.policy_id }}</div>
           <dl class="mt-2 grid grid-cols-[86px_1fr] gap-y-1.5 text-xs">
             <dt class="text-muted">{{ say("mappers-col-type") }}</dt>
-            <dd class="font-mono text-[11px]">{{ selected.policy_type }}</dd>
+            <dd class="text-[11px]">{{ policyTypeLabel(selected.policy_type) }}</dd>
             <dt v-if="selected.policies.length" class="text-muted">
               {{ say("authz-built-from") }}
             </dt>
@@ -1338,12 +1486,12 @@ function nodeStroke(row: PolicyRow): string {
       </div>
     </div>
 
-    <div v-if="board === 'resources'" class="mt-3 flex justify-end">
+    <div v-if="board === 'resources' && clientId" class="mt-3 flex justify-end">
       <button type="button" class="sf-button sf-button-secondary" :disabled="!canWrite" @click="openNew('resource')">
         {{ say("authz-add-resource") }}
       </button>
     </div>
-    <div v-if="board === 'resources'" class="sf-list mt-3 overflow-x-auto">
+    <div v-if="board === 'resources' && clientId" class="sf-list mt-3 overflow-x-auto">
       <table class="sf-table">
         <thead>
           <tr>
@@ -1387,12 +1535,12 @@ function nodeStroke(row: PolicyRow): string {
       </table>
     </div>
 
-    <div v-if="board === 'scopes'" class="mt-3 flex justify-end">
+    <div v-if="board === 'scopes' && clientId" class="mt-3 flex justify-end">
       <button type="button" class="sf-button sf-button-secondary" :disabled="!canWrite" @click="openNew('scope')">
         {{ say("authz-add-scope") }}
       </button>
     </div>
-    <div v-if="board === 'scopes'" class="sf-list mt-3 overflow-x-auto">
+    <div v-if="board === 'scopes' && clientId" class="sf-list mt-3 overflow-x-auto">
       <table class="sf-table">
         <thead>
           <tr>
@@ -1429,12 +1577,12 @@ function nodeStroke(row: PolicyRow): string {
       </table>
     </div>
 
-    <div v-if="board === 'policies'" class="mt-3 flex justify-end">
+    <div v-if="board === 'policies' && clientId" class="mt-3 flex justify-end">
       <button type="button" class="sf-button sf-button-secondary" :disabled="!canWrite" @click="openNew('policy')">
         {{ say("authz-add-policy") }}
       </button>
     </div>
-    <div v-if="board === 'policies'" class="sf-list mt-3 overflow-x-auto">
+    <div v-if="board === 'policies' && clientId" class="sf-list mt-3 overflow-x-auto">
       <table class="sf-table">
         <thead>
           <tr>
@@ -1447,7 +1595,7 @@ function nodeStroke(row: PolicyRow): string {
         <tbody>
           <tr v-for="held in unbound" :key="held.policy_id">
               <td>{{ held.name }}</td>
-              <td>{{ held.policy_type }}</td>
+              <td>{{ policyTypeLabel(held.policy_type) }}</td>
               <td class="text-muted">{{ held.description || say('value-none') }}</td>
               <td class="text-right whitespace-nowrap">
                 <button
@@ -1473,12 +1621,12 @@ function nodeStroke(row: PolicyRow): string {
       </table>
     </div>
 
-    <div v-if="board === 'permissions'" class="mt-3 flex justify-end">
-      <button type="button" class="sf-button sf-button-secondary" :disabled="!canWrite" @click="openNew('policy')">
-        {{ say("authz-add-policy") }}
+    <div v-if="board === 'permissions' && clientId" class="mt-3 flex justify-end">
+      <button type="button" class="sf-button sf-button-primary" :disabled="!canWrite" @click="openNewPermission">
+        {{ say("authz-add-permission") }}
       </button>
     </div>
-    <div v-if="board === 'permissions'" class="sf-list mt-3 overflow-x-auto">
+    <div v-if="board === 'permissions' && clientId" class="sf-list mt-3 overflow-x-auto">
       <table class="sf-table">
         <thead>
           <tr>
@@ -1491,7 +1639,7 @@ function nodeStroke(row: PolicyRow): string {
         <tbody>
           <tr v-for="held in binding" :key="held.policy_id">
               <td>{{ held.name }}</td>
-              <td>{{ held.policy_type }}</td>
+              <td>{{ policyTypeLabel(held.policy_type) }}</td>
               <td class="text-muted">{{ held.resources.length + held.scopes.length }}</td>
               <td class="text-right whitespace-nowrap">
                 <button
@@ -1678,23 +1826,134 @@ function nodeStroke(row: PolicyRow): string {
       </form>
     </AppDrawer>
 
-    <AppDrawer v-if="drawer === 'policy'" :title="editing ? say('authz-edit-policy') : say('authz-new-policy')" :subtitle="clientId" @close="drawer = ''">
-      <form class="flex flex-col gap-3 text-xs" @submit.prevent="makePolicy">
-        <label class="block text-[11px] font-medium text-muted">
-          {{ say("settings-name") }}
-          <input v-model="policyDraft.name" class="sf-field mt-1 font-mono" spellcheck="false" />
-        </label>
-        <label class="block text-[11px] font-medium text-muted">
-          {{ say("authz-evaluator") }} <AppHint name="authz-evaluator-help" />
-          <select v-model="policyDraft.policy_type" class="sf-field mt-1 font-mono">
-            <option v-for="held in EVALUATORS" :key="held.type" :value="held.type">{{ held.type }}</option>
-          </select>
-        </label>
-        <label class="block text-[11px] font-medium text-muted">
-          {{ say("scopes-col-description") }}
-          <input v-model="policyDraft.description" class="sf-field mt-1" />
-        </label>
-        <div v-if="policyDraft.policy_type === 'time'" class="grid gap-3 sm:grid-cols-2">
+    <AppDrawer
+      v-if="drawer === 'permission'"
+      wide
+      :title="editing ? say('authz-edit-permission') : say('authz-new-permission')"
+      :subtitle="clientId"
+      @close="drawer = ''"
+    >
+      <form class="flex flex-col gap-5 text-xs" @submit.prevent="savePermission">
+        <section class="grid gap-4 rounded-lg border border-border bg-bg p-4 sm:grid-cols-2">
+          <label class="text-[11px] font-medium text-muted">
+            {{ say("settings-name") }}
+            <input v-model="permissionDraft.name" required class="sf-field mt-1" />
+          </label>
+          <label class="text-[11px] font-medium text-muted">
+            {{ say("authz-permission-type") }}
+            <select v-model="permissionDraft.policyType" class="sf-field mt-1" :disabled="Boolean(editing)">
+              <option value="resource-permission">{{ say("authz-resource-permission") }}</option>
+              <option value="scope-permission">{{ say("authz-scope-permission") }}</option>
+            </select>
+          </label>
+          <label class="text-[11px] font-medium text-muted sm:col-span-2">
+            {{ say("scopes-col-description") }}
+            <input v-model="permissionDraft.description" class="sf-field mt-1" />
+          </label>
+          <label class="text-[11px] font-medium text-muted sm:col-span-2">
+            {{ say("authz-resource-type") }} <AppHint name="authz-permission-resource-type-help" />
+            <input v-model="permissionDraft.resourceType" class="sf-field mt-1 font-mono" placeholder="document" spellcheck="false" />
+          </label>
+        </section>
+
+        <section class="rounded-lg border border-border bg-bg p-4">
+          <h3 class="text-sm font-semibold">{{ say("authz-permission-conditions") }}</h3>
+          <p class="mt-1 text-[11px] text-muted">{{ say("authz-permission-conditions-help") }}</p>
+          <div class="mt-3 grid gap-2 sm:grid-cols-2">
+            <label
+              v-for="policy in permissionPolicies"
+              :key="policy.policy_id"
+              class="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-surface px-3 py-2.5"
+            >
+              <input
+                type="checkbox"
+                class="mt-0.5 accent-accent"
+                :checked="permissionDraft.policies.includes(policy.policy_id)"
+                @change="togglePermission('policies', policy.policy_id)"
+              />
+              <span class="min-w-0">
+                <span class="block truncate font-medium text-ink">{{ policy.name }}</span>
+                <span class="mt-0.5 block truncate font-mono text-[10px] text-faint">{{ policy.policy_type }}</span>
+              </span>
+            </label>
+            <p v-if="!permissionPolicies.length" class="text-[11px] text-muted">{{ say("authz-no-condition-policies") }}</p>
+          </div>
+        </section>
+
+        <div class="grid gap-4 lg:grid-cols-2">
+          <section class="rounded-lg border border-border bg-bg p-4">
+            <h3 class="text-sm font-semibold">{{ say("authz-board-resources") }}</h3>
+            <p class="mt-1 text-[11px] text-muted">{{ say("authz-permission-resources-help") }}</p>
+            <div class="mt-3 flex flex-col gap-2">
+              <label v-for="resource in resources" :key="resource.resource_id" class="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-surface px-3 py-2.5">
+                <input type="checkbox" class="mt-0.5 accent-accent" :checked="permissionDraft.resources.includes(resource.resource_id)" @change="togglePermission('resources', resource.resource_id)" />
+                <span class="min-w-0">
+                  <span class="block truncate font-medium text-ink">{{ resource.name }}</span>
+                  <span class="mt-0.5 block truncate font-mono text-[10px] text-faint">{{ resource.resource_type }}</span>
+                </span>
+              </label>
+              <p v-if="!resources.length" class="text-[11px] text-muted">{{ say("authz-none-here") }}</p>
+            </div>
+          </section>
+
+          <section v-if="permissionDraft.policyType === 'scope-permission'" class="rounded-lg border border-border bg-bg p-4">
+            <h3 class="text-sm font-semibold">{{ say("authz-board-scopes") }}</h3>
+            <p class="mt-1 text-[11px] text-muted">{{ say("authz-permission-scopes-help") }}</p>
+            <div class="mt-3 flex flex-col gap-2">
+              <label v-for="scope in scopes" :key="scope.scope_id" class="flex cursor-pointer items-center gap-2 rounded-md border border-border bg-surface px-3 py-2.5">
+                <input type="checkbox" class="accent-accent" :checked="permissionDraft.scopes.includes(scope.scope_id)" @change="togglePermission('scopes', scope.scope_id)" />
+                <span class="min-w-0 truncate font-medium text-ink">{{ scope.name }}</span>
+              </label>
+              <p v-if="!scopes.length" class="text-[11px] text-muted">{{ say("authz-none-here") }}</p>
+            </div>
+          </section>
+        </div>
+
+        <p v-if="!permissionCanSave" class="text-[11px] text-muted">{{ say("authz-permission-incomplete") }}</p>
+        <div class="flex justify-end gap-2 border-t border-border pt-4">
+          <button type="button" class="sf-button sf-button-secondary" @click="drawer = ''">{{ say("action-cancel") }}</button>
+          <button type="submit" class="sf-button sf-button-primary" :disabled="!permissionCanSave">
+            {{ editing ? say("settings-save") : say("realm-create") }}
+          </button>
+        </div>
+      </form>
+    </AppDrawer>
+
+    <AppDrawer v-if="drawer === 'policy'" wide :title="editing ? say('authz-edit-policy') : say('authz-new-policy')" :subtitle="clientId" @close="drawer = ''">
+      <form class="flex flex-col gap-5 text-xs" @submit.prevent="makePolicy">
+        <section class="grid gap-4 rounded-lg border border-border bg-bg p-4 sm:grid-cols-2">
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("settings-name") }}
+            <input v-model="policyDraft.name" required class="sf-field mt-1" spellcheck="false" />
+          </label>
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("authz-evaluator") }} <AppHint name="authz-evaluator-help" />
+            <select
+              v-model="policyDraft.policy_type"
+              class="sf-field mt-1"
+              :disabled="Boolean(editing)"
+              @change="changePolicyType"
+            >
+              <option v-if="!policyTypeSupported" :value="policyDraft.policy_type">
+                {{ policyDraft.policy_type }}
+              </option>
+              <option v-for="held in EVALUATORS" :key="held.type" :value="held.type">
+                {{ say(`authz-policy-type-${held.type}`) }}
+              </option>
+            </select>
+            <span v-if="editing" class="mt-1 block text-[10px] font-normal text-faint">{{ say("authz-policy-type-fixed") }}</span>
+          </label>
+          <label class="block text-[11px] font-medium text-muted sm:col-span-2">
+            {{ say("scopes-col-description") }}
+            <input v-model="policyDraft.description" class="sf-field mt-1" />
+          </label>
+        </section>
+
+        <section v-if="policyDraft.policy_type === 'time'" class="grid gap-3 rounded-lg border border-border bg-bg p-4 sm:grid-cols-2">
+          <div class="sm:col-span-2">
+            <h3 class="text-sm font-semibold">{{ say("authz-time-window") }}</h3>
+            <p class="mt-1 text-[11px] text-muted">{{ say("authz-time-window-help") }}</p>
+          </div>
           <label v-for="field in ['not_before', 'not_on_or_after'] as const" :key="field" class="block text-[11px] font-medium text-muted">
             {{ say(`authz-time-${field}`) }}
             <input v-model="timeDraft[field]" type="datetime-local" class="sf-field mt-1" />
@@ -1705,14 +1964,78 @@ function nodeStroke(row: PolicyRow): string {
           </label>
           <p class="sm:col-span-2 text-[10.5px] text-muted">{{ say('authz-time-utc') }}</p>
           <p v-if="timeFailed" class="sm:col-span-2 text-[11px] text-danger" role="alert">{{ say('authz-time-invalid') }}</p>
-        </div>
-        <label v-else class="block text-[11px] font-medium text-muted">
-          {{ say("authz-terms") }} <AppHint name="authz-terms-help" />
-          <textarea v-model="policyDraft.terms" rows="2" :placeholder="say('policy-blacklist-hint')" class="sf-field mt-1 font-mono" spellcheck="false"></textarea>
-        </label>
-        <div>
-          <button type="submit" class="sf-button sf-button-primary">
-            {{ say("realm-create") }}
+        </section>
+
+        <section v-else-if="!policyTypeSupported" class="rounded-lg border border-warn/40 bg-warn/5 p-4">
+          <h3 class="text-sm font-semibold">{{ say("authz-policy-unsupported-title") }}</h3>
+          <p class="mt-1 text-[11px] text-muted">{{ say("authz-policy-unsupported-help", { type: policyDraft.policy_type }) }}</p>
+        </section>
+
+        <section v-else class="rounded-lg border border-border bg-bg p-4">
+          <div>
+            <h3 class="text-sm font-semibold">{{ say(`authz-policy-members-${policyDraft.policy_type}`) }}</h3>
+            <p class="mt-1 text-[11px] text-muted">{{ say(`authz-policy-members-${policyDraft.policy_type}-help`) }}</p>
+          </div>
+
+          <div class="mt-4 overflow-hidden rounded-md border border-border bg-surface">
+            <div
+              v-for="term in policyTerms"
+              :key="term"
+              class="flex items-center gap-3 border-b border-border/60 px-3 py-2.5 last:border-0"
+            >
+              <span class="min-w-0 flex-1">
+                <span class="block truncate text-xs font-medium text-ink">{{ policyTermLabel(term) }}</span>
+                <span v-if="policyTermLabel(term) !== term" class="mt-0.5 block truncate font-mono text-[10px] text-faint">{{ term }}</span>
+              </span>
+              <button type="button" class="text-[10.5px] text-danger hover:underline" :aria-label="`${say('action-remove')} ${policyTermLabel(term)}`" @click="removePolicyTerm(term)">
+                {{ say("action-remove") }}
+              </button>
+            </div>
+            <p v-if="!policyTerms.length" class="px-3 py-4 text-xs text-muted">{{ say("authz-policy-members-none") }}</p>
+          </div>
+
+          <div class="relative mt-3 flex items-start gap-2">
+            <UserSubjectField
+              v-if="policyDraft.policy_type === 'user'"
+              v-model="policyTermDraft"
+              :realm="realm"
+              id-only
+              :placeholder="say('subject-username-or-id')"
+              class="sf-field font-mono"
+            />
+            <input
+              v-else
+              v-model="policyTermDraft"
+              class="sf-field min-w-0 flex-1 font-mono"
+              :placeholder="say('authz-policy-member-placeholder')"
+              spellcheck="false"
+              @keydown.enter.prevent="addPolicyTerm()"
+            />
+            <button type="button" class="sf-button sf-button-secondary" :disabled="!policyTermDraft.trim()" @click="addPolicyTerm()">
+              {{ say("picker-add") }}
+            </button>
+            <button
+              v-if="policyChoices.length"
+              type="button"
+              class="sf-button sf-button-secondary"
+              @click="policyPickerOpen = !policyPickerOpen"
+            >
+              {{ say("authz-browse") }}
+            </button>
+            <AppPicker
+              v-if="policyPickerOpen"
+              :rows="policyChoices"
+              :title="say(`authz-policy-members-${policyDraft.policy_type}`)"
+              @add="addPolicyTerm"
+              @close="policyPickerOpen = false"
+            />
+          </div>
+        </section>
+
+        <div class="flex justify-end gap-2 border-t border-border pt-4">
+          <button type="button" class="sf-button sf-button-secondary" @click="drawer = ''">{{ say("action-cancel") }}</button>
+          <button type="submit" class="sf-button sf-button-primary" :disabled="policyNeedsTerms">
+            {{ editing ? say("settings-save") : say("realm-create") }}
           </button>
         </div>
       </form>

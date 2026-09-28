@@ -64,7 +64,13 @@ import { authorizationClients, selectedClient } from "./authorizationClients";
 import { canWriteAuthorization } from "./authorizationSetup";
 import { listGroups, listRoles } from "@/services/directory";
 import { listScopeCatalogue } from "@/services/scopes";
-import { applyPolicyTerms, termsFromPolicy, uniquePolicyTerms } from "./policyTerms";
+import {
+  emptyPolicyDraft,
+  policyDraftFrom,
+  policyWrite,
+  termsFromPolicy,
+  uniquePolicyTerms,
+} from "./policyTerms";
 import {
   permissionReady,
   permissionWrite,
@@ -500,6 +506,9 @@ function emptyPermissionDraft(): PermissionDraft {
     policies: [],
     resources: [],
     scopes: [],
+    decision: "unanimous",
+    logic: "positive",
+    owner: "",
   };
 }
 
@@ -591,7 +600,7 @@ async function openNew(which: "policy" | "resource" | "scope") {
   if (!canWrite.value) return;
   editing.value = "";
   if (which === "policy") {
-    policyDraft.value = { name: "", policy_type: "role", description: "" };
+    policyDraft.value = emptyPolicyDraft();
     policyTerms.value = [];
     policyTermDraft.value = "";
     timeDraft.value = emptyTimeDraft();
@@ -610,11 +619,7 @@ async function openPolicy(held: PolicyRow) {
   }
   editing.value = held.policy_id;
   const listed = listNameOf(held.policy_type);
-  policyDraft.value = {
-    name: held.name,
-    policy_type: held.policy_type,
-    description: held.description,
-  };
+  policyDraft.value = policyDraftFrom(held);
   policyTerms.value = termsFromPolicy(held, listed);
   policyTermDraft.value = "";
   await loadPolicyChoices(held.policy_type);
@@ -639,6 +644,9 @@ function openPermission(held: PolicyRow) {
     policies: [...held.policies],
     resources: [...held.resources],
     scopes: [...held.scopes],
+    decision: held.decision,
+    logic: held.logic,
+    owner: held.policy_owner,
   };
   drawer.value = "permission";
 }
@@ -792,7 +800,7 @@ async function writeShare(held: boolean) {
   }
 }
 
-const policyDraft = ref({ name: "", policy_type: "role", description: "" });
+const policyDraft = ref(emptyPolicyDraft());
 const policyTerms = ref<string[]>([]);
 const policyTermDraft = ref("");
 const policyPickerOpen = ref(false);
@@ -883,22 +891,12 @@ async function makePolicy() {
   if (!canWrite.value) return;
   if (!policyDraft.value.name.trim()) return;
   try {
-    // The whole of what a policy carries. A partial body is not an edit of
-    // some of the terms: the server takes the terms it is given, so anything
-    // left out is a term set to nothing.
-    const listed = listNameOf(policyDraft.value.policy_type);
-    const body: Record<string, unknown> = {
-      name: policyDraft.value.name.trim(),
-      description: policyDraft.value.description,
-      decision: "unanimous",
-      logic: "positive",
-      policy_owner: clientId.value,
-      policies: [],
-      resources: [],
-      scopes: [],
-      policy_type: policyDraft.value.policy_type,
-    };
-    applyPolicyTerms(body, policyDraft.value.policy_type, listed, policyTerms.value);
+    const body = policyWrite(
+      policyDraft.value,
+      listNameOf(policyDraft.value.policy_type),
+      policyTerms.value,
+      clientId.value,
+    );
     if (policyDraft.value.policy_type === "time") {
       const window = timeWindowFrom(timeDraft.value);
       if (!window) {
@@ -915,7 +913,7 @@ async function makePolicy() {
     }
     drawer.value = "";
     editing.value = "";
-    policyDraft.value = { name: "", policy_type: "role", description: "" };
+    policyDraft.value = emptyPolicyDraft();
     policyTerms.value = [];
     timeDraft.value = emptyTimeDraft();
     await load();
@@ -1856,9 +1854,13 @@ function nodeStroke(row: PolicyRow): string {
           </label>
         </section>
 
+        <p v-if="permissionDraft.logic === 'negative'" class="rounded-md border border-warn/40 bg-warn/5 px-3 py-2 text-[11px] text-ink" role="note">
+          {{ say("authz-logic-negative") }}
+        </p>
+
         <section class="rounded-lg border border-border bg-bg p-4">
           <h3 class="text-sm font-semibold">{{ say("authz-permission-conditions") }}</h3>
-          <p class="mt-1 text-[11px] text-muted">{{ say("authz-permission-conditions-help") }}</p>
+          <p class="mt-1 text-[11px] text-muted">{{ say(`authz-permission-conditions-help-${permissionDraft.decision}`) }}</p>
           <div class="mt-3 grid gap-2 sm:grid-cols-2">
             <label
               v-for="policy in permissionPolicies"
@@ -1948,6 +1950,10 @@ function nodeStroke(row: PolicyRow): string {
             <input v-model="policyDraft.description" class="sf-field mt-1" />
           </label>
         </section>
+
+        <p v-if="policyDraft.logic === 'negative'" class="rounded-md border border-warn/40 bg-warn/5 px-3 py-2 text-[11px] text-ink" role="note">
+          {{ say("authz-logic-negative") }}
+        </p>
 
         <section v-if="policyDraft.policy_type === 'time'" class="grid gap-3 rounded-lg border border-border bg-bg p-4 sm:grid-cols-2">
           <div class="sm:col-span-2">

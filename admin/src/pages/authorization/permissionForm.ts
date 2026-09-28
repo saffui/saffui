@@ -8,6 +8,11 @@ export interface PermissionDraft {
   policies: string[];
   resources: string[];
   scopes: string[];
+  /// Held as the permission was opened: the drawer has no box for them, and a
+  /// write that dropped them would fold its conditions and answer another way.
+  decision: string;
+  logic: string;
+  owner: string;
 }
 
 export function permissionReady(draft: PermissionDraft): boolean {
@@ -16,13 +21,13 @@ export function permissionReady(draft: PermissionDraft): boolean {
   return draft.policyType !== "scope-permission" || draft.scopes.length > 0;
 }
 
-export function permissionWrite(draft: PermissionDraft, owner: string): Record<string, unknown> {
+export function permissionWrite(draft: PermissionDraft, server: string): Record<string, unknown> {
   return {
     name: draft.name.trim(),
     description: draft.description.trim(),
-    decision: "unanimous",
-    logic: "positive",
-    policy_owner: owner,
+    decision: draft.decision,
+    logic: draft.logic,
+    policy_owner: draft.owner || server,
     policies: [...new Set(draft.policies)],
     resources: [...new Set(draft.resources)],
     scopes: draft.policyType === "scope-permission" ? [...new Set(draft.scopes)] : [],

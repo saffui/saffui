@@ -379,6 +379,12 @@ pub fn routes() -> Vec<AdminRoute> {
             handler: Some(|| web::get().to(client_scopes::get)),
         },
         AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/client-scopes/{scope}/usage",
+            action: AdminAction::ClientRead,
+            handler: Some(|| web::get().to(client_scopes::usage)),
+        },
+        AdminRoute {
             method: Method::PUT,
             pattern: "/admin/realms/{realm}/client-scopes/{scope}",
             action: AdminAction::ClientWrite,
@@ -467,6 +473,12 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/protocol-mappers/{mapper}",
             action: AdminAction::ClientRead,
             handler: Some(|| web::get().to(protocol_mappers::get)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/protocol-mappers/{mapper}/usage",
+            action: AdminAction::ClientRead,
+            handler: Some(|| web::get().to(protocol_mappers::usage)),
         },
         AdminRoute {
             method: Method::PUT,

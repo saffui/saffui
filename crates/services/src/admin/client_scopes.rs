@@ -1,6 +1,7 @@
 use crypto::provider::CryptoProvider;
 use models::auditable::AuditableModel;
-use models::entities::client::{ClientScopeModel, ClientScopeMutationModel};
+use models::entities::client::{ClientScopeModel, ClientScopeMutationModel, ConfigurationUse};
+use models::paging::{Page, Window};
 use store::error::StoreError;
 use store::providers::clients;
 use store::providers::clients::client_scopes;
@@ -67,6 +68,18 @@ pub async fn get_scope(
         .await
         .map_err(|_| Unwritable::Backend)?
         .ok_or(Unwritable::NotFound)
+}
+
+pub async fn usage(
+    transaction: &UnitOfWork,
+    client_scope_id: &str,
+    window: Window,
+    with_total: bool,
+) -> Result<Page<ConfigurationUse>, Unwritable> {
+    get_scope(transaction, client_scope_id).await?;
+    client_scopes::scope_usage(transaction, client_scope_id, window, with_total)
+        .await
+        .map_err(|_| Unwritable::Backend)
 }
 
 pub async fn create_scope(

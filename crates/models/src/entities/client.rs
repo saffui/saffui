@@ -284,6 +284,25 @@ pub struct ClientScopeModel {
     pub metadata: AuditableModel,
 }
 
+/// One configuration object that keeps a scope or mapper in use.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum ConfigurationUse {
+    Client {
+        client_id: String,
+        name: String,
+    },
+    ClientScope {
+        client_scope_id: String,
+        name: String,
+    },
+    Policy {
+        server_id: String,
+        policy_id: String,
+        name: String,
+    },
+}
+
 /// The create and update payload for a scope. Everything but the name has a
 /// resting value, so a caller says only what it means to set.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -410,6 +429,20 @@ mod tests {
         assert_eq!(Protocol::OpenId.as_str(), "openid-connect");
         assert_eq!(Protocol::Docker.as_str(), "docker");
         assert_round_trips(Protocol::ALL);
+    }
+
+    #[test]
+    fn configuration_usage_keeps_each_identifier_explicit() {
+        let use_ = ConfigurationUse::Policy {
+            server_id: "documents".into(),
+            policy_id: "editors".into(),
+            name: "Editors".into(),
+        };
+        let value = serde_json::to_value(&use_).unwrap();
+        assert_eq!(value["kind"], "policy");
+        assert_eq!(value["server_id"], "documents");
+        assert_eq!(value["policy_id"], "editors");
+        assert!(value.get("client_id").is_none());
     }
 
     /// Every declared protocol parses. A parser that knew only one of them

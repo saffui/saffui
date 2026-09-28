@@ -1047,6 +1047,17 @@ async fn a_client_is_born_reshaped_and_retired_over_the_plane() {
         "{listed}"
     );
 
+    let (status, searched) = fetched(
+        &plane,
+        Method::GET,
+        &format!("{base}?search=sho&max=1&count=true"),
+        &bearer,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{searched}");
+    assert_eq!(searched["total"], 1);
+    assert_eq!(searched["items"][0]["client_id"], "shop");
+
     assert_eq!(
         request(
             &plane,

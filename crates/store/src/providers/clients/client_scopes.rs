@@ -1,5 +1,6 @@
 use crate::tenancy::UnitOfWork;
-use models::entities::client::{ClientScopeModel, Protocol, ProtocolMapperModel};
+use models::entities::client::{ClientScopeModel, ConfigurationUse, Protocol, ProtocolMapperModel};
+use models::paging::{Page, Window};
 use tokio_postgres::Row;
 
 use crate::error::{StoreError, StoreResult, refuse_broken_rule};
@@ -140,6 +141,28 @@ pub async fn scope_still_attached(
     Ok(row.get("held"))
 }
 
+/// One bounded page of clients and policies that still read this scope.
+pub async fn scope_usage(
+    transaction: &UnitOfWork,
+    client_scope_id: &str,
+    window: Window,
+    with_total: bool,
+) -> StoreResult<Page<ConfigurationUse>> {
+    const USED: &str = "SELECT 'client'::text AS kind, c.client_id AS id, \
+                               c.name, NULL::text AS owner_id \
+                        FROM clients_client_scopes a \
+                        JOIN clients c USING (tenant, realm_id, client_id) \
+                        WHERE a.client_scope_id = $1 \
+                        UNION ALL \
+                        SELECT 'policy'::text AS kind, p.policy_id AS id, \
+                               p.name, p.server_id AS owner_id \
+                        FROM policies_client_scopes a \
+                        JOIN policies p \
+                          USING (tenant, realm_id, server_id, policy_id, policy_type) \
+                        WHERE a.client_scope_id = $1";
+    usage_page(transaction, USED, client_scope_id, window, with_total).await
+}
+
 /// The scopes a new client of this realm is given without anyone attaching
 /// them.
 ///
@@ -271,6 +294,83 @@ pub async fn mapper_still_attached(transaction: &UnitOfWork, mapper_id: &str) ->
         .await
         .map_err(|_| StoreError::Backend)?;
     Ok(row.get("held"))
+}
+
+/// One bounded page of clients and scopes that still carry this mapper.
+pub async fn mapper_usage(
+    transaction: &UnitOfWork,
+    mapper_id: &str,
+    window: Window,
+    with_total: bool,
+) -> StoreResult<Page<ConfigurationUse>> {
+    const USED: &str = "SELECT 'client'::text AS kind, c.client_id AS id, \
+                               c.name, NULL::text AS owner_id \
+                        FROM clients_protocol_mappers a \
+                        JOIN clients c USING (tenant, realm_id, client_id) \
+                        WHERE a.mapper_id = $1 \
+                        UNION ALL \
+                        SELECT 'client-scope'::text AS kind, s.client_scope_id AS id, \
+                               s.name, NULL::text AS owner_id \
+                        FROM client_scopes_protocol_mappers a \
+                        JOIN client_scopes s USING (tenant, realm_id, client_scope_id) \
+                        WHERE a.mapper_id = $1";
+    usage_page(transaction, USED, mapper_id, window, with_total).await
+}
+
+async fn usage_page(
+    transaction: &UnitOfWork,
+    used: &str,
+    id: &str,
+    window: Window,
+    with_total: bool,
+) -> StoreResult<Page<ConfigurationUse>> {
+    let statement = format!(
+        "WITH used AS ({used}) \
+         SELECT kind, id, name, owner_id FROM used \
+         ORDER BY kind ASC, name ASC, id ASC LIMIT $2 OFFSET $3"
+    );
+    let rows = transaction
+        .query(statement.as_str(), &[&id, &window.max, &window.first])
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    let total = if with_total {
+        let statement = format!("WITH used AS ({used}) SELECT count(*) FROM used");
+        Some(
+            transaction
+                .query_one(statement.as_str(), &[&id])
+                .await
+                .map_err(|_| StoreError::Backend)?
+                .get(0),
+        )
+    } else {
+        None
+    };
+    Ok(Page::new(
+        rows.into_iter().map(read_usage).collect(),
+        window,
+        total,
+    ))
+}
+
+fn read_usage(row: Row) -> ConfigurationUse {
+    let id = row.get("id");
+    let name = row.get("name");
+    match row.get::<_, String>("kind").as_str() {
+        "client" => ConfigurationUse::Client {
+            client_id: id,
+            name,
+        },
+        "client-scope" => ConfigurationUse::ClientScope {
+            client_scope_id: id,
+            name,
+        },
+        "policy" => ConfigurationUse::Policy {
+            server_id: row.get("owner_id"),
+            policy_id: id,
+            name,
+        },
+        kind => unreachable!("usage query returned {kind}"),
+    }
 }
 
 /// Take a mapper off a scope, and say whether it was there.

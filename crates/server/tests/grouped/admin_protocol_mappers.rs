@@ -305,6 +305,20 @@ async fn a_mapper_shapes_what_the_realm_answers() {
     assert!(audiences.contains(&json!("app")), "{claims}");
     assert!(audiences.contains(&json!("resource-server")), "{claims}");
 
+    for (mapper, kind) in [(&department_id, "client"), (&audience_id, "client-scope")] {
+        let (status, usage) = asked(
+            &plane,
+            Method::GET,
+            &format!("{base}/{mapper}/usage?count=true"),
+            &bearer,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{usage}");
+        assert_eq!(usage["total"], 1);
+        assert_eq!(usage["items"][0]["kind"], kind);
+    }
+
     // Held rules are not deleted; released ones are.
     let (status, told) = asked(
         &plane,

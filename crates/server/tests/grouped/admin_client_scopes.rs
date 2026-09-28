@@ -227,6 +227,19 @@ async fn a_scope_lives_and_dies_over_the_plane() {
     assert_eq!(status, StatusCode::NOT_FOUND, "{told}");
     assert_eq!(told["error_code"], "client.scope.not_found");
 
+    let (status, usage) = asked(
+        &plane,
+        Method::GET,
+        &format!("{base}/{scope_id}/usage?max=1&count=true"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{usage}");
+    assert_eq!(usage["total"], 1);
+    assert_eq!(usage["items"][0]["kind"], "client");
+    assert_eq!(usage["items"][0]["client_id"], client);
+
     // Deletion is told no while a client holds the scope.
     let (status, told) = asked(
         &plane,

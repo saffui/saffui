@@ -340,6 +340,7 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
     return answer({ holds: true, entries: 42, broken_at: null });
   }
   if (path.includes("/journal?")) {
+    const campaign = "5c2d8e41-7a9b-4f3e-b0d6-19e4a7c3f825";
     const write = (seq: number, actor: string, method: string, pattern: string, status: number, ago: number) => ({
       seq,
       recorded_at: NOW - ago,
@@ -350,16 +351,26 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
         party: "saffui-console",
         method,
         pattern,
-        path: pattern.replace("{realm}", "main").replace("{user}", "grace"),
+        path: pattern.replace("{realm}", "main").replace("{campaign}", campaign),
         status,
       },
     });
     return answer({
       items: [
         write(42, "ada", "PUT", "/admin/realms/{realm}/theme", 204, 320),
-        write(41, "ada", "DELETE", "/admin/realms/{realm}/users/{user}/lockout", 204, 1500),
-        write(40, "linus", "PUT", "/admin/realms/{realm}/theme", 422, 4100),
-        write(39, "ada", "POST", "/admin/realms/{realm}/organizations", 201, 7300),
+        write(41, "ada", "POST", "/admin/realms/{realm}/iga/campaigns/{campaign}/close", 200, 1500),
+        {
+          seq: 40,
+          recorded_at: NOW - 1500,
+          entry: {
+            kind: "governance.campaign.closed",
+            occurred_at: NOW - 1500,
+            campaign,
+            report_digest: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+            items: 12,
+          },
+        },
+        write(39, "linus", "PUT", "/admin/realms/{realm}/theme", 422, 4100),
         write(38, "ada", "POST", "/admin/realms/{realm}/journal/anchors", 201, 86_000),
       ],
       first: 0,

@@ -10,6 +10,7 @@ import AppHint from "@/components/AppHint.vue";
 import { adminPath, api } from "@/services/http";
 import { afterWrites } from "@/services/writes";
 import type { ChainVerified, JournalPage as Held } from "@/models/journal";
+import { readJournalLine } from "./journalLine";
 
 
 const route = useRoute();
@@ -24,6 +25,9 @@ function resize(asked: number) {
   void load();
 }
 const page = ref<Held | null>(null);
+const rows = computed(() =>
+  (page.value?.items ?? []).map((held) => ({ ...held, line: readJournalLine(held.entry) })),
+);
 const chain = ref<ChainVerified | null>(null);
 const anchors = ref<{ seq: number; witness: string; receipt: string; anchored_at: number }[]>([]);
 const failed = ref("");
@@ -140,30 +144,33 @@ function instant(epoch: number): string {
         </thead>
         <tbody>
           <tr
-            v-for="held in page.items"
+            v-for="held in rows"
             :key="held.seq"
             class="border-b border-border/60 last:border-0"
           >
             <td class="font-mono text-[10.5px] text-faint">{{ held.seq }}</td>
-            <td>{{ held.entry.actor }}</td>
-            <td class="px-3 py-2 font-mono text-[10.5px]" :title="held.entry.pattern ?? ''">
-              {{ held.entry.method }} {{ held.entry.path || held.entry.pattern }}
+            <td :class="{ 'text-faint': !held.line.actor }">
+              {{ held.line.actor ?? say("value-not-recorded") }}
+            </td>
+            <td class="px-3 py-2 font-mono text-[10.5px]" :title="held.line.detail">
+              {{ held.line.what }}
             </td>
             <td>
               <span
+                v-if="held.line.status !== null"
                 class="font-mono text-[10.5px]"
-                :class="held.entry.status < 400 ? 'text-ok' : 'text-danger'"
-                >{{ held.entry.status }}</span
+                :class="held.line.status < 400 ? 'text-ok' : 'text-danger'"
+                >{{ held.line.status }}</span
               >
             </td>
             <td>
               <RouterLink
-                v-if="held.entry.trace_id"
-                :to="{ path: `/${realm}/decision-journal`, query: { trace: held.entry.trace_id } }"
+                v-if="held.line.trace"
+                :to="{ path: `/${realm}/decision-journal`, query: { trace: held.line.trace } }"
                 class="font-mono text-[10.5px] text-accent"
-                :title="held.entry.trace_id"
+                :title="held.line.trace"
               >
-                {{ held.entry.trace_id.slice(0, 8) }}
+                {{ held.line.trace.slice(0, 8) }}
               </RouterLink>
             </td>
             <td class="text-right font-mono text-[10.5px] text-faint">

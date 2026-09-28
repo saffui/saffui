@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import AppIcon from "@/components/AppIcon.vue";
 import { say } from "@/i18n";
+import { readJournalLine } from "@/pages/journal/journalLine";
 import { readOverview, type OverviewTold } from "@/services/overview";
 import { afterWrites } from "@/services/writes";
 import { useStanding } from "@/stores/standing";
@@ -10,6 +11,9 @@ import { useStanding } from "@/stores/standing";
 const route = useRoute();
 const standing = useStanding();
 const told = ref<OverviewTold | null>(null);
+const journal = computed(() =>
+  (told.value?.journal ?? []).map((held) => ({ ...held, line: readJournalLine(held.entry) })),
+);
 const failed = ref("");
 
 async function load() {
@@ -201,20 +205,23 @@ function duration(micros: number | null): string {
             <table class="sf-table">
               <tbody>
                 <tr
-                  v-for="held in told.journal"
+                  v-for="held in journal"
                   :key="held.seq"
                   class="border-b border-border/60 last:border-0"
                 >
                   <td class="font-mono text-[10.5px] text-faint">#{{ held.seq }}</td>
-                  <td>{{ held.entry.actor }}</td>
-                  <td class="font-mono text-[10.5px]">
-                    {{ held.entry.method }} {{ held.entry.path || held.entry.pattern }}
+                  <td :class="{ 'text-faint': !held.line.actor }">
+                    {{ held.line.actor ?? say("value-not-recorded") }}
+                  </td>
+                  <td class="font-mono text-[10.5px]" :title="held.line.detail">
+                    {{ held.line.what }}
                   </td>
                   <td>
                     <span
+                      v-if="held.line.status !== null"
                       class="font-mono text-[10.5px]"
-                      :class="held.entry.status < 400 ? 'text-ok' : 'text-danger'"
-                      >{{ held.entry.status }}</span
+                      :class="held.line.status < 400 ? 'text-ok' : 'text-danger'"
+                      >{{ held.line.status }}</span
                     >
                   </td>
                   <td class="text-right font-mono text-[10.5px] text-faint">

@@ -1,6 +1,7 @@
 use crate::tenancy::UnitOfWork;
 use models::entities::client::{ClientScopeModel, ConfigurationUse, Protocol, ProtocolMapperModel};
 use models::paging::{Page, Window};
+use std::collections::BTreeSet;
 use tokio_postgres::Row;
 
 use crate::error::{StoreError, StoreResult, refuse_broken_rule};
@@ -80,6 +81,25 @@ pub async fn load_scope_by_name(
         .await
         .map_err(|_| StoreError::Backend)?
         .map(read_scope))
+}
+
+/// The identifiers of the scopes a protocol holds under these names, as a
+/// token lists them. A name nothing holds, `openid` among them, is passed over.
+pub async fn identifiers_named(
+    transaction: &UnitOfWork,
+    protocol: Protocol,
+    names: &[String],
+) -> StoreResult<BTreeSet<String>> {
+    Ok(transaction
+        .query(
+            "SELECT client_scope_id FROM client_scopes WHERE protocol = $1 AND name = ANY($2)",
+            &[&protocol, &names],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .iter()
+        .map(|row| row.get(0))
+        .collect())
 }
 
 /// Rewrite a scope, and say whether it was there to rewrite.

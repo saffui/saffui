@@ -683,3 +683,126 @@ definition document {
         "relation-store-closed"
     );
 }
+
+/// A client-scope policy reads the scopes the presented token carries, by the
+/// identifiers the catalogue holds them under. The scope here has a drawn
+/// identifier, as an operator's does, so its name alone would never match.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_client_scope_policy_reads_the_scopes_the_token_carries() {
+    relations_running();
+    let fixture = Fixture::with_user().await;
+    let transaction = fixture.scoped(&tenant()).await;
+    plant(&transaction).await;
+
+    let metadata = AuditableModel::from_creator("acme".into(), "root".into());
+    store::providers::clients::client_scopes::create_scope(
+        &transaction,
+        &models::entities::client::ClientScopeModel {
+            client_scope_id: "6f1c2a90-4d3e-4b8f-9a27-5c0e8d1b7f43".into(),
+            realm_id: "main".into(),
+            name: "reports".into(),
+            description: String::new(),
+            protocol: models::entities::client::Protocol::OpenId,
+            default_scope: Some(false),
+            configs: None,
+            metadata: metadata.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    let carries_reports = models::entities::authz::PolicyTerms {
+        name: "carries-reports".into(),
+        description: String::new(),
+        decision: models::entities::authz::DecisionStrategy::Unanimous,
+        logic: models::entities::authz::DecisionLogic::Positive,
+        policy_owner: "ada".into(),
+        policies: Vec::new(),
+        resources: Vec::new(),
+        scopes: Vec::new(),
+        rule: models::entities::authz::PolicyRule::ClientScope {
+            client_scopes: vec!["6f1c2a90-4d3e-4b8f-9a27-5c0e8d1b7f43".into()],
+        },
+    }
+    .into_model(
+        "carries-reports".into(),
+        "app".into(),
+        "main".into(),
+        None,
+        metadata.clone(),
+    );
+    authz_policies::create(&transaction, &carries_reports)
+        .await
+        .unwrap();
+    let may_read = models::entities::authz::PolicyTerms {
+        name: "may-read".into(),
+        description: String::new(),
+        decision: models::entities::authz::DecisionStrategy::Unanimous,
+        logic: models::entities::authz::DecisionLogic::Positive,
+        policy_owner: "ada".into(),
+        policies: vec!["carries-reports".into()],
+        resources: vec!["doc".into()],
+        scopes: vec!["read".into()],
+        rule: models::entities::authz::PolicyRule::ScopePermission {
+            resource_type: String::new(),
+        },
+    }
+    .into_model(
+        "may-read".into(),
+        "app".into(),
+        "main".into(),
+        None,
+        metadata,
+    );
+    authz_policies::create(&transaction, &may_read)
+        .await
+        .unwrap();
+
+    let decided = |scope: &'static str, presenter: Option<&'static str>| {
+        let transaction = &transaction;
+        let fixture = &fixture;
+        async move {
+            let mut token = presented("ada");
+            token.scope = scope.to_owned();
+            if let Some(client) = presenter {
+                token.claims.insert("azp".into(), serde_json::json!(client));
+            }
+            let context = establish(transaction, tenant(), &token, Utc::now())
+                .await
+                .expect("a caller this realm holds");
+            decide(
+                transaction,
+                &journal(fixture),
+                &context,
+                question(
+                    Resource::Permission {
+                        server_id: "app",
+                        resource: "doc",
+                        scope: "read",
+                    },
+                    "read",
+                ),
+            )
+            .await
+            .unwrap()
+            .computed
+        }
+    };
+
+    assert_eq!(
+        decided("openid reports", Some("app")).await,
+        Decision::Permit,
+        "a token carrying the scope was not let through"
+    );
+    assert_eq!(
+        decided("openid", Some("app")).await,
+        Decision::Deny,
+        "a token carrying no such scope was not refused on it"
+    );
+    // No client presented the call, so there is no token scope to read: the
+    // rule cannot be evaluated, which is not the same as a refusal.
+    assert_eq!(
+        decided("openid reports", None).await,
+        Decision::Indeterminate
+    );
+}

@@ -566,6 +566,7 @@ pub async fn evaluate(
         principal: services::context::Principal::of_user(person),
         acting,
         presenter: None,
+        scopes: Vec::new(),
         now: chrono::Utc::now(),
     };
 

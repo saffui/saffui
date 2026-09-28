@@ -11,7 +11,8 @@ part of this repository's source.
 
 The JOSE layer is vendored from josekit. See the entry below. Changes to the rest
 of the `crypto` crate, this repository's own code beside that layer, are listed
-under *Beside the vendored tree*.
+under *Beside the vendored tree*. The consoles' fonts are IBM Plex files taken as
+upstream ships them, under *IBM Plex*.
 
 ---
 
@@ -226,6 +227,23 @@ Code meant for the whole crate goes into a module of its own rather than into
     authorities): why this build would not trust a certificate's key, in words,
     the judgement the SAML intake made for itself and now shares with the
     deposit of an authority.
+
+## IBM Plex
+
+- Upstream: https://github.com/IBM/plex
+- Version taken: commit `763c36ef9117782905ae010056dfbe8fd2653a25`
+- Date taken: 2026-09-27
+- Licence: OFL-1.1
+- Files derived:
+  - `assets/fonts/ibm-plex/IBMPlexSans-{Regular,Medium,SemiBold}-Latin1.woff2`
+  - `assets/fonts/ibm-plex/IBMPlexMono-{Regular,Medium}-Latin1.woff2`
+  - `assets/fonts/ibm-plex/LICENSE.txt`, the licence as upstream ships it
+- Modifications: none. These are upstream's own Latin-1 subsets;
+  `assets/fonts/ibm-plex/README.md` records the SHA-256 of each file.
+- Distribution: both consoles' builds embed the files in the binary. The image
+  carries the licence at `/usr/share/licenses/saffui/ibm-plex/LICENSE.txt`.
+- Upstream tracking: none. A newer revision is taken by hand, with the digests in
+  the README taken again.
 
 ## Before vendoring anything
 

@@ -10,9 +10,14 @@ COPY pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY packages packages
 COPY admin admin
 COPY account account
+# The fonts both stylesheets point at. Vite leaves a url it cannot resolve as
+# written, so without them the builds passed and the fonts 404ed once served;
+# the listing after the builds refuses that.
+COPY assets/fonts assets/fonts
 RUN pnpm install --frozen-lockfile \
  && pnpm --dir admin build \
- && pnpm --dir account build
+ && pnpm --dir account build \
+ && ls admin/dist/assets/*.woff2 account/dist/assets/*.woff2 > /dev/null
 
 # The build toolchain, pinned to the workspace's rust-version. OpenSSL is linked
 # from the system, so the runtime below carries the same major.
@@ -42,6 +47,8 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --no-create-home saffui
 COPY --from=build /out/saffui /usr/local/bin/saffui
+# The binary embeds the consoles' fonts, and their licence travels with them.
+COPY assets/fonts/ibm-plex/LICENSE.txt /usr/share/licenses/saffui/ibm-plex/LICENSE.txt
 USER saffui
 # Traffic, and the probes on a port of their own.
 EXPOSE 8080 8081

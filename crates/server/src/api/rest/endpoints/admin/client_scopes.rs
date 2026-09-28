@@ -3,6 +3,7 @@ use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use models::entities::client::ClientScopeMutationModel;
+use models::paging::PagingParams;
 use serde::Deserialize;
 use services::admin::client_scopes::{self, Unwritable};
 use store::tenancy::Tenancy;
@@ -65,6 +66,40 @@ pub async fn get(
         .await
         .map_err(refused)?;
     Ok(HttpResponse::Ok().json(found))
+}
+
+pub async fn usage(
+    admin: web::ReqData<Admin>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+    paging: web::Query<PagingParams>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, scope_id) = path.into_inner();
+    let window = paging
+        .window()
+        .map_err(|_| ApiError::new(ErrorCode::BadRequest))?;
+    let transaction = tenancy
+        .begin(&within(&admin, &realm_id))
+        .await
+        .map_err(refuse_unopened_work)?;
+    // Policies are read under uma:read, not under the capability this route
+    // costs, so they are named only for a caller who holds that one too.
+    let names_policies = crate::middleware::admin_guard::holds_action(
+        &transaction,
+        &admin.context,
+        models::entities::authz::AdminAction::UmaRead,
+    )
+    .await?;
+    let used = client_scopes::usage(
+        &transaction,
+        &scope_id,
+        names_policies,
+        window,
+        paging.wants_count(),
+    )
+    .await
+    .map_err(refused)?;
+    Ok(HttpResponse::Ok().json(used))
 }
 
 pub async fn update(

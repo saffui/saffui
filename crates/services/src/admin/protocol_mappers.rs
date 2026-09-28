@@ -1,6 +1,9 @@
 use crypto::provider::CryptoProvider;
 use models::auditable::AuditableModel;
-use models::entities::client::{ProtocolMapperModel, ProtocolMapperMutationModel};
+use models::entities::client::{
+    ConfigurationUse, ProtocolMapperModel, ProtocolMapperMutationModel,
+};
+use models::paging::{Page, Window};
 use store::providers::clients;
 use store::providers::clients::client_scopes;
 use store::tenancy::UnitOfWork;
@@ -73,6 +76,18 @@ pub async fn get_mapper(
         .await
         .map_err(|_| Unwritable::Backend)?
         .ok_or(Unwritable::NotFound)
+}
+
+pub async fn usage(
+    transaction: &UnitOfWork,
+    mapper_id: &str,
+    window: Window,
+    with_total: bool,
+) -> Result<Page<ConfigurationUse>, Unwritable> {
+    get_mapper(transaction, mapper_id).await?;
+    client_scopes::mapper_usage(transaction, mapper_id, window, with_total)
+        .await
+        .map_err(|_| Unwritable::Backend)
 }
 
 pub async fn create_mapper(

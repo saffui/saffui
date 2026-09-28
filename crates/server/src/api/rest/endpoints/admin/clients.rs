@@ -7,7 +7,7 @@ use serde_json::json;
 use services::admin::clients::{
     self as registry, CibaOptIn, Gates, Reshape, Secret, Spec, Unregistrable,
 };
-use store::query::list_query::{ListQuery, SortDirection};
+use store::query::list_query::{ListQuery, SortDirection, build_prefix_pattern};
 use store::tenancy::{Tenancy, UnitOfWork};
 
 use crate::api::rest::endpoints::admin::dto::{ClientBrief, ClientSpec};
@@ -15,13 +15,20 @@ use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 use outbound::Sealing;
 
+#[derive(serde::Deserialize)]
+pub struct Narrowing {
+    pub search: Option<String>,
+}
+
 pub async fn list(
     admin: web::ReqData<Admin>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
     paging: web::Query<PagingParams>,
+    narrowing: web::Query<Narrowing>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
+    let narrowing = narrowing.into_inner();
     let window = paging
         .window()
         .map_err(|_| ApiError::new(ErrorCode::BadRequest))?;
@@ -29,8 +36,12 @@ pub async fn list(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let query = ListQuery::new(window).sorted_by("client_id", SortDirection::Ascending);
-    let found = registry::list(&transaction, &query, paging.count.unwrap_or(false))
+    let typed = read_search_prefix(narrowing.search.as_deref());
+    let mut query = ListQuery::new(window).sorted_by("client_id", SortDirection::Ascending);
+    if let Some(typed) = typed.as_ref() {
+        query = query.starting_with(&["client_id", "name"], typed);
+    }
+    let found = registry::list(&transaction, &query, paging.wants_count())
         .await
         .map_err(refused)?;
     Ok(HttpResponse::Ok().json(models::paging::Page {
@@ -43,6 +54,13 @@ pub async fn list(
         max: found.max,
         total: found.total,
     }))
+}
+
+fn read_search_prefix(search: Option<&str>) -> Option<String> {
+    search
+        .map(str::trim)
+        .filter(|held| !held.is_empty())
+        .map(build_prefix_pattern)
 }
 
 pub async fn get(
@@ -324,4 +342,24 @@ fn refused(why: Unregistrable) -> ApiError {
 
 fn internal() -> ApiError {
     ApiError::new(ErrorCode::InternalError)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_search_prefix;
+
+    #[test]
+    fn a_client_search_is_a_literal_prefix() {
+        assert_eq!(read_search_prefix(Some("  Web  ")).as_deref(), Some("Web%"));
+        assert_eq!(
+            read_search_prefix(Some("a%b_c")).as_deref(),
+            Some("a\\%b\\_c%")
+        );
+        assert_eq!(
+            read_search_prefix(Some("a\\_b")).as_deref(),
+            Some("a\\\\\\_b%")
+        );
+        assert_eq!(read_search_prefix(Some("  ")), None);
+        assert_eq!(read_search_prefix(None), None);
+    }
 }

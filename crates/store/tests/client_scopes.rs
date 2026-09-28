@@ -3,9 +3,10 @@ mod support;
 use models::auditable::AuditableModel;
 use models::entities::authz::RoleMutationModel;
 use models::entities::client::{
-    ClientScopeModel, ClientScopeMutationModel, Protocol, ProtocolMapperModel,
+    ClientScopeModel, ClientScopeMutationModel, ConfigurationUse, Protocol, ProtocolMapperModel,
     ProtocolMapperMutationModel,
 };
+use models::paging::Window;
 use store::providers::clients::client_scopes;
 use store::providers::directory::roles;
 use store::tenancy::TenantContext;
@@ -261,6 +262,126 @@ async fn a_mapper_reached_by_two_routes_is_one_rule() {
         vec!["zulu".to_owned()],
         "an optional scope nobody asked for still contributed its mapper"
     );
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn usage_names_what_keeps_catalogue_entries_attached() {
+    let fixture = Fixture::with_user_and_client().await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
+    let window = Window {
+        first: 0,
+        max: 10,
+        clamped: false,
+    };
+
+    client_scopes::create_scope(&transaction, &scope("scope-1", "profile", false))
+        .await
+        .unwrap();
+    client_scopes::create_mapper(&transaction, &mapper("mapper-1", "department"))
+        .await
+        .unwrap();
+    client_scopes::attach_scope(&transaction, "app", "scope-1", false)
+        .await
+        .unwrap();
+    client_scopes::attach_mapper_to_client(&transaction, "app", "mapper-1")
+        .await
+        .unwrap();
+    client_scopes::attach_mapper_to_scope(&transaction, "scope-1", "mapper-1")
+        .await
+        .unwrap();
+
+    transaction
+        .execute(
+            "INSERT INTO resource_servers (tenant, realm_id, server_id) \
+             VALUES ('acme', 'main', 'app')",
+            &[],
+        )
+        .await
+        .unwrap();
+    transaction
+        .execute(
+            "INSERT INTO policies \
+                 (tenant, realm_id, server_id, policy_id, name, policy_type, rule, policy_owner) \
+             VALUES ('acme', 'main', 'app', 'needs-profile', 'Needs profile', \
+                     'client-scope', \
+                     '{\"policy_type\":\"client-scope\",\"client_scopes\":[\"scope-1\"]}', \
+                     'app')",
+            &[],
+        )
+        .await
+        .unwrap();
+    transaction
+        .execute(
+            "INSERT INTO policies_client_scopes \
+                 (tenant, realm_id, server_id, policy_id, policy_type, client_scope_id) \
+             VALUES ('acme', 'main', 'app', 'needs-profile', 'client-scope', 'scope-1')",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let scope_usage = client_scopes::scope_usage(&transaction, "scope-1", true, window, true)
+        .await
+        .unwrap();
+    assert_eq!(scope_usage.total, Some(2));
+    assert!(scope_usage.items.iter().any(|used| matches!(
+        used,
+        ConfigurationUse::Client { client_id, .. } if client_id == "app"
+    )));
+    assert!(scope_usage.items.iter().any(|used| matches!(
+        used,
+        ConfigurationUse::Policy { server_id, policy_id, .. }
+            if server_id == "app" && policy_id == "needs-profile"
+    )));
+
+    // Policies left unnamed are left out of the page and its total, and counted
+    // apart; the next page holds what the first one left.
+    let clients_only = client_scopes::scope_usage(&transaction, "scope-1", false, window, true)
+        .await
+        .unwrap();
+    assert_eq!(clients_only.total, Some(1));
+    assert!(matches!(
+        clients_only.items.as_slice(),
+        [ConfigurationUse::Client { client_id, .. }] if client_id == "app"
+    ));
+    assert_eq!(
+        client_scopes::count_policies_holding_scope(&transaction, "scope-1")
+            .await
+            .unwrap(),
+        1
+    );
+    let second = client_scopes::scope_usage(
+        &transaction,
+        "scope-1",
+        true,
+        Window {
+            first: 1,
+            max: 1,
+            clamped: false,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(second.total, None);
+    assert!(matches!(
+        second.items.as_slice(),
+        [ConfigurationUse::Policy { policy_id, .. }] if policy_id == "needs-profile"
+    ));
+
+    let mapper_usage = client_scopes::mapper_usage(&transaction, "mapper-1", window, true)
+        .await
+        .unwrap();
+    assert_eq!(mapper_usage.total, Some(2));
+    assert!(mapper_usage.items.iter().any(|used| matches!(
+        used,
+        ConfigurationUse::Client { client_id, .. } if client_id == "app"
+    )));
+    assert!(mapper_usage.items.iter().any(|used| matches!(
+        used,
+        ConfigurationUse::ClientScope { client_scope_id, .. } if client_scope_id == "scope-1"
+    )));
 }
 
 /// Two clients may each define a role of the same name, and the rows say which

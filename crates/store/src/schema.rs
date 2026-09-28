@@ -673,6 +673,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V111__trust_anchors.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 112,
+            name: "catalog_usage",
+            sql: include_str!("../migrations/V112__catalog_usage.sql"),
+            transactional: true,
+        }),
     ]
 }
 

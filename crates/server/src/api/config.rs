@@ -17,6 +17,7 @@ use crate::api::rest::endpoints::ops::health::Vitals;
 use crate::api::rest::endpoints::protocol::{
     answering, authorize, broker, ciba, device, discovery, introspect, keys, login, logout, mcp,
     page, par, privacy, recovery, registration, revoke, signup, ssf, token, userinfo, ussd,
+    verifier,
 };
 use crate::api::routes;
 use crate::middleware::account_guard::AccountGuard;
@@ -131,6 +132,13 @@ pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone +
             .service(
                 web::resource("/realms/{realm}/.well-known/ssf-configuration")
                     .route(web::get().to(discovery::ssf_configuration)),
+            )
+            // Where `did:web` puts the document of the realm's DID: its issuer
+            // path, then `did.json`. A wallet reads it to verify the realm's
+            // presentation requests.
+            .service(
+                web::resource("/realms/{realm}/did.json")
+                    .route(web::get().to(verifier::did_document)),
             )
             // Each of the next three doors takes a secret, so each answers to
             // the realm's word on plain connections before its body is read,

@@ -88,3 +88,69 @@ async fn the_anchors_say_whether_the_verifier_runs() {
         "a realm that closed it still runs it: {listed}"
     );
 }
+
+/// The realm's DID document names its Ed25519 key, for a wallet to verify the
+/// realm's requests against. There is none while the realm holds no such key,
+/// nor once the realm closes the verifier.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_realm_publishes_its_did_document() {
+    verifier_running();
+    let plane =
+        Plane::with_actions(&[AdminAction::RealmKeysWrite, AdminAction::FeatureWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let document = format!("/realms/{REALM}/did.json");
+
+    let (status, told) = asked(&plane, Method::GET, &document, &bearer, None).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a realm with no Ed25519 key has no key to sign a request with: {told}"
+    );
+
+    let (status, minted) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/keys"),
+        &bearer,
+        Some(json!({ "algorithm": "EdDSA" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{minted}");
+    let kid = minted["kid"].as_str().expect("a key identifier").to_owned();
+
+    let (status, told) = asked(&plane, Method::GET, &document, &bearer, None).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let did = told["id"].as_str().expect("an identifier").to_owned();
+    assert!(
+        did.starts_with("did:web:") && did.ends_with(&format!(":realms:{REALM}")),
+        "{told}"
+    );
+    let methods = told["verificationMethod"].as_array().expect("methods");
+    assert_eq!(methods.len(), 1, "{told}");
+    assert_eq!(methods[0]["id"], format!("{did}#{kid}"));
+    assert_eq!(methods[0]["type"], "Ed25519VerificationKey2020");
+    assert!(
+        methods[0]["publicKeyMultibase"]
+            .as_str()
+            .is_some_and(|held| held.starts_with("z6Mk")),
+        "not an Ed25519 key written as multibase: {told}"
+    );
+    assert_eq!(told["assertionMethod"], json!([format!("{did}#{kid}")]));
+
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/features/wallet-verifier"),
+        &bearer,
+        Some(json!({ "enabled": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+    let (status, _) = asked(&plane, Method::GET, &document, &bearer, None).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a realm that closed the verifier still names one"
+    );
+}

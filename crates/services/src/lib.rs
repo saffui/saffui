@@ -12,3 +12,4 @@ pub mod realm;
 pub mod scim;
 pub mod token;
 pub mod user_agent;
+pub mod verifier;

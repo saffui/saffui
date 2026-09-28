@@ -374,6 +374,12 @@ answers it, or the word that says nothing does.
 | T-NOD-1 | Two nodes forking one realm's chain | TA-7 | The append takes the head row for update (`crates/store/migrations/V011__audit_chain.sql:130`) |
 | T-NOD-2 | The same scheduled work done twice, or a message delivered twice | TA-7 | A lock per realm per job, and rows taken with skip locked (`crates/scheduler/src/jobs.rs:87`, `crates/store/src/providers/events/outbox.rs:122`) |
 
+### The wallet verifier
+
+| Id | Threat | Agent | What answers it |
+|---|---|---|---|
+| T-VER-1 | A wallet handed a key the realm does not sign with: a key of another family written as Ed25519, one key under two readings, another realm's key, or a document for a realm that does not run the verifier | TA-1 | The document lists the realm's own published signing keys and keeps the Ed25519 ones alone, each in one representation (`crates/services/src/verifier/did.rs:43`, `:75`); its identifier is read from the realm's issuer, so it names no other realm (`:22`). A realm that does not run the verifier, experimental and off, or that holds no Ed25519 key, has no document and answers as a realm this server does not hold (`crates/server/src/api/rest/endpoints/protocol/verifier.rs:29`, `:40`) |
+
 ### The mesh door
 
 | Id | Threat | Agent | What answers it |

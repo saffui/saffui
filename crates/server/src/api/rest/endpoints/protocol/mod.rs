@@ -29,3 +29,4 @@ pub mod ssf;
 pub mod token;
 pub mod userinfo;
 pub mod ussd;
+pub mod verifier;

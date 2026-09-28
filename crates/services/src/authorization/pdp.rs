@@ -3,12 +3,14 @@ use chrono::Utc;
 use commons::feature::Feature;
 use models::entities::attributes::AttributesMap;
 use models::entities::authz::{
-    AuthzDecisionRecord, Decision, ReportedDecision, ResourceServerModel,
+    AuthzDecisionRecord, Decision, PolicyRule, ReportedDecision, ResourceServerModel, StoredPolicy,
 };
+use models::entities::client::Protocol;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use store::providers::authorization::{authz_policies, authz_surface};
+use store::providers::clients::client_scopes;
 use store::providers::directory::{organizations, roles};
 use store::tenancy::{Tenancy, TenantContext, UnitOfWork};
 
@@ -260,18 +262,45 @@ async fn gather(transaction: &UnitOfWork, context: &Context) -> Result<Facts, Un
     })
 }
 
+/// The token's scopes as the identifiers client-scope policies hold them by.
+///
+/// Read only when a client presented the token and one of the server's policies
+/// is a client-scope rule, so a server with none pays nothing for it.
+async fn presented_scopes(
+    transaction: &UnitOfWork,
+    context: &Context,
+    stored: &[StoredPolicy],
+) -> Result<Option<BTreeSet<String>>, Unanswerable> {
+    let asked = stored.iter().any(|held| {
+        matches!(held, StoredPolicy::Read(policy)
+            if matches!(policy.terms.rule, PolicyRule::ClientScope { .. }))
+    });
+    if !asked || context.presenter.is_none() {
+        return Ok(None);
+    }
+    client_scopes::identifiers_named(transaction, Protocol::OpenId, &context.scopes)
+        .await
+        .map(Some)
+        .map_err(|_| Unanswerable::Unreadable)
+}
+
 /// The question, as the engine reads it.
-fn asked<'a>(context: &'a Context, facts: &'a Facts) -> Request<'a> {
+///
+/// `scopes` are the token's scopes as the catalogue's identifiers, or `None`
+/// when no policy asked for them. Unread is not empty: an empty set is a token
+/// carrying none, which is an answer.
+fn asked<'a>(
+    context: &'a Context,
+    facts: &'a Facts,
+    scopes: Option<&'a BTreeSet<String>>,
+) -> Request<'a> {
     Request {
         caller: Caller::User {
             user_id: context.principal.id(),
             through: match context.presenter.as_deref() {
                 Some(client_id) => Through::Client(Presented {
                     client_id,
-                    // Nothing resolves a token's scope names to identifiers yet.
-                    // Said to be unread rather than handed over empty, since an
-                    // empty set is a token carrying none, which is an answer.
-                    client_scopes: Resolved::Unknown,
+                    client_scopes: scopes.map_or(Resolved::Unknown, Resolved::Known),
                 }),
                 None => Through::Unestablished,
             },
@@ -303,8 +332,10 @@ async fn tested(
         .await
         .map_err(|_| Unanswerable::Unreadable)?;
     let set = Evaluable::index(&stored);
+    let scopes = presented_scopes(transaction, context, &stored).await?;
 
-    let (computed, reasons) = authz::policy(&set, policy_id, asked(context, facts));
+    let (computed, reasons) =
+        authz::policy(&set, policy_id, asked(context, facts, scopes.as_ref()));
 
     Ok(Answer {
         // A test reports what it reached. An administrator trying a rule needs
@@ -430,6 +461,7 @@ async fn enforced(
         .await
         .map_err(|_| Unanswerable::Unreadable)?;
     let set = Evaluable::index(&stored);
+    let scopes = presented_scopes(transaction, context, &stored).await?;
 
     let verdict = authz::permission(
         &server,
@@ -444,7 +476,7 @@ async fn enforced(
                 None => Declared::NotLoaded,
             },
         },
-        asked(context, facts),
+        asked(context, facts, scopes.as_ref()),
     );
 
     Ok(Answer {

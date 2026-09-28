@@ -102,6 +102,8 @@ pub struct Context {
     pub acting: Acting,
     /// The client that obtained the token, from `azp`.
     pub presenter: Option<String>,
+    /// The scopes the token carries, by name, as its `scope` says them.
+    pub scopes: Vec<String>,
     /// Read once, so every decision in this request shares an instant and a
     /// replay of any of them reads the same clock.
     pub now: DateTime<Utc>,
@@ -167,6 +169,11 @@ pub async fn establish(
             .get("azp")
             .and_then(|party| party.as_str())
             .map(str::to_owned),
+        scopes: verified
+            .scope
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect(),
         now,
     })
 }

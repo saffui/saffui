@@ -1886,6 +1886,11 @@ pub async fn token_exchange(
                 .get("azp")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
+            scopes: verified
+                .scope
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect(),
             now,
         };
         let mut decision_id = [0_u8; 16];

@@ -5,6 +5,11 @@ import type { SmsBrief, SmsWrite } from "@/models/sms";
 import type { WhatsAppBrief, WhatsAppWrite } from "@/models/whatsapp";
 import type { SimSwapBrief, SimSwapWrite } from "@/models/simSwap";
 import type { TrustAnchorBrief, TrustAnchorList, TrustAnchorWrite } from "@/models/trustAnchors";
+import type {
+  CredentialIssuerBrief,
+  CredentialIssuerList,
+  CredentialIssuerWrite,
+} from "@/models/credentialIssuers";
 import type { RealmKeys } from "@/models/keys";
 import type { RealmSettings, RealmTheme, RealmUpdate } from "@/models/realm";
 
@@ -364,6 +369,40 @@ export async function withdrawTrustAnchor(realm: string, anchor: string): Promis
   await api<void>(adminPath(realm, `trust-anchors/${encodeURIComponent(anchor)}`), {
     method: "DELETE",
     subject: say("trust-anchors-title"),
+  });
+}
+
+export async function listCredentialIssuers(realm: string): Promise<CredentialIssuerList> {
+  return api<CredentialIssuerList>(adminPath(realm, "credential-issuers"));
+}
+
+/// The server reads the issuer's keys before it keeps anything, so a refusal
+/// here is the issuer's answer, or its absence.
+export async function nameCredentialIssuer(
+  realm: string,
+  asked: CredentialIssuerWrite,
+): Promise<CredentialIssuerBrief> {
+  return api<CredentialIssuerBrief>(adminPath(realm, "credential-issuers"), {
+    method: "POST",
+    json: asked,
+    subject: say("credential-issuers-title"),
+  });
+}
+
+export async function readCredentialIssuerKeys(
+  realm: string,
+  issuer: string,
+): Promise<CredentialIssuerBrief> {
+  return api<CredentialIssuerBrief>(
+    adminPath(realm, `credential-issuers/${encodeURIComponent(issuer)}/keys`),
+    { method: "POST", subject: say("credential-issuers-title") },
+  );
+}
+
+export async function forgetCredentialIssuer(realm: string, issuer: string): Promise<void> {
+  await api<void>(adminPath(realm, `credential-issuers/${encodeURIComponent(issuer)}`), {
+    method: "DELETE",
+    subject: say("credential-issuers-title"),
   });
 }
 

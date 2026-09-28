@@ -2,6 +2,7 @@
 //! and the tenant it belongs to.
 
 pub mod auth_flows;
+pub mod credential_issuers;
 pub mod mail;
 pub mod page_previews;
 pub mod realm_features;

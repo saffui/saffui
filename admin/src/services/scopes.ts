@@ -30,7 +30,13 @@ export async function createScope(
 export async function updateScope(
   realm: string,
   scopeId: string,
-  spec: { name: string; description?: string; default_scope?: boolean },
+  spec: {
+    name: string;
+    description?: string;
+    default_scope?: boolean;
+    protocol?: string;
+    configs?: Record<string, AttributeValue> | null;
+  },
 ): Promise<void> {
   await api<unknown>(adminPath(realm, `client-scopes/${encodeURIComponent(scopeId)}`), {
     method: "PUT",

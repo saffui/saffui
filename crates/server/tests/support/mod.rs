@@ -2610,9 +2610,14 @@ async fn plant_the_common_world(tenancy: &Tenancy) {
     // The scopes a realm gets, planted the way a deployment plants them. Only
     // `profile` is attached below: the gate is exercised only when a client
     // asks for something nothing attached to it.
-    services::realm::provisioning::provision_standard_scopes(&transaction, TENANT, REALM)
-        .await
-        .unwrap();
+    services::realm::provisioning::provision_standard_scopes(
+        &transaction,
+        &provider(),
+        TENANT,
+        REALM,
+    )
+    .await
+    .unwrap();
     for client_id in [CONFIDENTIAL, OTHER, PUBLIC] {
         store::providers::clients::client_scopes::attach_scope(
             &transaction,

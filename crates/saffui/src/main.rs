@@ -767,9 +767,14 @@ async fn provision(wanted: &Wanted) -> Result<(), String> {
         println!("realm {} created", wanted.realm);
     }
     let (tenant, realm) = (wanted.tenant.as_str(), wanted.realm.as_str());
-    provisioning::provision_standard_scopes(&transaction, tenant, realm)
-        .await
-        .map_err(unreadable)?;
+    provisioning::provision_standard_scopes(
+        &transaction,
+        plane.sealing.provider.as_ref(),
+        tenant,
+        realm,
+    )
+    .await
+    .map_err(unreadable)?;
     provisioning::provision_admin_console(
         &transaction,
         tenant,

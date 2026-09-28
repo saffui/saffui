@@ -37,8 +37,14 @@ pub fn realm_did(issuer: &str) -> Option<String> {
 /// no Ed25519 key to sign a request with.
 ///
 /// Every published Ed25519 key is listed, the one in retreat as well, so a
-/// request signed just before a rotation still verifies.
-pub fn realm_did_document(did: &str, keys: &[RealmSigningKeyView]) -> Option<Value> {
+/// request signed just before a rotation still verifies. The address answers
+/// come back to is declared as a service: a wallet may refuse a request whose
+/// `response_uri` its verifier's DID does not declare.
+pub fn realm_did_document(
+    did: &str,
+    keys: &[RealmSigningKeyView],
+    response_uri: &str,
+) -> Option<Value> {
     let methods: Vec<(String, String)> = keys
         .iter()
         .filter_map(|key| Some((format!("{did}#{}", key.kid), multibase_of(&key.public_jwk)?)))
@@ -67,6 +73,11 @@ pub fn realm_did_document(did: &str, keys: &[RealmSigningKeyView]) -> Option<Val
             .collect::<Vec<_>>(),
         "authentication": ids,
         "assertionMethod": ids,
+        "service": [{
+            "id": format!("{did}#presentation-response"),
+            "type": "OpenID4VPResponseEndpoint",
+            "serviceEndpoint": response_uri,
+        }],
     }))
 }
 
@@ -92,6 +103,8 @@ mod tests {
     use super::*;
     use crypto::provider::SignAlg;
     use models::entities::keys::{KeyStatus, KeyUse};
+
+    const RESPONSE: &str = "https://id.example.org/realms/main/vp/response";
 
     fn key(kid: &str, algorithm: SignAlg, public_jwk: Value) -> RealmSigningKeyView {
         RealmSigningKeyView {
@@ -144,7 +157,7 @@ mod tests {
         });
 
         assert_eq!(
-            realm_did_document(did, &[key("es", SignAlg::Es256, ec.clone())]),
+            realm_did_document(did, &[key("es", SignAlg::Es256, ec.clone())], RESPONSE),
             None,
             "a realm with no Ed25519 key has no key to sign a request with"
         );
@@ -152,6 +165,7 @@ mod tests {
         let document = realm_did_document(
             did,
             &[key("es", SignAlg::Es256, ec), key("ed", SignAlg::EdDsa, ed)],
+            RESPONSE,
         )
         .expect("a document");
         assert_eq!(document["id"], did);
@@ -170,5 +184,9 @@ mod tests {
         );
         assert_eq!(document["authentication"], json!([format!("{did}#ed")]));
         assert_eq!(document["assertionMethod"], json!([format!("{did}#ed")]));
+        assert_eq!(
+            document["service"][0]["serviceEndpoint"], RESPONSE,
+            "the answers' address is not declared"
+        );
     }
 }

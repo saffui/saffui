@@ -9,6 +9,7 @@ pub mod form_post;
 pub mod login;
 pub mod logout_notices;
 pub mod oidc;
+pub mod presentations;
 pub mod pushed;
 pub mod replay;
 pub mod sessions;

@@ -6,7 +6,7 @@ use models::entities::authz::AdminAction;
 use crate::api::rest::endpoints::admin::{
     account, agents, authorization, branding, claim_sources, client_scopes, clients, compliance,
     credential_issuers, credentials, directory, events, features, federation, flows, idps, iga,
-    journal, keys, mail, metrics, negotiation, overview, page_drafts, portability,
+    journal, keys, mail, metrics, negotiation, overview, page_drafts, portability, presentations,
     protocol_mappers, realm_keys, realms, rebac, recert, requests, sessions, sim_swap, sms,
     trust_anchors, users, ussd, whatsapp,
 };
@@ -270,6 +270,18 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/credential-issuers/{issuer}",
             action: AdminAction::RealmWrite,
             handler: Some(|| web::delete().to(credential_issuers::forget)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/presentations",
+            action: AdminAction::RealmWrite,
+            handler: Some(|| web::post().to(presentations::ask)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/presentations/{presentation}",
+            action: AdminAction::RealmRead,
+            handler: Some(|| web::get().to(presentations::read)),
         },
         AdminRoute {
             method: Method::POST,

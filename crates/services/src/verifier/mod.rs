@@ -3,3 +3,4 @@
 pub mod base58;
 pub mod did;
 pub mod issuers;
+pub mod presentation;

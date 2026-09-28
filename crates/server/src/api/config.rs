@@ -46,6 +46,11 @@ const ADMIN_BODY: usize = 8 * 1024 * 1024;
 /// with nothing presented.
 const PROTOCOL_BODY: usize = 8 * 1024;
 
+/// The form ceiling on a wallet's answer to a presentation request: an
+/// encrypted response of at most five credentials, each an SD-JWT with its
+/// disclosures and key binding, a third more once encoded.
+const PRESENTATION_BODY: usize = 256 * 1024;
+
 /// How much JSON a person's own account may be sent: its largest request is a
 /// password change.
 const ACCOUNT_BODY: usize = 8 * 1024;
@@ -139,6 +144,18 @@ pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone +
             .service(
                 web::resource("/realms/{realm}/did.json")
                     .route(web::get().to(verifier::did_document)),
+            )
+            // Where a wallet fetches one presentation request, and where every
+            // answer to the realm's requests arrives.
+            .service(
+                web::resource("/realms/{realm}/vp/request/{request}")
+                    .route(web::get().to(verifier::request_object)),
+            )
+            .service(
+                web::resource("/realms/{realm}/vp/response")
+                    .wrap(crate::middleware::transport::SecuredTransport)
+                    .app_data(web::FormConfig::default().limit(PRESENTATION_BODY))
+                    .route(web::post().to(verifier::response)),
             )
             // Each of the next three doors takes a secret, so each answers to
             // the realm's word on plain connections before its body is read,

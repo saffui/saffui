@@ -20,12 +20,18 @@ describe("client scopes", () => {
       name: "contract-scope",
       description: "Under contract",
     });
+    // An update replaces the scope, so what the console sends back whole must
+    // come back as it was sent.
+    const configs = { "consent.screen.text": { Str: "Under contract" } };
     await updateScope(REALM, scope.client_scope_id, {
       name: "contract-scope",
       description: "Still under contract",
+      protocol: scope.protocol,
+      configs,
     });
     const catalogue = await keepAnswer(listScopeCatalogue, REALM);
-    expect(catalogue.some((held) => held.client_scope_id === scope.client_scope_id)).toBe(true);
+    const listed = catalogue.find((held) => held.client_scope_id === scope.client_scope_id);
+    expect(listed?.configs).toEqual(configs);
 
     const body = {
       name: "contract-department",

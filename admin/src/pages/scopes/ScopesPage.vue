@@ -66,7 +66,7 @@ async function openScope(scope?: ClientScope) {
 }
 
 async function saveScope() {
-  const body = scopeWrite(draft.value);
+  const body = scopeWrite(draft.value, selected.value);
   if (!body.name) return;
   try {
     if (selected.value) {

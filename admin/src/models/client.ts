@@ -69,6 +69,7 @@ export interface ClientScope {
   description: string;
   protocol: string;
   default_scope: boolean | null;
+  configs?: Record<string, AttributeValue> | null;
   optional?: boolean;
 }
 

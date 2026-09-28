@@ -26,6 +26,7 @@ models  = { path = "crates/models" }
 store   = { path = "crates/store" }
 authz   = { path = "crates/authz" }
 saml    = { path = "crates/saml" }
+jsonld  = { path = "crates/jsonld" }
 auth    = { path = "crates/auth" }
 services       = { path = "crates/services" }
 outbound       = { path = "crates/outbound" }

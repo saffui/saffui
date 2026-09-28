@@ -12,7 +12,9 @@ part of this repository's source.
 The JOSE layer is vendored from josekit. See the entry below. Changes to the rest
 of the `crypto` crate, this repository's own code beside that layer, are listed
 under *Beside the vendored tree*. The consoles' fonts are IBM Plex files taken as
-upstream ships them, under *IBM Plex*.
+upstream ships them, under *IBM Plex*. The canonicalization tests of the `jsonld`
+crate run the W3C suite's own files, under *W3C RDF Dataset Canonicalization
+test suite*.
 
 ---
 
@@ -252,6 +254,24 @@ Code meant for the whole crate goes into a module of its own rather than into
   carries the licence at `/usr/share/licenses/saffui/ibm-plex/LICENSE.txt`.
 - Upstream tracking: none. A newer revision is taken by hand, with the digests in
   the README taken again.
+
+## W3C RDF Dataset Canonicalization test suite
+
+- Upstream: https://github.com/w3c/rdf-canon, directory `tests/`
+- Version taken: commit `15619df2fda7a4ca88308733789b6774517f9638` (2026-02-24)
+- Date taken: 2026-09-28
+- Licence: the W3C Test Suite Licence or the W3C 3-clause BSD Licence, as
+  upstream's `tests/LICENCE.md` states, copied beside the files.
+- Files derived:
+  - `crates/jsonld/tests/rdfc10/test*-in.nq`, `test*-rdfc10.nq` and
+    `test*-rdfc10map.json`: the 150 files of upstream `tests/rdfc10/`
+  - `crates/jsonld/tests/rdfc10/manifest.csv`, the manifest in upstream's
+    CSV form
+  - `crates/jsonld/tests/rdfc10/LICENCE.md`, the licence as upstream ships it
+- Modifications: none.
+- Use: test fixtures only. Nothing in them is compiled into the product.
+- Upstream tracking: none. A newer revision is taken by hand, with the commit
+  above updated.
 
 ## Before vendoring anything
 

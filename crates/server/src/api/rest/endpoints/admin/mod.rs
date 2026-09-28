@@ -24,6 +24,7 @@ pub mod negotiation;
 pub mod overview;
 pub mod page_drafts;
 pub mod portability;
+pub mod presentations;
 pub mod protocol_mappers;
 pub mod realm_keys;
 pub mod realms;

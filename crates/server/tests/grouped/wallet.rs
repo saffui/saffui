@@ -25,19 +25,10 @@ async fn asked(
     .await
 }
 
-/// The same request, from a server that may dial where the egress policy says.
-async fn asked_under(
-    plane: &Plane,
-    egress: config::serving::Egress,
-    method: Method,
-    path: &str,
-    bearer: &str,
-    body: Option<Value>,
-) -> (StatusCode, Value) {
-    use actix_web::{App, test};
-    use server::api::config::register;
+/// The server under test, dialling where the egress policy says.
+fn served(plane: &Plane, egress: config::serving::Egress) -> server::api::config::Plane {
     use server::middleware::admin_policy::AdminPolicy;
-    let app = test::init_service(App::new().configure(register(&server::api::config::Plane {
+    server::api::config::Plane {
         tenancy: plane.tenancy(),
         policy: AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -50,8 +41,45 @@ async fn asked_under(
         egress,
         sealing: support::sealing(),
         ceiling: support::ceiling(),
-    })))
+    }
+}
+
+/// A public door asked as a wallet asks it: no bearer, a form when posting,
+/// and the body kept as it came.
+async fn fetched(
+    plane: &Plane,
+    method: Method,
+    path: &str,
+    form: Option<&[(&str, &str)]>,
+) -> (StatusCode, String) {
+    use actix_web::{App, test};
+    use server::api::config::register;
+    let app = test::init_service(
+        App::new().configure(register(&served(plane, config::serving::Egress::Outward))),
+    )
     .await;
+    let mut asking = test::TestRequest::default().method(method).uri(path);
+    if let Some(form) = form {
+        asking = asking.set_form(form);
+    }
+    let response = test::call_service(&app, asking.to_request()).await;
+    let status = response.status();
+    let body = test::read_body(response).await;
+    (status, String::from_utf8_lossy(&body).into_owned())
+}
+
+/// The same request, from a server that may dial where the egress policy says.
+async fn asked_under(
+    plane: &Plane,
+    egress: config::serving::Egress,
+    method: Method,
+    path: &str,
+    bearer: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    use actix_web::{App, test};
+    use server::api::config::register;
+    let app = test::init_service(App::new().configure(register(&served(plane, egress)))).await;
     let mut asking = test::TestRequest::default()
         .method(method)
         .uri(path)
@@ -378,4 +406,664 @@ async fn an_issuer_is_named_with_the_keys_it_publishes() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{told}");
     assert_eq!(told["error_code"], "realm.credential_issuer.not_found");
+}
+
+/// A PID issuer on a real socket, publishing one key in its JWT VC metadata.
+fn serve_pid_issuer(key: Value) -> String {
+    use actix_web::{App, HttpResponse, HttpServer, web};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let base = format!(
+        "http://127.0.0.1:{}",
+        listener.local_addr().expect("an address").port()
+    );
+    let served = base.clone();
+    let server = HttpServer::new(move || {
+        let (base, key) = (served.clone(), key.clone());
+        App::new().route(
+            "/.well-known/jwt-vc-issuer/pid",
+            web::get().to(move || {
+                let document =
+                    json!({ "issuer": format!("{base}/pid"), "jwks": { "keys": [key.clone()] } });
+                async move { HttpResponse::Ok().json(document) }
+            }),
+        )
+    })
+    .listen(listener)
+    .expect("a listener")
+    .workers(1)
+    .disable_signals()
+    .run();
+    tokio::spawn(server);
+    base
+}
+
+/// What a wallet holds and does, played the way Inji's library plays it.
+#[derive(Clone)]
+struct Wallet {
+    issuer: String,
+    issuer_key: crypto::jose::jwk::alg::ed::EdKeyPair,
+    holder_key: crypto::jose::jwk::alg::ec::EcKeyPair,
+    vct: &'static str,
+}
+
+impl Wallet {
+    fn new(issuer: String, issuer_key: crypto::jose::jwk::alg::ed::EdKeyPair) -> Self {
+        Self {
+            issuer,
+            issuer_key,
+            holder_key: crypto::jose::jwk::alg::ec::EcKeyPair::generate(
+                crypto::jose::jwk::alg::ec::EcCurve::P256,
+            )
+            .expect("a holder key"),
+            vct: "urn:eudi:pid:1",
+        }
+    }
+
+    /// A PID the issuer signed, every personal claim concealed.
+    fn issued(&self) -> String {
+        use crypto::jose::jwk::KeyPair;
+        use crypto::jose::jws::{EdDSA, JwsHeader};
+        use crypto::sd_jwt::{Concealed, conceal_claims};
+        let now = chrono::Utc::now().timestamp();
+        let Value::Object(claims) = json!({
+            "iss": format!("{}/pid", self.issuer),
+            "vct": self.vct,
+            "iat": now,
+            "exp": now + 3600,
+            "cnf": { "jwk": self.holder_key.to_jwk_public_key().as_ref() },
+            "given_name": "Ada",
+            "family_name": "Lovelace",
+            "birthdate": "1815-12-10",
+            "address": { "locality": "London", "country": "GB" },
+        }) else {
+            unreachable!()
+        };
+        let concealment = conceal_claims(
+            &support::provider(),
+            claims,
+            &[
+                Concealed::Property(&["given_name"]),
+                Concealed::Property(&["family_name"]),
+                Concealed::Property(&["birthdate"]),
+                Concealed::Property(&["address", "locality"]),
+                Concealed::Property(&["address", "country"]),
+            ],
+            2,
+        )
+        .expect("concealed");
+        let mut header = JwsHeader::new();
+        header.set_token_type("dc+sd-jwt");
+        header.set_key_id("pid-2026");
+        let signer = EdDSA
+            .signer_from_pem(self.issuer_key.to_pem_private_key())
+            .expect("an issuer signer");
+        let signed = crypto::jose::jws::serialize_compact(
+            Value::Object(concealment.payload.clone())
+                .to_string()
+                .as_bytes(),
+            &header,
+            &signer,
+        )
+        .expect("signed");
+        concealment.issued(&signed)
+    }
+
+    /// A presentation disclosing the claims named, bound to one request.
+    fn presented_disclosing(&self, audience: &str, nonce: &str, names: &[&str]) -> String {
+        use crypto::jose::jwk::KeyPair;
+        use crypto::jose::jws::ES256;
+        let presentation = crypto::sd_jwt::select_disclosures(&self.issued(), |disclosure| {
+            disclosure
+                .name
+                .as_deref()
+                .is_some_and(|name| names.contains(&name))
+        })
+        .expect("selected");
+        let holder = ES256
+            .signer_from_pem(self.holder_key.to_pem_private_key())
+            .expect("a holder signer");
+        crypto::sd_jwt::bind_presentation(
+            &support::provider(),
+            &presentation,
+            &holder,
+            audience,
+            nonce,
+            chrono::Utc::now().timestamp(),
+        )
+        .expect("bound")
+    }
+
+    /// The presentation the PID query asks for.
+    fn presented(&self, audience: &str, nonce: &str) -> String {
+        self.presented_disclosing(audience, nonce, &["given_name", "family_name", "locality"])
+    }
+}
+
+/// The path part of an address the realm wrote, for the server under test.
+fn path_of(address: &str) -> String {
+    let parsed = url::Url::parse(address).expect("an address");
+    match parsed.query() {
+        Some(query) => format!("{}?{query}", parsed.path()),
+        None => parsed.path().to_owned(),
+    }
+}
+
+/// Read a request the way a wallet does: fetch it at the address the link
+/// gives, find the signing key in the realm's DID document by the `kid`, and
+/// verify it.
+async fn read_request(plane: &Plane, link: &str) -> serde_json::Map<String, Value> {
+    use crypto::jose::jws::EdDSA;
+    let link = url::Url::parse(link).expect("an openid4vp link");
+    assert_eq!(link.scheme(), "openid4vp");
+    let given = |name: &str| {
+        link.query_pairs()
+            .find(|(held, _)| held == name)
+            .map(|(_, value)| value.into_owned())
+            .unwrap_or_else(|| panic!("a link without {name}"))
+    };
+    let (status, signed) = fetched(plane, Method::GET, &path_of(&given("request_uri")), None).await;
+    assert_eq!(status, StatusCode::OK, "{signed}");
+
+    let header: Value = serde_json::from_slice(
+        &data_encoding::BASE64URL_NOPAD
+            .decode(signed.split('.').next().expect("a header").as_bytes())
+            .expect("base64url"),
+    )
+    .expect("a JSON header");
+    assert_eq!(header["alg"], "EdDSA");
+    assert_eq!(header["typ"], "oauth-authz-req+jwt");
+    let kid = header["kid"].as_str().expect("a kid");
+
+    let (status, document) = fetched(
+        plane,
+        Method::GET,
+        &format!("/realms/{REALM}/did.json"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{document}");
+    let document: Value = serde_json::from_str(&document).expect("a DID document");
+    let method = document["verificationMethod"]
+        .as_array()
+        .expect("methods")
+        .iter()
+        .find(|method| method["id"] == kid)
+        .expect("the request's kid names a method of the realm's DID");
+    let multibase = method["publicKeyMultibase"]
+        .as_str()
+        .expect("a multibase key");
+    let decoded =
+        services::verifier::base58::decode(&multibase[1..]).expect("base58 after the `z`");
+    assert_eq!(decoded[..2], [0xed, 0x01], "an Ed25519 multicodec prefix");
+    let key = crypto::jose::jwk::Jwk::from_map(
+        json!({
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": data_encoding::BASE64URL_NOPAD.encode(&decoded[2..]),
+        })
+        .as_object()
+        .expect("a JWK")
+        .clone(),
+    )
+    .expect("a key");
+    let verifier = EdDSA.verifier_from_jwk(&key).expect("a verifier");
+    let (payload, _) = crypto::jose::jws::deserialize_compact(&signed, &verifier)
+        .expect("a request the realm signed");
+    let Value::Object(request) = serde_json::from_slice(&payload).expect("a JSON request") else {
+        panic!("a request that is not an object")
+    };
+    assert_eq!(request["client_id"], given("client_id").as_str());
+    assert_eq!(
+        format!("{}#", document["id"].as_str().expect("a DID")),
+        kid[..kid.find('#').expect("a fragment") + 1],
+        "the request is signed under another DID"
+    );
+    assert_eq!(
+        request["response_uri"], document["service"][0]["serviceEndpoint"],
+        "the answer's address is not the one the DID declares"
+    );
+    request
+}
+
+/// Encrypt an answer to the key the request drew, as `direct_post.jwt` asks.
+fn encrypted(request: &serde_json::Map<String, Value>, answer: &Value) -> String {
+    use crypto::jose::jwe::{ECDH_ES, JweHeader};
+    let key = crypto::jose::jwk::Jwk::from_map(
+        request["client_metadata"]["jwks"]["keys"][0]
+            .as_object()
+            .expect("the answer's key")
+            .clone(),
+    )
+    .expect("a JWK");
+    let mut header = JweHeader::new();
+    header.set_content_encryption("A256GCM");
+    header.set_key_id(key.key_id().expect("a kid"));
+    let encrypter = ECDH_ES.encrypter_from_jwk(&key).expect("an encrypter");
+    crypto::jose::jwe::serialize_compact(answer.to_string().as_bytes(), &header, &encrypter)
+        .expect("encrypted")
+}
+
+/// Set a realm up to verify: the verifier running, an Ed25519 key, and a PID
+/// issuer named. Hands back the wallet that holds that issuer's credential.
+async fn realm_ready_to_verify(plane: &Plane, bearer: &str) -> Wallet {
+    use crypto::jose::jwk::KeyPair;
+    verifier_running();
+    let issuer_key = crypto::jose::jwk::alg::ed::EdKeyPair::generate(crypto::jose::jwk::Ed25519)
+        .expect("an issuer key");
+    let mut public = issuer_key.to_jwk_public_key();
+    public.set_key_id("pid-2026");
+    let base = serve_pid_issuer(Value::Object(public.as_ref().clone()));
+    let (status, told) = asked_under(
+        plane,
+        config::serving::Egress::Anywhere,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/credential-issuers"),
+        bearer,
+        Some(json!({ "name": "PID", "issuer": format!("{base}/pid") })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+    let (status, told) = asked(
+        plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/keys"),
+        bearer,
+        Some(json!({ "algorithm": "EdDSA" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+    Wallet::new(base, issuer_key)
+}
+
+fn pid_query() -> Value {
+    json!({
+        "credentials": [{
+            "id": "pid",
+            "format": "dc+sd-jwt",
+            "meta": { "vct_values": ["urn:eudi:pid:1"] },
+            "claims": [
+                { "path": ["given_name"] },
+                { "path": ["family_name"] },
+                { "path": ["address", "locality"] }
+            ]
+        }]
+    })
+}
+
+/// Ask the realm for a PID, and read the request as the wallet reads it.
+async fn ask_for_pid(plane: &Plane, bearer: &str) -> (Value, serde_json::Map<String, Value>) {
+    let (status, asked_for) = asked(
+        plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/presentations"),
+        bearer,
+        Some(json!({ "dcql_query": pid_query() })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{asked_for}");
+    let request = read_request(plane, asked_for["uri"].as_str().expect("a link")).await;
+    (asked_for, request)
+}
+
+/// Post to the address the request names, as a wallet does.
+async fn answered(
+    plane: &Plane,
+    request: &serde_json::Map<String, Value>,
+    form: &[(&str, &str)],
+) -> (StatusCode, String) {
+    let at = path_of(request["response_uri"].as_str().expect("a response_uri"));
+    fetched(plane, Method::POST, &at, Some(form)).await
+}
+
+/// Where a request stands, read by the administrator who asked.
+async fn standing_of(plane: &Plane, bearer: &str, id: &Value) -> Value {
+    let id = id.as_str().expect("an id");
+    let (status, standing) = asked(
+        plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/presentations/{id}"),
+        bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{standing}");
+    standing
+}
+
+async fn plane_that_verifies() -> (Plane, String) {
+    let plane = Plane::with_actions(&[
+        AdminAction::RealmRead,
+        AdminAction::RealmWrite,
+        AdminAction::RealmKeysWrite,
+        AdminAction::FeatureWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    (plane, bearer)
+}
+
+/// The whole door, against a wallet that does what Inji's library does: the
+/// realm asks, the wallet verifies the request by the realm's DID, presents a
+/// PID bound to the request and encrypted to the key it drew, and the realm
+/// verifies it against the issuer it names. What it keeps names the claims,
+/// never their values, and the same answer does not settle it twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_wallet_answers_a_presentation_request() {
+    let (plane, bearer) = plane_that_verifies().await;
+    let wallet = realm_ready_to_verify(&plane, &bearer).await;
+
+    let (asked_for, request) = ask_for_pid(&plane, &bearer).await;
+    let client_id = request["client_id"].as_str().expect("a client_id");
+    assert!(
+        client_id.starts_with("decentralized_identifier:did:web:id.test:realms:"),
+        "{client_id}"
+    );
+    assert_eq!(request["response_type"], "vp_token");
+    assert_eq!(request["response_mode"], "direct_post.jwt");
+    assert_eq!(request["state"], asked_for["id"]);
+    assert_eq!(request["dcql_query"], pid_query());
+    let key = &request["client_metadata"]["jwks"]["keys"][0];
+    assert_eq!(
+        (key["alg"].as_str(), key["use"].as_str()),
+        (Some("ECDH-ES"), Some("enc"))
+    );
+    assert!(
+        key.get("d").is_none(),
+        "the answer's private key left the realm"
+    );
+    let standing = standing_of(&plane, &bearer, &asked_for["id"]).await;
+    assert_eq!(standing["status"], "pending", "{standing}");
+
+    let nonce = request["nonce"].as_str().expect("a nonce");
+    let answer = json!({
+        "vp_token": { "pid": [wallet.presented(client_id, nonce)] },
+        "state": request["state"],
+    });
+    let response = encrypted(&request, &answer);
+    let (status, told) = answered(&plane, &request, &[("response", &response)]).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+
+    let standing = standing_of(&plane, &bearer, &asked_for["id"]).await;
+    assert_eq!(standing["status"], "verified", "{standing}");
+    assert_eq!(
+        standing["outcome"]["credentials"],
+        json!([{
+            "id": "pid",
+            "issuer": format!("{}/pid", wallet.issuer),
+            "vct": "urn:eudi:pid:1",
+            "claims": ["given_name", "family_name", "address.locality"],
+        }])
+    );
+    let kept = standing.to_string();
+    for value in ["Ada", "Lovelace", "London"] {
+        assert!(!kept.contains(value), "a disclosed value was kept: {kept}");
+    }
+
+    let (status, told) = answered(&plane, &request, &[("response", &response)]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+    assert!(told.contains("no request is waiting"), "{told}");
+    let (status, _) = fetched(
+        &plane,
+        Method::GET,
+        &format!(
+            "/realms/{REALM}/vp/request/{}",
+            request["state"].as_str().expect("an id")
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "an answered request is still served"
+    );
+
+    // A realm that closes the verifier serves no request, takes no answer and
+    // asks for nothing more.
+    let (_, pending) = ask_for_pid(&plane, &bearer).await;
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/features/wallet-verifier"),
+        &bearer,
+        Some(json!({ "enabled": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+    let state = pending["state"].as_str().expect("a state");
+    let (status, _) = fetched(
+        &plane,
+        Method::GET,
+        &format!("/realms/{REALM}/vp/request/{state}"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a closed verifier serves a request"
+    );
+    let (status, _) = answered(
+        &plane,
+        &pending,
+        &[("error", "access_denied"), ("state", state)],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a closed verifier takes an answer"
+    );
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/presentations"),
+        &bearer,
+        Some(json!({ "dcql_query": pid_query() })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+}
+
+/// Ask for a PID, answer with what `answer` makes of the request, and check
+/// the request failed, once, for the reason given.
+async fn answer_fails(
+    plane: &Plane,
+    bearer: &str,
+    reason: &str,
+    answer: impl FnOnce(&serde_json::Map<String, Value>) -> Value,
+) {
+    let (asked_for, request) = ask_for_pid(plane, bearer).await;
+    let response = encrypted(&request, &answer(&request));
+    let (status, told) = answered(plane, &request, &[("response", &response)]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{reason}: {told}");
+    let told: Value = serde_json::from_str(&told).expect("a JSON error");
+    assert_eq!(told["error_description"], reason);
+    let standing = standing_of(plane, bearer, &asked_for["id"]).await;
+    assert_eq!(standing["status"], "failed", "{standing}");
+    assert_eq!(standing["outcome"]["reason"], reason);
+}
+
+fn client_id_and_nonce(request: &serde_json::Map<String, Value>) -> (&str, &str) {
+    (
+        request["client_id"].as_str().expect("a client_id"),
+        request["nonce"].as_str().expect("a nonce"),
+    )
+}
+
+/// Each check a presentation must pass fails its request on its own, in the
+/// realm's words: a refusal the wallet sends settles it as refused, and a
+/// state no request holds is not an answer to anything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_answer_that_does_not_hold_settles_its_request_once() {
+    let (plane, bearer) = plane_that_verifies().await;
+    let wallet = realm_ready_to_verify(&plane, &bearer).await;
+    let (plane, bearer) = (&plane, bearer.as_str());
+    let pid = |presented: String, request: &serde_json::Map<String, Value>| json!({ "vp_token": { "pid": [presented] }, "state": request["state"] });
+
+    answer_fails(
+        plane,
+        bearer,
+        "a credential's disclosures, key binding or time claims do not hold",
+        |request| {
+            let (client_id, _) = client_id_and_nonce(request);
+            pid(wallet.presented(client_id, "another-nonce"), request)
+        },
+    )
+    .await;
+    answer_fails(
+        plane,
+        bearer,
+        "a credential's issuer is not one this realm names",
+        |request| {
+            let (client_id, nonce) = client_id_and_nonce(request);
+            let impostor = Wallet {
+                issuer: "https://elsewhere.example".to_owned(),
+                ..wallet.clone()
+            };
+            pid(impostor.presented(client_id, nonce), request)
+        },
+    )
+    .await;
+    answer_fails(
+        plane,
+        bearer,
+        "a credential's signature is not its issuer's",
+        |request| {
+            let (client_id, nonce) = client_id_and_nonce(request);
+            let forger = Wallet {
+                issuer_key: crypto::jose::jwk::alg::ed::EdKeyPair::generate(
+                    crypto::jose::jwk::Ed25519,
+                )
+                .expect("a key"),
+                ..wallet.clone()
+            };
+            pid(forger.presented(client_id, nonce), request)
+        },
+    )
+    .await;
+    answer_fails(
+        plane,
+        bearer,
+        "a credential is of a type the query did not accept",
+        |request| {
+            let (client_id, nonce) = client_id_and_nonce(request);
+            let student = Wallet {
+                vct: "urn:example:student:1",
+                ..wallet.clone()
+            };
+            pid(student.presented(client_id, nonce), request)
+        },
+    )
+    .await;
+    answer_fails(
+        plane,
+        bearer,
+        "a credential lacks a claim the query asked for",
+        |request| {
+            let (client_id, nonce) = client_id_and_nonce(request);
+            let presented =
+                wallet.presented_disclosing(client_id, nonce, &["given_name", "family_name"]);
+            pid(presented, request)
+        },
+    )
+    .await;
+    answer_fails(
+        plane,
+        bearer,
+        "each credential asked for is presented once",
+        |request| json!({ "vp_token": { "pid": [] }, "state": request["state"] }),
+    )
+    .await;
+    answer_fails(
+        plane,
+        bearer,
+        "each credential asked for is presented once",
+        |request| {
+            let (client_id, nonce) = client_id_and_nonce(request);
+            let presented = wallet.presented(client_id, nonce);
+            json!({ "vp_token": { "pid": [presented.clone(), presented] }, "state": request["state"] })
+        },
+    )
+    .await;
+    answer_fails(
+        plane,
+        bearer,
+        "the answer carries a credential the query did not ask for",
+        |request| {
+            let (client_id, nonce) = client_id_and_nonce(request);
+            let presented = wallet.presented(client_id, nonce);
+            json!({
+                "vp_token": { "pid": [presented.clone()], "mdl": [presented] },
+                "state": request["state"],
+            })
+        },
+    )
+    .await;
+    answer_fails(
+        plane,
+        bearer,
+        "the answer names another request",
+        |request| {
+            let (client_id, nonce) = client_id_and_nonce(request);
+            json!({
+                "vp_token": { "pid": [wallet.presented(client_id, nonce)] },
+                "state": "another-request",
+            })
+        },
+    )
+    .await;
+    answer_fails(
+        plane,
+        bearer,
+        "the answer carries no vp_token object",
+        |request| {
+            let (client_id, nonce) = client_id_and_nonce(request);
+            json!({ "vp_token": [wallet.presented(client_id, nonce)], "state": request["state"] })
+        },
+    )
+    .await;
+
+    let (asked_for, request) = ask_for_pid(plane, bearer).await;
+    let state = request["state"].as_str().expect("a state");
+    let (status, told) = answered(
+        plane,
+        &request,
+        &[("error", "access_denied"), ("state", state)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let standing = standing_of(plane, bearer, &asked_for["id"]).await;
+    assert_eq!(standing["status"], "refused", "{standing}");
+    assert_eq!(standing["outcome"]["error"], "access_denied");
+
+    let (status, told) = answered(
+        plane,
+        &request,
+        &[("error", "access_denied"), ("state", "no-such-request")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+
+    // The sweep keeps every request a day past its window, then takes it.
+    use services::realm::housekeeping::{PRESENTATIONS_KEPT_HOURS, drop_expired_rows};
+    let transaction = plane
+        .scoped(&store::tenancy::TenantContext::new(support::TENANT, REALM))
+        .await;
+    let closed = chrono::Utc::now()
+        + chrono::Duration::seconds(services::verifier::presentation::LIFETIME_SECONDS)
+        + chrono::Duration::minutes(1);
+    let swept = drop_expired_rows(&transaction, closed)
+        .await
+        .expect("a sweep");
+    assert_eq!(swept.presentation_requests, 0);
+    let swept = drop_expired_rows(
+        &transaction,
+        closed + chrono::Duration::hours(PRESENTATIONS_KEPT_HOURS),
+    )
+    .await
+    .expect("a sweep");
+    assert_eq!(swept.presentation_requests, 11);
 }

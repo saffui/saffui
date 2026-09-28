@@ -63,6 +63,23 @@ pub async fn load(
         .transpose()
 }
 
+/// The issuer the realm names by this identifier, as credentials carry it.
+pub async fn by_issuer(
+    transaction: &UnitOfWork,
+    issuer: &str,
+) -> StoreResult<Option<CredentialIssuer>> {
+    transaction
+        .query_opt(
+            "SELECT issuer_id, name, issuer, keys, read_from, read_at, created_by, created_at \
+             FROM realm_credential_issuers WHERE issuer = $1",
+            &[&issuer],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .map(read)
+        .transpose()
+}
+
 /// Keep the keys read from an issuer again, and say whether it was there.
 pub async fn replace_keys(
     transaction: &UnitOfWork,

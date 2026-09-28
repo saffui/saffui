@@ -1283,6 +1283,64 @@ mod tests {
         Ok(())
     }
 
+    /// A compressed payload opens on both deserialization paths.
+    #[test]
+    fn compressed_dir() -> Result<()> {
+        let payload = b"hello world";
+        let key = vec![0; 32];
+        let alg = DirectJweAlgorithm::Dir;
+        let encrypter = alg.encrypter_from_bytes(&key)?;
+        let decrypter = alg.decrypter_from_bytes(&key)?;
+
+        let mut header = JweHeader::new();
+        header.set_content_encryption("A256GCM");
+        header.set_compression("DEF");
+        let jwe = serialize_compact(payload, &header, &encrypter)?;
+        assert_eq!(deserialize_compact(&jwe, &decrypter)?.0, payload);
+
+        let mut hs = JweHeaderSet::new();
+        hs.set_content_encryption("A256GCM", true);
+        hs.set_compression("DEF");
+        let jwe = serialize_flattened_json(payload, Some(&hs), None, None, &encrypter)?;
+        assert_eq!(deserialize_json(&jwe, &decrypter)?.0, payload);
+        Ok(())
+    }
+
+    /// A small JWE that inflates past the ceiling once decrypted is refused on
+    /// both deserialization paths, the way the attack arrives: encrypted
+    /// honestly to the recipient's key, whose public half anyone may hold.
+    #[test]
+    fn a_compressed_payload_past_the_ceiling_is_refused() -> Result<()> {
+        let payload = vec![0; 1024 * 1024];
+        let key = vec![0; 32];
+        let alg = DirectJweAlgorithm::Dir;
+        let encrypter = alg.encrypter_from_bytes(&key)?;
+        let decrypter = alg.decrypter_from_bytes(&key)?;
+
+        let mut header = JweHeader::new();
+        header.set_content_encryption("A256GCM");
+        header.set_compression("DEF");
+        let compact = serialize_compact(&payload, &header, &encrypter)?;
+        assert!(compact.len() < 16 * 1024, "{} bytes", compact.len());
+
+        let mut hs = JweHeaderSet::new();
+        hs.set_content_encryption("A256GCM", true);
+        hs.set_compression("DEF");
+        let json = serialize_flattened_json(&payload, Some(&hs), None, None, &encrypter)?;
+
+        for refused in [
+            deserialize_compact(&compact, &decrypter).map(|_| ()),
+            deserialize_json(&json, &decrypter).map(|_| ()),
+        ] {
+            let refused = refused.expect_err("a payload past the ceiling inflated");
+            assert!(
+                refused.to_string().contains("exceeds 262144 bytes"),
+                "{refused}"
+            );
+        }
+        Ok(())
+    }
+
     #[test]
     fn general_json_dir() -> Result<()> {
         let payload = b"hello world";

@@ -1077,6 +1077,7 @@ journal-col-actor = Acteur
 journal-col-what = Quoi
 journal-col-status = Statut
 journal-col-when = Quand
+journal-campaign-closed = Campagne de recertification { $campaign } close, { $items } éléments au rapport
 journal-anchors = Ancres
 journal-anchors-lede = Une tête publiée borne jusqu'où une réécriture pourrait remonter sans se voir.
 journal-witness = Témoin

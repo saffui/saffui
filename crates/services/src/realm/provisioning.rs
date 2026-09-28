@@ -89,6 +89,7 @@ pub const STANDARD_SCOPES: [(&str, bool, &str); 5] = [
 /// redirect can run it again.
 pub async fn provision_realm(
     transaction: &UnitOfWork,
+    provider: &dyn CryptoProvider,
     realm: &RealmModel,
     console: &AdminConsole<'_>,
 ) -> StoreResult<()> {
@@ -96,7 +97,7 @@ pub async fn provision_realm(
     if realms::load(transaction, &realm.realm_id).await?.is_none() {
         realms::create(transaction, realm).await?;
     }
-    provision_standard_scopes(transaction, tenant, &realm.realm_id).await?;
+    provision_standard_scopes(transaction, provider, tenant, &realm.realm_id).await?;
     provision_admin_console(transaction, tenant, &realm.realm_id, console).await
 }
 
@@ -134,6 +135,7 @@ pub async fn provision_realm_row(
 /// without these rows silently answers every request with less than was asked.
 pub async fn provision_standard_scopes(
     transaction: &UnitOfWork,
+    provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,
 ) -> StoreResult<Vec<String>> {
@@ -149,10 +151,20 @@ pub async fn provision_standard_scopes(
             held.push(standing.client_scope_id);
             continue;
         }
+        // Its name is its identifier, unless a scope renamed away from the name
+        // still holds it. Then it is made again as an operator would make it.
+        let client_scope_id = if client_scopes::load_scope(transaction, name)
+            .await?
+            .is_none()
+        {
+            name.to_owned()
+        } else {
+            draw_identifier(provider)?
+        };
         client_scopes::create_scope(
             transaction,
             &ClientScopeModel {
-                client_scope_id: name.to_owned(),
+                client_scope_id: client_scope_id.clone(),
                 realm_id: realm_id.to_owned(),
                 name: name.to_owned(),
                 description: description.to_owned(),
@@ -163,9 +175,18 @@ pub async fn provision_standard_scopes(
             },
         )
         .await?;
-        held.push(name.to_owned());
+        held.push(client_scope_id);
     }
     Ok(held)
+}
+
+fn draw_identifier(provider: &dyn CryptoProvider) -> StoreResult<String> {
+    let mut bytes = [0_u8; 16];
+    provider
+        .rand()
+        .fill(&mut bytes)
+        .map_err(|_| StoreError::Backend)?;
+    Ok(crypto::provider::uuid_from(bytes))
 }
 
 /// Give a realm its admin scope and a console entitled to it.

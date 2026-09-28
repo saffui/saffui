@@ -270,7 +270,7 @@ pub async fn register(
 
     // Every standard scope, optional: granted when asked for, under the
     // identifier its name is held by.
-    let standard = provision_standard_scopes(transaction, tenant, realm_id)
+    let standard = provision_standard_scopes(transaction, provider, tenant, realm_id)
         .await
         .map_err(|_| Unregistrable::Unwritable)?;
     for scope in &standard {

@@ -266,9 +266,14 @@ async fn provisioning_a_realm_gives_it_the_scopes_it_cannot_work_without() {
 
     let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
-    services::realm::provisioning::provision_realm(&transaction, &realm(), &console())
-        .await
-        .unwrap();
+    services::realm::provisioning::provision_realm(
+        &transaction,
+        &support::provider(),
+        &realm(),
+        &console(),
+    )
+    .await
+    .unwrap();
 
     for (name, default) in [("profile", true), ("email", true), ("phone", false)] {
         let held = client_scopes::load_scope(&transaction, name)
@@ -294,9 +299,14 @@ async fn provisioning_a_realm_gives_it_the_scopes_it_cannot_work_without() {
 
     // Run again. An operator who added a redirect or renamed a console must be
     // able to, and what already exists is left as it stands.
-    services::realm::provisioning::provision_realm(&transaction, &realm(), &console())
-        .await
-        .expect("provisioning is idempotent");
+    services::realm::provisioning::provision_realm(
+        &transaction,
+        &support::provider(),
+        &realm(),
+        &console(),
+    )
+    .await
+    .expect("provisioning is idempotent");
     transaction.commit().await.unwrap();
 }
 
@@ -311,9 +321,14 @@ async fn a_late_failure_rolls_back_the_whole_realm_birth() {
     transaction.commit().await.unwrap();
 
     let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
-    services::realm::provisioning::provision_realm(&transaction, &realm(), &console())
-        .await
-        .unwrap();
+    services::realm::provisioning::provision_realm(
+        &transaction,
+        &support::provider(),
+        &realm(),
+        &console(),
+    )
+    .await
+    .unwrap();
     assert!(transaction.query_one("SELECT 1 / 0", &[]).await.is_err());
     transaction.rollback().await.unwrap();
 

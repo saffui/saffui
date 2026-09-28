@@ -95,7 +95,7 @@ pub async fn bear_realm(
             StoreError::AlreadyExists => Unrealmed::AlreadyExists,
             _ => Unrealmed::Backend,
         })?;
-    provisioning::provision_standard_scopes(transaction, tenant, &realm_id)
+    provisioning::provision_standard_scopes(transaction, provider, tenant, &realm_id)
         .await
         .map_err(|_| Unrealmed::Backend)?;
     if let Some(console) = &birth.admin_console {

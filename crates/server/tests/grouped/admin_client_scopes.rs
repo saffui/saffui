@@ -563,6 +563,73 @@ async fn a_new_client_takes_the_standard_scope_holding_its_name() {
     );
 }
 
+/// A standard scope renamed away and not made again is made again by the next
+/// registration, under a drawn identifier since the renamed one keeps its own.
+/// Registration used to fail making it under that identifier.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_standard_scope_renamed_away_is_made_again() {
+    let plane = Plane::with_actions(&[AdminAction::ClientRead, AdminAction::ClientWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = format!("/admin/realms/{REALM}/client-scopes");
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{base}/profile"),
+        &bearer,
+        Some(json!({ "name": "profile-before" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+
+    let (status, made) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/clients"),
+        &bearer,
+        Some(json!({ "client_id": "newcomer", "redirect_uris": ["https://newcomer.example/cb"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+
+    let (status, catalogue) = asked(&plane, Method::GET, &base, &bearer, None).await;
+    assert_eq!(status, StatusCode::OK, "{catalogue}");
+    let named = |name: &str| {
+        catalogue
+            .as_array()
+            .expect("a listing")
+            .iter()
+            .find(|scope| scope["name"] == name)
+            .cloned()
+    };
+    assert_eq!(
+        named("profile-before").expect("the renamed scope")["client_scope_id"],
+        "profile"
+    );
+    let again = named("profile").expect("the standard scope, made again");
+    assert_ne!(again["client_scope_id"], "profile", "{again}");
+
+    let (status, held) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/clients/newcomer/scopes"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{held}");
+    let names: Vec<&str> = held
+        .as_array()
+        .expect("attachments")
+        .iter()
+        .filter_map(|scope| scope["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"profile") && !names.contains(&"profile-before"),
+        "{held}"
+    );
+}
+
 /// A scope of another protocol held by an OpenID Connect client is no part of
 /// what `/authorize` grants it: neither named by the request nor carried as a
 /// required attachment.

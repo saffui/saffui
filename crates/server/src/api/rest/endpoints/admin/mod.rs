@@ -17,6 +17,7 @@ pub mod flows;
 pub mod idps;
 pub mod iga;
 pub mod journal;
+pub mod jsonld_contexts;
 pub mod keys;
 pub mod mail;
 pub mod metrics;

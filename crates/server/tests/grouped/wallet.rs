@@ -408,6 +408,284 @@ async fn an_issuer_is_named_with_the_keys_it_publishes() {
     assert_eq!(told["error_code"], "realm.credential_issuer.not_found");
 }
 
+/// Contexts on a real socket: one whose document the test rewrites, one with a
+/// vocabulary mapping, one naming another, that other, a page that is no JSON,
+/// and as many small ones as a count needs.
+fn serve_contexts(insurance: std::sync::Arc<std::sync::Mutex<String>>) -> String {
+    use actix_web::{App, HttpResponse, HttpServer, web};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let base = format!(
+        "http://127.0.0.1:{}",
+        listener.local_addr().expect("an address").port()
+    );
+    let served = base.clone();
+    let server = HttpServer::new(move || {
+        let base = served.clone();
+        let insurance = insurance.clone();
+        let document = |held: Value| {
+            web::get().to(move || {
+                let held = held.clone();
+                async move { HttpResponse::Ok().json(held) }
+            })
+        };
+        App::new()
+            .route(
+                "/insurance",
+                web::get().to(move || {
+                    let now = insurance.lock().expect("the document").clone();
+                    async move { HttpResponse::Ok().content_type("application/ld+json").body(now) }
+                }),
+            )
+            .route(
+                "/vocabulary",
+                document(json!({ "@context": { "@vocab": "https://example.com/terms#" } })),
+            )
+            .route(
+                "/naming",
+                document(json!({ "@context": [format!("{base}/terms"), { "a": "https://example.com/a" }] })),
+            )
+            .route(
+                "/terms",
+                document(json!({ "@context": { "b": "https://example.com/b" } })),
+            )
+            .route(
+                "/page",
+                web::get().to(|| async { HttpResponse::Ok().body("<html>no context</html>") }),
+            )
+            .route(
+                "/small/{n}",
+                document(json!({ "@context": { "c": "https://example.com/c" } })),
+            )
+    })
+    .listen(listener)
+    .expect("a listener")
+    .workers(1)
+    .disable_signals()
+    .run();
+    tokio::spawn(server);
+    base
+}
+
+fn sha256_hex(text: &str) -> String {
+    use crypto::provider::{CryptoConfig, CryptoProvider, HashAlg};
+    let provider = crypto::provider::openssl::OpenSslProvider::new(&CryptoConfig::default())
+        .expect("a provider");
+    data_encoding::HEXLOWER.encode(
+        &provider
+            .digest()
+            .hash(HashAlg::Sha256, text.as_bytes())
+            .expect("a digest"),
+    )
+}
+
+/// A realm pins a context with the document read then, kept with its digest,
+/// and read again on demand. Built-in contexts, other addresses, documents that
+/// would not read, a context pinned twice and one past the bound are refused in
+/// words; a context naming another waits until that other is pinned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_realm_pins_the_contexts_its_credentials_name() {
+    use config::serving::Egress;
+    verifier_running();
+    let plane = Plane::with_actions(&[AdminAction::RealmRead, AdminAction::RealmWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let insurance = std::sync::Arc::new(std::sync::Mutex::new(
+        json!({ "@context": { "@version": 1.1, "@protected": true, "policyNumber": "https://schema.org/Text" } })
+            .to_string(),
+    ));
+    let base = serve_contexts(insurance.clone());
+    let contexts = format!("/admin/realms/{REALM}/jsonld-contexts");
+    let pin = |url: String| json!({ "url": url });
+
+    let (status, pinned) = asked_under(
+        &plane,
+        Egress::Anywhere,
+        Method::POST,
+        &contexts,
+        &bearer,
+        Some(pin(format!("{base}/insurance"))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{pinned}");
+    assert_eq!(pinned["url"], format!("{base}/insurance"));
+    let first_digest = pinned["digest"].as_str().expect("a digest").to_owned();
+    let served = insurance.lock().expect("the document").clone();
+    assert_eq!(first_digest, sha256_hex(&served), "{pinned}");
+    assert_eq!(pinned["octets"], served.len(), "{pinned}");
+
+    // The bad addresses come before the built-in one: a server that skipped its
+    // check would otherwise go out and read w3.org.
+    for (url, says) in [
+        (
+            "ftp://contexts.example/v1".to_owned(),
+            "absolute http or https",
+        ),
+        (
+            format!("{base}/small/{}", "a".repeat(2048)),
+            "at most 2048 characters",
+        ),
+        (
+            "https://www.w3.org/2018/credentials/v1".to_owned(),
+            "built in",
+        ),
+        (format!("{base}/vocabulary"), "a vocabulary mapping"),
+        (format!("{base}/naming"), "is not one held here"),
+        (format!("{base}/page"), "not one JSON document"),
+    ] {
+        let (status, told) = asked_under(
+            &plane,
+            Egress::Anywhere,
+            Method::POST,
+            &contexts,
+            &bearer,
+            Some(pin(url.clone())),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{url}: {told}");
+        assert!(
+            told["message"]
+                .as_str()
+                .is_some_and(|held| held.contains(says)),
+            "{url}: {told}"
+        );
+    }
+    for url in [format!("{base}/terms"), format!("{base}/naming")] {
+        let (status, told) = asked_under(
+            &plane,
+            Egress::Anywhere,
+            Method::POST,
+            &contexts,
+            &bearer,
+            Some(pin(url.clone())),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{url}: {told}");
+    }
+    let (status, told) = asked_under(
+        &plane,
+        Egress::Anywhere,
+        Method::POST,
+        &contexts,
+        &bearer,
+        Some(pin(format!("{base}/insurance"))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{told}");
+    assert_eq!(told["error_code"], "realm.jsonld_context.already_pinned");
+
+    // A server that may only dial https reads nothing from a plain address.
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &contexts,
+        &bearer,
+        Some(pin(format!("{base}/small/0"))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    let (status, listed) = asked(&plane, Method::GET, &contexts, &bearer, None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(listed["running"], true);
+    assert_eq!(
+        listed["built_in"].as_array().map(Vec::len),
+        Some(3),
+        "{listed}"
+    );
+    assert_eq!(
+        listed["items"].as_array().map(Vec::len),
+        Some(3),
+        "{listed}"
+    );
+
+    let id = pinned["id"].as_str().expect("an identity");
+    *insurance.lock().expect("the document") =
+        json!({ "@context": { "@vocab": "https://example.com/terms#" } }).to_string();
+    let (status, told) = asked_under(
+        &plane,
+        Egress::Anywhere,
+        Method::POST,
+        &format!("{contexts}/{id}/document"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    let (_, listed) = asked(&plane, Method::GET, &contexts, &bearer, None).await;
+    assert_eq!(
+        listed["items"][0]["digest"], first_digest,
+        "a document that does not read replaced the one kept: {listed}"
+    );
+    *insurance.lock().expect("the document") =
+        json!({ "@context": { "policyName": "https://schema.org/name" } }).to_string();
+    let (status, again) = asked_under(
+        &plane,
+        Egress::Anywhere,
+        Method::POST,
+        &format!("{contexts}/{id}/document"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    let served = insurance.lock().expect("the document").clone();
+    assert_eq!(again["digest"], sha256_hex(&served), "{again}");
+    assert_ne!(again["digest"], first_digest, "{again}");
+    assert!(
+        again["read_at"].as_str() >= pinned["read_at"].as_str(),
+        "{again}"
+    );
+
+    for n in 3..services::admin::jsonld_contexts::MAX_CONTEXTS {
+        let (status, told) = asked_under(
+            &plane,
+            Egress::Anywhere,
+            Method::POST,
+            &contexts,
+            &bearer,
+            Some(pin(format!("{base}/small/{n}"))),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{n}: {told}");
+    }
+    let (status, told) = asked_under(
+        &plane,
+        Egress::Anywhere,
+        Method::POST,
+        &contexts,
+        &bearer,
+        Some(pin(format!("{base}/small/past"))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(
+        told["message"]
+            .as_str()
+            .is_some_and(|held| held.contains("at most 50")),
+        "{told}"
+    );
+
+    let (status, _) = asked(
+        &plane,
+        Method::DELETE,
+        &format!("{contexts}/{id}"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, told) = asked(
+        &plane,
+        Method::DELETE,
+        &format!("{contexts}/{id}"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{told}");
+    assert_eq!(told["error_code"], "realm.jsonld_context.not_found");
+}
+
 /// A PID issuer on a real socket, publishing one key in its JWT VC metadata.
 fn serve_pid_issuer(key: Value) -> String {
     use actix_web::{App, HttpResponse, HttpServer, web};

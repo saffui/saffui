@@ -10,6 +10,7 @@ pub mod credential_issuers;
 pub mod credentials;
 pub mod device;
 pub mod export;
+pub mod jsonld_contexts;
 pub mod keys;
 pub mod mail;
 pub mod oidc;

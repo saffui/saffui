@@ -242,6 +242,12 @@ Code meant for the whole crate goes into a module of its own rather than into
     authorities): why this build would not trust a certificate's key, in words,
     the judgement the SAML intake made for itself and now shares with the
     deposit of an authority.
+11. `public_jwk::public_key_from_jwk` (2026-09-29, the wallet verifier): the
+    SubjectPublicKeyInfo of a public key a JWK writes, Ed25519 or ECDSA over
+    P-256, each coordinate at its curve's length and the point on the curve,
+    so that the key a `did:jwk` names, or one an issuer published, can be
+    handed to the signer. The vendored verifiers build the same bytes for
+    themselves and are untouched.
 
 ## IBM Plex
 

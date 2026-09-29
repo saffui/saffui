@@ -46,9 +46,9 @@ const ADMIN_BODY: usize = 8 * 1024 * 1024;
 /// with nothing presented.
 const PROTOCOL_BODY: usize = 8 * 1024;
 
-/// The form ceiling on a wallet's answer to a presentation request: an
-/// encrypted response of at most five credentials, each an SD-JWT with its
-/// disclosures and key binding, a third more once encoded.
+/// The form ceiling on a wallet's answer to a presentation request: at most
+/// five credentials, SD-JWTs or JSON-LD presentations of some 35 KB with a
+/// portrait, encrypted, a third more once encoded.
 const PRESENTATION_BODY: usize = 256 * 1024;
 
 /// How much JSON a person's own account may be sent: its largest request is a

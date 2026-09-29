@@ -3233,6 +3233,7 @@ dependencies = [
  "fluent-bundle",
  "futures-util",
  "include_dir",
+ "jsonld",
  "ldap3",
  "ldapfront",
  "models",

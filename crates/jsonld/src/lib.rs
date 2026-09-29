@@ -13,6 +13,7 @@ mod expand;
 mod iri;
 pub mod json;
 pub mod nquads;
+pub mod proof;
 pub mod rdf;
 mod to_rdf;
 

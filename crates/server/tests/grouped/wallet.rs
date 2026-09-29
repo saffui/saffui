@@ -1117,6 +1117,26 @@ async fn a_wallet_answers_a_presentation_request() {
         "an answered request is still served"
     );
 
+    // A query saying what the verifier would not hold an answer to is refused
+    // in words where it is asked.
+    let mut valued = pid_query();
+    valued["credentials"][0]["claims"][0]["values"] = json!(["Ada"]);
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/presentations"),
+        &bearer,
+        Some(json!({ "dcql_query": valued })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(
+        told["message"]
+            .as_str()
+            .is_some_and(|held| held.contains("a claim's values are not matched")),
+        "{told}"
+    );
+
     // A realm that closes the verifier serves no request, takes no answer and
     // asks for nothing more.
     let (_, pending) = ask_for_pid(&plane, &bearer).await;

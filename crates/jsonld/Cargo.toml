@@ -1,0 +1,17 @@
+[package]
+name = "jsonld"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+crypto = { workspace = true }
+data-encoding = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# The W3C suite's manifest and identifier maps are JSON.
+serde_json = { workspace = true }

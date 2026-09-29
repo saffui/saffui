@@ -49,6 +49,18 @@ const ISSUER_ALGORITHMS: [&str; 10] = [
 ];
 const HOLDER_ALGORITHMS: [&str; 4] = ["EdDSA", "ES256", "ES384", "ES512"];
 
+/// The members of a credential query this verifier checks, and those of a
+/// claims query.
+const CREDENTIAL_QUERY_MEMBERS: [&str; 6] = [
+    "id",
+    "format",
+    "multiple",
+    "meta",
+    "claims",
+    "require_cryptographic_holder_binding",
+];
+const CLAIMS_QUERY_MEMBERS: [&str; 2] = ["id", "path"];
+
 const SEALING_PURPOSE: &str = "presentation-response-key";
 const MOST_CREDENTIALS: usize = 5;
 const MOST_CLAIMS: usize = 32;
@@ -99,8 +111,10 @@ pub fn response_uri(issuer: &str) -> String {
 }
 
 /// Whether a DCQL query asks only for what this verifier can check: SD-JWT VC
-/// credentials, each naming the types it accepts, with claims named by paths
-/// of member names.
+/// credentials, each naming the types it accepts and bound to its holder, with
+/// claims named by paths of member names. Whatever else a query may say is
+/// refused rather than passed over, so that a verified answer never seems to
+/// have been held to it.
 pub fn check_query(query: &Value) -> Result<(), Unaskable> {
     let refused = Unaskable::NotAQuery;
     let asked = query
@@ -128,6 +142,21 @@ pub fn check_query(query: &Value) -> Result<(), Unaskable> {
         if !ids.insert(id) {
             return Err(refused("each credential has an id of its own"));
         }
+        if credential.get("claim_sets").is_some() {
+            return Err(refused(
+                "claim sets are not read yet: name the claims every credential must hold",
+            ));
+        }
+        if credential.get("trusted_authorities").is_some() {
+            return Err(refused(
+                "trusted authorities are not matched: the issuers the realm names decide",
+            ));
+        }
+        if has_member_outside(credential, &CREDENTIAL_QUERY_MEMBERS) {
+            return Err(refused(
+                "a credential is asked for by its id, format, multiple, meta, claims and require_cryptographic_holder_binding alone",
+            ));
+        }
         if credential.get("format").and_then(Value::as_str) != Some(SD_JWT_VC) {
             return Err(refused("each credential is asked for as dc+sd-jwt"));
         }
@@ -139,23 +168,75 @@ pub fn check_query(query: &Value) -> Result<(), Unaskable> {
                 "each credential names the types it accepts in meta.vct_values",
             ))?;
         if credential
+            .get("meta")
+            .is_some_and(|meta| has_member_outside(meta, &["vct_values"]))
+        {
+            return Err(refused("meta names the types a credential may be of alone"));
+        }
+        if credential
             .get("multiple")
             .is_some_and(|many| many != &json!(false))
         {
             return Err(refused("each credential is asked for once"));
         }
+        if credential
+            .get("require_cryptographic_holder_binding")
+            .is_some_and(|required| required != &json!(true))
+        {
+            return Err(refused("each credential is asked for bound to its holder"));
+        }
         if let Some(claims) = credential.get("claims") {
-            let claims = claims
-                .as_array()
-                .filter(|listed| !listed.is_empty() && listed.len() <= MOST_CLAIMS)
-                .ok_or(refused("claims, when given, are one to thirty-two paths"))?;
-            for claim in claims {
-                claim_path(claim)
-                    .ok_or(refused("each claim is named by a path of member names"))?;
-            }
+            check_claims_query(claims)?;
         }
     }
     Ok(())
+}
+
+/// The claims one credential is asked for: each named once, by a path of
+/// member names. A claim's values are refused: the verifier checks that a claim
+/// is held, never what it holds, and the specification leaves value matching to
+/// the wallet's discretion.
+fn check_claims_query(claims: &Value) -> Result<(), Unaskable> {
+    let refused = Unaskable::NotAQuery;
+    let claims = claims
+        .as_array()
+        .filter(|listed| !listed.is_empty() && listed.len() <= MOST_CLAIMS)
+        .ok_or(refused("claims, when given, are one to thirty-two paths"))?;
+    let (mut ids, mut paths) = (HashSet::new(), HashSet::new());
+    for claim in claims {
+        if claim.get("values").is_some() {
+            return Err(refused(
+                "a claim's values are not matched: the verifier checks a claim is held, never its value",
+            ));
+        }
+        if has_member_outside(claim, &CLAIMS_QUERY_MEMBERS) {
+            return Err(refused("a claim is asked for by its id and path alone"));
+        }
+        if let Some(id) = claim.get("id") {
+            let id = id
+                .as_str()
+                .filter(|id| is_query_id(id))
+                .ok_or(refused("a claim's id is letters, digits, `_` and `-`"))?;
+            if !ids.insert(id) {
+                return Err(refused("each claim has an id of its own"));
+            }
+        }
+        let path =
+            claim_path(claim).ok_or(refused("each claim is named by a path of member names"))?;
+        if !paths.insert(path) {
+            return Err(refused("each claim is asked for once"));
+        }
+    }
+    Ok(())
+}
+
+/// Whether `object` holds a member `known` does not name.
+fn has_member_outside(object: &Value, known: &[&str]) -> bool {
+    object.as_object().is_some_and(|members| {
+        members
+            .keys()
+            .any(|member| !known.contains(&member.as_str()))
+    })
 }
 
 /// A request the realm asked, with where a wallet reads it.
@@ -735,6 +816,95 @@ mod tests {
             credential.insert("multiple".into(), json!(false));
         });
         assert_eq!(check_query(&once), Ok(()));
+        let bound = pid_query_with(|credential| {
+            credential.insert("require_cryptographic_holder_binding".into(), json!(true));
+            credential.insert(
+                "claims".into(),
+                json!([{ "id": "given", "path": ["given_name"] }, { "path": ["family_name"] }]),
+            );
+        });
+        assert_eq!(check_query(&bound), Ok(()));
+    }
+
+    /// What the verifier would not hold an answer to is refused where it is
+    /// asked, rather than passed over for a verified answer to seem to meet.
+    #[test]
+    fn a_query_saying_what_the_verifier_does_not_check_is_refused() {
+        let refused_for = |query: &Value| match check_query(query) {
+            Err(Unaskable::NotAQuery(why)) => why,
+            other => panic!("{query} was taken: {other:?}"),
+        };
+        for (member, value, why) in [
+            (
+                "claim_sets",
+                json!([["given"]]),
+                "claim sets are not read yet: name the claims every credential must hold",
+            ),
+            (
+                "trusted_authorities",
+                json!([{ "type": "aki", "values": ["s9tIpPmhxdiuNkHMEWNpYim8S8Y"] }]),
+                "trusted authorities are not matched: the issuers the realm names decide",
+            ),
+            (
+                "require_cryptographic_holder_binding",
+                json!(false),
+                "each credential is asked for bound to its holder",
+            ),
+            (
+                "require_cryptographic_holder_binding",
+                json!("true"),
+                "each credential is asked for bound to its holder",
+            ),
+            (
+                "purpose",
+                json!("age check"),
+                "a credential is asked for by its id, format, multiple, meta, claims and require_cryptographic_holder_binding alone",
+            ),
+            (
+                "meta",
+                json!({ "vct_values": ["urn:eudi:pid:1"], "doctype_value": "org.iso.18013.5.1.mDL" }),
+                "meta names the types a credential may be of alone",
+            ),
+        ] {
+            let query = pid_query_with(|credential| {
+                credential.insert(member.into(), value.clone());
+            });
+            assert_eq!(refused_for(&query), why, "{member}: {value}");
+        }
+        for (claims, why) in [
+            (
+                json!([{ "path": ["given_name"], "values": ["Ada"] }]),
+                "a claim's values are not matched: the verifier checks a claim is held, never its value",
+            ),
+            (
+                json!([{ "path": ["given_name"], "intent_to_retain": false }]),
+                "a claim is asked for by its id and path alone",
+            ),
+            (
+                json!([{ "id": "given name", "path": ["given_name"] }]),
+                "a claim's id is letters, digits, `_` and `-`",
+            ),
+            (
+                json!([{ "id": 7, "path": ["given_name"] }]),
+                "a claim's id is letters, digits, `_` and `-`",
+            ),
+            (
+                json!([
+                    { "id": "given", "path": ["given_name"] },
+                    { "id": "given", "path": ["family_name"] }
+                ]),
+                "each claim has an id of its own",
+            ),
+            (
+                json!([{ "path": ["given_name"] }, { "path": ["given_name"] }]),
+                "each claim is asked for once",
+            ),
+        ] {
+            let query = pid_query_with(|credential| {
+                credential.insert("claims".into(), claims.clone());
+            });
+            assert_eq!(refused_for(&query), why, "{claims}");
+        }
     }
 
     #[test]

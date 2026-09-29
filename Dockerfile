@@ -49,6 +49,9 @@ RUN apt-get update \
 COPY --from=build /out/saffui /usr/local/bin/saffui
 # The binary embeds the consoles' fonts, and their licence travels with them.
 COPY assets/fonts/ibm-plex/LICENSE.txt /usr/share/licenses/saffui/ibm-plex/LICENSE.txt
+# It embeds three JSON-LD contexts too, and theirs travel the same way.
+COPY crates/jsonld/contexts/w3c/LICENSE.md /usr/share/licenses/saffui/jsonld-contexts/w3c/LICENSE.md
+COPY crates/jsonld/contexts/digitalbazaar/LICENSE /usr/share/licenses/saffui/jsonld-contexts/digitalbazaar/LICENSE
 USER saffui
 # Traffic, and the probes on a port of their own.
 EXPOSE 8080 8081

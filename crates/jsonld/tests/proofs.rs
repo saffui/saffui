@@ -1,7 +1,9 @@
 //! Data Integrity proofs, against a credential a real issuer signed and
-//! presentations signed here in the exact shape Inji's wallets give them.
+//! presentations signed here in the exact shape Inji's wallets give them, read
+//! under the contexts built in and the one context a realm would pin for the
+//! credential.
 //!
-//! The credential and the contexts are in `tests/proofs`, one folder per
+//! The credential and that context are in `tests/proofs`, one folder per
 //! upstream, recorded in THIRD-PARTY.md.
 
 use std::collections::HashMap;
@@ -13,6 +15,7 @@ use crypto::provider::openssl::OpenSslProvider;
 use crypto::provider::{CryptoConfig, CryptoProvider, HashAlg, PublicKey};
 use data_encoding::BASE64URL_NOPAD;
 use jsonld::base58;
+use jsonld::built_in::{CREDENTIALS_V1, HeldContexts, JWS_2020_V1};
 use jsonld::canon::canonicalize;
 use jsonld::json::parse_strict;
 use jsonld::proof::{Bounds, Proof, Suite, Unproven, read_proof, verify_proof};
@@ -32,9 +35,6 @@ const ED25519_PUBLIC_KEY_PREFIX: [u8; 12] = [
     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
 ];
 
-const CREDENTIALS_V1: &str = "https://www.w3.org/2018/credentials/v1";
-const JWS_2020_V1: &str = "https://w3id.org/security/suites/jws-2020/v1";
-
 fn provider() -> OpenSslProvider {
     OpenSslProvider::new(&CryptoConfig::default()).expect("a provider")
 }
@@ -46,22 +46,13 @@ fn fixture(path: &str) -> Value {
     parse_strict(&std::fs::read(&path).expect("a fixture")).expect("JSON")
 }
 
-fn contexts() -> HashMap<String, Value> {
-    HashMap::from([
-        (
-            CREDENTIALS_V1.to_owned(),
-            fixture("w3c/credentials-v1.jsonld"),
-        ),
-        (JWS_2020_V1.to_owned(), fixture("w3c/jws-2020-v1.jsonld")),
-        (
-            "https://w3id.org/security/suites/ed25519-2020/v1".to_owned(),
-            fixture("digitalbazaar/ed25519-signature-2020-v1.jsonld"),
-        ),
-        (
-            "https://holashchand.github.io/test_project/insurance-context.json".to_owned(),
-            fixture("holashchand/insurance-context.json"),
-        ),
-    ])
+/// What a realm verifying the insurance credential pins beside the built-in
+/// contexts.
+fn pinned() -> HashMap<String, Value> {
+    HashMap::from([(
+        "https://holashchand.github.io/test_project/insurance-context.json".to_owned(),
+        fixture("holashchand/insurance-context.json"),
+    )])
 }
 
 fn insurance_credential() -> Value {
@@ -77,7 +68,14 @@ fn issuer_key() -> PublicKey {
 }
 
 fn verify(document: &Value, key: &PublicKey) -> Result<Proof, Unproven> {
-    verify_proof(&provider(), document, &contexts(), key, BOUNDS)
+    let pinned = pinned();
+    verify_proof(
+        &provider(),
+        document,
+        &HeldContexts::new(&pinned),
+        key,
+        BOUNDS,
+    )
 }
 
 #[test]
@@ -162,7 +160,9 @@ impl Holder {
 /// the reading and the canonicalization rather than taken from the verifier.
 fn hash_canonical(document: &Value) -> Vec<u8> {
     let provider = provider();
-    let quads = to_rdf(document, &contexts(), BOUNDS.most_quads).expect("a dataset");
+    let pinned = pinned();
+    let quads =
+        to_rdf(document, &HeldContexts::new(&pinned), BOUNDS.most_quads).expect("a dataset");
     let canonical =
         canonicalize(&provider, HashAlg::Sha256, &quads, BOUNDS.work).expect("canonical");
     provider

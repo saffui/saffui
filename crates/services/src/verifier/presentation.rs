@@ -921,36 +921,60 @@ mod tests {
         assert_eq!(check_query(&alternatives), Ok(()));
     }
 
+    /// Why `check_query` refuses `query`, which it must.
+    fn refusal_of(query: &Value) -> &'static str {
+        match check_query(query) {
+            Err(Unaskable::NotAQuery(why)) => why,
+            other => panic!("{query} was taken: {other:?}"),
+        }
+    }
+
     /// A JSON-LD query names each type as a credential's contexts expand it:
-    /// one left unexpanded names nothing a credential read here holds.
+    /// one left unexpanded names nothing a credential read here holds. A
+    /// query's `meta` names types as its format does, and nothing beside them.
     #[test]
     fn a_json_ld_query_names_the_types_it_accepts_expanded() {
-        for meta in [
-            json!({}),
-            json!({ "type_values": [] }),
-            json!({ "type_values": [[]] }),
-            json!({ "type_values": [["VerifiableCredential"]] }),
-            json!({ "type_values": ["https://issuer.example/vocab#IdentityCredential"] }),
-            json!({ "type_values": [[7]] }),
-            json!({ "vct_values": ["urn:eudi:pid:1"] }),
+        let unnamed = "each ldp_vc credential names the types it accepts in meta.type_values, lists of absolute IRIs";
+        let beside = "meta names the types a credential may be of alone";
+        let expanded = identity_query()["credentials"][0]["meta"]["type_values"].clone();
+        for (meta, why) in [
+            (json!({}), unnamed),
+            (json!({ "type_values": [] }), unnamed),
+            (json!({ "type_values": [[]] }), unnamed),
+            (
+                json!({ "type_values": [["VerifiableCredential"]] }),
+                unnamed,
+            ),
+            (
+                json!({ "type_values": ["https://issuer.example/vocab#IdentityCredential"] }),
+                unnamed,
+            ),
+            (json!({ "type_values": [[7]] }), unnamed),
+            (json!({ "vct_values": ["urn:eudi:pid:1"] }), unnamed),
+            (
+                json!({ "type_values": expanded.clone(), "vct_values": ["urn:eudi:pid:1"] }),
+                beside,
+            ),
         ] {
             let mut query = identity_query();
             query["credentials"][0]["meta"] = meta.clone();
-            assert!(
-                matches!(check_query(&query), Err(Unaskable::NotAQuery(_))),
-                "{meta}"
-            );
+            assert_eq!(refusal_of(&query), why, "{meta}");
         }
-        let sd_jwt_named_as_json_ld = pid_query_with(|credential| {
-            credential.insert(
-                "meta".into(),
-                identity_query()["credentials"][0]["meta"].clone(),
-            );
-        });
-        assert!(matches!(
-            check_query(&sd_jwt_named_as_json_ld),
-            Err(Unaskable::NotAQuery(_))
-        ));
+        for (meta, why) in [
+            (
+                json!({ "type_values": expanded.clone() }),
+                "each dc+sd-jwt credential names the types it accepts in meta.vct_values",
+            ),
+            (
+                json!({ "vct_values": ["urn:eudi:pid:1"], "type_values": expanded.clone() }),
+                beside,
+            ),
+        ] {
+            let query = pid_query_with(|credential| {
+                credential.insert("meta".into(), meta.clone());
+            });
+            assert_eq!(refusal_of(&query), why, "{meta}");
+        }
     }
 
     #[test]
@@ -978,10 +1002,6 @@ mod tests {
     /// asked, rather than passed over for a verified answer to seem to meet.
     #[test]
     fn a_query_saying_what_the_verifier_does_not_check_is_refused() {
-        let refused_for = |query: &Value| match check_query(query) {
-            Err(Unaskable::NotAQuery(why)) => why,
-            other => panic!("{query} was taken: {other:?}"),
-        };
         for (member, value, why) in [
             (
                 "claim_sets",
@@ -1017,7 +1037,7 @@ mod tests {
             let query = pid_query_with(|credential| {
                 credential.insert(member.into(), value.clone());
             });
-            assert_eq!(refused_for(&query), why, "{member}: {value}");
+            assert_eq!(refusal_of(&query), why, "{member}: {value}");
         }
         for (claims, why) in [
             (
@@ -1051,7 +1071,7 @@ mod tests {
             let query = pid_query_with(|credential| {
                 credential.insert("claims".into(), claims.clone());
             });
-            assert_eq!(refused_for(&query), why, "{claims}");
+            assert_eq!(refusal_of(&query), why, "{claims}");
         }
     }
 

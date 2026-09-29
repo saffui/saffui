@@ -25,6 +25,7 @@ import {
   listRealmFeatures,
   listSignInEvents,
   listCredentialIssuers,
+  listJsonLdContexts,
   listTrustAnchors,
   previewPartialImport,
   readRelayRefusals,
@@ -146,6 +147,15 @@ describe("realm settings", () => {
     const named = await keepAnswer(listCredentialIssuers, REALM);
     expect(typeof named.running).toBe("boolean");
     expect(Array.isArray(named.items)).toBe(true);
+  });
+
+  // Pinning one reads it where it lives, which this server may not dial here
+  // either; the listing carries the contexts every realm holds.
+  test("lists the JSON-LD contexts, those built in, and whether the verifier runs", async () => {
+    const held = await keepAnswer(listJsonLdContexts, REALM);
+    expect(typeof held.running).toBe("boolean");
+    expect(held.built_in).toHaveLength(3);
+    expect(Array.isArray(held.items)).toBe(true);
   });
 
   test("lists features, page keys and sign-in events", async () => {

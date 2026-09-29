@@ -1362,6 +1362,33 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
       running: false,
     });
   }
+  if (/\/jsonld-contexts\/[^/]+$/.test(path) && method === "DELETE") {
+    return answer(undefined);
+  }
+  if (path.endsWith("/jsonld-contexts") || /\/jsonld-contexts\/[^/]+\/document$/.test(path)) {
+    const pinned = {
+      id: "8e1b4d7a2c9f0e3b5a6d8c1f4e7b0a2d",
+      url: "https://inji.github.io/inji-config/contexts/mosip-identity-context.json",
+      digest: "2b1a9c4e7d0f3a6b8c5e2d9f1a4b7c0e3d6f9a2c5b8e1d4a7c0f3b6e9d2a5c8f",
+      octets: 2547,
+      read_at: "2026-09-29T08:10:00Z",
+      created_by: "ada",
+      created_at: "2026-09-29T08:10:00Z",
+    };
+    return answer(
+      method === "POST"
+        ? pinned
+        : {
+            running: false,
+            built_in: [
+              "https://w3id.org/security/suites/ed25519-2020/v1",
+              "https://w3id.org/security/suites/jws-2020/v1",
+              "https://www.w3.org/2018/credentials/v1",
+            ],
+            items: [pinned],
+          },
+    );
+  }
   if (/\/credential-issuers\/[^/]+$/.test(path) && method === "DELETE") {
     return answer(undefined);
   }

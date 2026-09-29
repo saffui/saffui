@@ -14,7 +14,7 @@ use jsonld::json::parse_strict;
 use jsonld::proof::{Bounds, Unproven, read_proof, verify_proof};
 use jsonld::{Contexts, Unreadable};
 use models::entities::credential_issuers::CredentialIssuer;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use store::providers::realms::credential_issuers;
 use store::tenancy::UnitOfWork;
 
@@ -125,8 +125,14 @@ fn verify_holder_proof<'p>(
     }) {
         return Err("a presentation names another holder than its signer");
     }
-    verify_proof(provider, presented, contexts, &holder, BOUNDS)
-        .map_err(|why| refused_proof(&why, "a presentation's signature is not its holder's"))?;
+    verify_proof(
+        provider,
+        presented,
+        contexts,
+        std::slice::from_ref(&holder),
+        BOUNDS,
+    )
+    .map_err(|why| refused_proof(&why, "a presentation's signature is not its holder's"))?;
 
     let credential = match presentation.get("verifiableCredential") {
         Some(Value::Array(listed)) => match listed.as_slice() {
@@ -164,17 +170,27 @@ fn verify_issued_credential(
     if proof.proof_purpose.as_deref() != Some("assertionMethod") {
         return Err("a credential's proof is not an assertion");
     }
-    // The method the proof names is the key: one the realm read from the
-    // issuer it names, under that very identifier.
-    let key = named
-        .keys
+    // Only a key the issuer asserts with, as the realm read it from that
+    // issuer, makes the proof the issuer's. The one the proof names when the
+    // issuer holds it under that very identifier; otherwise each of them, the
+    // identifier being only a hint: MOSIP's issuers name their key under
+    // another DID that publishes it too.
+    let asserted: Vec<&Map<String, Value>> =
+        named.keys.iter().filter_map(Value::as_object).collect();
+    let named_key = asserted
         .iter()
-        .filter_map(Value::as_object)
-        .find(|jwk| jwk.get("kid").and_then(Value::as_str) == Some(&proof.verification_method))
-        .ok_or("a credential is signed by a key its issuer does not assert with")?;
-    let key = public_key_from_jwk(key)
-        .ok_or("a credential is signed by a key this verifier does not read")?;
-    verify_proof(provider, presented.credential, contexts, &key, BOUNDS)
+        .find(|jwk| jwk.get("kid").and_then(Value::as_str) == Some(&proof.verification_method));
+    let keys: Vec<PublicKey> = match named_key {
+        Some(jwk) => public_key_from_jwk(jwk).into_iter().collect(),
+        None => asserted
+            .iter()
+            .filter_map(|jwk| public_key_from_jwk(jwk))
+            .collect(),
+    };
+    if keys.is_empty() {
+        return Err("a credential is signed by a key this verifier does not read");
+    }
+    verify_proof(provider, presented.credential, contexts, &keys, BOUNDS)
         .map_err(|why| refused_proof(&why, "a credential's signature is not its issuer's"))?;
 
     let mut unsigned = presented.credential.clone();

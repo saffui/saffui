@@ -73,7 +73,7 @@ fn verify(document: &Value, key: &PublicKey) -> Result<Proof, Unproven> {
         &provider(),
         document,
         &HeldContexts::new(&pinned),
-        key,
+        std::slice::from_ref(key),
         BOUNDS,
     )
 }
@@ -108,6 +108,26 @@ fn a_changed_claim_or_another_key_verifies_nothing() {
         ),
         Err(Unproven::Signature)
     );
+}
+
+/// A proof holds under whichever of the keys given signed it, and under none
+/// when none did.
+#[test]
+fn a_proof_verifies_under_any_of_the_keys_given() {
+    let pinned = pinned();
+    let contexts = HeldContexts::new(&pinned);
+    let another = PublicKey::from_der(
+        EdDSA
+            .generate_key_pair(Ed25519)
+            .expect("a key pair")
+            .to_der_public_key(),
+    );
+    let credential = insurance_credential();
+    let under =
+        |keys: &[PublicKey]| verify_proof(&provider(), &credential, &contexts, keys, BOUNDS);
+    assert!(under(&[another.clone(), issuer_key()]).is_ok());
+    assert_eq!(under(&[another]), Err(Unproven::Signature));
+    assert_eq!(under(&[]), Err(Unproven::Signature));
 }
 
 /// The insurance context maps `policyName` and `policyNumber` to the same IRI,

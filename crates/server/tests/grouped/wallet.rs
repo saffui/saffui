@@ -1755,6 +1755,20 @@ async fn a_wallet_presents_a_json_ld_credential() {
     for value in ["Ama", "Mensah", "1990-04-15", "5555"] {
         assert!(!kept.contains(value), "a presented value was kept: {kept}");
     }
+
+    // A proof naming the issuer's key under another identifier, as MOSIP's
+    // issuers write one, is the issuer's all the same: the key decides.
+    let (asked_for, request) = ask_for(&plane, &bearer, &query).await;
+    let (client_id, nonce) = client_id_and_nonce(&request);
+    let elsewhere = wallet.issued_as(|_, options| {
+        options["verificationMethod"] = json!("did:web:keys.issuer.example#key-1");
+    });
+    let answer = identity_answer(wallet.presented(elsewhere, client_id, nonce), &request);
+    let response = encrypted(&request, &answer);
+    let (status, told) = answered(&plane, &request, &[("response", &response)]).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let standing = standing_of(&plane, &bearer, &asked_for["id"]).await;
+    assert_eq!(standing["status"], "verified", "{standing}");
 }
 
 /// Each check a JSON-LD presentation must pass fails its request on its own,
@@ -1965,11 +1979,15 @@ async fn a_json_ld_presentation_that_does_not_hold_settles_its_request_once() {
             }),
         ),
         (
-            refused(
-                &query,
-                "a credential is signed by a key its issuer does not assert with",
-            ),
-            wallet.issued_as(|_, options| {
+            refused(&query, "a credential's signature is not its issuer's"),
+            IdentityWallet {
+                issuer_key: crypto::jose::jwk::alg::ed::EdKeyPair::generate(
+                    crypto::jose::jwk::Ed25519,
+                )
+                .expect("a key"),
+                ..wallet.clone()
+            }
+            .issued_as(|_, options| {
                 options["verificationMethod"] = json!(format!("{}#key-2", wallet.issuer()));
             }),
         ),

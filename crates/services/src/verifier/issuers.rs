@@ -164,26 +164,37 @@ pub fn read_did_document(did: &str, document: &str) -> Result<Vec<Value>, Unread
         .unwrap_or_default();
     // Only the keys the issuer asserts with: a credential is signed under the
     // assertion purpose, and a key listed for another purpose is not one.
-    let mut keys = Vec::new();
-    for asserted in said
+    let asserted = said
         .get("assertionMethod")
         .and_then(Value::as_array)
         .map(Vec::as_slice)
-        .unwrap_or_default()
-    {
-        let method = match asserted {
-            Value::String(id) => {
-                let id = absolute(id);
-                methods
-                    .iter()
-                    .find(|method| {
-                        method.get("id").and_then(Value::as_str).map(absolute) == Some(id.clone())
-                    })
-                    .copied()
-            }
-            Value::Object(method) => Some(method),
-            _ => None,
+        .unwrap_or_default();
+    // MOSIP's issuers list the DID itself there rather than one of its
+    // methods: every method its document holds.
+    let listed: Vec<Option<&Map<String, Value>>> =
+        if asserted.iter().any(|entry| entry.as_str() == Some(did)) {
+            methods.iter().copied().map(Some).collect()
+        } else {
+            asserted
+                .iter()
+                .map(|entry| match entry {
+                    Value::String(id) => {
+                        let id = absolute(id);
+                        methods
+                            .iter()
+                            .find(|method| {
+                                method.get("id").and_then(Value::as_str).map(absolute)
+                                    == Some(id.clone())
+                            })
+                            .copied()
+                    }
+                    Value::Object(method) => Some(method),
+                    _ => None,
+                })
+                .collect()
         };
+    let mut keys = Vec::new();
+    for method in listed {
         let Some(method) = method else { continue };
         let Some(id) = method.get("id").and_then(Value::as_str).map(absolute) else {
             continue;
@@ -436,6 +447,49 @@ mod tests {
             json!({ "id": did, "verificationMethod": document["verificationMethod"] });
         assert_eq!(
             read_did_document(did, &nothing_asserted.to_string()),
+            Err(Unreadable::NoUsableKey)
+        );
+    }
+
+    /// The DID listed as its own assertion method, as MOSIP's issuers write it,
+    /// asserts with every method its document holds that this server reads.
+    #[test]
+    fn a_did_listed_as_its_own_assertion_method_asserts_with_each_of_its_keys() {
+        let did = "did:web:inji.github.io:inji-config:collab:mosipid-identity";
+        let document = json!({
+            "id": did,
+            "verificationMethod": [
+                {
+                    "id": format!("{did}#k1"),
+                    "type": "EcdsaSecp256k1VerificationKey2019",
+                    "controller": did,
+                    "publicKeyJwk": { "kty": "EC", "crv": "secp256k1", "x": ED25519_X, "y": ED25519_X }
+                },
+                {
+                    "id": format!("{did}#k2"),
+                    "type": "Ed25519VerificationKey2020",
+                    "controller": did,
+                    "publicKeyMultibase": ED25519_MULTIBASE
+                }
+            ],
+            "assertionMethod": [did]
+        });
+        assert_eq!(
+            read_did_document(did, &document.to_string()),
+            Ok(vec![json!({
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": ED25519_X,
+                "kid": format!("{did}#k2")
+            })])
+        );
+        let another = json!({
+            "id": did,
+            "verificationMethod": document["verificationMethod"],
+            "assertionMethod": ["did:web:elsewhere.example"]
+        });
+        assert_eq!(
+            read_did_document(did, &another.to_string()),
             Err(Unreadable::NoUsableKey)
         );
     }

@@ -1,7 +1,8 @@
 //! Linked data as a verifier of W3C credentials needs it: JSON-LD read into an
 //! RDF dataset from contexts held locally, built in or pinned by a realm, the
 //! dataset's canonical N-Quads form, RDF Dataset Canonicalization (RDFC-1.0),
-//! and the Data Integrity proofs signed over it.
+//! the Data Integrity proofs signed over it, and the types and claims a
+//! verifier may take from a credential those proofs sign.
 //!
 //! The reading is strict. Wherever the JSON-LD algorithms would drop part of a
 //! document in silence, and so leave it out of what a proof signs, it refuses
@@ -10,6 +11,7 @@
 pub mod base58;
 pub mod built_in;
 pub mod canon;
+pub mod claims;
 mod context;
 mod expand;
 mod iri;
@@ -20,6 +22,7 @@ pub mod rdf;
 mod to_rdf;
 
 pub use context::{Contexts, check_context_document};
+pub use iri::is_absolute_iri;
 pub use to_rdf::to_rdf;
 
 /// Why a document was not read into RDF.

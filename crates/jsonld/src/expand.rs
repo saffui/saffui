@@ -13,6 +13,16 @@ pub(crate) struct Expander<'c> {
     pub contexts: &'c dyn Contexts,
 }
 
+/// The contexts a node object is read under.
+pub(crate) struct NodeContexts<'e> {
+    /// Its keys'.
+    pub active: ActiveContext,
+    /// Its types', as they stood before any type stood up a context.
+    pub type_scoped: ActiveContext,
+    /// Its keys that name its types, in lexicographic order.
+    pub type_keys: Vec<&'e String>,
+}
+
 impl Expander<'_> {
     /// §5.1.2: `element` expanded, `Value::Null` for nothing.
     pub(crate) fn expand(
@@ -69,14 +79,15 @@ impl Expander<'_> {
         }
     }
 
-    fn expand_object(
+    /// Steps 7 to 11: the contexts a node object's keys and types are read
+    /// under.
+    pub(crate) fn read_node_contexts<'e>(
         &self,
         active: &ActiveContext,
-        active_property: Option<&str>,
-        element: &Map<String, Value>,
+        element: &'e Map<String, Value>,
         from_map: bool,
-        property_scoped: Option<Value>,
-    ) -> Result<Value, Unreadable> {
+        property_scoped: Option<&Value>,
+    ) -> Result<NodeContexts<'e>, Unreadable> {
         // 7: a context a type stood up does not reach into another node.
         let mut active = active.clone();
         if let Some(previous) = active.previous.clone() {
@@ -92,7 +103,7 @@ impl Expander<'_> {
             }
         }
         // 8
-        if let Some(scoped) = &property_scoped {
+        if let Some(scoped) = property_scoped {
             active = process(self.contexts, &active, scoped, &[], true, true, true)?;
         }
         // 9
@@ -120,6 +131,26 @@ impl Expander<'_> {
                 }
             }
         }
+        Ok(NodeContexts {
+            active,
+            type_scoped,
+            type_keys,
+        })
+    }
+
+    fn expand_object(
+        &self,
+        active: &ActiveContext,
+        active_property: Option<&str>,
+        element: &Map<String, Value>,
+        from_map: bool,
+        property_scoped: Option<Value>,
+    ) -> Result<Value, Unreadable> {
+        let NodeContexts {
+            active,
+            type_scoped,
+            type_keys,
+        } = self.read_node_contexts(active, element, from_map, property_scoped.as_ref())?;
         // 12
         let input_type = type_keys.first().and_then(|key| {
             let last = match &element[key.as_str()] {

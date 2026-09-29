@@ -833,6 +833,11 @@ async fn read_request(plane: &Plane, link: &str) -> serde_json::Map<String, Valu
     use crypto::jose::jws::EdDSA;
     let link = url::Url::parse(link).expect("an openid4vp link");
     assert_eq!(link.scheme(), "openid4vp");
+    assert_eq!(
+        link.host_str(),
+        Some("authorize"),
+        "Inji's wallets take no other link"
+    );
     let given = |name: &str| {
         link.query_pairs()
             .find(|(held, _)| held == name)
@@ -970,12 +975,22 @@ fn pid_query() -> Value {
 
 /// Ask the realm for a PID, and read the request as the wallet reads it.
 async fn ask_for_pid(plane: &Plane, bearer: &str) -> (Value, serde_json::Map<String, Value>) {
+    ask_for(plane, bearer, &pid_query()).await
+}
+
+/// Ask the realm for what `query` names, and read the request as the wallet
+/// reads it.
+async fn ask_for(
+    plane: &Plane,
+    bearer: &str,
+    query: &Value,
+) -> (Value, serde_json::Map<String, Value>) {
     let (status, asked_for) = asked(
         plane,
         Method::POST,
         &format!("/admin/realms/{REALM}/presentations"),
         bearer,
-        Some(json!({ "dcql_query": pid_query() })),
+        Some(json!({ "dcql_query": query })),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{asked_for}");
@@ -1172,7 +1187,19 @@ async fn answer_fails(
     reason: &str,
     answer: impl FnOnce(&serde_json::Map<String, Value>) -> Value,
 ) {
-    let (asked_for, request) = ask_for_pid(plane, bearer).await;
+    answer_to_fails(plane, bearer, &pid_query(), reason, answer).await;
+}
+
+/// Ask for what `query` names, answer with what `answer` makes of the request,
+/// and check the request failed, once, for the reason given.
+async fn answer_to_fails(
+    plane: &Plane,
+    bearer: &str,
+    query: &Value,
+    reason: &str,
+    answer: impl FnOnce(&serde_json::Map<String, Value>) -> Value,
+) {
+    let (asked_for, request) = ask_for(plane, bearer, query).await;
     let response = encrypted(&request, &answer(&request));
     let (status, told) = answered(plane, &request, &[("response", &response)]).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{reason}: {told}");
@@ -1364,4 +1391,744 @@ async fn an_answer_that_does_not_hold_settles_its_request_once() {
     .await
     .expect("a sweep");
     assert_eq!(swept.presentation_requests, 11);
+}
+
+/// The type the scripted issuer's identity credentials hold, expanded.
+const IDENTITY_TYPE: &str = "https://issuer.example/vocab#IdentityCredential";
+const CREDENTIAL_TYPE: &str = "https://www.w3.org/2018/credentials#VerifiableCredential";
+
+/// The context the identity credentials name: their type and claims MOSIP's
+/// identity credentials hold; two claims written to one property, as issuers'
+/// contexts write them; terms naming again the issuer, the subject and the
+/// expiry the credentials context names; and an index map.
+fn identity_context() -> Value {
+    json!({ "@context": {
+        "@version": 1.1,
+        "IdentityCredential": IDENTITY_TYPE,
+        "fullName": "https://schema.org/name",
+        "dateOfBirth": "https://schema.org/birthDate",
+        "policyName": "https://schema.org/Text",
+        "policyNumber": "https://schema.org/Text",
+        "issuedBy": { "@id": "https://www.w3.org/2018/credentials#issuer", "@type": "@id" },
+        "holderSubject": {
+            "@id": "https://www.w3.org/2018/credentials#credentialSubject",
+            "@type": "@id"
+        },
+        "validity": {
+            "@id": "https://www.w3.org/2018/credentials#expirationDate",
+            "@type": "http://www.w3.org/2001/XMLSchema#dateTime"
+        },
+        "identifiers": {
+            "@id": "https://issuer.example/vocab#identifiers",
+            "@container": "@index"
+        }
+    } })
+}
+
+/// A context the issuer's credentials may name and the realm never pins.
+const UNPINNED_CONTEXT: &str = "https://issuer.example/contexts/unpinned.jsonld";
+
+/// An issuer of JSON-LD credentials on a real socket: its JWT VC issuer
+/// metadata, each key named by the absolute method identifier a proof names it
+/// with, and the context its credentials name.
+fn serve_identity_issuer(keys: Vec<(&'static str, Value)>) -> String {
+    use actix_web::{App, HttpResponse, HttpServer, web};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let base = format!(
+        "http://127.0.0.1:{}",
+        listener.local_addr().expect("an address").port()
+    );
+    let served = base.clone();
+    let server = HttpServer::new(move || {
+        let (base, keys) = (served.clone(), keys.clone());
+        App::new()
+            .route(
+                "/.well-known/jwt-vc-issuer/identity",
+                web::get().to(move || {
+                    let keys: Vec<Value> = keys
+                        .iter()
+                        .map(|(fragment, key)| {
+                            let mut key = key.clone();
+                            key["kid"] = json!(format!("{base}/identity#{fragment}"));
+                            key
+                        })
+                        .collect();
+                    let document = json!({
+                        "issuer": format!("{base}/identity"),
+                        "jwks": { "keys": keys },
+                    });
+                    async move { HttpResponse::Ok().json(document) }
+                }),
+            )
+            .route(
+                "/contexts/identity.jsonld",
+                web::get().to(|| async { HttpResponse::Ok().json(identity_context()) }),
+            )
+    })
+    .listen(listener)
+    .expect("a listener")
+    .workers(1)
+    .disable_signals()
+    .run();
+    tokio::spawn(server);
+    base
+}
+
+/// A holder of a JSON-LD identity credential, presenting it the way Inji's
+/// wallets do: the credential alone in a presentation, signed with a detached
+/// JWS by the `did:jwk` key the credential binds, for one request.
+#[derive(Clone)]
+struct IdentityWallet {
+    base: String,
+    issuer_key: crypto::jose::jwk::alg::ed::EdKeyPair,
+    holder_key: crypto::jose::jwk::alg::ec::EcKeyPair,
+}
+
+impl IdentityWallet {
+    fn issuer(&self) -> String {
+        format!("{}/identity", self.base)
+    }
+
+    fn context_url(&self) -> String {
+        format!("{}/contexts/identity.jsonld", self.base)
+    }
+
+    /// The holder's DID, its key base64url-encoded: padded, as MOSIP's issuers
+    /// write it in a credential, or not, as Inji's wallets sign with it.
+    fn holder_did(&self, padded: bool) -> String {
+        use crypto::jose::jwk::KeyPair;
+        let jwk = Value::Object(self.holder_key.to_jwk_public_key().as_ref().clone()).to_string();
+        let encoding = if padded {
+            data_encoding::BASE64URL
+        } else {
+            data_encoding::BASE64URL_NOPAD
+        };
+        format!("did:jwk:{}", encoding.encode(jwk.as_bytes()))
+    }
+
+    /// The SHA-256 of a document's dataset in canonical form, read under the
+    /// contexts the issuer and the wallet hold, within bounds far above the
+    /// realm's: what the issuer signs, the realm may still refuse to read.
+    fn hash_canonical(&self, document: &Value) -> Vec<u8> {
+        use crypto::provider::{CryptoProvider, HashAlg};
+        let held = std::collections::HashMap::from([
+            (self.context_url(), identity_context()),
+            (
+                UNPINNED_CONTEXT.to_owned(),
+                json!({ "@context": { "nickname": "https://schema.org/alternateName" } }),
+            ),
+        ]);
+        let contexts = jsonld::built_in::HeldContexts::new(&held);
+        let quads = jsonld::to_rdf(document, &contexts, 100_000).expect("a dataset");
+        let provider = support::provider();
+        let canonical = jsonld::canon::canonicalize(&provider, HashAlg::Sha256, &quads, 100_000)
+            .expect("a canonical form");
+        provider
+            .digest()
+            .hash(HashAlg::Sha256, canonical.nquads.as_bytes())
+            .expect("a digest")
+    }
+
+    /// The credential the issuer signs, `change` made to it and to its proof's
+    /// options first.
+    fn issued_as(&self, change: impl FnOnce(&mut Value, &mut Value)) -> Value {
+        use crypto::jose::jws::EdDSA;
+        let now = chrono::Utc::now();
+        let written = |at: chrono::DateTime<chrono::Utc>| {
+            at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        };
+        let mut credential = json!({
+            "@context": [
+                jsonld::built_in::CREDENTIALS_V1,
+                self.context_url(),
+                jsonld::built_in::ED25519_2020_V1,
+            ],
+            "id": "urn:uuid:0f5b4a52-6a0f-4b8e-9a51-6f3c4d2e1b7a",
+            "type": ["VerifiableCredential", "IdentityCredential"],
+            "issuer": self.issuer(),
+            "issuanceDate": written(now - chrono::Duration::hours(1)),
+            "expirationDate": written(now + chrono::Duration::days(365)),
+            "credentialSubject": {
+                "id": self.holder_did(true),
+                "fullName": "Ama Mensah",
+                "dateOfBirth": "1990-04-15",
+                "policyName": "Family",
+                "policyNumber": "5555",
+            },
+        });
+        let mut options = json!({
+            "type": "Ed25519Signature2020",
+            "created": written(now),
+            "verificationMethod": format!("{}#key-1", self.issuer()),
+            "proofPurpose": "assertionMethod",
+        });
+        change(&mut credential, &mut options);
+        options["@context"] = credential["@context"].clone();
+        let signed = [
+            self.hash_canonical(&options),
+            self.hash_canonical(&credential),
+        ]
+        .concat();
+        let signer = EdDSA
+            .signer_from_pem(self.issuer_key.to_pem_private_key())
+            .expect("an issuer signer");
+        let signature = signer.sign(&signed).expect("a signature");
+        let proof = options.as_object_mut().expect("an object");
+        proof.remove("@context");
+        proof.insert(
+            "proofValue".to_owned(),
+            json!(format!("z{}", jsonld::base58::encode(&signature))),
+        );
+        credential["proof"] = options;
+        credential
+    }
+
+    /// The credential the issuer signs, `change` made to it first.
+    fn issued_with(&self, change: impl FnOnce(&mut Value)) -> Value {
+        self.issued_as(|credential, _| change(credential))
+    }
+
+    fn issued(&self) -> Value {
+        self.issued_with(|_| {})
+    }
+
+    /// A presentation of `credentials` for the request `client_id` and `nonce`
+    /// name, `change` made to it and to its proof's options before the holder
+    /// signs.
+    fn presented_as(
+        &self,
+        credentials: Vec<Value>,
+        client_id: &str,
+        nonce: &str,
+        change: impl FnOnce(&mut Value, &mut Value),
+    ) -> Value {
+        use crypto::jose::jws::ES256;
+        let holder = format!("{}#0", self.holder_did(false));
+        let mut presentation = json!({
+            "@context": [jsonld::built_in::CREDENTIALS_V1, jsonld::built_in::JWS_2020_V1],
+            "type": ["VerifiablePresentation"],
+            "verifiableCredential": credentials,
+            "id": "urn:uuid:9c1d7e2a-4b3f-4d6e-8a2b-1c0f5e6d7a8b",
+            "holder": holder,
+        });
+        let mut options = json!({
+            "type": "JsonWebSignature2020",
+            "challenge": nonce,
+            "domain": client_id,
+            "verificationMethod": holder,
+        });
+        change(&mut presentation, &mut options);
+        options["@context"] = presentation["@context"].clone();
+        let signed = [
+            self.hash_canonical(&options),
+            self.hash_canonical(&presentation),
+        ]
+        .concat();
+        let header = data_encoding::BASE64URL_NOPAD.encode(
+            json!({ "alg": "ES256", "b64": false, "crit": ["b64"] })
+                .to_string()
+                .as_bytes(),
+        );
+        let signer = ES256
+            .signer_from_pem(self.holder_key.to_pem_private_key())
+            .expect("a holder signer");
+        let signature = signer
+            .sign(&[header.as_bytes(), b".", &signed].concat())
+            .expect("a signature");
+        let proof = options.as_object_mut().expect("an object");
+        proof.remove("@context");
+        proof.insert(
+            "jws".to_owned(),
+            json!(format!(
+                "{header}..{}",
+                data_encoding::BASE64URL_NOPAD.encode(&signature)
+            )),
+        );
+        presentation["proof"] = options;
+        presentation
+    }
+
+    fn presented(&self, credential: Value, client_id: &str, nonce: &str) -> Value {
+        self.presented_as(vec![credential], client_id, nonce, |_, _| {})
+    }
+}
+
+/// Set a realm up to verify identity credentials in JSON-LD: the verifier
+/// running, an Ed25519 key, the issuer named with an Ed25519 key and an RSA
+/// one, and its context pinned. Hands back the wallet that holds that issuer's
+/// credential.
+async fn realm_ready_for_identity(plane: &Plane, bearer: &str) -> IdentityWallet {
+    use crypto::jose::jwk::KeyPair;
+    verifier_running();
+    let issuer_key = crypto::jose::jwk::alg::ed::EdKeyPair::generate(crypto::jose::jwk::Ed25519)
+        .expect("an issuer key");
+    let rsa = crypto::jose::jws::RS256
+        .generate_key_pair(2048)
+        .expect("an RSA key");
+    let base = serve_identity_issuer(vec![
+        (
+            "key-1",
+            Value::Object(issuer_key.to_jwk_public_key().as_ref().clone()),
+        ),
+        (
+            "rsa",
+            Value::Object(rsa.to_jwk_public_key().as_ref().clone()),
+        ),
+    ]);
+    let wallet = IdentityWallet {
+        base,
+        issuer_key,
+        holder_key: crypto::jose::jwk::alg::ec::EcKeyPair::generate(
+            crypto::jose::jwk::alg::ec::EcCurve::P256,
+        )
+        .expect("a holder key"),
+    };
+    for (path, body) in [
+        (
+            "credential-issuers",
+            json!({ "name": "Identity", "issuer": wallet.issuer() }),
+        ),
+        ("jsonld-contexts", json!({ "url": wallet.context_url() })),
+    ] {
+        let (status, told) = asked_under(
+            plane,
+            config::serving::Egress::Anywhere,
+            Method::POST,
+            &format!("/admin/realms/{REALM}/{path}"),
+            bearer,
+            Some(body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{told}");
+    }
+    let (status, told) = asked(
+        plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/keys"),
+        bearer,
+        Some(json!({ "algorithm": "EdDSA" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+    wallet
+}
+
+/// A query for the identity credential, and the claims `claims` names.
+fn identity_query(claims: &[&[&str]]) -> Value {
+    json!({
+        "credentials": [{
+            "id": "identity",
+            "format": "ldp_vc",
+            "meta": { "type_values": [[CREDENTIAL_TYPE, IDENTITY_TYPE]] },
+            "claims": claims.iter().map(|path| json!({ "path": path })).collect::<Vec<_>>(),
+        }]
+    })
+}
+
+fn identity_answer(presentation: Value, request: &serde_json::Map<String, Value>) -> Value {
+    json!({ "vp_token": { "identity": [presentation] }, "state": request["state"] })
+}
+
+/// The whole door for a JSON-LD credential, against a wallet that does what
+/// Inji's wallets do: the realm asks by the credential's expanded types, the
+/// wallet presents it in a presentation bound to the request, and the realm
+/// verifies both proofs under the contexts it pinned and the key it read from
+/// the issuer it names. What it keeps names the types and the claims, never a
+/// value.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_wallet_presents_a_json_ld_credential() {
+    let (plane, bearer) = plane_that_verifies().await;
+    let wallet = realm_ready_for_identity(&plane, &bearer).await;
+    let query = identity_query(&[
+        &["credentialSubject", "fullName"],
+        &["credentialSubject", "dateOfBirth"],
+    ]);
+    let (asked_for, request) = ask_for(&plane, &bearer, &query).await;
+    assert_eq!(request["dcql_query"], query);
+    assert_eq!(
+        request["client_metadata"]["vp_formats_supported"]["ldp_vc"]["proof_type_values"],
+        json!(["Ed25519Signature2020", "JsonWebSignature2020"])
+    );
+
+    let (client_id, nonce) = client_id_and_nonce(&request);
+    let answer = identity_answer(
+        wallet.presented(wallet.issued(), client_id, nonce),
+        &request,
+    );
+    let response = encrypted(&request, &answer);
+    let (status, told) = answered(&plane, &request, &[("response", &response)]).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+
+    let standing = standing_of(&plane, &bearer, &asked_for["id"]).await;
+    assert_eq!(standing["status"], "verified", "{standing}");
+    assert_eq!(
+        standing["outcome"]["credentials"],
+        json!([{
+            "id": "identity",
+            "issuer": wallet.issuer(),
+            "types": [CREDENTIAL_TYPE, IDENTITY_TYPE],
+            "claims": ["credentialSubject.fullName", "credentialSubject.dateOfBirth"],
+        }])
+    );
+    let kept = standing.to_string();
+    for value in ["Ama", "Mensah", "1990-04-15", "5555"] {
+        assert!(!kept.contains(value), "a presented value was kept: {kept}");
+    }
+
+    // A proof naming the issuer's key under another identifier, as MOSIP's
+    // issuers write one, is the issuer's all the same: the key decides.
+    let (asked_for, request) = ask_for(&plane, &bearer, &query).await;
+    let (client_id, nonce) = client_id_and_nonce(&request);
+    let elsewhere = wallet.issued_as(|_, options| {
+        options["verificationMethod"] = json!("did:web:keys.issuer.example#key-1");
+    });
+    let answer = identity_answer(wallet.presented(elsewhere, client_id, nonce), &request);
+    let response = encrypted(&request, &answer);
+    let (status, told) = answered(&plane, &request, &[("response", &response)]).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let standing = standing_of(&plane, &bearer, &asked_for["id"]).await;
+    assert_eq!(standing["status"], "verified", "{standing}");
+}
+
+/// Each check a JSON-LD presentation must pass fails its request on its own,
+/// in the realm's words.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_json_ld_presentation_that_does_not_hold_settles_its_request_once() {
+    let (plane, bearer) = plane_that_verifies().await;
+    let wallet = realm_ready_for_identity(&plane, &bearer).await;
+    let (plane, bearer) = (&plane, bearer.as_str());
+    let query = identity_query(&[&["credentialSubject", "fullName"]]);
+    let present = |credential: Value, request: &serde_json::Map<String, Value>| {
+        let (client_id, nonce) = client_id_and_nonce(request);
+        identity_answer(wallet.presented(credential, client_id, nonce), request)
+    };
+    let present_as = |request: &serde_json::Map<String, Value>,
+                      change: &dyn Fn(&mut Value, &mut Value)| {
+        let (client_id, nonce) = client_id_and_nonce(request);
+        identity_answer(
+            wallet.presented_as(vec![wallet.issued()], client_id, nonce, change),
+            request,
+        )
+    };
+    // What the answer holds as the presentation, once the holder has signed.
+    let signed_then = |request: &serde_json::Map<String, Value>,
+                       change: &dyn Fn(&mut serde_json::Map<String, Value>)| {
+        let mut answer = present(wallet.issued(), request);
+        change(
+            answer["vp_token"]["identity"][0]
+                .as_object_mut()
+                .expect("a presentation"),
+        );
+        answer
+    };
+    let refused = |query: &Value, reason: &'static str| (query.clone(), reason);
+
+    // The presentation: its proof, its binding to the request and its holder.
+    for (reason, answer) in [
+        (
+            "a presentation is not bound to this request",
+            Box::new(|request: &serde_json::Map<String, Value>| {
+                let (client_id, _) = client_id_and_nonce(request);
+                identity_answer(
+                    wallet.presented(wallet.issued(), client_id, "another-nonce"),
+                    request,
+                )
+            }) as Box<dyn Fn(&serde_json::Map<String, Value>) -> Value>,
+        ),
+        (
+            "a presentation is not bound to this request",
+            Box::new(|request| {
+                let (_, nonce) = client_id_and_nonce(request);
+                identity_answer(
+                    wallet.presented(
+                        wallet.issued(),
+                        "decentralized_identifier:did:web:elsewhere.example",
+                        nonce,
+                    ),
+                    request,
+                )
+            }),
+        ),
+        (
+            "a presentation's proof is not for authentication",
+            Box::new(|request| {
+                present_as(request, &|_, options| {
+                    options["proofPurpose"] = json!("assertionMethod");
+                })
+            }),
+        ),
+        (
+            "a presentation is not signed by a did:jwk key",
+            Box::new(|request| {
+                present_as(request, &|presentation, options| {
+                    let method = format!("{}#key-1", wallet.holder_did(false));
+                    presentation["holder"] = json!(method);
+                    options["verificationMethod"] = json!(method);
+                })
+            }),
+        ),
+        (
+            "a presentation names another holder than its signer",
+            Box::new(|request| {
+                present_as(request, &|presentation, _| {
+                    presentation["holder"] = json!("did:example:someone-else");
+                })
+            }),
+        ),
+        (
+            "a presentation's proof is missing or malformed",
+            Box::new(|request| {
+                signed_then(request, &|presentation| {
+                    presentation.remove("proof");
+                })
+            }),
+        ),
+        (
+            "a presentation's signature is not its holder's",
+            Box::new(|request| {
+                signed_then(request, &|presentation| {
+                    presentation["verifiableCredential"][0]["credentialSubject"]["fullName"] =
+                        json!("Kofi Owusu");
+                })
+            }),
+        ),
+        (
+            "a presentation holds what its proofs would not sign",
+            Box::new(|request| {
+                signed_then(request, &|presentation| {
+                    presentation["verifiableCredential"][0]["credentialSubject"]["nickname"] =
+                        json!("Ama");
+                })
+            }),
+        ),
+        (
+            "a presentation's proofs are malformed",
+            Box::new(|request| {
+                signed_then(request, &|presentation| {
+                    presentation.remove("@context");
+                })
+            }),
+        ),
+        (
+            "a presentation names a JSON-LD context this realm does not pin",
+            Box::new(|request| {
+                present(
+                    wallet.issued_with(|credential| {
+                        credential["@context"]
+                            .as_array_mut()
+                            .expect("contexts")
+                            .push(json!(UNPINNED_CONTEXT));
+                    }),
+                    request,
+                )
+            }),
+        ),
+        (
+            "a presentation is too large or too complex to verify",
+            Box::new(|request| {
+                present(
+                    wallet.issued_with(|credential| {
+                        credential["credentialSubject"]["policyName"] = json!(
+                            (0..1_000)
+                                .map(|at| format!("policy {at}"))
+                                .collect::<Vec<_>>()
+                        );
+                    }),
+                    request,
+                )
+            }),
+        ),
+        (
+            "a presentation carries one credential",
+            Box::new(|request| {
+                let (client_id, nonce) = client_id_and_nonce(request);
+                identity_answer(
+                    wallet.presented_as(
+                        vec![wallet.issued(), wallet.issued()],
+                        client_id,
+                        nonce,
+                        |_, _| {},
+                    ),
+                    request,
+                )
+            }),
+        ),
+        (
+            "a credential is not presented in the form its format takes",
+            Box::new(|request| identity_answer(json!(wallet.issued().to_string()), request)),
+        ),
+    ] {
+        answer_to_fails(plane, bearer, &query, reason, answer).await;
+    }
+
+    // The credential: its issuer, its proof, its binding, its dates, its type
+    // and its claims.
+    for ((query, reason), credential) in [
+        (
+            refused(&query, "a credential names no issuer"),
+            wallet.issued_with(|credential| {
+                credential
+                    .as_object_mut()
+                    .expect("a credential")
+                    .remove("issuer");
+            }),
+        ),
+        (
+            refused(&query, "a credential's issuer is not one this realm names"),
+            wallet.issued_with(|credential| {
+                credential["issuer"] = json!("https://elsewhere.example/identity");
+            }),
+        ),
+        (
+            refused(&query, "a credential's proof is missing or malformed"),
+            {
+                let mut unproven = wallet.issued();
+                unproven
+                    .as_object_mut()
+                    .expect("a credential")
+                    .remove("proof");
+                unproven
+            },
+        ),
+        (
+            refused(&query, "a credential's proof is not an assertion"),
+            wallet.issued_as(|_, options| {
+                options["proofPurpose"] = json!("authentication");
+            }),
+        ),
+        (
+            refused(&query, "a credential's signature is not its issuer's"),
+            IdentityWallet {
+                issuer_key: crypto::jose::jwk::alg::ed::EdKeyPair::generate(
+                    crypto::jose::jwk::Ed25519,
+                )
+                .expect("a key"),
+                ..wallet.clone()
+            }
+            .issued_as(|_, options| {
+                options["verificationMethod"] = json!(format!("{}#key-2", wallet.issuer()));
+            }),
+        ),
+        (
+            refused(
+                &query,
+                "a credential is signed by a key this verifier does not read",
+            ),
+            wallet.issued_as(|_, options| {
+                options["verificationMethod"] = json!(format!("{}#rsa", wallet.issuer()));
+            }),
+        ),
+        (
+            refused(&query, "a credential's signature is not its issuer's"),
+            {
+                let mut altered = wallet.issued();
+                altered["credentialSubject"]["fullName"] = json!("Kofi Owusu");
+                altered
+            },
+        ),
+        (
+            refused(
+                &query,
+                "a credential's issuer or holder rests on a member its proof does not tell apart",
+            ),
+            wallet.issued_with(|credential| {
+                credential["issuedBy"] = json!("https://elsewhere.example/identity");
+            }),
+        ),
+        (
+            refused(
+                &query,
+                "a credential's issuer or holder rests on a member its proof does not tell apart",
+            ),
+            wallet.issued_with(|credential| {
+                credential["holderSubject"] = json!({ "id": "did:example:someone-else" });
+            }),
+        ),
+        (
+            refused(&query, "a credential binds no did:jwk key"),
+            wallet.issued_with(|credential| {
+                credential["credentialSubject"]["id"] = json!("did:example:holder");
+            }),
+        ),
+        (
+            refused(
+                &query,
+                "a credential's dates are not RFC 3339 date-times its proof tells apart",
+            ),
+            wallet.issued_with(|credential| {
+                credential["validity"] = json!("2026-01-01T00:00:00Z");
+            }),
+        ),
+        (
+            refused(&query, "a credential has expired"),
+            wallet.issued_with(|credential| {
+                credential["expirationDate"] = json!("2026-01-01T00:00:00Z");
+            }),
+        ),
+        (
+            refused(&query, "a credential is of a type the query did not accept"),
+            wallet.issued_with(|credential| {
+                credential["type"] = json!(["VerifiableCredential"]);
+            }),
+        ),
+        (
+            refused(&query, "a credential lacks a claim the query asked for"),
+            wallet.issued_with(|credential| {
+                credential["credentialSubject"]
+                    .as_object_mut()
+                    .expect("a subject")
+                    .remove("fullName");
+            }),
+        ),
+        (
+            refused(
+                &identity_query(&[&["credentialSubject", "policyNumber"]]),
+                "a claim the query asked for shares its property with another member, so the proof does not tell them apart",
+            ),
+            wallet.issued(),
+        ),
+        (
+            refused(
+                &identity_query(&[&["credentialSubject", "identifiers"]]),
+                "a claim the query asked for stands under an index map, whose keys the proof does not sign",
+            ),
+            wallet.issued_with(|credential| {
+                credential["credentialSubject"]["identifiers"] = json!({ "uin": "4123456789" });
+            }),
+        ),
+        (
+            refused(
+                &identity_query(&[&["credentialSubject", "fullName", "first"]]),
+                "a claim the query asked for is not a property of a node",
+            ),
+            wallet.issued(),
+        ),
+    ] {
+        answer_to_fails(plane, bearer, &query, reason, |request| {
+            present(credential, request)
+        })
+        .await;
+    }
+
+    // Presented by another holder, a credential proves nothing of them.
+    answer_to_fails(
+        plane,
+        bearer,
+        &query,
+        "a credential is not bound to the key that presents it",
+        |request| {
+            let (client_id, nonce) = client_id_and_nonce(request);
+            let thief = IdentityWallet {
+                holder_key: crypto::jose::jwk::alg::ec::EcKeyPair::generate(
+                    crypto::jose::jwk::alg::ec::EcCurve::P256,
+                )
+                .expect("a key"),
+                ..wallet.clone()
+            };
+            identity_answer(thief.presented(wallet.issued(), client_id, nonce), request)
+        },
+    )
+    .await;
 }

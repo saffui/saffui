@@ -8,7 +8,7 @@
 //! request is answered once, and nothing a person disclosed is kept: the
 //! outcome names issuers, types and claims, never their values.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Duration, Utc};
 use crypto::jose::jwe::{self, ECDH_ES};
@@ -20,6 +20,7 @@ use crypto::jose::jws::{
 use crypto::provider::{CryptoProvider, SignAlg};
 use crypto::sd_jwt::{self, KeyBinding, VerifyingPolicy};
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
+use jsonld::built_in::HeldContexts;
 use models::entities::credential_issuers::CredentialIssuer;
 use models::entities::keys::KeyUse;
 use serde_json::{Map, Value, json};
@@ -29,6 +30,7 @@ use store::providers::realms::{credential_issuers, realm_keys};
 use store::tenancy::UnitOfWork;
 
 use super::did::realm_did;
+use super::linked_data::{Binding, verify_ldp_presentation};
 
 /// How long a request waits for its answer, in seconds.
 pub const LIFETIME_SECONDS: i64 = 300;
@@ -36,8 +38,14 @@ pub const LIFETIME_SECONDS: i64 = 300;
 /// The encryptions an answer may come back under. HAIP names both.
 pub const RESPONSE_ENCRYPTIONS: [&str; 2] = ["A256GCM", "A128GCM"];
 
-/// The one credential format this verifier reads.
+/// The credential formats this verifier reads: SD-JWT VC, and W3C
+/// credentials in JSON-LD secured by Data Integrity proofs.
 pub const SD_JWT_VC: &str = "dc+sd-jwt";
+pub const LDP_VC: &str = "ldp_vc";
+
+/// The Data Integrity proofs a JSON-LD credential or presentation may carry:
+/// MOSIP's issuers sign under the first, Inji's wallets under the second.
+const LDP_PROOF_TYPES: [&str; 2] = ["Ed25519Signature2020", "JsonWebSignature2020"];
 
 /// The `typ` an SD-JWT VC issuer writes: the one the specification settled
 /// on, and the one it replaced, which issuers in service still write.
@@ -65,7 +73,7 @@ const SEALING_PURPOSE: &str = "presentation-response-key";
 const MOST_CREDENTIALS: usize = 5;
 const MOST_CLAIMS: usize = 32;
 /// How far two clocks may disagree when a presentation's times are read.
-const LEEWAY_SECONDS: i64 = 60;
+pub(super) const LEEWAY_SECONDS: i64 = 60;
 /// How long a refusal's words are kept.
 const MOST_ERROR_CHARS: usize = 64;
 
@@ -111,10 +119,10 @@ pub fn response_uri(issuer: &str) -> String {
 }
 
 /// Whether a DCQL query asks only for what this verifier can check: SD-JWT VC
-/// credentials, each naming the types it accepts and bound to its holder, with
-/// claims named by paths of member names. Whatever else a query may say is
-/// refused rather than passed over, so that a verified answer never seems to
-/// have been held to it.
+/// or JSON-LD credentials, each naming the types it accepts and bound to its
+/// holder, with claims named by paths of member names. Whatever else a query
+/// may say is refused rather than passed over, so that a verified answer never
+/// seems to have been held to it.
 pub fn check_query(query: &Value) -> Result<(), Unaskable> {
     let refused = Unaskable::NotAQuery;
     let asked = query
@@ -157,19 +165,38 @@ pub fn check_query(query: &Value) -> Result<(), Unaskable> {
                 "a credential is asked for by its id, format, multiple, meta, claims and require_cryptographic_holder_binding alone",
             ));
         }
-        if credential.get("format").and_then(Value::as_str) != Some(SD_JWT_VC) {
-            return Err(refused("each credential is asked for as dc+sd-jwt"));
-        }
-        credential
-            .pointer("/meta/vct_values")
-            .and_then(Value::as_array)
-            .filter(|types| !types.is_empty() && types.iter().all(Value::is_string))
-            .ok_or(refused(
-                "each credential names the types it accepts in meta.vct_values",
-            ))?;
+        let types_member = match credential.get("format").and_then(Value::as_str) {
+            Some(SD_JWT_VC) => {
+                credential
+                    .pointer("/meta/vct_values")
+                    .and_then(Value::as_array)
+                    .filter(|types| !types.is_empty() && types.iter().all(Value::is_string))
+                    .ok_or(refused(
+                        "each dc+sd-jwt credential names the types it accepts in meta.vct_values",
+                    ))?;
+                "vct_values"
+            }
+            Some(LDP_VC) => {
+                credential
+                    .pointer("/meta/type_values")
+                    .and_then(Value::as_array)
+                    .filter(|alternatives| {
+                        !alternatives.is_empty() && alternatives.iter().all(is_expanded_type_set)
+                    })
+                    .ok_or(refused(
+                        "each ldp_vc credential names the types it accepts in meta.type_values, lists of absolute IRIs",
+                    ))?;
+                "type_values"
+            }
+            _ => {
+                return Err(refused(
+                    "each credential is asked for as dc+sd-jwt or ldp_vc",
+                ));
+            }
+        };
         if credential
             .get("meta")
-            .is_some_and(|meta| has_member_outside(meta, &["vct_values"]))
+            .is_some_and(|meta| has_member_outside(meta, &[types_member]))
         {
             return Err(refused("meta names the types a credential may be of alone"));
         }
@@ -243,7 +270,7 @@ fn has_member_outside(object: &Value, known: &[&str]) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asked {
     pub request_id: String,
-    /// The `openid4vp://` link a wallet opens, or a QR code carries.
+    /// The `openid4vp://authorize` link a wallet opens, or a QR code carries.
     pub uri: String,
     pub expires_at: DateTime<Utc>,
 }
@@ -327,7 +354,7 @@ pub async fn ask(
     .map_err(|_| Unaskable::Unwritable)?;
 
     let uri = format!(
-        "openid4vp://?client_id={}&request_uri={}",
+        "openid4vp://authorize?client_id={}&request_uri={}",
         encoded(&client_id),
         encoded(&request_uri(issuer, &request_id)),
     );
@@ -515,6 +542,19 @@ async fn verify_answer(
         ));
     }
 
+    // The contexts a JSON-LD credential is read under, read once per answer.
+    let pinned = if asked
+        .iter()
+        .any(|credential| credential.get("format").and_then(Value::as_str) == Some(LDP_VC))
+    {
+        crate::admin::jsonld_contexts::pinned_documents(transaction)
+            .await
+            .map_err(|_| Unanswerable::Unwritable)?
+    } else {
+        HashMap::new()
+    };
+    let contexts = HeldContexts::new(&pinned);
+
     let mut verified = Vec::with_capacity(asked.len());
     for credential in &asked {
         let id = credential
@@ -522,25 +562,55 @@ async fn verify_answer(
             .and_then(Value::as_str)
             .unwrap_or_default();
         let presented = match tokens.get(id).and_then(Value::as_array).map(Vec::as_slice) {
-            Some([Value::String(presented)]) => presented,
+            Some([presented]) => presented,
             _ => return Ok(Err("each credential asked for is presented once")),
         };
-        match verify_credential(
-            transaction,
-            signing.provider,
-            client_id,
-            &held.nonce,
-            credential,
-            presented,
-            now,
-        )
-        .await?
-        {
-            Ok(outcome) => verified.push(
-                json!({ "id": id, "issuer": outcome.0, "vct": outcome.1, "claims": outcome.2 }),
-            ),
-            Err(why) => return Ok(Err(why)),
-        }
+        let outcome = match (credential.get("format").and_then(Value::as_str), presented) {
+            (Some(SD_JWT_VC), Value::String(presented)) => match verify_credential(
+                transaction,
+                signing.provider,
+                client_id,
+                &held.nonce,
+                credential,
+                presented,
+                now,
+            )
+            .await?
+            {
+                Ok((issuer, vct, claims)) => {
+                    json!({ "id": id, "issuer": issuer, "vct": vct, "claims": claims })
+                }
+                Err(why) => return Ok(Err(why)),
+            },
+            (Some(LDP_VC), _) => match verify_ldp_presentation(
+                transaction,
+                signing.provider,
+                &contexts,
+                &Binding {
+                    client_id,
+                    nonce: &held.nonce,
+                },
+                credential,
+                presented,
+                now,
+            )
+            .await?
+            {
+                Ok(outcome) => json!({
+                    "id": id,
+                    "issuer": outcome.issuer,
+                    "types": outcome.types,
+                    "claims": outcome.claims,
+                }),
+                Err(why) => return Ok(Err(why)),
+            },
+            _ => {
+                return Ok(Err(
+                    "a credential is not presented in the form its format takes",
+                ));
+            }
+        };
+        verified.push(outcome);
     }
     Ok(Ok(verified))
 }
@@ -712,7 +782,8 @@ fn request_claims(parts: &RequestParts<'_>) -> Map<String, Value> {
         SD_JWT_VC: {
             "sd-jwt_alg_values": ISSUER_ALGORITHMS,
             "kb-jwt_alg_values": HOLDER_ALGORITHMS,
-        }
+        },
+        LDP_VC: { "proof_type_values": LDP_PROOF_TYPES },
     });
     let claims = json!({
         "iss": parts.client_id,
@@ -745,7 +816,7 @@ fn request_claims(parts: &RequestParts<'_>) -> Map<String, Value> {
 }
 
 /// A claim's path as member names, or `None` for a path holding anything else.
-fn claim_path(claim: &Value) -> Option<Vec<String>> {
+pub(super) fn claim_path(claim: &Value) -> Option<Vec<String>> {
     let path = claim.get("path")?.as_array()?;
     if path.is_empty() || path.len() > 8 {
         return None;
@@ -758,6 +829,18 @@ fn claim_path(claim: &Value) -> Option<Vec<String>> {
                 .map(str::to_owned)
         })
         .collect()
+}
+
+/// One alternative of `meta.type_values`: types a credential must all hold, as
+/// its contexts expand them. A type left unexpanded names nothing a credential
+/// read here can hold.
+fn is_expanded_type_set(alternative: &Value) -> bool {
+    alternative.as_array().is_some_and(|types| {
+        !types.is_empty()
+            && types
+                .iter()
+                .all(|held| held.as_str().is_some_and(jsonld::is_absolute_iri))
+    })
 }
 
 fn is_query_id(id: &str) -> bool {
@@ -805,6 +888,95 @@ mod tests {
         query
     }
 
+    fn identity_query() -> Value {
+        json!({
+            "credentials": [{
+                "id": "identity",
+                "format": "ldp_vc",
+                "meta": { "type_values": [[
+                    "https://www.w3.org/2018/credentials#VerifiableCredential",
+                    "https://issuer.example/vocab#IdentityCredential"
+                ]] },
+                "claims": [{ "path": ["credentialSubject", "fullName"] }]
+            }]
+        })
+    }
+
+    #[test]
+    fn a_query_for_json_ld_credentials_is_askable() {
+        assert_eq!(check_query(&identity_query()), Ok(()));
+        let both = json!({ "credentials": [
+            pid_query()["credentials"][0],
+            identity_query()["credentials"][0],
+        ] });
+        assert_eq!(check_query(&both), Ok(()));
+        let alternatives = json!({ "credentials": [{
+            "id": "identity",
+            "format": "ldp_vc",
+            "meta": { "type_values": [
+                ["https://issuer.example/vocab#IdentityCredential"],
+                ["urn:example:credential:identity"]
+            ] }
+        }] });
+        assert_eq!(check_query(&alternatives), Ok(()));
+    }
+
+    /// Why `check_query` refuses `query`, which it must.
+    fn refusal_of(query: &Value) -> &'static str {
+        match check_query(query) {
+            Err(Unaskable::NotAQuery(why)) => why,
+            other => panic!("{query} was taken: {other:?}"),
+        }
+    }
+
+    /// A JSON-LD query names each type as a credential's contexts expand it:
+    /// one left unexpanded names nothing a credential read here holds. A
+    /// query's `meta` names types as its format does, and nothing beside them.
+    #[test]
+    fn a_json_ld_query_names_the_types_it_accepts_expanded() {
+        let unnamed = "each ldp_vc credential names the types it accepts in meta.type_values, lists of absolute IRIs";
+        let beside = "meta names the types a credential may be of alone";
+        let expanded = identity_query()["credentials"][0]["meta"]["type_values"].clone();
+        for (meta, why) in [
+            (json!({}), unnamed),
+            (json!({ "type_values": [] }), unnamed),
+            (json!({ "type_values": [[]] }), unnamed),
+            (
+                json!({ "type_values": [["VerifiableCredential"]] }),
+                unnamed,
+            ),
+            (
+                json!({ "type_values": ["https://issuer.example/vocab#IdentityCredential"] }),
+                unnamed,
+            ),
+            (json!({ "type_values": [[7]] }), unnamed),
+            (json!({ "vct_values": ["urn:eudi:pid:1"] }), unnamed),
+            (
+                json!({ "type_values": expanded.clone(), "vct_values": ["urn:eudi:pid:1"] }),
+                beside,
+            ),
+        ] {
+            let mut query = identity_query();
+            query["credentials"][0]["meta"] = meta.clone();
+            assert_eq!(refusal_of(&query), why, "{meta}");
+        }
+        for (meta, why) in [
+            (
+                json!({ "type_values": expanded.clone() }),
+                "each dc+sd-jwt credential names the types it accepts in meta.vct_values",
+            ),
+            (
+                json!({ "vct_values": ["urn:eudi:pid:1"], "type_values": expanded.clone() }),
+                beside,
+            ),
+        ] {
+            let query = pid_query_with(|credential| {
+                credential.insert("meta".into(), meta.clone());
+            });
+            assert_eq!(refusal_of(&query), why, "{meta}");
+        }
+    }
+
     #[test]
     fn a_query_for_sd_jwt_credentials_is_askable() {
         assert_eq!(check_query(&pid_query()), Ok(()));
@@ -830,10 +1002,6 @@ mod tests {
     /// asked, rather than passed over for a verified answer to seem to meet.
     #[test]
     fn a_query_saying_what_the_verifier_does_not_check_is_refused() {
-        let refused_for = |query: &Value| match check_query(query) {
-            Err(Unaskable::NotAQuery(why)) => why,
-            other => panic!("{query} was taken: {other:?}"),
-        };
         for (member, value, why) in [
             (
                 "claim_sets",
@@ -869,7 +1037,7 @@ mod tests {
             let query = pid_query_with(|credential| {
                 credential.insert(member.into(), value.clone());
             });
-            assert_eq!(refused_for(&query), why, "{member}: {value}");
+            assert_eq!(refusal_of(&query), why, "{member}: {value}");
         }
         for (claims, why) in [
             (
@@ -903,7 +1071,7 @@ mod tests {
             let query = pid_query_with(|credential| {
                 credential.insert("claims".into(), claims.clone());
             });
-            assert_eq!(refused_for(&query), why, "{claims}");
+            assert_eq!(refusal_of(&query), why, "{claims}");
         }
     }
 
@@ -998,6 +1166,10 @@ mod tests {
         assert_eq!(
             metadata["vp_formats_supported"]["dc+sd-jwt"]["kb-jwt_alg_values"],
             json!(HOLDER_ALGORITHMS)
+        );
+        assert_eq!(
+            metadata["vp_formats_supported"]["ldp_vc"]["proof_type_values"],
+            json!(["Ed25519Signature2020", "JsonWebSignature2020"])
         );
         assert_eq!(metadata["vp_formats"], metadata["vp_formats_supported"]);
         assert_eq!(metadata["authorization_encrypted_response_alg"], "ECDH-ES");

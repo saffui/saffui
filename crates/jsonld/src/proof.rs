@@ -88,13 +88,14 @@ pub fn read_proof(document: &Value) -> Result<Proof, Unproven> {
     read_members(split.proof).map(|(proof, _)| proof)
 }
 
-/// Verify the proof `document` carries under `key`, every context it names
-/// taken from `contexts`.
+/// Verify the proof `document` carries under one of `keys`, every context it
+/// names taken from `contexts`. The document is read and hashed once, whatever
+/// the number of keys.
 pub fn verify_proof(
     provider: &dyn CryptoProvider,
     document: &Value,
     contexts: &dyn Contexts,
-    key: &PublicKey,
+    keys: &[PublicKey],
     bounds: Bounds,
 ) -> Result<Proof, Unproven> {
     let Split { proof, unsigned } = split_proof(document)?;
@@ -113,27 +114,27 @@ pub fn verify_proof(
         hash_canonical(provider, &Value::Object(unsigned), contexts, bounds)?,
     ]
     .concat();
-    let verified = match signature {
-        Signature::ProofValue(signature) => {
-            provider
-                .signer()
-                .verify(SignAlg::EdDsa, key, &signed_data, &signature)
-        }
+    let (algorithm, signing_input, signature) = match signature {
+        Signature::ProofValue(signature) => (SignAlg::EdDsa, signed_data, signature),
         Signature::Jws {
             algorithm,
             header,
             signature,
-        } => {
-            let signing_input = [header.as_bytes(), b".", &signed_data].concat();
+        } => (
+            algorithm,
+            [header.as_bytes(), b".", &signed_data].concat(),
+            signature,
+        ),
+    };
+    keys.iter()
+        .any(|key| {
             provider
                 .signer()
                 .verify(algorithm, key, &signing_input, &signature)
-        }
-    };
-    match verified {
-        Ok(true) => Ok(read),
-        _ => Err(Unproven::Signature),
-    }
+                .is_ok_and(|verified| verified)
+        })
+        .then_some(read)
+        .ok_or(Unproven::Signature)
 }
 
 /// The signature a proof carries, decoded.

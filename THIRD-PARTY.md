@@ -15,7 +15,9 @@ under *Beside the vendored tree*. The consoles' fonts are IBM Plex files taken a
 upstream ships them, under *IBM Plex*. The canonicalization tests of the `jsonld`
 crate run the W3C suite's own files, under *W3C RDF Dataset Canonicalization
 test suite*, and its reading of JSON-LD runs the toRdf tests of the W3C JSON-LD
-suite, under *W3C JSON-LD 1.1 test suite*.
+suite, under *W3C JSON-LD 1.1 test suite*. Its proof tests verify a credential
+MOSIP's vc-verifier keeps, under the contexts that credential names: the five
+entries that follow the JSON-LD suite.
 
 ---
 
@@ -292,6 +294,86 @@ Code meant for the whole crate goes into a module of its own rather than into
 - Use: test fixtures only. Nothing in them is compiled into the product.
 - Upstream tracking: none. A newer revision is taken by hand, with the commit
   above updated and the counts the suite's test pins measured again.
+
+## W3C Verifiable Credentials context v1
+
+- Upstream: https://github.com/w3c/vc-data-model, file `contexts/credentials/v1`,
+  served as https://www.w3.org/2018/credentials/v1
+- Version taken: commit `736b4f1cfd27958c33f5a3bcd78f737ae9b10e40` (2026-09-27)
+- Date taken: 2026-09-29
+- Licence: the W3C Software and Document License, as upstream's `LICENSE.md`
+  states, copied beside the file.
+- Files derived:
+  - `crates/jsonld/tests/proofs/w3c/credentials-v1.jsonld`
+  - `crates/jsonld/tests/proofs/w3c/LICENSE.md`, the licence note as upstream
+    ships it, the same text as `vc-jws-2020`'s
+- Modifications: none. The file is renamed only.
+- Use: test fixtures only. Nothing in them is compiled into the product.
+- Upstream tracking: none. A context is fixed once credentials name it: a newer
+  revision would change what those credentials mean.
+
+## W3C JSON Web Signature 2020 context v1
+
+- Upstream: https://github.com/w3c/vc-jws-2020, file `contexts/v1/index.json`,
+  served as https://w3id.org/security/suites/jws-2020/v1
+- Version taken: commit `38923458cf22e66aeb1243d7dd151f191e49c419` (2023-06-29)
+- Date taken: 2026-09-29
+- Licence: the W3C Software and Document License, as upstream's `LICENSE.md`
+  states; it is the note copied under the entry above.
+- Files derived: `crates/jsonld/tests/proofs/w3c/jws-2020-v1.jsonld`
+- Modifications: none. The file is renamed only.
+- Use: test fixtures only. Nothing in them is compiled into the product.
+- Upstream tracking: none, for the same reason.
+
+## Ed25519 Signature 2020 context
+
+- Upstream: https://github.com/digitalbazaar/ed25519-signature-2020-context, file
+  `contexts/ed25519-signature-2020-v1.jsonld`, served as
+  https://w3id.org/security/suites/ed25519-2020/v1
+- Version taken: commit `e19889b4d116fe62e1a866b9ab6fa80a404401f5` (2021-04-22)
+- Date taken: 2026-09-29
+- Licence: BSD-3-Clause, upstream's `LICENSE` copied beside the file.
+- Files derived:
+  - `crates/jsonld/tests/proofs/digitalbazaar/ed25519-signature-2020-v1.jsonld`
+  - `crates/jsonld/tests/proofs/digitalbazaar/LICENSE`
+- Modifications: none.
+- Use: test fixtures only. Nothing in them is compiled into the product.
+- Upstream tracking: none, for the same reason.
+
+## MOSIP vc-verifier insurance credential
+
+- Upstream: https://github.com/inji/vc-verifier, file
+  `vc-verifier/kotlin/vcverifier/src/test/resources/ldp_vc/Ed25519Signature2020SignedSunbirdVC.json`
+- Version taken: commit `a85e9dc819769b3c496f00198e33b43d683e1c0f` (2026-08-04)
+- Date taken: 2026-09-29
+- Licence: Apache-2.0, upstream's `LICENSE` copied beside the file. Upstream has
+  no `NOTICE` file.
+- Files derived:
+  - `crates/jsonld/tests/proofs/vc-verifier/Ed25519Signature2020SignedSunbirdVC.json`
+  - `crates/jsonld/tests/proofs/vc-verifier/LICENSE`
+- Modifications: none. The file is a credential an issuer of MOSIP's `released`
+  environment signed; one changed byte breaks its signature, which is what the
+  tests check. Its claims are test data. The issuer's public key is written in
+  the tests as a constant, as its DID document published it on 2026-09-28; the
+  document itself is not copied.
+- Use: test fixtures only. Nothing in them is compiled into the product.
+- Upstream tracking: none. The credential is fixed by its signature.
+
+## Insurance context of holashchand/test_project
+
+- Upstream: https://github.com/holashchand/test_project, file
+  `insurance-context.json`, served as
+  https://holashchand.github.io/test_project/insurance-context.json
+- Version taken: commit `243b48ae91f2ce03b76237aebd84848b46b04ca2` (2025-10-08)
+- Date taken: 2026-09-29
+- Licence: **none found**. The repository declares none and holds no licence
+  file. The file is 605 bytes of term definitions, the context the credential
+  above names, without which that credential cannot be read. It is copied on the
+  maintainers' decision of 2026-09-29, recorded here as it stands.
+- Files derived: `crates/jsonld/tests/proofs/holashchand/insurance-context.json`
+- Modifications: none.
+- Use: test fixtures only. Nothing in them is compiled into the product.
+- Upstream tracking: none, for the same reason as the contexts above.
 
 ## Before vendoring anything
 

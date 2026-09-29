@@ -3284,6 +3284,7 @@ dependencies = [
  "data-encoding",
  "deadpool-postgres",
  "email_address",
+ "jsonld",
  "models",
  "pgcore",
  "saml",

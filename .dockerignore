@@ -7,3 +7,5 @@ account/dist
 account/.vite
 .*
 !.config
+# The one Markdown file the image ships: the licence note of contexts it embeds.
+!crates/jsonld/contexts/w3c/LICENSE.md

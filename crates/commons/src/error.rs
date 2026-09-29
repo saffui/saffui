@@ -64,6 +64,8 @@ catalogue! {
     CredentialIssuerNotFound = 112, 404, "realm.credential_issuer.not_found", "this realm names no such credential issuer";
     CredentialIssuerAlreadyNamed = 113, 409, "realm.credential_issuer.already_named", "this issuer is already named in this realm";
     PresentationNotFound = 114, 404, "realm.presentation.not_found", "this realm asked for no such presentation";
+    JsonLdContextNotFound = 115, 404, "realm.jsonld_context.not_found", "this realm pins no such JSON-LD context";
+    JsonLdContextAlreadyPinned = 116, 409, "realm.jsonld_context.already_pinned", "this JSON-LD context is already pinned in this realm";
     RealmAlreadyExists = 101, 409, "realm.already_exists", "a realm with this identifier already exists";
     KeyNotFound = 110, 404, "realm.key.not_found", "this realm holds no such key";
     KeyStillActive = 111, 409, "realm.key.still_active", "this key is still in service; rotate its algorithm first";
@@ -196,7 +198,7 @@ mod tests {
     /// whoever still sends it.
     #[test]
     fn the_catalogue_has_not_shrunk() {
-        assert_eq!(ErrorCode::ALL.len(), 76);
+        assert_eq!(ErrorCode::ALL.len(), 78);
     }
 
     /// The admin console keys its hints by slug, so a hint under a slug this

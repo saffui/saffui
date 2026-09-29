@@ -10,6 +10,11 @@ import type {
   CredentialIssuerList,
   CredentialIssuerWrite,
 } from "@/models/credentialIssuers";
+import type {
+  JsonLdContextBrief,
+  JsonLdContextList,
+  JsonLdContextWrite,
+} from "@/models/jsonLdContexts";
 import type { RealmKeys } from "@/models/keys";
 import type { RealmSettings, RealmTheme, RealmUpdate } from "@/models/realm";
 
@@ -403,6 +408,40 @@ export async function forgetCredentialIssuer(realm: string, issuer: string): Pro
   await api<void>(adminPath(realm, `credential-issuers/${encodeURIComponent(issuer)}`), {
     method: "DELETE",
     subject: say("credential-issuers-title"),
+  });
+}
+
+export async function listJsonLdContexts(realm: string): Promise<JsonLdContextList> {
+  return api<JsonLdContextList>(adminPath(realm, "jsonld-contexts"));
+}
+
+/// The server reads the context before it keeps anything, so a refusal here is
+/// what was read there, or its absence.
+export async function pinJsonLdContext(
+  realm: string,
+  asked: JsonLdContextWrite,
+): Promise<JsonLdContextBrief> {
+  return api<JsonLdContextBrief>(adminPath(realm, "jsonld-contexts"), {
+    method: "POST",
+    json: asked,
+    subject: say("jsonld-contexts-title"),
+  });
+}
+
+export async function readJsonLdContextAgain(
+  realm: string,
+  context: string,
+): Promise<JsonLdContextBrief> {
+  return api<JsonLdContextBrief>(
+    adminPath(realm, `jsonld-contexts/${encodeURIComponent(context)}/document`),
+    { method: "POST", subject: say("jsonld-contexts-title") },
+  );
+}
+
+export async function forgetJsonLdContext(realm: string, context: string): Promise<void> {
+  await api<void>(adminPath(realm, `jsonld-contexts/${encodeURIComponent(context)}`), {
+    method: "DELETE",
+    subject: say("jsonld-contexts-title"),
   });
 }
 

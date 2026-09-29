@@ -691,6 +691,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V114__presentation_requests.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 115,
+            name: "jsonld_contexts",
+            sql: include_str!("../migrations/V115__jsonld_contexts.sql"),
+            transactional: true,
+        }),
     ]
 }
 

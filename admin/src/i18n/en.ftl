@@ -1681,6 +1681,17 @@ credential-issuers-name = Name
 credential-issuers-issuer = Issuer
 credential-issuers-issuer-help = An https address, as the issuer's credentials name it, or a did:web. An https issuer's keys are read from its /.well-known/jwt-vc-issuer metadata, a did:web issuer's from its DID document, among the keys it asserts with.
 credential-issuers-name-it = Name this issuer
+jsonld-contexts-title = JSON-LD contexts
+jsonld-contexts-help = The contexts this realm reads W3C credentials under, beside the ones built in. Each is read when it is pinned, or read again on demand, kept with the digest of what was read, and never fetched while a person presents a credential. A context that would give meaning to undefined keys, or that names one not held, is refused.
+jsonld-contexts-not-running = Stored, and not running: the process must run wallet-verifier (SAFFUI_FEATURES=+wallet-verifier).
+jsonld-contexts-built-in = Built in, held by every realm
+jsonld-contexts-empty = This realm pins no context yet.
+jsonld-contexts-read = Read { $at }: { $octets } bytes
+jsonld-contexts-read-again = Read it again
+jsonld-contexts-forget = Remove
+jsonld-contexts-url = Address
+jsonld-contexts-url-help = The context's address exactly as the credentials name it in their @context. A context that names another is pinned after that other.
+jsonld-contexts-pin-it = Pin this context
 sms-today-title = Today
 sms-today-help = What this realm has spent on texts today, and what its brakes held back. Both come off what the sending path itself writes, so this screen and the brakes cannot disagree about the same day.
 sms-today-sent = Sent

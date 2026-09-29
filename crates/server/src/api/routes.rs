@@ -6,9 +6,9 @@ use models::entities::authz::AdminAction;
 use crate::api::rest::endpoints::admin::{
     account, agents, authorization, branding, claim_sources, client_scopes, clients, compliance,
     credential_issuers, credentials, directory, events, features, federation, flows, idps, iga,
-    journal, keys, mail, metrics, negotiation, overview, page_drafts, portability, presentations,
-    protocol_mappers, realm_keys, realms, rebac, recert, requests, sessions, sim_swap, sms,
-    trust_anchors, users, ussd, whatsapp,
+    journal, jsonld_contexts, keys, mail, metrics, negotiation, overview, page_drafts, portability,
+    presentations, protocol_mappers, realm_keys, realms, rebac, recert, requests, sessions,
+    sim_swap, sms, trust_anchors, users, ussd, whatsapp,
 };
 use crate::api::rest::endpoints::scim;
 
@@ -270,6 +270,30 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/credential-issuers/{issuer}",
             action: AdminAction::RealmWrite,
             handler: Some(|| web::delete().to(credential_issuers::forget)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/jsonld-contexts",
+            action: AdminAction::RealmRead,
+            handler: Some(|| web::get().to(jsonld_contexts::list)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/jsonld-contexts",
+            action: AdminAction::RealmWrite,
+            handler: Some(|| web::post().to(jsonld_contexts::pin)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/jsonld-contexts/{context}/document",
+            action: AdminAction::RealmWrite,
+            handler: Some(|| web::post().to(jsonld_contexts::read_again)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/jsonld-contexts/{context}",
+            action: AdminAction::RealmWrite,
+            handler: Some(|| web::delete().to(jsonld_contexts::forget)),
         },
         AdminRoute {
             method: Method::POST,

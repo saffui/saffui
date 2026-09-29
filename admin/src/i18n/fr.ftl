@@ -1681,6 +1681,17 @@ credential-issuers-name = Nom
 credential-issuers-issuer = Émetteur
 credential-issuers-issuer-help = Une adresse https, telle que les attestations de l'émetteur la nomment, ou un did:web. Les clés d'un émetteur https sont lues dans ses métadonnées /.well-known/jwt-vc-issuer, celles d'un did:web dans son document DID, parmi les clés dont il se sert pour attester.
 credential-issuers-name-it = Nommer cet émetteur
+jsonld-contexts-title = Contextes JSON-LD
+jsonld-contexts-help = Les contextes sous lesquels ce realm lit les attestations W3C, en plus de ceux intégrés. Chacun est lu quand il est épinglé, ou relu à la demande, gardé avec l'empreinte de ce qui a été lu, et jamais chargé pendant qu'une personne présente une attestation. Un contexte qui donnerait un sens à des clés non définies, ou qui en nomme un autre non détenu, est refusé.
+jsonld-contexts-not-running = Enregistré, mais inactif : le processus doit faire tourner wallet-verifier (SAFFUI_FEATURES=+wallet-verifier).
+jsonld-contexts-built-in = Intégrés, détenus par tous les realms
+jsonld-contexts-empty = Ce realm n'épingle encore aucun contexte.
+jsonld-contexts-read = Lu le { $at } : { $octets } octets
+jsonld-contexts-read-again = Relire
+jsonld-contexts-forget = Retirer
+jsonld-contexts-url = Adresse
+jsonld-contexts-url-help = L'adresse du contexte, exactement comme les attestations la nomment dans leur @context. Un contexte qui en nomme un autre s'épingle après cet autre.
+jsonld-contexts-pin-it = Épingler ce contexte
 sms-today-title = Aujourd'hui
 sms-today-help = Ce que ce realm a dépensé en SMS aujourd'hui, et ce que ses freins ont retenu. Les deux viennent de ce que le chemin d'envoi écrit lui-même, donc cet écran et les freins ne peuvent pas diverger sur la même journée.
 sms-today-sent = Envoyés

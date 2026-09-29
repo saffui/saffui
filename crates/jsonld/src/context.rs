@@ -114,6 +114,25 @@ fn colon_after_first(value: &str) -> Option<usize> {
     value.get(1..)?.find(':').map(|at| at + 1)
 }
 
+/// Whether a context document reads here: each term it defines well formed and
+/// every context it names held, as a document naming it would read it.
+pub fn check_context_document(document: &Value, contexts: &dyn Contexts) -> Result<(), Unreadable> {
+    let local = document
+        .as_object()
+        .and_then(|document| document.get("@context"))
+        .ok_or(Unreadable::Invalid("invalid remote context"))?;
+    process(
+        contexts,
+        &ActiveContext::default(),
+        local,
+        &[],
+        false,
+        true,
+        true,
+    )
+    .map(|_| ())
+}
+
 /// §4.1.2: `active` updated with `local`.
 pub(crate) fn process(
     contexts: &dyn Contexts,

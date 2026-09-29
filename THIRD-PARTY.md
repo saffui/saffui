@@ -15,9 +15,11 @@ under *Beside the vendored tree*. The consoles' fonts are IBM Plex files taken a
 upstream ships them, under *IBM Plex*. The canonicalization tests of the `jsonld`
 crate run the W3C suite's own files, under *W3C RDF Dataset Canonicalization
 test suite*, and its reading of JSON-LD runs the toRdf tests of the W3C JSON-LD
-suite, under *W3C JSON-LD 1.1 test suite*. Its proof tests verify a credential
-MOSIP's vc-verifier keeps, under the contexts that credential names: the five
-entries that follow the JSON-LD suite.
+suite, under *W3C JSON-LD 1.1 test suite*. The `jsonld` crate compiles in the
+W3C credentials context and the two suite contexts MOSIP's issuers and Inji's
+wallets sign under, the first three entries after the JSON-LD suite; its proof
+tests verify a credential MOSIP's vc-verifier keeps, under those and the one
+context the last entry holds.
 
 ---
 
@@ -304,11 +306,15 @@ Code meant for the whole crate goes into a module of its own rather than into
 - Licence: the W3C Software and Document License, as upstream's `LICENSE.md`
   states, copied beside the file.
 - Files derived:
-  - `crates/jsonld/tests/proofs/w3c/credentials-v1.jsonld`
-  - `crates/jsonld/tests/proofs/w3c/LICENSE.md`, the licence note as upstream
-    ships it, the same text as `vc-jws-2020`'s
+  - `crates/jsonld/contexts/w3c/credentials-v1.jsonld`
+  - `crates/jsonld/contexts/w3c/LICENSE.md`, the licence note as upstream ships
+    it, the same text as `vc-jws-2020`'s
 - Modifications: none. The file is renamed only.
-- Use: test fixtures only. Nothing in them is compiled into the product.
+- Use: compiled into the product, `include_str!` in
+  `crates/jsonld/src/built_in.rs`, as a context every realm holds.
+- Distribution: the image carries the licence note at
+  `/usr/share/licenses/saffui/jsonld-contexts/w3c/LICENSE.md`; `.dockerignore`
+  lets that one Markdown file through.
 - Upstream tracking: none. A context is fixed once credentials name it: a newer
   revision would change what those credentials mean.
 
@@ -320,9 +326,10 @@ Code meant for the whole crate goes into a module of its own rather than into
 - Date taken: 2026-09-29
 - Licence: the W3C Software and Document License, as upstream's `LICENSE.md`
   states; it is the note copied under the entry above.
-- Files derived: `crates/jsonld/tests/proofs/w3c/jws-2020-v1.jsonld`
+- Files derived: `crates/jsonld/contexts/w3c/jws-2020-v1.jsonld`
 - Modifications: none. The file is renamed only.
-- Use: test fixtures only. Nothing in them is compiled into the product.
+- Use: compiled into the product, as above.
+- Distribution: under the licence note above.
 - Upstream tracking: none, for the same reason.
 
 ## Ed25519 Signature 2020 context
@@ -334,10 +341,12 @@ Code meant for the whole crate goes into a module of its own rather than into
 - Date taken: 2026-09-29
 - Licence: BSD-3-Clause, upstream's `LICENSE` copied beside the file.
 - Files derived:
-  - `crates/jsonld/tests/proofs/digitalbazaar/ed25519-signature-2020-v1.jsonld`
-  - `crates/jsonld/tests/proofs/digitalbazaar/LICENSE`
+  - `crates/jsonld/contexts/digitalbazaar/ed25519-signature-2020-v1.jsonld`
+  - `crates/jsonld/contexts/digitalbazaar/LICENSE`
 - Modifications: none.
-- Use: test fixtures only. Nothing in them is compiled into the product.
+- Use: compiled into the product, as above.
+- Distribution: the licence asks that a binary carry its notice; the image
+  carries it at `/usr/share/licenses/saffui/jsonld-contexts/digitalbazaar/LICENSE`.
 - Upstream tracking: none, for the same reason.
 
 ## MOSIP vc-verifier insurance credential

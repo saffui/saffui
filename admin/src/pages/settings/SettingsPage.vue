@@ -16,6 +16,7 @@ import {
   forgetWhatsApp,
   forgetRegistrationSecret,
   forgetCredentialIssuer,
+  forgetJsonLdContext,
   depositTrustAnchor,
   getMail,
   getSms,
@@ -28,11 +29,14 @@ import {
   previewPartialImport,
   keepFeatureWish,
   listCredentialIssuers,
+  listJsonLdContexts,
   listRealmFeatures,
   listTrustAnchors,
   lookAtRelay,
   nameCredentialIssuer,
+  pinJsonLdContext,
   readCredentialIssuerKeys,
+  readJsonLdContextAgain,
   readSmsToday,
   readRelayRefusals,
   reshapeRealm,
@@ -60,6 +64,7 @@ import type { WhatsAppBrief } from "@/models/whatsapp";
 import type { SimSwapBrief } from "@/models/simSwap";
 import type { TrustAnchorList } from "@/models/trustAnchors";
 import type { CredentialIssuerList } from "@/models/credentialIssuers";
+import type { JsonLdContextList } from "@/models/jsonLdContexts";
 import { OTP_DEFAULTS, OWASP_HASHING, SOURCE_THROTTLE_DEFAULTS } from "@/models/realm";
 import type { MailTemplate, PasswordPolicy, RealmSettings, RealmUpdate } from "@/models/realm";
 import type { ExecutionRow } from "@/models/flows";
@@ -137,6 +142,7 @@ const whatsApp = ref<WhatsAppBrief | null>(null);
 const simSwap = ref<SimSwapBrief | null>(null);
 const trustAnchors = ref<TrustAnchorList | null>(null);
 const credentialIssuers = ref<CredentialIssuerList | null>(null);
+const jsonLdContexts = ref<JsonLdContextList | null>(null);
 const ussdHeld = ref(false);
 const failed = ref("");
 const exporting = ref(false);
@@ -781,6 +787,7 @@ watch(
     if (group.value === "features" && !features.value.length) void loadFeatures();
     if (group.value === "wallet" && !trustAnchors.value) void loadTrustAnchors();
     if (group.value === "wallet" && !credentialIssuers.value) void loadCredentialIssuers();
+    if (group.value === "wallet" && !jsonLdContexts.value) void loadJsonLdContexts();
   },
   { immediate: true },
 );
@@ -1093,6 +1100,43 @@ async function readIssuerAgain(issuer: string) {
 async function forgetIssuer(issuer: string) {
   await forgetCredentialIssuer(realm.value, issuer);
   await loadCredentialIssuers();
+}
+
+async function loadJsonLdContexts() {
+  try {
+    jsonLdContexts.value = await listJsonLdContexts(realm.value);
+  } catch (refused) {
+    failed.value = refused instanceof Error ? refused.message : String(refused);
+  }
+}
+
+/// The address the credentials name the context by, as typed.
+const contextDraft = ref("");
+
+async function pinContext() {
+  try {
+    await pinJsonLdContext(realm.value, { url: contextDraft.value.trim() });
+  } catch {
+    // The toast carries the server's refusal, and the draft stays to be fixed.
+    return;
+  }
+  contextDraft.value = "";
+  await loadJsonLdContexts();
+}
+
+async function readContextAgain(context: string) {
+  try {
+    await readJsonLdContextAgain(realm.value, context);
+  } catch {
+    // The toast carries the server's refusal; the document read before is kept.
+    return;
+  }
+  await loadJsonLdContexts();
+}
+
+async function forgetContext(context: string) {
+  await forgetJsonLdContext(realm.value, context);
+  await loadJsonLdContexts();
 }
 
 /// Where a carrier that reads a key set finds the realm's public half.
@@ -3003,6 +3047,77 @@ async function saveSmsTemplate() {
                 class="w-fit sf-button sf-button-primary"
               >
                 {{ say("credential-issuers-name-it") }}
+              </button>
+            </form>
+          </div>
+
+          <div class="mt-4 flex w-full flex-col gap-3 rounded-lg border border-border bg-surface p-4 text-xs">
+            <div class="flex items-center gap-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("jsonld-contexts-title") }} <AppHint name="jsonld-contexts-help" />
+              <span class="rounded border border-border px-1.5 py-0.5 text-[10px] tracking-normal normal-case">{{
+                say("settings-experimental")
+              }}</span>
+            </div>
+            <p v-if="jsonLdContexts && !jsonLdContexts.running" class="text-[11px] leading-5 text-muted">
+              {{ say("jsonld-contexts-not-running") }}
+            </p>
+            <div v-if="jsonLdContexts?.built_in.length" class="grid gap-1">
+              <div class="text-[11px] font-medium text-muted">{{ say("jsonld-contexts-built-in") }}</div>
+              <div
+                v-for="url in jsonLdContexts.built_in"
+                :key="url"
+                class="font-mono text-[11px] break-all text-faint"
+              >
+                {{ url }}
+              </div>
+            </div>
+            <p v-if="jsonLdContexts && !jsonLdContexts.items.length" class="text-[11px] text-faint">
+              {{ say("jsonld-contexts-empty") }}
+            </p>
+            <ul v-if="jsonLdContexts?.items.length" class="grid gap-1.5">
+              <li
+                v-for="pinned in jsonLdContexts.items"
+                :key="pinned.id"
+                class="flex items-start gap-3 rounded-md border border-border bg-surface-2 px-3 py-2"
+              >
+                <div class="min-w-0 flex-1">
+                  <div class="font-mono text-[11px] break-all text-ink">{{ pinned.url }}</div>
+                  <div class="mt-0.5 text-[10.5px] text-muted">
+                    {{ say("jsonld-contexts-read", { octets: pinned.octets, at: stamp(pinned.read_at) }) }}
+                  </div>
+                  <div class="font-mono text-[10px] break-all text-faint">SHA-256 {{ pinned.digest }}</div>
+                </div>
+                <div class="flex shrink-0 flex-col gap-1.5">
+                  <button
+                    type="button"
+                    class="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-surface"
+                    @click="readContextAgain(pinned.id)"
+                  >
+                    {{ say("jsonld-contexts-read-again") }}
+                  </button>
+                  <button
+                    type="button"
+                    class="rounded-md border border-border px-3 py-1.5 text-xs text-danger hover:bg-surface"
+                    @click="forgetContext(pinned.id)"
+                  >
+                    {{ say("jsonld-contexts-forget") }}
+                  </button>
+                </div>
+              </li>
+            </ul>
+            <form class="grid gap-2" @submit.prevent="pinContext">
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("jsonld-contexts-url") }} <AppHint name="jsonld-contexts-url-help" />
+                <input
+                  v-model="contextDraft"
+                  class="sf-field mt-1 font-mono"
+                  spellcheck="false"
+                  maxlength="2048"
+                  placeholder="https://issuer.example.org/contexts/credential.json"
+                />
+              </label>
+              <button type="submit" :disabled="!contextDraft.trim()" class="w-fit sf-button sf-button-primary">
+                {{ say("jsonld-contexts-pin-it") }}
               </button>
             </form>
           </div>

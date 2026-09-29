@@ -503,7 +503,7 @@ async fn a_provider_s_own_keys_are_drawn_here_and_kept_dark() {
         &services::token::assertion::AssertionKey {
             kid: &signing.kid,
             private_pem: &signing.private_pem,
-            algorithm: brokering::PROVIDER_ASSERTION_ALGORITHM,
+            algorithm: services::token::assertion::AssertionAlgorithm::Ps256,
         },
         "saffui-at-op",
         "https://op.example/realms/main",
@@ -574,4 +574,156 @@ async fn a_provider_s_own_keys_are_drawn_here_and_kept_dark() {
     {
         assert!(!bag.contains_key(field), "{field} was kept as planted");
     }
+}
+
+/// A provider that verifies RS256 alone, as eSignet 1.x does, gets a classic
+/// RSA key drawn for RS256, whose assertions its shown half verifies; the
+/// algorithm stands with the key, so asking another is refused in words while
+/// the same one keeps the key.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_assertion_key_is_drawn_for_the_algorithm_its_provider_verifies() {
+    use crypto::jose::jwk::Jwk;
+    use crypto::jose::jws::RS256;
+    use services::federation::brokering::{self, ProviderKey};
+    use services::token::assertion::{AssertionAlgorithm, AssertionKey, client_assertion};
+    use store::tenancy::TenantContext;
+
+    let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = format!("/admin/realms/{REALM}/identity-providers");
+    let signing_with = |alias: &str, algorithm: Option<&str>| {
+        let mut asked_for = upstream(alias);
+        let bag = asked_for["configs"].as_object_mut().expect("a bag");
+        bag.remove("client_secret");
+        bag.insert("token_auth".to_owned(), json!({ "Str": "private_key_jwt" }));
+        bag.insert(
+            "assertion_audience".to_owned(),
+            json!({ "Str": "token_endpoint" }),
+        );
+        if let Some(algorithm) = algorithm {
+            bag.insert("assertion_alg".to_owned(), json!({ "Str": algorithm }));
+        }
+        asked_for
+    };
+    let shown = |answer: &Value| -> Value {
+        let written = answer["configs"]["assertion_jwk"]["Str"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no assertion key shown: {answer}"));
+        serde_json::from_str(written).expect("a JWK")
+    };
+
+    let (status, born) = asked(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        Some(signing_with("older", Some("RS256"))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+    let assertion_jwk = shown(&born);
+    assert_eq!(
+        (
+            &assertion_jwk["kty"],
+            &assertion_jwk["alg"],
+            &assertion_jwk["use"]
+        ),
+        (&json!("RSA"), &json!("RS256"), &json!("sig"))
+    );
+
+    let transaction = plane
+        .scoped(&TenantContext::new(support::TENANT, REALM))
+        .await;
+    let sealing = support::sealing();
+    let ring = store::keyring::load(&transaction, &sealing.envelope, support::TENANT, REALM)
+        .await
+        .expect("the realm's keyring");
+    let stored = brokering::read_provider(&transaction, "older")
+        .await
+        .expect("the store")
+        .expect("the provider");
+    let signing =
+        brokering::open_provider_key(&ring, &sealing.envelope, &stored, ProviderKey::Assertion)
+            .await
+            .expect("the assertion key");
+    drop(transaction);
+    let assertion = client_assertion(
+        &support::provider(),
+        &AssertionKey {
+            kid: &signing.kid,
+            private_pem: &signing.private_pem,
+            algorithm: AssertionAlgorithm::Rs256,
+        },
+        "saffui-at-op",
+        "https://op.example/token",
+        chrono::Utc::now(),
+    )
+    .expect("an assertion");
+    let registered: Jwk =
+        Jwk::from_bytes(assertion_jwk.to_string().as_bytes()).expect("the shown key");
+    crypto::jose::jwt::decode_with_verifier(
+        &assertion,
+        &RS256.verifier_from_jwk(&registered).expect("a verifier"),
+    )
+    .expect("an assertion the shown key verifies");
+
+    for (alias, asked_algorithm, refusal) in [
+        (
+            "older",
+            Some("PS256"),
+            "this provider's assertion key signs RS256: signing PS256 takes a new provider, whose key is registered anew where it signs in",
+        ),
+        (
+            "older",
+            None,
+            "this provider's assertion key signs RS256: signing PS256 takes a new provider, whose key is registered anew where it signs in",
+        ),
+    ] {
+        let (status, told) = asked(
+            &plane,
+            Method::PUT,
+            &format!("{base}/{alias}"),
+            &bearer,
+            Some(signing_with(alias, asked_algorithm)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+        assert_eq!(told["message"], refusal, "{asked_algorithm:?}");
+    }
+    let (status, kept) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{base}/older"),
+        &bearer,
+        Some(signing_with("older", Some("RS256"))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{kept}");
+    assert_eq!(shown(&kept), assertion_jwk);
+
+    // A provider drawn for PS256 keeps to it the same way.
+    let (status, born) = asked(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        Some(signing_with("newer", None)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+    assert_eq!(shown(&born)["alg"], "PS256");
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{base}/newer"),
+        &bearer,
+        Some(signing_with("newer", Some("RS256"))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert_eq!(
+        told["message"],
+        "this provider's assertion key signs PS256: signing RS256 takes a new provider, whose key is registered anew where it signs in"
+    );
 }

@@ -279,7 +279,7 @@ pub async fn conclude(
     };
     let secret = opened_secret(&transaction, &sealing, &context, &provider).await;
     let assertion = match upstream.token_auth {
-        TokenAuth::PrivateKeyJwt => {
+        TokenAuth::PrivateKeyJwt(settings) => {
             let Some(key) = brokering::open_provider_key(
                 &ring,
                 &sealing.envelope,
@@ -299,7 +299,7 @@ pub async fn conclude(
                 &services::token::assertion::AssertionKey {
                     kid: &key.kid,
                     private_pem: &key.private_pem,
-                    algorithm: brokering::PROVIDER_ASSERTION_ALGORITHM,
+                    algorithm: settings.algorithm,
                 },
                 &upstream.client_id,
                 brokering::choose_assertion_audience(&upstream),

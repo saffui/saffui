@@ -1,6 +1,7 @@
-//! The relation store, in a process that runs it. The store is experimental
-//! and off unless the process turns it on, which a process does once: its
-//! suites share a binary of their own, and every case turns it on first.
+//! The relation store, in a process that runs it, beside the wallet verifier
+//! the console contract asks with. Both are experimental and off unless the
+//! process turns them on, which a process does once: these suites share a
+//! binary of their own, and every case turns them on first.
 mod support;
 
 #[path = "grouped/admin_authz.rs"]

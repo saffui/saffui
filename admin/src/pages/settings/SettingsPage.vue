@@ -6,6 +6,7 @@ import AppHint from "@/components/AppHint.vue";
 import PageTabs from "@/components/PageTabs.vue";
 import AppIcon from "@/components/AppIcon.vue";
 import DangerDialog from "@/components/DangerDialog.vue";
+import PresentationRequestCard from "./PresentationRequestCard.vue";
 import AppToggle from "@/components/AppToggle.vue";
 import { useRouter } from "vue-router";
 import {
@@ -3121,6 +3122,8 @@ async function saveSmsTemplate() {
               </button>
             </form>
           </div>
+
+          <PresentationRequestCard :realm="realm" :running="credentialIssuers?.running ?? null" />
         </div>
       </template>
     </div>

@@ -16,8 +16,9 @@ pub struct PresentationAsked {
     pub dcql_query: serde_json::Value,
 }
 
-/// Ask a wallet for a presentation: the answer is a link a wallet opens, or a
-/// QR code carries, and the request waits five minutes for it.
+/// Ask a wallet for a presentation: the answer is a link a wallet opens, and
+/// the same link drawn as a QR code for a wallet to scan, and the request waits
+/// five minutes for it.
 pub async fn ask(
     admin: web::ReqData<Admin>,
     tenancy: web::Data<Tenancy>,
@@ -68,6 +69,7 @@ pub async fn ask(
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::Created().json(serde_json::json!({
         "id": made.request_id,
+        "qr": commons::qr::draw_qr_svg(&made.uri),
         "uri": made.uri,
         "expires_at": made.expires_at,
     })))

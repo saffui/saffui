@@ -52,7 +52,7 @@ fn protection() -> Value {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn evaluator_accepts_the_exact_username_and_user_id() {
-    crate::relations::relations_running();
+    crate::relations::experiments_running();
     let plane = Plane::with_actions(&[AdminAction::AuthzDecisionWrite]).await;
     let bearer = plane.token(&support::claims());
     plane.rename_subject("ada-renamed").await;
@@ -82,7 +82,7 @@ async fn evaluator_accepts_the_exact_username_and_user_id() {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_protected_application_lives_over_the_plane() {
-    crate::relations::relations_running();
+    crate::relations::experiments_running();
     let plane = Plane::with_actions(&[
         AdminAction::UmaRead,
         AdminAction::UmaWrite,
@@ -201,7 +201,7 @@ async fn a_protected_application_lives_over_the_plane() {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn what_the_store_refuses_reaches_the_caller_in_its_own_words() {
-    crate::relations::relations_running();
+    crate::relations::experiments_running();
     let plane = Plane::with_actions(&[
         AdminAction::UmaRead,
         AdminAction::UmaWrite,
@@ -391,7 +391,7 @@ async fn what_the_store_refuses_reaches_the_caller_in_its_own_words() {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn the_capabilities_split_where_they_should() {
-    crate::relations::relations_running();
+    crate::relations::experiments_running();
     let plane = Plane::with_actions(&[AdminAction::UmaRead]).await;
     let bearer = plane.token(&support::claims());
     let base = format!(
@@ -420,7 +420,7 @@ async fn the_capabilities_split_where_they_should() {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_simulated_decision_is_the_engine_speaking() {
-    crate::relations::relations_running();
+    crate::relations::experiments_running();
     let plane = Plane::with_actions(&[
         AdminAction::UmaRead,
         AdminAction::UmaWrite,
@@ -539,7 +539,7 @@ async fn a_simulated_decision_is_the_engine_speaking() {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_surface_is_reworked_in_place_and_never_through_another_server() {
-    crate::relations::relations_running();
+    crate::relations::experiments_running();
     let plane = Plane::with_actions(&[AdminAction::UmaRead, AdminAction::UmaWrite]).await;
     let bearer = plane.token(&support::claims());
     let here = format!(
@@ -657,7 +657,7 @@ async fn a_surface_is_reworked_in_place_and_never_through_another_server() {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_resource_is_shared_only_where_it_is_user_managed_and_the_graph_says_how() {
-    crate::relations::relations_running();
+    crate::relations::experiments_running();
     let plane = Plane::with_actions(&[
         AdminAction::UmaRead,
         AdminAction::UmaWrite,
@@ -843,7 +843,7 @@ async fn a_resource_is_shared_only_where_it_is_user_managed_and_the_graph_says_h
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_server_closes_and_reopens_sharing_in_place() {
-    crate::relations::relations_running();
+    crate::relations::experiments_running();
     let plane = Plane::with_actions(&[
         AdminAction::UmaRead,
         AdminAction::UmaWrite,
@@ -939,7 +939,7 @@ async fn a_server_closes_and_reopens_sharing_in_place() {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_blank_or_taken_name_is_refused_in_words() {
-    crate::relations::relations_running();
+    crate::relations::experiments_running();
     let plane = Plane::with_actions(&[
         AdminAction::UmaRead,
         AdminAction::UmaWrite,
@@ -1193,7 +1193,7 @@ async fn evaluate_viewer(
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_closed_resource_grants_nothing_through_its_shares() {
-    crate::relations::relations_running();
+    crate::relations::experiments_running();
     let plane = Plane::with_actions(&[
         AdminAction::UmaRead,
         AdminAction::UmaWrite,
@@ -1365,7 +1365,7 @@ async fn a_closed_resource_grants_nothing_through_its_shares() {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_policy_naming_a_member_twice_is_refused_in_words() {
-    crate::relations::relations_running();
+    crate::relations::experiments_running();
     let plane = Plane::with_actions(&[
         AdminAction::UmaRead,
         AdminAction::UmaWrite,

@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-commons = { workspace = true, features = ["http", "request-span"] }
+commons = { workspace = true, features = ["http", "request-span", "qr"] }
 # Every record a handler emits lands under the request's span, and the two
 # middlewares that open that span are what a binary and a test both mount.
 tracing = { workspace = true }

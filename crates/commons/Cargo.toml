@@ -23,6 +23,10 @@ tracing-json = ["dep:tracing", "dep:tracing-subscriber", "dep:tracing-log", "dep
 # so it is its own feature rather than a silent consequence of enabling two.
 request-span = ["http", "tracing-json", "dep:tracing-actix-web", "dep:uuid"]
 
+# A link drawn as a QR code in SVG. Off by default: only the crates that show
+# one need the encoder.
+qr = ["dep:qrcode"]
+
 [dependencies]
 thiserror = { workspace = true }
 secrecy = { workspace = true }
@@ -41,3 +45,4 @@ chrono = { workspace = true, optional = true }
 tracing-log = { workspace = true, optional = true }
 tracing-actix-web = { workspace = true, optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
+qrcode = { workspace = true, optional = true }

@@ -1047,6 +1047,11 @@ async fn a_wallet_answers_a_presentation_request() {
     let wallet = realm_ready_to_verify(&plane, &bearer).await;
 
     let (asked_for, request) = ask_for_pid(&plane, &bearer).await;
+    assert_eq!(
+        asked_for["qr"].as_str(),
+        commons::qr::draw_qr_svg(asked_for["uri"].as_str().expect("a link")).as_deref(),
+        "the QR code draws the link a wallet opens"
+    );
     let client_id = request["client_id"].as_str().expect("a client_id");
     assert!(
         client_id.starts_with("decentralized_identifier:did:web:id.test:realms:"),

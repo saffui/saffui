@@ -6,6 +6,12 @@ import type { ClientBrief, ClientDetail } from "@/models/client";
 import type { UserBrief } from "@/models/user";
 
 const NOW = Math.floor(Date.now() / 1000);
+/// When the preview last asked for a presentation: its wallet answers a few
+/// seconds later, so the page shows the QR code before the verdict.
+let presentationAskedAt = 0;
+const PREVIEW_QR =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 25 25"><rect width="25" height="25" fill="#ffffff"/>' +
+  '<path d="M2 2h7v7H2zM16 2h7v7h-7zM2 16h7v7H2zM11 11h3v3h-3zM16 16h2v2h-2zM20 18h3v3h-3z" fill="#000000"/></svg>';
 
 /// Revoking in the preview has to show, or the button would look broken here
 /// and nowhere else.
@@ -1360,6 +1366,43 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
       kid: "3kS9aU0LyR7vN2qP8cT4dX1mB6hJ5wE0fG7iK2oZ9sA",
       public_jwk: { kty: "EC", crv: "P-256", kid: "3kS9aU0LyR7vN2qP8cT4dX1mB6hJ5wE0fG7iK2oZ9sA", alg: "ES256", use: "sig", x: "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU", y: "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0" },
       running: false,
+    });
+  }
+  if (path.endsWith("/presentations") && method === "POST") {
+    presentationAskedAt = Date.now();
+    return answer({
+      id: "4f1c9a2e7b3d5c8e0a6f1b4d7c2e9a5b",
+      qr: PREVIEW_QR,
+      uri:
+        "openid4vp://authorize?client_id=decentralized_identifier%3Adid%3Aweb%3Aid.test%3Arealms%3Amain" +
+        "&request_uri=https%3A%2F%2Fid.test%2Frealms%2Fmain%2Fvp%2Frequest%2F4f1c9a2e7b3d5c8e0a6f1b4d7c2e9a5b",
+      expires_at: new Date(presentationAskedAt + 300_000).toISOString(),
+    });
+  }
+  if (/\/presentations\/[^/]+$/.test(path)) {
+    const answered = Date.now() - presentationAskedAt > 6_000;
+    return answer({
+      id: "4f1c9a2e7b3d5c8e0a6f1b4d7c2e9a5b",
+      status: answered ? "verified" : "pending",
+      outcome: answered
+        ? {
+            credentials: [
+              {
+                id: "credential",
+                issuer: "did:web:issuer.example",
+                types: [
+                  "https://www.w3.org/2018/credentials#VerifiableCredential",
+                  "https://issuer.example/vocab#IdentityCredential",
+                ],
+                claims: ["credentialSubject.fullName", "credentialSubject.dateOfBirth"],
+              },
+            ],
+          }
+        : null,
+      expires_at: new Date(presentationAskedAt + 300_000).toISOString(),
+      answered_at: answered ? new Date(presentationAskedAt + 6_000).toISOString() : null,
+      created_by: "ada",
+      created_at: new Date(presentationAskedAt).toISOString(),
     });
   }
   if (/\/jsonld-contexts\/[^/]+$/.test(path) && method === "DELETE") {

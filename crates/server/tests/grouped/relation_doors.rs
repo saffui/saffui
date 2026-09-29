@@ -26,7 +26,7 @@ definition folder {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_relationship_schema_rules_what_is_written() {
-    crate::relations::relations_running();
+    crate::relations::experiments_running();
     let plane = Plane::with_actions(&[AdminAction::RebacRead, AdminAction::RebacWrite]).await;
     let bearer = plane.token(&support::claims());
     let schema = format!("/admin/realms/{REALM}/rebac/schema");
@@ -169,7 +169,7 @@ async fn a_relationship_schema_rules_what_is_written() {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn the_realms_edges_list_a_page_at_a_time_and_narrow() {
-    crate::relations::relations_running();
+    crate::relations::experiments_running();
     let plane = Plane::with_actions(&[AdminAction::RebacRead, AdminAction::RebacWrite]).await;
     let bearer = plane.token(&support::claims());
     let (status, told) = asked(
@@ -279,7 +279,7 @@ async fn the_realms_edges_list_a_page_at_a_time_and_narrow() {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn closing_one_capability_shuts_its_doors_and_no_others() {
-    crate::relations::relations_running();
+    crate::relations::experiments_running();
     let plane = Plane::with_actions(&[
         AdminAction::FeatureRead,
         AdminAction::FeatureWrite,

@@ -8,17 +8,24 @@ use serde_json::{Value, json};
 
 const REALM: &str = support::REALM;
 
-/// The relation store is experimental and off unless the process runs it, so
-/// every case in this binary turns it on before anything reads what the
-/// process runs: the first call decides for the whole binary.
-pub(crate) fn relations_running() {
+/// The relation store and the wallet verifier are experimental and off unless
+/// the process runs them, so every case in this binary turns both on before
+/// anything reads what the process runs: the first call decides for the whole
+/// binary. The console contract asks for presentations, and so needs the
+/// verifier beside the store.
+pub(crate) fn experiments_running() {
     server::api::config::install_features(
-        commons::feature::FeatureSet::resolve("+rebac-store", |_| false)
+        commons::feature::FeatureSet::resolve("+rebac-store,+wallet-verifier", |_| false)
             .expect("a set that resolves"),
     );
+    let running = server::api::config::features();
     assert!(
-        server::api::config::features().is_enabled(commons::feature::Feature::RebacStore),
+        running.is_enabled(commons::feature::Feature::RebacStore),
         "the process does not run the relation store"
+    );
+    assert!(
+        running.is_enabled(commons::feature::Feature::WalletVerifier),
+        "the process does not run the wallet verifier"
     );
 }
 
@@ -50,7 +57,7 @@ async fn evaluate(plane: &Plane, bearer: &str, invoice: &str) -> Value {
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_realm_that_closes_the_relation_store_closes_all_of_it() {
-    relations_running();
+    experiments_running();
     let plane = Plane::with_actions(&[
         AdminAction::FeatureWrite,
         AdminAction::UmaRead,

@@ -10,8 +10,6 @@ authors.workspace = true
 [dependencies]
 crypto = { workspace = true }
 data-encoding = { workspace = true }
-thiserror = { workspace = true }
-
-[dev-dependencies]
-# The W3C suite's manifest and identifier maps are JSON.
+serde = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }

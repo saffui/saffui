@@ -14,7 +14,8 @@ of the `crypto` crate, this repository's own code beside that layer, are listed
 under *Beside the vendored tree*. The consoles' fonts are IBM Plex files taken as
 upstream ships them, under *IBM Plex*. The canonicalization tests of the `jsonld`
 crate run the W3C suite's own files, under *W3C RDF Dataset Canonicalization
-test suite*.
+test suite*, and its reading of JSON-LD runs the toRdf tests of the W3C JSON-LD
+suite, under *W3C JSON-LD 1.1 test suite*.
 
 ---
 
@@ -272,6 +273,25 @@ Code meant for the whole crate goes into a module of its own rather than into
 - Use: test fixtures only. Nothing in them is compiled into the product.
 - Upstream tracking: none. A newer revision is taken by hand, with the commit
   above updated.
+
+## W3C JSON-LD 1.1 test suite
+
+- Upstream: https://github.com/w3c/json-ld-api, directory `tests/`
+- Version taken: commit `ffdb326121ea89b7b8280e76a5caea923834bcef` (2026-08-12)
+- Date taken: 2026-09-29
+- Licence: the licences for W3C test suites (dual licensing), as upstream's
+  `tests/LICENSE.md` states, copied beside the files.
+- Files derived:
+  - `crates/jsonld/tests/jsonld-api/toRdf/`: the 837 files of upstream
+    `tests/toRdf/`, its `c031/` folder included
+  - `crates/jsonld/tests/jsonld-api/toRdf-manifest.jsonld`, the manifest of
+    those tests
+  - `crates/jsonld/tests/jsonld-api/LICENSE.md`, the licence as upstream ships
+    it
+- Modifications: none.
+- Use: test fixtures only. Nothing in them is compiled into the product.
+- Upstream tracking: none. A newer revision is taken by hand, with the commit
+  above updated and the counts the suite's test pins measured again.
 
 ## Before vendoring anything
 

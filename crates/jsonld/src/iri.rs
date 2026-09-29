@@ -47,7 +47,7 @@ pub(crate) fn has_keyword_form(value: &str) -> bool {
 
 /// An absolute IRI RDF can carry: a scheme, and none of the characters an IRI
 /// reference may not hold.
-pub(crate) fn is_absolute_iri(value: &str) -> bool {
+pub fn is_absolute_iri(value: &str) -> bool {
     let Some((scheme, _)) = value.split_once(':') else {
         return false;
     };

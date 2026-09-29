@@ -6,6 +6,7 @@
 //! document in silence, and so leave it out of what a proof signs, it refuses
 //! the document instead, as VC Data Integrity §2.4.3 requires.
 
+pub mod base58;
 pub mod canon;
 mod context;
 mod expand;

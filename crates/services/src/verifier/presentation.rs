@@ -187,7 +187,7 @@ pub fn check_query(query: &Value) -> Result<(), Unaskable> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asked {
     pub request_id: String,
-    /// The `openid4vp://` link a wallet opens, or a QR code carries.
+    /// The `openid4vp://authorize` link a wallet opens, or a QR code carries.
     pub uri: String,
     pub expires_at: DateTime<Utc>,
 }
@@ -271,7 +271,7 @@ pub async fn ask(
     .map_err(|_| Unaskable::Unwritable)?;
 
     let uri = format!(
-        "openid4vp://?client_id={}&request_uri={}",
+        "openid4vp://authorize?client_id={}&request_uri={}",
         encoded(&client_id),
         encoded(&request_uri(issuer, &request_id)),
     );

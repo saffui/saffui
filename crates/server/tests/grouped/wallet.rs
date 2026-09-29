@@ -833,6 +833,11 @@ async fn read_request(plane: &Plane, link: &str) -> serde_json::Map<String, Valu
     use crypto::jose::jws::EdDSA;
     let link = url::Url::parse(link).expect("an openid4vp link");
     assert_eq!(link.scheme(), "openid4vp");
+    assert_eq!(
+        link.host_str(),
+        Some("authorize"),
+        "Inji's wallets take no other link"
+    );
     let given = |name: &str| {
         link.query_pairs()
             .find(|(held, _)| held == name)

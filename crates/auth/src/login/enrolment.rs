@@ -264,7 +264,7 @@ fn start_totp(provider: &dyn CryptoProvider, realm: &RealmModel, subject: &UserM
     Enrolment::Asked {
         named: CONFIGURE_TOTP,
         challenge: Challenge {
-            shown: json!({ "secret": encoded, "otpauth": otpauth, "qr": qr_svg(&otpauth) }),
+            shown: json!({ "secret": encoded, "otpauth": otpauth, "qr": commons::qr::draw_qr_svg(&otpauth) }),
             remembered: json!({ "secret": encoded }),
         },
         sending: None,
@@ -300,21 +300,6 @@ fn otpauth_uri(
         algorithm = policy.algorithm.as_str(),
         digits = policy.digits,
         period = policy.period,
-    )
-}
-
-/// The otpauth URI as a scannable SVG. The image paints its own light ground,
-/// so it stays readable on the dark page. `None` never happens for a URI this
-/// short, and an app that cannot draw one still has the link and the text.
-fn qr_svg(uri: &str) -> Option<String> {
-    use qrcode::render::svg;
-    let code = qrcode::QrCode::new(uri.as_bytes()).ok()?;
-    Some(
-        code.render::<svg::Color>()
-            .min_dimensions(176, 176)
-            .dark_color(svg::Color("#000000"))
-            .light_color(svg::Color("#ffffff"))
-            .build(),
     )
 }
 
@@ -373,7 +358,7 @@ async fn finish_totp(
                 shown: json!({
                     "secret": encoded,
                     "otpauth": otpauth,
-                    "qr": qr_svg(&otpauth),
+                    "qr": commons::qr::draw_qr_svg(&otpauth),
                     "refused": true,
                 }),
                 remembered: state.clone(),
@@ -1102,25 +1087,6 @@ fn e164(offered: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    /// The image is real SVG carrying its own light ground, so the page can
-    /// hand it to an `img` untouched and it scans on the dark theme.
-    #[test]
-    fn the_enrolment_uri_becomes_a_scannable_image() {
-        let drawn = super::qr_svg(
-            "otpauth://totp/main:ada?secret=JBSWY3DPEHPK3PXP&issuer=main\
-             &algorithm=SHA1&digits=6&period=30",
-        )
-        .expect("a URI this short always fits");
-        assert!(
-            drawn.starts_with("<?xml") || drawn.starts_with("<svg"),
-            "{drawn}"
-        );
-        assert!(
-            drawn.contains("#ffffff"),
-            "the light ground is the image's own"
-        );
-    }
-
     /// Both legs advertise the same enrolment.
     ///
     /// The leg that issues the secret and the leg that asks again after a

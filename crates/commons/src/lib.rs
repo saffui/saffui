@@ -5,5 +5,7 @@ pub mod feature;
 pub mod http;
 pub mod observability;
 pub mod pattern;
+#[cfg(feature = "qr")]
+pub mod qr;
 pub mod secret;
 pub mod walk;

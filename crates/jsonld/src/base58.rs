@@ -1,7 +1,11 @@
 //! Base58 in the Bitcoin alphabet, as `did:key`, `did:web` documents and
-//! multibase's `z` write keys.
+//! multibase's `z` write keys and proof values.
 
 const ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+/// The longest text decoded. A key or a signature is far shorter, and the work
+/// grows with the square of the length of a text that may come from anyone.
+const MOST_CHARACTERS: usize = 256;
 
 /// The bytes read as one big-endian number, written in base 58, each leading
 /// zero byte kept as a leading `1`.
@@ -32,8 +36,11 @@ pub fn encode(bytes: &[u8]) -> String {
 }
 
 /// The bytes a base58 text writes, or `None` for a character outside the
-/// alphabet.
+/// alphabet or a text longer than any key or signature.
 pub fn decode(text: &str) -> Option<Vec<u8>> {
+    if text.len() > MOST_CHARACTERS {
+        return None;
+    }
     let zeros = text
         .bytes()
         .take_while(|character| *character == b'1')
@@ -73,5 +80,12 @@ mod tests {
         }
         assert_eq!(encode(&[0, 0, 1]), "112");
         assert_eq!(decode("0OIl"), None, "outside the alphabet");
+    }
+
+    #[test]
+    fn a_text_longer_than_a_signature_is_refused() {
+        let longest = "z".repeat(MOST_CHARACTERS);
+        assert!(decode(&longest).is_some());
+        assert_eq!(decode(&format!("{longest}z")), None);
     }
 }

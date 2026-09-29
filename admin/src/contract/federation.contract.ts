@@ -15,6 +15,7 @@ import {
   updateIdpMapper,
 } from "@/services/federation";
 import { deleteSpnego, getSpnego, putSpnego } from "@/services/negotiation";
+import { readHeldAssertionAlgorithm } from "@/pages/federation/forms";
 import { keepAnswer, REALM } from "./answers";
 
 const PROVIDER = "contract-oidc";
@@ -90,6 +91,8 @@ describe("federation", () => {
         scope: { Str: "openid profile" },
         allowed_algs: { Str: "PS256" },
         token_auth: { Str: "private_key_jwt" },
+        assertion_alg: { Str: "RS256" },
+        assertion_audience: { Str: "token_endpoint" },
         userinfo_response: { Str: "jwe" },
         userinfo_algs: { Str: "RS256 PS256" },
         claims: { Str: '{"userinfo":{"name":{"essential":true}}}' },
@@ -100,8 +103,16 @@ describe("federation", () => {
     const shown = Object.keys(created.configs ?? {});
     expect(shown).toEqual(expect.arrayContaining(["assertion_jwk", "encryption_jwk"]));
     expect(shown.filter((field) => field.endsWith("_sealed"))).toEqual([]);
+    expect(readHeldAssertionAlgorithm(created)).toBe("RS256");
     const rewritten = await keepAnswer(updateIdp, REALM, NATIONAL, { ...provider, display_name: "National ID" });
     expect(rewritten.configs?.assertion_jwk).toEqual(created.configs?.assertion_jwk);
+    await expect(
+      updateIdp(REALM, NATIONAL, { ...provider, configs: { ...provider.configs, assertion_alg: { Str: "PS256" } } }),
+    ).rejects.toMatchObject({
+      status: 422,
+      message:
+        "this provider's assertion key signs RS256: signing PS256 takes a new provider, whose key is registered anew where it signs in",
+    });
     await deleteIdp(REALM, NATIONAL);
   });
 

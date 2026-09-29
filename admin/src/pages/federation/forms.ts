@@ -20,6 +20,12 @@ export type UserinfoForm = "" | "json" | "jws" | "jwe";
 
 /// A key this realm draws and holds for one provider, shown by its public half.
 export type ProviderKeyField = "assertion_jwk" | "encryption_jwk";
+/// What a provider's own key signs its assertions with: PS256, or RS256 for a
+/// provider that verifies nothing else, as eSignet 1.x does.
+export type AssertionAlgorithm = "PS256" | "RS256";
+/// Where an assertion is addressed: the provider's issuer, or its token
+/// endpoint, which eSignet 1.x requires.
+export type AssertionAudience = "issuer" | "token_endpoint";
 
 export const PERSISTENT_NAME_ID = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent";
 
@@ -53,6 +59,8 @@ export interface ProviderDraft {
   acceptedContexts: string;
   issuerRequiredOnReturn: boolean;
   tokenAuth: TokenAuth;
+  assertionAlgorithm: AssertionAlgorithm;
+  assertionAudience: AssertionAudience;
   pkce: boolean;
   subjectPointer: string;
   usernamePointer: string;
@@ -115,6 +123,8 @@ export function emptyProviderDraft(): ProviderDraft {
     acceptedContexts: "",
     issuerRequiredOnReturn: false,
     tokenAuth: "client_secret_basic",
+    assertionAlgorithm: "PS256",
+    assertionAudience: "issuer",
     pkce: true,
     subjectPointer: "",
     usernamePointer: "",
@@ -166,6 +176,9 @@ export function providerDraft(row: IdpRow): ProviderDraft {
     acceptedContexts: configText(row, "accepted_acrs"),
     issuerRequiredOnReturn: configText(row, "iss_parameter") === "required",
     tokenAuth: readTokenAuth(configText(row, "token_auth")),
+    assertionAlgorithm:
+      readAssertionAlgorithm(configText(row, "assertion_alg")) ?? readHeldAssertionAlgorithm(row) ?? "PS256",
+    assertionAudience: configText(row, "assertion_audience") === "token_endpoint" ? "token_endpoint" : "issuer",
     pkce: configText(row, "pkce") !== "false",
     subjectPointer: configText(row, "subject_pointer"),
     usernamePointer: configText(row, "username_pointer"),
@@ -188,6 +201,23 @@ export function providerDraft(row: IdpRow): ProviderDraft {
 
 function readTokenAuth(said: string): TokenAuth {
   return said === "client_secret_post" || said === "private_key_jwt" ? said : "client_secret_basic";
+}
+
+function readAssertionAlgorithm(said: string): AssertionAlgorithm | null {
+  return said === "PS256" || said === "RS256" ? said : null;
+}
+
+/// The algorithm a saved provider's assertion key was drawn for, or nothing
+/// until one is: it stands with the key, which the provider registered once.
+export function readHeldAssertionAlgorithm(row: IdpRow | undefined): AssertionAlgorithm | null {
+  const held = row ? configText(row, "assertion_jwk") : "";
+  if (!held) return null;
+  try {
+    const alg: unknown = (JSON.parse(held) as { alg?: unknown }).alg;
+    return typeof alg === "string" ? readAssertionAlgorithm(alg) : null;
+  } catch {
+    return null;
+  }
 }
 
 function readUserinfoForm(said: string): UserinfoForm {
@@ -228,9 +258,15 @@ export function readProviderPublicKey(row: IdpRow | undefined, field: ProviderKe
 
 /// A draft with what an issuer's discovery document says in place of what was
 /// typed: its endpoints, the identity token algorithms this server verifies,
-/// and whether its way back names its issuer. The userinfo algorithms stay as
-/// they are, eSignet 2.0.0 announcing PS256 there while it signs RS256.
-export function applyDiscoveredProvider(draft: ProviderDraft, found: DiscoveredProvider): ProviderDraft {
+/// whether its way back names its issuer, and the algorithm it takes assertions
+/// under, unless a key already drawn for the provider holds one. The userinfo
+/// algorithms stay as they are, eSignet 2.0.0 announcing PS256 there while it
+/// signs RS256.
+export function applyDiscoveredProvider(
+  draft: ProviderDraft,
+  found: DiscoveredProvider,
+  held: AssertionAlgorithm | null = null,
+): ProviderDraft {
   return {
     ...draft,
     issuer: found.issuer,
@@ -240,6 +276,7 @@ export function applyDiscoveredProvider(draft: ProviderDraft, found: DiscoveredP
     userinfoEndpoint: found.userinfo_endpoint ?? draft.userinfoEndpoint,
     algorithms: found.id_token_algs.join(" "),
     issuerRequiredOnReturn: found.iss_parameter,
+    assertionAlgorithm: held ?? found.assertion_alg ?? draft.assertionAlgorithm,
   };
 }
 
@@ -294,6 +331,10 @@ function brokerConfigs(draft: ProviderDraft): IdpMutation["configs"] {
       written("emails_verified_pointer", draft.emailsVerifiedPointer);
       written("emails_primary_pointer", draft.emailsPrimaryPointer);
     }
+  }
+  if (draft.tokenAuth === "private_key_jwt") {
+    configs.assertion_alg = { Str: draft.assertionAlgorithm };
+    if (draft.protocol === "oidc") configs.assertion_audience = { Str: draft.assertionAudience };
   }
   if (!draft.pkce) configs.pkce = { Str: "false" };
   if (draft.clientSecret && draft.tokenAuth !== "private_key_jwt") {

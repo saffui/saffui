@@ -684,7 +684,7 @@ async fn a_realm_is_offered_flows_and_binds_none_of_them() {
     let made = provision_offered_flows(&transaction, "acme", "main")
         .await
         .expect("the flows are made");
-    assert_eq!(made, 5, "a realm was offered something else");
+    assert_eq!(made, 6, "a realm was offered something else");
 
     // Running again offers nothing twice: provisioning runs on a realm that
     // was half made, and a second flow by the same alias is not a repair.
@@ -699,6 +699,7 @@ async fn a_realm_is_offered_flows_and_binds_none_of_them() {
         "passwordless",
         "mailed-link",
         "desktop",
+        "wallet",
     ] {
         let flow = store::providers::realms::auth_flows::flow_by_alias(&transaction, alias)
             .await
@@ -798,6 +799,40 @@ async fn a_realm_is_offered_flows_and_binds_none_of_them() {
         );
     }
     assert_eq!(desktop.len(), 2, "the desktop flow lost a way in");
+
+    // The wallet flow keeps the password as a way in, as the passkey one keeps
+    // the link: an identity is linked from an account somebody is already
+    // signed in to, so a wallet-only flow shuts out everyone who has not
+    // linked one. And it says what it needs, none of which is in the flow.
+    let wallet = store::providers::realms::auth_flows::executions_of(&transaction, "wallet")
+        .await
+        .expect("the store answered");
+    for step in &wallet {
+        assert_eq!(
+            step.requirement,
+            models::entities::auth::AuthenticatorRequirement::Alternative,
+            "{} is not a way in but a demand",
+            step.alias
+        );
+    }
+    let mut ways: Vec<&str> = wallet.iter().map(|step| step.alias.as_str()).collect();
+    ways.sort_unstable();
+    assert_eq!(
+        ways,
+        ["password", "wallet-sign-in"],
+        "the wallet flow's ways in"
+    );
+    let wallet = store::providers::realms::auth_flows::flow_by_alias(&transaction, "wallet")
+        .await
+        .expect("the store answered")
+        .expect("it was offered");
+    for needed in ["wallet verifier", "profile"] {
+        assert!(
+            wallet.description.contains(needed),
+            "the flow does not say it needs the {needed}: {}",
+            wallet.description
+        );
+    }
 
     // A texted code is the whole of the phone-first flow: a proven number is
     // an identifier here, so the code is a way in and not a second one.

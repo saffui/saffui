@@ -8,18 +8,19 @@
 -- a table read on its own names nobody.
 CREATE TABLE realm_wallet_identity
 (
-    tenant           text        NOT NULL,
-    realm_id         text        NOT NULL,
+    tenant            text        NOT NULL,
+    realm_id          text        NOT NULL,
     -- The credential asked for, as one DCQL credential query.
-    credential_query jsonb       NOT NULL,
+    credential_query  jsonb       NOT NULL,
     -- The issuer that vouches for identities, one the realm names.
-    issuer           text        NOT NULL,
+    issuer            text        NOT NULL,
     -- The claim that identifies, as a path of member names.
-    identifier_path  jsonb       NOT NULL,
+    identifier_path   jsonb       NOT NULL,
     -- The HMAC key, drawn once and sealed under the realm's keyring.
-    digest_key       bytea       NOT NULL,
-    updated_by       text        NOT NULL,
-    updated_at       timestamptz NOT NULL DEFAULT now(),
+    sealed_digest_key bytea       NOT NULL,
+    sealed_version    integer     NOT NULL,
+    updated_by        text        NOT NULL,
+    updated_at        timestamptz NOT NULL DEFAULT now(),
 
     PRIMARY KEY (tenant, realm_id),
     CONSTRAINT realm_wallet_identity_realm FOREIGN KEY (tenant, realm_id)

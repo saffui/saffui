@@ -1,10 +1,17 @@
 mod support;
 
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
+use crypto::envelope::Envelope;
+use crypto::provider::CryptoConfig;
+use crypto::provider::openssl::OpenSslProvider;
 use models::auditable::AuditableModel;
 use models::entities::user::UserCreateModel;
+use secrecy::ExposeSecret;
 use serde_json::json;
 use store::error::StoreError;
+use store::keyring;
 use store::providers::directory::{users, wallet_identities};
 use store::providers::realms::wallet_identity::{self, WalletIdentity};
 use store::tenancy::TenantContext;
@@ -150,49 +157,95 @@ async fn an_identity_answers_for_one_account_and_an_account_holds_one_per_issuer
     );
 }
 
-/// A realm keeps one profile, and rewriting it keeps the key every linked
-/// identity was written under.
+fn envelope() -> Envelope {
+    let provider = OpenSslProvider::new(&CryptoConfig {
+        fips_required: false,
+        pkcs11: None,
+    })
+    .expect("a software provider");
+    Envelope::new(
+        Arc::new(provider),
+        "a-deployment-wrapping-key-of-decent-length",
+    )
+    .expect("an envelope")
+}
+
+/// A realm keeps one profile, its key lands sealed and opens whole, and
+/// rewriting the profile keeps the key every linked identity was written
+/// under.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_profile_rewritten_keeps_its_key() {
     let fixture = Fixture::with_user().await;
+    let envelope = envelope();
     let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
+    keyring::provision(&transaction, &envelope, "acme", "main")
+        .await
+        .unwrap();
+    let ring = keyring::load(&transaction, &envelope, "acme", "main")
+        .await
+        .unwrap();
     assert_eq!(wallet_identity::load(&transaction).await.unwrap(), None);
+    assert!(
+        wallet_identity::open_digest_key(&transaction, &ring, &envelope)
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     let first = WalletIdentity {
         credential_query: json!({ "id": "identity", "format": "ldp_vc" }),
         issuer: ISSUER.to_owned(),
         identifier_path: vec!["credentialSubject".to_owned(), "UIN".to_owned()],
-        digest_key: b"the key drawn first".to_vec(),
         updated_by: "root".to_owned(),
         updated_at: now(),
     };
-    wallet_identity::keep(&transaction, &first).await.unwrap();
+    wallet_identity::keep(
+        &transaction,
+        &ring,
+        &envelope,
+        &first,
+        b"the key drawn first",
+    )
+    .await
+    .unwrap();
     assert_eq!(
         wallet_identity::load(&transaction).await.unwrap(),
-        Some(first.clone())
+        Some(first)
+    );
+    let stored: Vec<u8> = transaction
+        .query_one("SELECT sealed_digest_key FROM realm_wallet_identity", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert!(
+        crypto::envelope::is_sealed(&stored),
+        "the key was stored unsealed"
     );
 
     let rewritten = WalletIdentity {
         credential_query: json!({ "id": "identity", "format": "dc+sd-jwt" }),
         issuer: "https://issuer.example".to_owned(),
         identifier_path: vec!["national_id".to_owned()],
-        digest_key: b"a key drawn again".to_vec(),
         updated_by: "someone".to_owned(),
         updated_at: now(),
     };
-    wallet_identity::keep(&transaction, &rewritten)
-        .await
-        .unwrap();
-    let held = wallet_identity::load(&transaction)
+    wallet_identity::keep(
+        &transaction,
+        &ring,
+        &envelope,
+        &rewritten,
+        b"a key drawn again",
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        wallet_identity::load(&transaction).await.unwrap(),
+        Some(rewritten)
+    );
+    let opened = wallet_identity::open_digest_key(&transaction, &ring, &envelope)
         .await
         .unwrap()
-        .expect("a profile");
-    assert_eq!(
-        held,
-        WalletIdentity {
-            digest_key: first.digest_key,
-            ..rewritten
-        }
-    );
+        .expect("a key");
+    assert_eq!(opened.expose_secret().as_slice(), b"the key drawn first");
 }

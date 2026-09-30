@@ -24,7 +24,7 @@ import { login } from "../lib/console.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const COMPOSE = join(here, "..", "local", "compose.yaml");
-const BASE = "http://localhost:8080";
+const BASE = "http://localhost:8085";
 const OPS = "http://localhost:8081";
 const WITNESS = 19080;
 const REALM = "main";

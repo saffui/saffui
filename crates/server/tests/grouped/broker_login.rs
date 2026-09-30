@@ -296,6 +296,12 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
         support::cookie_value(&cookies, "saffui_session").is_some(),
         "no session cookie was set: {cookies:?}"
     );
+    assert!(
+        cookies
+            .iter()
+            .any(|set| set.starts_with(support::AUTH_PROOF_COOKIE) && set.contains("Max-Age=0")),
+        "a login's proof outlived its brokered admission: {cookies:?}"
+    );
 
     // First arrival made a person and a link.
     let (linked, named) = {

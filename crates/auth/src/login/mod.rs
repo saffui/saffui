@@ -17,17 +17,20 @@ use models::entities::user::UserModel;
 use store::providers::realms::auth_flows;
 use store::tenancy::UnitOfWork;
 
-use crate::login::authenticator::{Answer, Authenticator, Posting};
+use crate::login::authenticator::{Answer, Answered, Authenticator, Posting};
 use crate::login::step::{Decided, Outcome, Step};
 use crate::messaging::Outbound;
+
+/// The steps a login passed, by execution, under the authenticator each ran.
+pub type PassedSteps = std::collections::BTreeMap<String, Authenticator>;
 
 /// Where a login stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Progress {
-    /// Everything the flow required is established, by these authenticators.
-    /// Named rather than counted, because the level a login reached is the
-    /// realm's reading of what actually ran.
-    Admitted { by: Vec<Authenticator> },
+    /// Everything the flow required is established, by these steps. Named
+    /// rather than counted, because the level a login reached is the realm's
+    /// reading of what actually ran.
+    Admitted { passed: PassedSteps },
     /// It cannot be, and no further answer changes that.
     Refused,
     /// Too many failures were counted against this person, so nothing is even
@@ -42,6 +45,8 @@ pub enum Progress {
         execution_id: String,
         asks: Option<serde_json::Value>,
         remember: serde_json::Map<String, serde_json::Value>,
+        /// The steps that passed so far, the caller's to keep for the next round.
+        passed: PassedSteps,
     },
 }
 
@@ -85,7 +90,9 @@ pub enum Unrunnable {
 ///
 /// Every enabled step is run, not merely the ones before the first refusal: a
 /// flow of alternatives has to try them all before it can say none of them let
-/// this caller in, and the fold cannot see what was never run.
+/// this caller in, and the fold cannot see what was never run. A step this
+/// login already passed counts without running again: a factor spent as it
+/// passes cannot be presented a second time.
 #[allow(
     clippy::too_many_arguments,
     reason = "each is a distinct fact about one pass of one flow"
@@ -98,6 +105,9 @@ pub async fn run_flow(
     flow_id: &str,
     subject: Option<&UserModel>,
     answers: &[Answer],
+    // The steps an earlier round of this login passed, when the caller may
+    // count them.
+    already: &PassedSteps,
     // What the previous round issued, under each authenticator's own name.
     remembered_before: &serde_json::Value,
     // What a mailed step needs. Absent where no step in this flow is one.
@@ -135,7 +145,7 @@ pub async fn run_flow(
     let mut waiting = None;
     let mut asked = None;
     let mut remembered = serde_json::Map::new();
-    let mut passed = Vec::new();
+    let mut passed = PassedSteps::new();
 
     for execution in &executions {
         if !execution.is_enabled() {
@@ -151,20 +161,28 @@ pub async fn run_flow(
         };
         let named: Authenticator = authenticator.parse()?;
 
-        let answered = authenticator::verify_answer(
-            transaction,
-            provider,
-            realm,
-            origin,
-            subject,
-            named,
-            answers,
-            remembered_before.get(named.as_str()),
-            posting,
-            federations,
-            wallet,
-        )
-        .await;
+        // Only under the authenticator it passed as: a step rewritten since
+        // to run another asks for that one.
+        let answered = if already.get(&execution.execution_id) == Some(&named)
+            && !authenticator::is_closed(transaction, named).await
+        {
+            Answered::plain(Outcome::Passed)
+        } else {
+            authenticator::verify_answer(
+                transaction,
+                provider,
+                realm,
+                origin,
+                subject,
+                named,
+                answers,
+                remembered_before.get(named.as_str()),
+                posting,
+                federations,
+                wallet,
+            )
+            .await
+        };
         let outcome = answered.outcome;
         if let Some(message) = answered.sending {
             sending = Some(Box::new(message));
@@ -182,7 +200,7 @@ pub async fn run_flow(
             waiting = Some(execution.execution_id.clone());
         }
         if outcome == Outcome::Passed {
-            passed.push(named);
+            passed.insert(execution.execution_id.clone(), named);
         }
         steps.push(Step {
             requirement: execution.requirement,
@@ -217,7 +235,7 @@ pub async fn run_flow(
     }
 
     let progress = match decided {
-        Decided::Admitted => Progress::Admitted { by: passed },
+        Decided::Admitted => Progress::Admitted { passed },
         Decided::Refused => Progress::Refused,
         // The fold said a step waits; which one is the first that did, so a
         // caller is asked the earliest question rather than an arbitrary one.
@@ -226,6 +244,7 @@ pub async fn run_flow(
                 execution_id,
                 asks: asked,
                 remember: remembered,
+                passed,
             },
             None => Progress::Refused,
         },

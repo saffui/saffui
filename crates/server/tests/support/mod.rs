@@ -108,6 +108,8 @@ pub const STRONG_ACR: &str = "mfa";
 #[allow(dead_code, reason = "only the protocol suite carries a browser")]
 pub const AUTH_SESSION_COOKIE: &str = "saffui_auth_session";
 #[allow(dead_code, reason = "only the protocol suite carries a browser")]
+pub const AUTH_PROOF_COOKIE: &str = "saffui_auth_proof";
+#[allow(dead_code, reason = "only the protocol suite carries a browser")]
 pub const SSO_COOKIE: &str = "saffui_session";
 #[allow(
     dead_code,

@@ -1,6 +1,7 @@
 use chrono::{DateTime, Duration, Utc};
 use config::serving::PublicOrigin;
-use crypto::provider::CryptoProvider;
+use crypto::provider::{CryptoProvider, HashAlg};
+use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
 use models::sessions::records::{UserSessionModel, UserSessionState};
 use serde_json::Value;
 use store::providers::directory::users;
@@ -9,9 +10,9 @@ use store::providers::protocol::{login, sessions};
 use store::providers::realms;
 use store::tenancy::{TenantContext, UnitOfWork};
 
-use crate::login::authenticator::{Answer, reached_level};
+use crate::login::authenticator::{Answer, Authenticator, reached_level};
 use crate::login::enrolment::{self, Enrolment};
-use crate::login::{Lock, Progress, device, run_flow, throttle};
+use crate::login::{Lock, PassedSteps, Progress, device, run_flow, throttle};
 use models::claims_request::ClaimsRequest;
 
 /// How long the login it opens lasts, and a login a grant opens with no
@@ -35,6 +36,10 @@ const REMEMBER_ME_NOTE: &str = "remember_me";
 /// whatever name they type, or none.
 const WEIGHED_NAME_NOTE: &str = "weighed_name";
 
+/// The notes key holding the steps this login passed, and the digest of the
+/// proof its browser was handed for them.
+const PASSED_STEPS_NOTE: &str = "passed_steps";
+
 #[derive(Debug)]
 pub enum Step {
     /// The flow wants something more from the person.
@@ -42,6 +47,7 @@ pub enum Step {
         execution_id: String,
         asks: Option<serde_json::Value>,
         sending: Option<Box<crate::messaging::Outbound>>,
+        proof: Option<String>,
     },
     /// The client asks for what the person has not agreed to.
     Consent {
@@ -52,11 +58,13 @@ pub enum Step {
         /// https: a consent screen must not hand the person a plain link.
         policy_uri: Option<String>,
         tos_uri: Option<String>,
+        proof: Option<String>,
     },
     /// Several organizations could answer for this person and nothing picks
     /// one, so the person is asked which they are signing in as.
     Organization {
         held: Vec<crate::organization::Choice>,
+        proof: Option<String>,
     },
     /// The person is established, and the login is over. What is done with that
     /// belongs to whatever asked for the login: a redirect URI and a response
@@ -78,6 +86,20 @@ pub enum Step {
     LockedOut { until: i64 },
     /// Too many wrong ones from where this came from, until this instant.
     Throttled { until: i64 },
+}
+
+impl Step {
+    /// The proof drawn for the steps this round passed, which they count under
+    /// on the login's later rounds. Drawn when they pass, it is never known to
+    /// whoever else holds the login's cookie, one planted in this browser included.
+    pub fn drawn_proof(&self) -> Option<&str> {
+        match self {
+            Step::Challenge { proof, .. }
+            | Step::Consent { proof, .. }
+            | Step::Organization { proof, .. } => proof.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 /// What a finished login established, for the protocol to act on.
@@ -146,6 +168,8 @@ pub async fn answer_step(
     sealing: Option<Sealing<'_>>,
     // The token the browser kept from an earlier sign-in, when it kept one.
     device_token: Option<&str>,
+    // The proof an earlier round of this login handed the browser.
+    proof: Option<&str>,
     // What it takes to sign, when the request wants something minted here.
     signing: Option<&store::keyring::Signing<'_>>,
     // What the person answered to the consent screen, when they answered.
@@ -222,6 +246,21 @@ pub async fn answer_step(
     )
     .await?;
 
+    // What this login passed counts again only while it is still about the
+    // person who passed it, and only for the browser that presents its proof.
+    let proven = proof
+        .filter(|_| {
+            subject
+                .as_ref()
+                .is_some_and(|person| login.user_id.as_deref() == Some(person.user_id.as_str()))
+        })
+        .and_then(|presented| digest_of(provider, presented))
+        .and_then(|digest| standing_steps(&login.notes, &digest).map(|steps| (digest, steps)));
+    let (proven, already) = match proven {
+        Some((digest, steps)) => (Some(digest), steps),
+        None => (None, PassedSteps::new()),
+    };
+
     // The choice is the person's once, the realm's always, and the notes'
     // afterwards: a flow that pauses for a second factor must not forget it.
     let remembering = realm.remember_me == Some(true)
@@ -289,6 +328,7 @@ pub async fn answer_step(
         &login.flow_id,
         subject.as_ref(),
         answers,
+        &already,
         // What the previous round of this same login remembered. A challenge is
         // verified against what was handed out, never against what came back.
         &login.notes,
@@ -317,18 +357,27 @@ pub async fn answer_step(
     .await
     .map_err(|_| Unanswerable::Unrunnable)?;
 
+    // What every round that leaves the login open writes beside its own
+    // state, and the proof the browser is handed with it.
+    let carry = |notes: &mut serde_json::Map<String, Value>, passed: &PassedSteps| {
+        carry_forward(
+            provider,
+            notes,
+            remembering,
+            &knock,
+            passed,
+            proven.as_deref(),
+        )
+    };
+
     match progress {
         Progress::Waiting {
             execution_id,
             asks,
             mut remember,
+            passed,
         } => {
-            if remembering {
-                remember.insert(REMEMBER_ME_NOTE.to_owned(), Value::Bool(true));
-            }
-            if let Some(counted) = knock.counted_name() {
-                remember.insert(WEIGHED_NAME_NOTE.to_owned(), Value::from(counted));
-            }
+            let proof = carry(&mut remember, &passed)?;
             // Written before the answer is asked for, so a login resumed on
             // another connection knows which step it is on.
             // What the step issued goes down with where the flow stands. The
@@ -347,6 +396,7 @@ pub async fn answer_step(
                 execution_id,
                 asks,
                 sending,
+                proof,
             })
         }
         Progress::Refused => {
@@ -363,7 +413,7 @@ pub async fn answer_step(
                 .map_err(|_| Unanswerable::Unreadable)?;
             Ok(Step::LockedOut { until })
         }
-        Progress::Admitted { by } => {
+        Progress::Admitted { passed } => {
             let subject = subject.ok_or(Unanswerable::Unrunnable)?;
             // Admitted is not yet in: what the realm required of this user
             // runs now, under an identity the flow has finished proving, and
@@ -402,12 +452,7 @@ pub async fn answer_step(
                 } => {
                     let mut remember = serde_json::Map::new();
                     remember.insert(named.to_owned(), challenge.remembered);
-                    if remembering {
-                        remember.insert(REMEMBER_ME_NOTE.to_owned(), Value::Bool(true));
-                    }
-                    if let Some(counted) = knock.counted_name() {
-                        remember.insert(WEIGHED_NAME_NOTE.to_owned(), Value::from(counted));
-                    }
+                    let proof = carry(&mut remember, &passed)?;
                     login::record_step(
                         transaction,
                         auth_session_id,
@@ -423,6 +468,7 @@ pub async fn answer_step(
                         sending,
                         execution_id: named.to_owned(),
                         asks: Some(challenge.shown),
+                        proof,
                     });
                 }
             }
@@ -464,6 +510,17 @@ pub async fn answer_step(
                 match consented {
                     // Not answered yet: show what is being asked for.
                     None => {
+                        let mut notes = serde_json::Map::new();
+                        let proof = carry(&mut notes, &passed)?;
+                        login::record_step(
+                            transaction,
+                            auth_session_id,
+                            Some(&subject.user_id),
+                            None,
+                            &Value::Object(notes),
+                        )
+                        .await
+                        .map_err(|_| Unanswerable::Unreadable)?;
                         let https_only = |uri: &Option<String>| {
                             uri.clone().filter(|held| held.starts_with("https://"))
                         };
@@ -473,6 +530,7 @@ pub async fn answer_step(
                             scopes: scope.split_whitespace().map(str::to_owned).collect(),
                             policy_uri: https_only(&client.policy_uri),
                             tos_uri: https_only(&client.tos_uri),
+                            proof,
                         });
                     }
                     Some(true) => {
@@ -514,7 +572,20 @@ pub async fn answer_step(
                 match organization.filter(|slug| held.iter().any(|choice| choice.name == *slug)) {
                     // Not answered yet, or answered something never offered:
                     // the screen is shown, or shown again.
-                    None => return Ok(Step::Organization { held }),
+                    None => {
+                        let mut notes = serde_json::Map::new();
+                        let proof = carry(&mut notes, &passed)?;
+                        login::record_step(
+                            transaction,
+                            &login.session_id,
+                            Some(&subject.user_id),
+                            None,
+                            &Value::Object(notes),
+                        )
+                        .await
+                        .map_err(|_| Unanswerable::Unreadable)?;
+                        return Ok(Step::Organization { held, proof });
+                    }
                     Some(slug) => {
                         let chosen = serde_json::json!({ "organization": slug });
                         login::record_step(transaction, &login.session_id, None, None, &chosen)
@@ -530,6 +601,7 @@ pub async fn answer_step(
             // only the first would report a level the login exceeded; a code
             // that ran alone reached one factor, whatever it would be beside a
             // password.
+            let by: Vec<Authenticator> = passed.values().copied().collect();
             let reached = realm
                 .acr_loa_map
                 .as_ref()
@@ -759,6 +831,78 @@ fn noted<'a>(notes: &'a Value, named: &str) -> Option<&'a str> {
     notes.get(named).and_then(Value::as_str)
 }
 
+/// The digest a proof is kept under in the notes, never the proof itself.
+fn digest_of(provider: &dyn CryptoProvider, proof: &str) -> Option<String> {
+    provider
+        .digest()
+        .hash(HashAlg::Sha256, proof.as_bytes())
+        .ok()
+        .map(|bytes| HEXLOWER.encode(&bytes))
+}
+
+/// The steps the notes hold as passed, when the digest presented is the one
+/// they are kept under.
+fn standing_steps(notes: &Value, presented: &str) -> Option<PassedSteps> {
+    let held = notes.get(PASSED_STEPS_NOTE)?;
+    if held.get("proof").and_then(Value::as_str) != Some(presented) {
+        return None;
+    }
+    Some(
+        held.get("steps")?
+            .as_object()?
+            .iter()
+            .filter_map(|(execution, named)| {
+                Some((execution.clone(), named.as_str()?.parse().ok()?))
+            })
+            .collect(),
+    )
+}
+
+/// Write what a round that leaves its login open carries to the next: the
+/// remember-me asked for, the name it is weighed under, and the steps that
+/// passed. Says which proof the browser is handed for those steps, none when
+/// it presented the one they are already kept under.
+fn carry_forward(
+    provider: &dyn CryptoProvider,
+    notes: &mut serde_json::Map<String, Value>,
+    remembering: bool,
+    knock: &throttle::Knock,
+    passed: &PassedSteps,
+    proven: Option<&str>,
+) -> Result<Option<String>, Unanswerable> {
+    if remembering {
+        notes.insert(REMEMBER_ME_NOTE.to_owned(), Value::Bool(true));
+    }
+    if let Some(counted) = knock.counted_name() {
+        notes.insert(WEIGHED_NAME_NOTE.to_owned(), Value::from(counted));
+    }
+    if passed.is_empty() {
+        return Ok(None);
+    }
+    let (proof, digest) = match proven {
+        Some(digest) => (None, digest.to_owned()),
+        None => {
+            let mut drawn = [0u8; 32];
+            provider
+                .rand()
+                .fill(&mut drawn)
+                .map_err(|_| Unanswerable::Unreadable)?;
+            let proof = BASE64URL_NOPAD.encode(&drawn);
+            let digest = digest_of(provider, &proof).ok_or(Unanswerable::Unreadable)?;
+            (Some(proof), digest)
+        }
+    };
+    let steps: serde_json::Map<String, Value> = passed
+        .iter()
+        .map(|(execution, named)| (execution.clone(), Value::from(named.as_str())))
+        .collect();
+    notes.insert(
+        PASSED_STEPS_NOTE.to_owned(),
+        serde_json::json!({ "proof": digest, "steps": steps }),
+    );
+    Ok(proof)
+}
+
 /// Who the login is for: the one it already resolved, or the one this answer
 /// names.
 ///
@@ -939,4 +1083,94 @@ pub fn shadow_row(
         service_account_client_link: None,
         metadata,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crypto::provider::CryptoConfig;
+    use crypto::provider::openssl::OpenSslProvider;
+
+    fn provider() -> OpenSslProvider {
+        OpenSslProvider::new(&CryptoConfig::default()).expect("a provider")
+    }
+
+    fn passed() -> PassedSteps {
+        PassedSteps::from([
+            ("exec-1".to_owned(), Authenticator::Password),
+            ("exec-2".to_owned(), Authenticator::Totp),
+        ])
+    }
+
+    /// What a round keeps is read back only under the proof it handed out,
+    /// and a round presenting that proof is handed nothing new.
+    #[test]
+    fn passed_steps_are_read_back_only_under_their_proof() {
+        let provider = provider();
+        let knock = throttle::Knock::counted_as(None, "a-weighed-name");
+
+        let mut notes = serde_json::Map::new();
+        let proof = carry_forward(&provider, &mut notes, false, &knock, &passed(), None)
+            .expect("kept")
+            .expect("a proof drawn for steps that passed");
+        let notes = Value::Object(notes);
+        let digest = digest_of(&provider, &proof).expect("a digest");
+        assert!(
+            !notes.to_string().contains(&proof),
+            "the notes hold the proof itself"
+        );
+        assert_eq!(standing_steps(&notes, &digest), Some(passed()));
+        let other = digest_of(&provider, "another-proof").expect("a digest");
+        assert_eq!(standing_steps(&notes, &other), None);
+        assert_eq!(standing_steps(&Value::Null, &digest), None);
+
+        let mut again = serde_json::Map::new();
+        let handed = carry_forward(
+            &provider,
+            &mut again,
+            false,
+            &knock,
+            &passed(),
+            Some(&digest),
+        )
+        .expect("kept");
+        assert_eq!(handed, None, "a proof the browser holds was drawn again");
+        assert_eq!(
+            standing_steps(&Value::Object(again), &digest),
+            Some(passed())
+        );
+
+        let mut none_passed = serde_json::Map::new();
+        let handed = carry_forward(
+            &provider,
+            &mut none_passed,
+            false,
+            &knock,
+            &PassedSteps::new(),
+            None,
+        )
+        .expect("kept");
+        assert_eq!(handed, None, "a proof was drawn for nothing");
+        assert!(!none_passed.contains_key(PASSED_STEPS_NOTE));
+    }
+
+    /// A step kept under a name no build knows counts for nothing.
+    #[test]
+    fn a_step_kept_under_an_unknown_authenticator_is_dropped() {
+        let mut notes = serde_json::Map::new();
+        notes.insert(
+            PASSED_STEPS_NOTE.to_owned(),
+            serde_json::json!({
+                "proof": "a-digest",
+                "steps": { "exec-1": "password", "exec-2": "telepathy" },
+            }),
+        );
+        assert_eq!(
+            standing_steps(&Value::Object(notes), "a-digest"),
+            Some(PassedSteps::from([(
+                "exec-1".to_owned(),
+                Authenticator::Password
+            )]))
+        );
+    }
 }

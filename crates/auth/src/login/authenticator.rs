@@ -129,6 +129,16 @@ fn capability_behind(authenticator: Authenticator) -> Option<commons::feature::F
     }
 }
 
+/// Whether the realm has closed the capability this step belongs to.
+pub(crate) async fn is_closed(transaction: &UnitOfWork, authenticator: Authenticator) -> bool {
+    match capability_behind(authenticator) {
+        Some(behind) => {
+            !store::providers::realms::realm_features::runs_for_realm(transaction, behind).await
+        }
+        None => false,
+    }
+}
+
 impl Authenticator {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -267,9 +277,7 @@ pub async fn verify_answer(
     // alternative step carries it, and a step the flow requires stops it. A
     // refusal here would make that the authenticator's decision instead of
     // the flow's, and it would read as a wrong credential.
-    if let Some(behind) = capability_behind(authenticator)
-        && !store::providers::realms::realm_features::runs_for_realm(transaction, behind).await
-    {
+    if is_closed(transaction, authenticator).await {
         return Answered::plain(Outcome::Skipped);
     }
 
@@ -923,10 +931,9 @@ pub(crate) fn redacted(email: &str) -> String {
 
 /// The one answer a step understands, of everything the caller sent.
 ///
-/// A flow runs every step against what it was given, so a login resumed with a
-/// second factor still has to satisfy the first. Handing each step the whole set
-/// and letting it take its own kind is what makes that possible without the
-/// runner remembering which steps already passed.
+/// Each step is handed the whole set and takes its own kind, so a round may
+/// carry answers for steps it does not run, the page's answers to steps this
+/// login already passed among them.
 fn of_kind(answers: &[Answer], wanted: fn(&Answer) -> bool) -> Option<&Answer> {
     answers.iter().find(|answer| wanted(answer))
 }
@@ -1185,13 +1192,13 @@ async fn recovery_code(
     .await
     {
         Ok(true) => {
-            // Down to the last line, the sheet demands its successor, and the
-            // demand is served by this very login. One line has to stay
-            // spendable: the ceremony only runs once the flow has passed, so
-            // finishing it costs one more code, and a sheet allowed to reach
-            // zero would leave a flow no answer can pass. Zero still counts,
-            // for the sheets that get there anyway, so the demand stands
-            // where an operator or an alternative step can answer it.
+            // Down to the last line, the sheet demands its successor, served
+            // by this very login. One line stays spendable for whoever leaves
+            // before the ceremony, or answers it without the proof the flow's
+            // pass handed the browser and pays with a code: a sheet at zero
+            // leaves a flow no answer can pass. Zero still counts, so the
+            // demand stands where an operator or an alternative step can
+            // answer it.
             let drained = credentials::count_recovery_codes(transaction, &subject.user_id)
                 .await
                 .is_ok_and(|left| left <= 1);

@@ -203,6 +203,7 @@ const REQUIRED_ACTIONS = [
   "configure-totp",
   "configure-webauthn",
   "configure-recovery-codes",
+  "link-wallet-identity",
 ] as const;
 const askedActions = ref<string[]>([]);
 const askOpen = ref(false);

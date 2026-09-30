@@ -21,6 +21,7 @@ fn kept<'a>(
         request_object: "signed",
         expires_at,
         created_by: "admin",
+        for_login: None,
     }
 }
 
@@ -144,5 +145,78 @@ async fn a_request_is_settled_once_inside_its_window() {
         presentations::keep(&transaction, &kept("r3", "k2", &query, closes))
             .await
             .is_err()
+    );
+}
+
+/// A request a login asked for is read by that login alone, and says what it is
+/// for; one an administrator asked for is read by no login. A purpose with no
+/// login, or a login with no purpose, is refused by the schema.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_request_asked_for_a_login_is_read_by_that_login_alone() {
+    let fixture = Fixture::with_user_and_client().await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
+    let now = DateTime::from_timestamp(Utc::now().timestamp(), 0).expect("a time");
+    let closes = now + Duration::seconds(300);
+    let query = json!({ "credentials": [{ "id": "identity" }] });
+    let mut for_login = kept("r-login", "k-login", &query, closes);
+    for_login.for_login = Some(presentations::ForLogin {
+        purpose: "factor",
+        login_session: "login-1",
+        user_id: "u-1",
+    });
+    presentations::keep(&transaction, &for_login).await.unwrap();
+    presentations::keep(&transaction, &kept("r-admin", "k-admin", &query, closes))
+        .await
+        .unwrap();
+
+    let held = presentations::claim_by_response_kid(&transaction, "k-login", &now)
+        .await
+        .unwrap()
+        .expect("a pending request");
+    assert_eq!(held.purpose.as_deref(), Some("factor"));
+    let asked_by_admin = presentations::claim_by_request_id(&transaction, "r-admin", &now)
+        .await
+        .unwrap()
+        .expect("a pending request");
+    assert_eq!(asked_by_admin.purpose, None);
+
+    let read = |request_id: &'static str, login: &'static str| {
+        let transaction = &transaction;
+        async move {
+            presentations::standing_for_login(transaction, request_id, login)
+                .await
+                .unwrap()
+                .map(|standing| standing.request_id)
+        }
+    };
+    assert_eq!(read("r-login", "login-1").await.as_deref(), Some("r-login"));
+    assert_eq!(read("r-login", "login-2").await, None);
+    assert_eq!(read("r-admin", "login-1").await, None);
+    let read_by_admin = |request_id: &'static str| {
+        let transaction = &transaction;
+        async move {
+            presentations::standing(transaction, request_id)
+                .await
+                .unwrap()
+                .map(|standing| standing.request_id)
+        }
+    };
+    assert_eq!(read_by_admin("r-admin").await.as_deref(), Some("r-admin"));
+    assert_eq!(
+        read_by_admin("r-login").await,
+        None,
+        "an administrator read a login's request"
+    );
+
+    let mut unbound = kept("r-half", "k-half", &query, closes);
+    unbound.for_login = Some(presentations::ForLogin {
+        purpose: "sign-in",
+        login_session: "login-1",
+        user_id: "u-1",
+    });
+    assert!(
+        presentations::keep(&transaction, &unbound).await.is_err(),
+        "a purpose the schema does not know was kept"
     );
 }

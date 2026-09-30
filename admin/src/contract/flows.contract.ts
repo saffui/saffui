@@ -21,6 +21,7 @@ const ACTIONS = [
   { action: "update-password", provider: "password", title: "Update password" },
   { action: "configure-recovery-codes", provider: "recovery-code", title: "Draw recovery codes" },
   { action: "configure-webauthn", provider: "webauthn", title: "Configure passkey" },
+  { action: "link-wallet-identity", provider: "wallet", title: "Link a wallet identity" },
 ];
 
 describe("authentication flows", () => {

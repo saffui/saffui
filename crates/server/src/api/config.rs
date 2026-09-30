@@ -394,6 +394,10 @@ fn account_api_scope(plane: &Plane) -> impl HttpServiceFactory + 'static {
                 .route(web::delete().to(account::remove_recovery_codes)),
         )
         .service(
+            web::resource("/me/wallet-identities/{identity}")
+                .route(web::delete().to(account::unlink_wallet_identity)),
+        )
+        .service(
             web::resource("/me/sessions")
                 .route(web::get().to(account::list_sessions))
                 .route(web::delete().to(account::end_other_sessions)),
@@ -484,6 +488,7 @@ fn protocol_scope() -> impl HttpServiceFactory + 'static {
                 .route(web::get().to(page::magic_link))
                 .route(web::post().to(login::answer)),
         )
+        .service(web::resource("/login/wallet").route(web::get().to(login::read_wallet_standing)))
         .service(web::resource("/device-authorization").route(web::post().to(device::open)))
         .service(
             web::resource("/device")

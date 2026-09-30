@@ -32,6 +32,9 @@ str_enum! {
         /// Draw a set of one-shot codes, the way back when the second
         /// factor is lost.
         ConfigureRecoveryCodes => "configure-recovery-codes",
+        /// Link the national identity a wallet presents, by the credential
+        /// the realm knows people by.
+        LinkWalletIdentity => "link-wallet-identity",
     }
 }
 
@@ -271,7 +274,7 @@ mod tests {
     #[test]
     fn the_catalogues_agree_with_their_own_spelling() {
         assert_eq!(UserStorage::ALL.len(), 2);
-        assert_eq!(RequiredAction::ALL.len(), 7);
+        assert_eq!(RequiredAction::ALL.len(), 8);
         assert_round_trips(UserStorage::ALL);
         assert_round_trips(RequiredAction::ALL);
     }
@@ -292,6 +295,10 @@ mod tests {
         assert_eq!(
             RequiredAction::ConfigureRecoveryCodes.as_str(),
             "configure-recovery-codes"
+        );
+        assert_eq!(
+            RequiredAction::LinkWalletIdentity.as_str(),
+            "link-wallet-identity"
         );
         assert_eq!(
             RequiredAction::ConfigureWebauthn.as_str(),

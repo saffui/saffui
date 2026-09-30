@@ -7,7 +7,12 @@ import { composeReturnUri } from "./place";
 export const ACCOUNT_CONSOLE = "account-console";
 /// The ceremonies the console may ask the sign-in pages to run, each adding one way
 /// to sign in. The server refuses any other name, and one the realm turned off.
-export const CEREMONIES = ["configure-totp", "configure-webauthn", "configure-recovery-codes"] as const;
+export const CEREMONIES = [
+  "configure-totp",
+  "configure-webauthn",
+  "configure-recovery-codes",
+  "link-wallet-identity",
+] as const;
 export type Ceremony = (typeof CEREMONIES)[number];
 /// What a sign-in the console started was for.
 export type Attempt = "sign-in" | "step-up" | "enrol";

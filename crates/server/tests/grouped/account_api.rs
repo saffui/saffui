@@ -775,6 +775,122 @@ async fn a_person_lists_and_removes_their_factors_from_a_recent_strong_sign_in()
     assert!(held["fresh_until"].is_i64(), "{held}");
 }
 
+/// Link an identity to the subject, as the ceremony leaves it.
+async fn plant_wallet_identity(plane: &Plane, issuer: &str) {
+    let transaction = plane.scoped(&within()).await;
+    store::providers::directory::wallet_identities::link(
+        &transaction,
+        support::SUBJECT,
+        issuer,
+        "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+        &chrono::Utc::now(),
+    )
+    .await
+    .expect("the identities table");
+    transaction.commit().await.expect("the identity kept");
+}
+
+/// An identity linked from a wallet is listed with the factors, named by its
+/// issuer, and stands as a second factor: the app goes while it stays, it
+/// stays while it is the last, and it goes once a key takes its place, the
+/// person being told.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_person_unlinks_a_wallet_identity_like_a_second_factor() {
+    const ISSUER: &str = "https://issuer.example/pid";
+    let plane = Plane::with_actions(&[]).await;
+    provision_account_console(&plane).await;
+    let bearer = plane.token(&support::account_console_claims());
+    plant_wallet_identity(&plane, ISSUER).await;
+    let identity = data_encoding::BASE64URL_NOPAD.encode(ISSUER.as_bytes());
+
+    let (status, _, held) = asked(&plane, &own("credentials"), Some(&bearer)).await;
+    assert_eq!(status, StatusCode::OK, "{held}");
+    let listed = &held["wallet_identities"][0];
+    assert_eq!(
+        (&listed["id"], &listed["issuer"], &listed["kept_because"]),
+        (&json!(identity), &json!(ISSUER), &Value::Null),
+        "{held}"
+    );
+    assert!(listed["linked_at"].is_string(), "{held}");
+    assert_eq!(
+        held["wallet_offered"], false,
+        "a realm keeping no profile offered a link: {held}"
+    );
+
+    prove_sign_in_reaching(&plane, chrono::Utc::now().timestamp(), 1).await;
+    let unheld = data_encoding::BASE64URL_NOPAD.encode(b"https://other.example/pid");
+    let (status, _, told) = sent(
+        &plane,
+        Method::DELETE,
+        &own(&format!("wallet-identities/{unheld}")),
+        Some(&bearer),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, told["error_code"].as_str()),
+        (StatusCode::NOT_FOUND, Some("credential.not_found")),
+        "an identity from an issuer never linked was unlinked: {told}"
+    );
+    let (status, _, told) = sent(
+        &plane,
+        Method::DELETE,
+        &own("credentials/cred-totp"),
+        Some(&bearer),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+    let (_, _, held) = asked(&plane, &own("credentials"), Some(&bearer)).await;
+    assert_eq!(
+        held["wallet_identities"][0]["kept_because"],
+        "this is the last second factor: add another before removing it",
+        "{held}"
+    );
+    let unlink = own(&format!("wallet-identities/{identity}"));
+    let (status, _, told) = sent(&plane, Method::DELETE, &unlink, Some(&bearer), None).await;
+    assert_eq!(
+        (status, told["error_code"].as_str()),
+        (StatusCode::CONFLICT, Some("account.last_factor")),
+        "the last second factor was unlinked: {told}"
+    );
+
+    plant_key(&plane, b"key-one").await;
+    let (status, _, told) = sent(&plane, Method::DELETE, &unlink, Some(&bearer), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+    let (status, _, told) = sent(&plane, Method::DELETE, &unlink, Some(&bearer), None).await;
+    assert_eq!(
+        (status, told["error_code"].as_str()),
+        (StatusCode::NOT_FOUND, Some("credential.not_found")),
+        "{told}"
+    );
+    let (status, _, told) = sent(
+        &plane,
+        Method::DELETE,
+        &own("wallet-identities/not*base64"),
+        Some(&bearer),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+
+    let (_, _, held) = asked(&plane, &own("credentials"), Some(&bearer)).await;
+    assert_eq!(held["wallet_identities"], json!([]), "{held}");
+    let transaction = plane.scoped(&within()).await;
+    let told: Vec<Value> = transaction
+        .query(
+            "SELECT payload FROM event_outbox WHERE kind = 'identity.unlinked'",
+            &[],
+        )
+        .await
+        .expect("the outbox")
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(told, [json!({ "provider": ISSUER })]);
+}
+
 /// A factor goes only from a sign-in as strong as the flow the account console signs
 /// in with lets the person reach: with a code step behind the password, a recent
 /// password alone is asked to step up to `mfa` and removes nothing, and a recent

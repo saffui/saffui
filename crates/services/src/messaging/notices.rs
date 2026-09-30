@@ -39,10 +39,12 @@ pub enum NoticeKind {
     AddressChanged,
     /// An upstream account linked to an account that already existed.
     ProviderLinked,
+    /// An upstream account, or a wallet's identity, unlinked from an account.
+    ProviderUnlinked,
 }
 
 impl NoticeKind {
-    pub const ALL: [NoticeKind; 14] = [
+    pub const ALL: [NoticeKind; 15] = [
         NoticeKind::PasswordSet,
         NoticeKind::PasswordChanged,
         NoticeKind::AppAdded,
@@ -57,6 +59,7 @@ impl NoticeKind {
         NoticeKind::RecoveryCodeUsed,
         NoticeKind::AddressChanged,
         NoticeKind::ProviderLinked,
+        NoticeKind::ProviderUnlinked,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -75,6 +78,7 @@ impl NoticeKind {
             NoticeKind::RecoveryCodeUsed => "recovery-code-used",
             NoticeKind::AddressChanged => "address-changed",
             NoticeKind::ProviderLinked => "provider-linked",
+            NoticeKind::ProviderUnlinked => "provider-unlinked",
         }
     }
 
@@ -124,6 +128,11 @@ pub fn read_notice(kind: &str, payload: &Value) -> Option<Owed> {
                 provider_alias: Some(provider.to_owned()),
             })
         }
+        outbox::IDENTITY_UNLINKED => Some(Owed {
+            kind: NoticeKind::ProviderUnlinked,
+            recipient: None,
+            provider_alias: Some(payload["provider"].as_str()?.to_owned()),
+        }),
         _ => None,
     }
 }
@@ -210,6 +219,7 @@ fn describe(kind: NoticeKind, tongue: Tongue) -> &'static str {
             NoticeKind::RecoveryCodeUsed => "A recovery code was used to sign in to your account",
             NoticeKind::AddressChanged => "The email address of your account was changed",
             NoticeKind::ProviderLinked => "An external account was linked to your account",
+            NoticeKind::ProviderUnlinked => "An external account was unlinked from your account",
         },
         Tongue::French => match kind {
             NoticeKind::PasswordSet => "Un mot de passe a été défini pour votre compte",
@@ -238,6 +248,7 @@ fn describe(kind: NoticeKind, tongue: Tongue) -> &'static str {
             }
             NoticeKind::AddressChanged => "L'adresse e-mail de votre compte a été changée",
             NoticeKind::ProviderLinked => "Un compte externe a été lié à votre compte",
+            NoticeKind::ProviderUnlinked => "Un compte externe a été délié de votre compte",
         },
     }
 }
@@ -947,6 +958,49 @@ mod tests {
             "Un compte externe a été lié à votre compte.\n\nCompte : ada\nQuand : le 15/09/2026 à \
              10:42 UTC\nFournisseur : Annuaire Acme\n\nSi c'était vous, vous n'avez rien à faire. \
              Sinon, prévenez tout de suite votre administrateur.\n"
+        );
+    }
+
+    /// An identity unlinked from an account owes it a notice naming the issuer or
+    /// provider it came from, and one the person can answer with a reset.
+    #[test]
+    fn an_identity_unlinked_from_an_account_owes_a_notice() {
+        assert_eq!(
+            read_notice(
+                outbox::IDENTITY_UNLINKED,
+                &json!({ "provider": "did:web:id.example" })
+            ),
+            Some(Owed {
+                kind: NoticeKind::ProviderUnlinked,
+                recipient: None,
+                provider_alias: Some("did:web:id.example".to_owned()),
+            })
+        );
+        assert_eq!(read_notice(outbox::IDENTITY_UNLINKED, &json!({})), None);
+        assert_eq!(
+            NoticeKind::parse("provider-unlinked"),
+            Some(NoticeKind::ProviderUnlinked)
+        );
+        let held = compose_notice(
+            &realm("Acme", None, true),
+            &person(None, Some(true)),
+            NoticeKind::ProviderUnlinked,
+            at_ten_forty_two(),
+            &Particulars {
+                codes_left: None,
+                provider: Some("did:web:id.example".to_owned()),
+            },
+        );
+        assert_eq!(
+            held.subject,
+            "Acme: An external account was unlinked from your account"
+        );
+        assert_eq!(
+            held.text,
+            "An external account was unlinked from your account.\n\nAccount: ada\nWhen: \
+             2026-09-15 at 10:42 UTC\nProvider: did:web:id.example\n\nIf this was you, there is \
+             nothing to do. If it was not, reset your password from the sign-in page and tell \
+             your administrator.\n"
         );
     }
 

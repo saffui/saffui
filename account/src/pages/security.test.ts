@@ -7,6 +7,7 @@ const calls = vi.hoisted(() => ({
   removeApp: vi.fn(async (_realm: string, _id: string) => {}),
   removeKey: vi.fn(async (_realm: string, _id: string) => {}),
   removeRecoveryCodes: vi.fn(async (_realm: string) => {}),
+  unlinkWalletIdentity: vi.fn(async (_realm: string, _id: string) => {}),
 }));
 
 vi.mock("@/services/factors", () => ({
@@ -14,9 +15,10 @@ vi.mock("@/services/factors", () => ({
   removeApp: calls.removeApp,
   removeKey: calls.removeKey,
   removeRecoveryCodes: calls.removeRecoveryCodes,
+  unlinkWalletIdentity: calls.unlinkWalletIdentity,
 }));
 
-import type { OwnApp, OwnKey } from "@/services/factors";
+import type { OwnApp, OwnKey, OwnWalletIdentity } from "@/services/factors";
 import { ApiError, StepUpNeeded } from "@/services/http";
 import {
   carryOutRemoval,
@@ -41,6 +43,12 @@ const KEY: OwnKey = {
   label: "laptop",
   enrolled_at: "2026-09-02T10:00:00Z",
   last_used_at: null,
+  kept_because: null,
+};
+const IDENTITY: OwnWalletIdentity = {
+  id: "aHR0cHM6Ly9pc3N1ZXIuZXhhbXBsZS9waWQ",
+  issuer: "https://issuer.example/pid",
+  linked_at: "2026-09-30T10:00:00Z",
   kept_because: null,
 };
 const FORM = { current: "old", replacement: "new", again: "new" };
@@ -120,9 +128,12 @@ describe("removing a way to sign in", () => {
     await carryOutRemoval("main", { kind: "app", app: APP });
     await carryOutRemoval("main", { kind: "key", key: KEY });
     await carryOutRemoval("main", { kind: "recovery-codes", count: 3 });
+    await carryOutRemoval("main", { kind: "wallet-identity", identity: IDENTITY });
     expect(calls.removeApp).toHaveBeenCalledWith("main", "app-1");
     expect(calls.removeKey).toHaveBeenCalledWith("main", "a2V5");
     expect(calls.removeRecoveryCodes).toHaveBeenCalledWith("main");
+    expect(calls.unlinkWalletIdentity).toHaveBeenCalledWith("main", IDENTITY.id);
+    expect(calls.removeRecoveryCodes).toHaveBeenCalledTimes(1);
   });
 
   test("refused for want of a new sign-in passes on what the server asks", async () => {
@@ -158,6 +169,11 @@ describe("removing a way to sign in", () => {
     expect(composeRemovalConfirmation({ kind: "recovery-codes", count: 3 }).body).toMatch(
       /^Your 3 codes stop working/,
     );
+    expect(composeRemovalConfirmation({ kind: "wallet-identity", identity: IDENTITY })).toEqual({
+      title: "Unlink the identity from https://issuer.example/pid?",
+      body: "You will no longer sign in with your wallet until you link it again.",
+      confirm: "Unlink",
+    });
   });
 });
 

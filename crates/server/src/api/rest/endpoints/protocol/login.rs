@@ -279,6 +279,19 @@ pub async fn answer(
         })
         .collect();
 
+    // The verifier a wallet step asks through, where the realm keeps the
+    // keyring its requests are signed under.
+    let verifier = ring
+        .as_ref()
+        .map(|ring| services::verifier::identity::LoginVerifier {
+            signing: store::keyring::Signing {
+                provider: sealing.provider.as_ref(),
+                ring,
+                envelope: &sealing.envelope,
+            },
+            issuer: origin.issuer(&context.realm_id),
+            now,
+        });
     let device_token = binding::read(&request, binding::DEVICE);
     let proof = binding::read(&request, binding::AUTH_PROOF);
     // Played once, and once more where the carrier held the code it drew.
@@ -334,6 +347,9 @@ pub async fn answer(
             answered.remember_me.unwrap_or(false),
             answered.organization.as_deref(),
             &federations,
+            verifier
+                .as_ref()
+                .map(|held| held as &dyn auth::login::wallet::Wallet),
             now,
         )
         .await
@@ -385,6 +401,49 @@ pub async fn answer(
                 Finished::Held(_) => told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
             }
         }
+    }
+}
+
+/// Whether the presentation the login waits on is settled, read for the
+/// browser the login is bound to.
+///
+/// The page asks this until it is, and only then plays a round: a round
+/// replays every step, a password's hash among them, and is no way to wait
+/// on somebody's wallet. It says nothing but settled or not.
+pub async fn read_wallet_standing(
+    request: HttpRequest,
+    realm: web::Path<String>,
+    tenancy: web::Data<Tenancy>,
+) -> HttpResponse {
+    let Some(auth_session) = binding::read(&request, binding::AUTH_SESSION) else {
+        return told(StatusCode::NOT_FOUND, "no-such-login");
+    };
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return told(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+        }
+        Err(_) => return told(StatusCode::NOT_FOUND, "no-such-login"),
+    };
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => {
+            return told(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+        }
+        Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
+    };
+    match services::verifier::identity::read_awaited_presentation(
+        &transaction,
+        &auth_session,
+        Utc::now(),
+    )
+    .await
+    {
+        Ok(Some(presented)) => uncached(&mut HttpResponse::Ok()).json(serde_json::json!({
+            "settled": presented != auth::login::wallet::Presented::Waiting,
+        })),
+        Ok(None) => told(StatusCode::NOT_FOUND, "no-such-login"),
+        Err(_) => told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
     }
 }
 
@@ -617,11 +676,11 @@ async fn finish(
                             }
                             answer.json(body)
                         }
-                        // A key needs the script; a code needs only the
-                        // field, in the panel of the step that sent it and
-                        // in the words of the way it went; a link followed
-                        // in the wrong browser needs to be told so rather
-                        // than shown either.
+                        // A key and a wallet need the script; a code needs
+                        // only the field, in the panel of the step that sent
+                        // it and in the words of the way it went; a link
+                        // followed in the wrong browser needs to be told so
+                        // rather than shown either.
                         Spoken::Form => shown(
                             page,
                             match &asks {
@@ -643,6 +702,7 @@ async fn finish(
                                     }
                                 }
                                 Some(asks) if asks.get("ask_phone").is_some() => "phone",
+                                Some(asks) if asks.get("wallet").is_some() => "wallet-needs-script",
                                 Some(_) => "key-needs-script",
                                 None => "code",
                             },

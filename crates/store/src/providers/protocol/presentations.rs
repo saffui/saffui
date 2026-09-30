@@ -16,17 +16,30 @@ pub struct KeptRequest<'a> {
     pub request_object: &'a str,
     pub expires_at: DateTime<Utc>,
     pub created_by: &'a str,
+    /// The login it was asked for, when a login asked rather than an
+    /// administrator.
+    pub for_login: Option<ForLogin<'a>>,
+}
+
+/// A request asked for a login: what it is for, the login, and the person that
+/// login names.
+#[derive(Debug, Clone, Copy)]
+pub struct ForLogin<'a> {
+    pub purpose: &'a str,
+    pub login_session: &'a str,
+    pub user_id: &'a str,
 }
 
 pub async fn keep(transaction: &UnitOfWork, request: &KeptRequest<'_>) -> StoreResult<()> {
+    let for_login = request.for_login;
     transaction
         .execute(
             "INSERT INTO presentation_requests \
                  (tenant, realm_id, request_id, nonce, response_kid, response_key, query, \
-                  request_object, expires_at, created_by) \
+                  request_object, expires_at, created_by, purpose, login_session, user_id) \
              SELECT current_setting('saffui.current_tenant', true), \
                     current_setting('saffui.current_realm', true), \
-                    $1, $2, $3, $4, $5, $6, $7, $8",
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11",
             &[
                 &request.request_id,
                 &request.nonce,
@@ -36,6 +49,9 @@ pub async fn keep(transaction: &UnitOfWork, request: &KeptRequest<'_>) -> StoreR
                 &request.request_object,
                 &request.expires_at,
                 &request.created_by,
+                &for_login.map(|bound| bound.purpose),
+                &for_login.map(|bound| bound.login_session),
+                &for_login.map(|bound| bound.user_id),
             ],
         )
         .await
@@ -66,6 +82,8 @@ pub struct Answering {
     pub nonce: String,
     pub response_key: Vec<u8>,
     pub query: Value,
+    /// What a login asked it for, when a login did.
+    pub purpose: Option<String>,
 }
 
 /// Hold the pending request whose answer is encrypted to this key.
@@ -79,7 +97,7 @@ pub async fn claim_by_response_kid(
 ) -> StoreResult<Option<Answering>> {
     Ok(transaction
         .query_opt(
-            "SELECT request_id, nonce, response_key, query FROM presentation_requests \
+            "SELECT request_id, nonce, response_key, query, purpose FROM presentation_requests \
              WHERE response_kid = $1 AND status = 'pending' AND expires_at > $2 \
              FOR UPDATE",
             &[&response_kid, now],
@@ -98,7 +116,7 @@ pub async fn claim_by_request_id(
 ) -> StoreResult<Option<Answering>> {
     Ok(transaction
         .query_opt(
-            "SELECT request_id, nonce, response_key, query FROM presentation_requests \
+            "SELECT request_id, nonce, response_key, query, purpose FROM presentation_requests \
              WHERE request_id = $1 AND status = 'pending' AND expires_at > $2 \
              FOR UPDATE",
             &[&request_id, now],
@@ -139,12 +157,39 @@ pub struct Standing {
     pub created_at: DateTime<Utc>,
 }
 
+/// Where a request an administrator asked for stands. One a login asked for
+/// is that login's alone to read.
 pub async fn standing(transaction: &UnitOfWork, request_id: &str) -> StoreResult<Option<Standing>> {
     Ok(transaction
         .query_opt(
             "SELECT request_id, status, outcome, expires_at, answered_at, created_by, created_at \
-             FROM presentation_requests WHERE request_id = $1",
+             FROM presentation_requests WHERE request_id = $1 AND purpose IS NULL",
             &[&request_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .map(|row| Standing {
+            request_id: row.get("request_id"),
+            status: row.get("status"),
+            outcome: row.get("outcome"),
+            expires_at: row.get("expires_at"),
+            answered_at: row.get("answered_at"),
+            created_by: row.get("created_by"),
+            created_at: row.get("created_at"),
+        }))
+}
+
+/// Where a request a login asked for stands, read by that login alone.
+pub async fn standing_for_login(
+    transaction: &UnitOfWork,
+    request_id: &str,
+    login_session: &str,
+) -> StoreResult<Option<Standing>> {
+    Ok(transaction
+        .query_opt(
+            "SELECT request_id, status, outcome, expires_at, answered_at, created_by, created_at \
+             FROM presentation_requests WHERE request_id = $1 AND login_session = $2",
+            &[&request_id, &login_session],
         )
         .await
         .map_err(|_| StoreError::Backend)?
@@ -176,5 +221,6 @@ fn read_answering(row: Row) -> Answering {
         nonce: row.get("nonce"),
         response_key: row.get("response_key"),
         query: row.get("query"),
+        purpose: row.get("purpose"),
     }
 }

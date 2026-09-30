@@ -8,7 +8,7 @@ use crate::api::rest::endpoints::admin::{
     credential_issuers, credentials, directory, events, features, federation, flows, idps, iga,
     journal, jsonld_contexts, keys, mail, metrics, negotiation, overview, page_drafts, portability,
     presentations, protocol_mappers, realm_keys, realms, rebac, recert, requests, sessions,
-    sim_swap, sms, trust_anchors, users, ussd, whatsapp,
+    sim_swap, sms, trust_anchors, users, ussd, wallet_identity, whatsapp,
 };
 use crate::api::rest::endpoints::scim;
 
@@ -306,6 +306,18 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/presentations/{presentation}",
             action: AdminAction::RealmRead,
             handler: Some(|| web::get().to(presentations::read)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/wallet-identity",
+            action: AdminAction::RealmRead,
+            handler: Some(|| web::get().to(wallet_identity::read)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/wallet-identity",
+            action: AdminAction::RealmWrite,
+            handler: Some(|| web::put().to(wallet_identity::write)),
         },
         AdminRoute {
             method: Method::POST,
@@ -1620,6 +1632,12 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/account/recovery-codes",
             action: AdminAction::AccountWrite,
             handler: Some(|| web::delete().to(account::remove_own_recovery_codes)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/account/wallet-identities/{identity}",
+            action: AdminAction::AccountWrite,
+            handler: Some(|| web::delete().to(account::unlink_own_wallet_identity)),
         },
         AdminRoute {
             method: Method::GET,

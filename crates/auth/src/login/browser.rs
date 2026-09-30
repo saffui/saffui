@@ -181,6 +181,8 @@ pub async fn answer_step(
     organization: Option<&str>,
     // The directories this realm federates from, first-asked first.
     federations: &[crate::login::directory::Named<'_>],
+    // The verifier a wallet is asked through, where the realm can ask one.
+    wallet: Option<&dyn crate::login::wallet::Wallet>,
     now: DateTime<Utc>,
 ) -> Result<Step, Unanswerable> {
     let login = login::resume(transaction, auth_session_id)
@@ -313,6 +315,11 @@ pub async fn answer_step(
         ),
     };
 
+    // Bound here, so every presentation this login asks for is this login's.
+    let asking = wallet.map(|verifier| crate::login::wallet::Asking {
+        verifier,
+        login_session: auth_session_id,
+    });
     let (progress, sending) = run_flow(
         transaction,
         provider,
@@ -338,6 +345,7 @@ pub async fn answer_step(
             now,
         }),
         federations,
+        asking,
         seen.address.as_deref(),
         if knock.is_on_device() {
             Lock::Spared
@@ -431,6 +439,7 @@ pub async fn answer_step(
                     sim_swap: sim_swap.as_ref(),
                     now,
                 }),
+                asking,
             )
             .await
             {

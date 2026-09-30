@@ -314,6 +314,15 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
         },
       ],
       recovery_codes: 8,
+      wallet_identities: [
+        {
+          id: "ZGlkOndlYjptb3NpcC5naXRodWIuaW86aW5qaS1jb25maWc6Y29sbGFiOm1vY2s",
+          issuer: "did:web:mosip.github.io:inji-config:collab:mock",
+          linked_at: "2026-09-30T08:00:00Z",
+          kept_because: null,
+        },
+      ],
+      wallet_offered: true,
       fresh_until: Math.floor(Date.now() / 1000) + 300,
       stronger_sign_in_needed: false,
     });
@@ -322,6 +331,7 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
     method === "DELETE" &&
     (path.includes("/account/credentials/") ||
       path.includes("/account/keys/") ||
+      path.includes("/account/wallet-identities/") ||
       path.endsWith("/account/recovery-codes"))
   ) {
     return answer(undefined);
@@ -454,7 +464,7 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
         held("organization", "preview", "realm", "narrows", "Group accounts under an organization carrying its own brokers and domains.", true),
         held("pq-hybrid", "preview", "process", "weakens", "ML-DSA signatures and ML-KEM encapsulation.", false),
         held("rebac-store", "experimental", "realm", "narrows", "Relation tuples and the walks over them: the ReBAC side of the authorization engine, and the sharing of user-managed resources that rides it.", false),
-        held("wallet-verifier", "experimental", "realm", "narrows", "Verify the credentials a person presents from a digital identity wallet, against the authorities the realm trusts.", false),
+        held("wallet-verifier", "experimental", "realm", "weakens", "Verify the credentials a person presents from a digital identity wallet, against the authorities the realm trusts, and sign in with one as a factor. Closing it takes that factor away.", false),
       ],
     });
   }
@@ -1369,6 +1379,28 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
       public_jwk: { kty: "EC", crv: "P-256", kid: "3kS9aU0LyR7vN2qP8cT4dX1mB6hJ5wE0fG7iK2oZ9sA", alg: "ES256", use: "sig", x: "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU", y: "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0" },
       running: false,
     });
+  }
+  if (path.endsWith("/wallet-identity")) {
+    const kept = {
+      credential_query: {
+        id: "identity",
+        format: "ldp_vc",
+        meta: {
+          type_values: [
+            [
+              "https://www.w3.org/2018/credentials#VerifiableCredential",
+              "https://mosip.io/vocab#MOSIPVerifiableCredential",
+            ],
+          ],
+        },
+        claims: [{ path: ["credentialSubject", "UIN"] }, { path: ["credentialSubject", "fullName"] }],
+      },
+      issuer: "https://certify.registre.example/v1/certify",
+      identifier_path: ["credentialSubject", "UIN"],
+      updated_by: "ada",
+      updated_at: "2026-09-30T08:00:00Z",
+    };
+    return answer(method === "PUT" ? { ...kept, ...(body as object) } : kept);
   }
   if (path.endsWith("/presentations") && method === "POST") {
     presentationAskedAt = Date.now();

@@ -101,6 +101,15 @@
       </label>
       <p id="renew-mismatch" hidden>{{signup-mismatch}}</p>
     </div>
+    <div id="wallet" hidden>
+      <h2>{{wallet-title}}</h2>
+      <p class="panel-lede" id="wallet-lede">{{wallet-lede}}</p>
+      <p class="panel-lede" id="wallet-link-lede" hidden>{{wallet-link-lede}}</p>
+      <div id="wallet-qr-frame" class="qr-frame"><img id="wallet-qr" alt="{{wallet-title}}" hidden></div>
+      <p class="panel-lede">{{wallet-scan}}</p>
+      <p class="app-open"><a id="wallet-open" href="">{{wallet-open}}</a></p>
+      <p role="status">{{wallet-waiting}}</p>
+    </div>
     <div id="sheet" hidden>
       <p>{{recovery-keep}}</p>
       <ul id="sheet-codes"></ul>
@@ -180,6 +189,7 @@
   <p id="throttled" class="flash" role="alert">{{flash-throttled}}</p>
   <p id="choice-needs-script" class="flash" role="alert">{{flash-choice-needs-script}}</p>
   <p id="address-held" class="flash" role="alert">{{flash-address-held}}</p>
+  <p id="wallet-needs-script" class="flash" role="alert">{{flash-wallet-needs-script}}</p>
   <!-- What the known scopes mean to a person, for the consent list. -->
   <ul id="scope-names" hidden>
     <li id="scope-profile">{{consent-scope-profile}}</li>
@@ -191,6 +201,9 @@
   <p id="totp-error" hidden>{{totp-error}}</p>
   <p id="no-key-here" hidden>{{flash-no-key-here}}</p>
   <p id="key-silent" hidden>{{flash-key-silent}}</p>
+  <p id="wallet-refused" hidden>{{wallet-refused}}</p>
+  <p id="wallet-held-elsewhere" hidden>{{wallet-held-elsewhere}}</p>
+  <p id="wallet-issuer-linked" hidden>{{wallet-issuer-linked}}</p>
 </main>
 <script src="login.js"></script>
 </body>

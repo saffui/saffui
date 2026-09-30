@@ -20,7 +20,7 @@ use models::entities::realm::RealmModel;
 use models::entities::user::{RequiredAction, UserModel, UserStorage};
 use secrecy::SecretBox;
 use store::providers::directory::webauthn::EnrolledCredential;
-use store::providers::directory::{credentials, users, webauthn};
+use store::providers::directory::{credentials, users, wallet_identities, webauthn};
 use store::providers::protocol::sessions;
 use store::providers::realms::auth_flows;
 use store::providers::{clients, realms};
@@ -236,6 +236,11 @@ pub struct OwnFactors {
     pub apps: Vec<CredentialModel>,
     pub keys: Vec<EnrolledCredential>,
     pub recovery_codes: i64,
+    /// The identities linked from a wallet, one per issuer.
+    pub wallet_identities: Vec<wallet_identities::Linked>,
+    /// Whether the realm knows people by a wallet credential, so one can be
+    /// linked.
+    pub wallet_offered: bool,
     /// Until when the login the request rides may remove a factor, if it still may.
     pub fresh_until: Option<i64>,
     /// Whether that login is recent but weaker than the flow lets this person
@@ -245,11 +250,16 @@ pub struct OwnFactors {
 
 impl OwnFactors {
     fn second_factors(&self) -> usize {
-        self.apps.len() + self.keys.len()
+        self.apps.len() + self.keys.len() + self.wallet_identities.len()
     }
 
     /// Why an app has to stay, when it has to.
     pub fn app_kept_because(&self) -> Option<&'static str> {
+        (self.second_factors() <= 1).then_some(LAST_SECOND_FACTOR)
+    }
+
+    /// Why an identity linked from a wallet has to stay, when it has to.
+    pub fn wallet_identity_kept_because(&self) -> Option<&'static str> {
         (self.second_factors() <= 1).then_some(LAST_SECOND_FACTOR)
     }
 
@@ -268,6 +278,8 @@ pub enum OwnFactor<'a> {
     App(&'a str),
     Key(&'a [u8]),
     RecoveryCodes,
+    /// An identity linked from a wallet, named by the issuer that vouched.
+    WalletIdentity(&'a str),
 }
 
 /// What a person holds to sign in with, read for the person themselves.
@@ -302,12 +314,25 @@ pub async fn own_factors(
     let recovery_codes = credentials::count_recovery_codes(transaction, user_id)
         .await
         .map_err(|_| Unremoved::Backend)?;
+    let linked = wallet_identities::of_user(transaction, user_id)
+        .await
+        .map_err(|_| Unremoved::Backend)?;
+    let wallet_offered = realms::realm_features::runs_for_realm(
+        transaction,
+        commons::feature::Feature::WalletVerifier,
+    )
+    .await
+        && realms::wallet_identity::load(transaction)
+            .await
+            .map_err(|_| Unremoved::Backend)?
+            .is_some();
     let holds = Holdings {
         password,
         authenticator_app,
         passkey: !keys.is_empty(),
         recovery_codes: recovery_codes > 0,
         verified_phone: read_verified_phone(transaction, user_id).await?,
+        wallet_identity: !linked.is_empty(),
     };
     let standing = judge_sign_in(transaction, session_id, presenter, &holds, now).await?;
     let strong = standing.is_strong_enough();
@@ -316,6 +341,8 @@ pub async fn own_factors(
         apps,
         keys,
         recovery_codes,
+        wallet_identities: linked,
+        wallet_offered,
         stronger_sign_in_needed: standing.fresh_until.is_some() && !strong,
         fresh_until: standing.fresh_until.filter(|_| strong),
     })
@@ -350,8 +377,16 @@ pub async fn read_sign_in_standing(
             .map_err(|_| Unread)?
             > 0,
         verified_phone: read_verified_phone(transaction, user_id).await?,
+        wallet_identity: read_wallet_identity(transaction, user_id).await?,
     };
     judge_sign_in(transaction, session_id, presenter, &holds, now).await
+}
+
+async fn read_wallet_identity(transaction: &UnitOfWork, user_id: &str) -> Result<bool, Unread> {
+    Ok(!wallet_identities::of_user(transaction, user_id)
+        .await
+        .map_err(|_| Unread)?
+        .is_empty())
 }
 
 async fn read_verified_phone(transaction: &UnitOfWork, user_id: &str) -> Result<bool, Unread> {
@@ -440,6 +475,7 @@ struct Holdings {
     passkey: bool,
     recovery_codes: bool,
     verified_phone: bool,
+    wallet_identity: bool,
 }
 
 impl Holdings {
@@ -450,6 +486,7 @@ impl Holdings {
             Authenticator::Webauthn => self.passkey,
             Authenticator::RecoveryCode => self.recovery_codes,
             Authenticator::SmsOtp => self.verified_phone,
+            Authenticator::Wallet => self.wallet_identity,
             Authenticator::MagicLink | Authenticator::Kerberos => true,
         }
     }
@@ -566,6 +603,21 @@ pub async fn remove_own_factor(
                 .await
                 .map_err(|_| Unremoved::Backend)?;
         }
+        OwnFactor::WalletIdentity(issuer) => {
+            if !held
+                .wallet_identities
+                .iter()
+                .any(|linked| linked.issuer == issuer)
+            {
+                return Err(Unremoved::NotFound);
+            }
+            if let Some(why) = held.wallet_identity_kept_because() {
+                return Err(Unremoved::LastFactor(why));
+            }
+            wallet_identities::unlink(transaction, user_id, issuer)
+                .await
+                .map_err(|_| Unremoved::Backend)?;
+        }
     }
     Ok(())
 }
@@ -622,6 +674,17 @@ mod tests {
 
         let keyed = [step("password", Required), step("webauthn", Required)];
         assert_eq!(reachable_level(&levels(), &keyed, &with_app), Some(1));
+
+        let presented = [step("password", Required), step("wallet", Required)];
+        let with_identity = Holdings {
+            wallet_identity: true,
+            ..with_password
+        };
+        assert_eq!(
+            reachable_level(&levels(), &presented, &with_identity),
+            Some(2)
+        );
+        assert_eq!(reachable_level(&levels(), &presented, &with_app), Some(1));
 
         let switched_off = [step("password", Required), step("totp", Disabled)];
         assert_eq!(

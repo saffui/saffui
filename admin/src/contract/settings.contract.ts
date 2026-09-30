@@ -41,6 +41,7 @@ import {
   writeWhatsApp,
   withdrawTrustAnchor,
 } from "@/services/settings";
+import { keepWalletIdentity, readWalletIdentity } from "@/services/walletIdentity";
 import { keepAnswer, REALM } from "./answers";
 
 describe("realm settings", () => {
@@ -147,6 +148,27 @@ describe("realm settings", () => {
     const named = await keepAnswer(listCredentialIssuers, REALM);
     expect(typeof named.running).toBe("boolean");
     expect(Array.isArray(named.items)).toBe(true);
+  });
+
+  // A profile names an issuer the realm named, which this server cannot name
+  // here: the refusal is the server's answer to the path and the body alike.
+  test("reads how the realm knows people by a wallet, and is told why a profile is refused", async () => {
+    expect(await readWalletIdentity(REALM)).toBeNull();
+    await expect(
+      keepWalletIdentity(REALM, {
+        credential_query: {
+          id: "identity",
+          format: "dc+sd-jwt",
+          meta: { vct_values: ["urn:eudi:pid:1"] },
+          claims: [{ path: ["personal_administrative_number"] }],
+        },
+        issuer: "https://issuer.example/pid",
+        identifier_path: ["personal_administrative_number"],
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: "no issuer this realm names answers to https://issuer.example/pid",
+    });
   });
 
   // Pinning one reads it where it lives, which this server may not dial here

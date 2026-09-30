@@ -5,8 +5,10 @@ import {
   removeApp,
   removeKey,
   removeRecoveryCodes,
+  unlinkWalletIdentity,
   type OwnApp,
   type OwnKey,
+  type OwnWalletIdentity,
 } from "@/services/factors";
 import { ApiError, StepUpNeeded } from "@/services/http";
 
@@ -20,6 +22,7 @@ export interface PasswordForm {
 export type Removal =
   | { kind: "app"; app: OwnApp }
   | { kind: "key"; key: OwnKey }
+  | { kind: "wallet-identity"; identity: OwnWalletIdentity }
   | { kind: "recovery-codes"; count: number };
 
 export interface Confirmation {
@@ -110,6 +113,13 @@ export function composeRemovalConfirmation(removal: Removal): Confirmation {
       confirm: say("confirm-remove"),
     };
   }
+  if (removal.kind === "wallet-identity") {
+    return {
+      title: say("confirm-unlink-wallet-title", { issuer: removal.identity.issuer }),
+      body: say("confirm-unlink-wallet-body"),
+      confirm: say("confirm-unlink"),
+    };
+  }
   return {
     title: say("confirm-remove-codes-title"),
     body: say("confirm-remove-codes-body", { count: removal.count }),
@@ -140,7 +150,9 @@ export async function carryOutRemoval(realm: string, removal: Removal): Promise<
   try {
     if (removal.kind === "app") await removeApp(realm, removal.app.id);
     else if (removal.kind === "key") await removeKey(realm, removal.key.id);
-    else await removeRecoveryCodes(realm);
+    else if (removal.kind === "wallet-identity") {
+      await unlinkWalletIdentity(realm, removal.identity.id);
+    } else await removeRecoveryCodes(realm);
     return { tone: "ok", text: say("security-removed"), stepUp: null };
   } catch (refused) {
     if (refused instanceof StepUpNeeded) return askForStepUp(refused);

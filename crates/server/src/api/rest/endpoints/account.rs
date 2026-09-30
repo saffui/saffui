@@ -156,6 +156,26 @@ pub async fn remove_key(
     remove(&caller, &tenancy, OwnFactor::Key(&credential_id)).await
 }
 
+/// Unlink an identity the caller linked from a wallet, named as the listing
+/// spells it.
+pub async fn unlink_wallet_identity(
+    caller: web::ReqData<AccountCaller>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, AccountRefusal> {
+    let (_, identity) = path.into_inner();
+    let issuer = read_identity_issuer(&identity)
+        .ok_or_else(|| AccountRefusal::Refused(ApiError::new(ErrorCode::BadRequest)))?;
+    remove(&caller, &tenancy, OwnFactor::WalletIdentity(&issuer)).await
+}
+
+/// The issuer an identity is named by in the listing: its bytes in base64url,
+/// since an issuer is an address or a DID and a path segment holds neither.
+pub(crate) fn read_identity_issuer(identity: &str) -> Option<String> {
+    let decoded = BASE64URL_NOPAD.decode(identity.as_bytes()).ok()?;
+    String::from_utf8(decoded).ok()
+}
+
 /// Take away the caller's whole sheet of recovery codes.
 pub async fn remove_recovery_codes(
     caller: web::ReqData<AccountCaller>,
@@ -207,6 +227,7 @@ fn refuse(why: Unmade) -> AccountRefusal {
 pub(crate) fn describe_own_factors(held: &OwnFactors) -> serde_json::Value {
     let app_kept = held.app_kept_because();
     let key_kept = held.key_kept_because();
+    let identity_kept = held.wallet_identity_kept_because();
     serde_json::json!({
         "password": held.password,
         "apps": held.apps.iter().map(|app| serde_json::json!({
@@ -224,6 +245,13 @@ pub(crate) fn describe_own_factors(held: &OwnFactors) -> serde_json::Value {
             "kept_because": key_kept,
         })).collect::<Vec<_>>(),
         "recovery_codes": held.recovery_codes,
+        "wallet_identities": held.wallet_identities.iter().map(|linked| serde_json::json!({
+            "id": BASE64URL_NOPAD.encode(linked.issuer.as_bytes()),
+            "issuer": linked.issuer,
+            "linked_at": linked.linked_at,
+            "kept_because": identity_kept,
+        })).collect::<Vec<_>>(),
+        "wallet_offered": held.wallet_offered,
         "fresh_until": held.fresh_until,
         "stronger_sign_in_needed": held.stronger_sign_in_needed,
     })

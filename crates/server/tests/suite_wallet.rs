@@ -5,3 +5,5 @@ mod support;
 
 #[path = "grouped/wallet.rs"]
 mod wallet;
+#[path = "grouped/wallet_login.rs"]
+mod wallet_login;

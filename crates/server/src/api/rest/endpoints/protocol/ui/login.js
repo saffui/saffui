@@ -247,6 +247,17 @@
   // the first rather than instead of it.
   const answered = {};
 
+  // How long a wallet is left to answer between two looks, and which wait is
+  // the current one: a round, or another wait, ends the one before it.
+  const WALLET_WAIT_MS = 2000;
+  let walletTurn = 0;
+  // What stood in the way of a wallet's answer, in the page's words.
+  const WALLET_SAID = {
+    refused: "wallet-refused",
+    held_elsewhere: "wallet-held-elsewhere",
+    issuer_linked: "wallet-issuer-linked",
+  };
+
   function say(text) {
     notice.textContent = text;
     notice.hidden = !text;
@@ -255,7 +266,7 @@
   // The panels one round can put in front of a person, by name. Named and not
   // positional: six booleans in a row is a call nobody reads correctly twice,
   // and the one that gets it wrong shows a person the wrong field.
-  const PANELS = ["credentials", "code", "recovery", "key", "app", "sheet", "renew", "texted", "phone", "phone-code"];
+  const PANELS = ["credentials", "code", "recovery", "key", "app", "sheet", "renew", "texted", "phone", "phone-code", "wallet"];
 
   function only(...wanted) {
     PANELS.forEach(function (id) {
@@ -392,6 +403,8 @@
   }
 
   function round() {
+    // A round the person started ends whatever wait was running.
+    walletTurn += 1;
     busy(true);
     say("");
     return post()
@@ -496,6 +509,10 @@
       form.phone_register.focus();
       return;
     }
+    if (told.asks && told.asks.wallet) {
+      awaitWallet(told);
+      return;
+    }
     if (told.asks && told.asks.code_sent_to) {
       document.getElementById("texted-note").textContent = told.asks.code_sent_to;
       tellWay("texted", told.asks);
@@ -531,6 +548,74 @@
       recoveryRow.hidden = !printedCodes;
       form.totp.focus();
     }
+  }
+
+  // A wallet is asked by a link its own app opens, drawn for a phone to scan,
+  // and waited on at a door that says settled or not. Only then does the page
+  // play a round: a round replays every step, a password's hash among them,
+  // and is no way to wait on somebody's wallet.
+  function awaitWallet(told) {
+    const asks = told.asks;
+    const linking = told.execution === "link-wallet-identity";
+    document.getElementById("wallet-lede").hidden = linking;
+    document.getElementById("wallet-link-lede").hidden = !linking;
+    const qr = document.getElementById("wallet-qr");
+    qr.hidden = !asks.wallet.qr;
+    document.getElementById("wallet-qr-frame").hidden = !asks.wallet.qr;
+    if (asks.wallet.qr) {
+      qr.src = "data:image/svg+xml;utf8," + encodeURIComponent(asks.wallet.qr);
+    }
+    document.getElementById("wallet-open").href = asks.wallet.uri;
+    const said = Object.keys(WALLET_SAID).find(function (flag) {
+      return asks[flag];
+    });
+    say(said ? spoken(WALLET_SAID[said]) : "");
+    only("wallet");
+    later.hidden = !asks.optional;
+    // Nothing to type: the wallet answers, and the page plays the round.
+    button.hidden = true;
+    walletTurn += 1;
+    const turn = walletTurn;
+    setTimeout(function () {
+      readWalletStanding(turn);
+    }, WALLET_WAIT_MS);
+  }
+
+  function readWalletStanding(turn) {
+    if (turn !== walletTurn) {
+      return;
+    }
+    fetch(location.pathname + "/wallet", {
+      credentials: "same-origin",
+      headers: { accept: "application/json" },
+    })
+      .then(function (response) {
+        return response.json().then(function (told) {
+          return { status: response.status, told: told };
+        });
+      })
+      .then(
+        function (answer) {
+          if (turn !== walletTurn) {
+            return;
+          }
+          if (answer.status === 200 && answer.told.settled === false) {
+            setTimeout(function () {
+              readWalletStanding(turn);
+            }, WALLET_WAIT_MS);
+            return;
+          }
+          // Settled, or the login is gone: one round tells which.
+          round();
+        },
+        function () {
+          if (turn === walletTurn) {
+            setTimeout(function () {
+              readWalletStanding(turn);
+            }, WALLET_WAIT_MS * 2);
+          }
+        },
+      );
   }
 
   // The options arrive in the W3C JSON form and go back the same way, which

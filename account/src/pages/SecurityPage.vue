@@ -267,6 +267,44 @@ onMounted(async () => {
       </div>
     </section>
 
+    <section
+      v-if="factors.wallet_offered || factors.wallet_identities.length"
+      class="card"
+      aria-labelledby="security-wallet"
+    >
+      <h2 id="security-wallet" class="card-title">{{ say("security-wallet") }}</h2>
+      <ul v-if="factors.wallet_identities.length" class="factors">
+        <li v-for="identity in factors.wallet_identities" :key="identity.id" class="factor">
+          <span class="factor-glyph" aria-hidden="true"><AppIcon name="wallet" :size="18" /></span>
+          <div>
+            <p class="factor-name">{{ identity.issuer }}</p>
+            <p class="factor-facts">
+              {{ say("security-linked", { when: formatDay(identity.linked_at, tongue) }) }}
+            </p>
+          </div>
+          <div class="factor-actions">
+            <AppHint v-if="identity.kept_because" :text="describeKeptBecause(identity.kept_because)" />
+            <button
+              type="button"
+              class="button button-danger-quiet"
+              :disabled="identity.kept_because !== null || challenge !== null"
+              @click="pending = { kind: 'wallet-identity', identity }"
+            >
+              {{ say("security-unlink") }}
+            </button>
+          </div>
+        </li>
+      </ul>
+      <p v-else class="absent">{{ say("security-wallet-none") }}</p>
+      <div v-if="factors.wallet_offered" class="card-actions">
+        <button type="button" class="button" @click="addFactor('link-wallet-identity')">
+          <AppIcon name="add" :size="15" />
+          <span>{{ say("security-wallet-link") }}</span>
+        </button>
+        <AppHint :text="say('security-wallet-link-help')" />
+      </div>
+    </section>
+
     <section class="card" aria-labelledby="security-codes">
       <h2 id="security-codes" class="card-title">{{ say("security-codes") }}</h2>
       <p>{{ say("security-codes-left", { count: factors.recovery_codes }) }}</p>

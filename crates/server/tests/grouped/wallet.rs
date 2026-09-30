@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 const REALM: &str = support::REALM;
 
-async fn asked(
+pub(super) async fn asked(
     plane: &Plane,
     method: Method,
     path: &str,
@@ -26,7 +26,7 @@ async fn asked(
 }
 
 /// The server under test, dialling where the egress policy says.
-fn served(plane: &Plane, egress: config::serving::Egress) -> server::api::config::Plane {
+pub(super) fn served(plane: &Plane, egress: config::serving::Egress) -> server::api::config::Plane {
     use server::middleware::admin_policy::AdminPolicy;
     server::api::config::Plane {
         tenancy: plane.tenancy(),
@@ -717,11 +717,13 @@ fn serve_pid_issuer(key: Value) -> String {
 
 /// What a wallet holds and does, played the way Inji's library plays it.
 #[derive(Clone)]
-struct Wallet {
-    issuer: String,
+pub(super) struct Wallet {
+    pub(super) issuer: String,
     issuer_key: crypto::jose::jwk::alg::ed::EdKeyPair,
     holder_key: crypto::jose::jwk::alg::ec::EcKeyPair,
     vct: &'static str,
+    /// Whose PID it holds, by family name.
+    pub(super) family_name: &'static str,
 }
 
 impl Wallet {
@@ -734,6 +736,15 @@ impl Wallet {
             )
             .expect("a holder key"),
             vct: "urn:eudi:pid:1",
+            family_name: "Lovelace",
+        }
+    }
+
+    /// The same wallet, holding somebody else's PID from the same issuer.
+    pub(super) fn holding_pid_of(&self, family_name: &'static str) -> Self {
+        Self {
+            family_name,
+            ..self.clone()
         }
     }
 
@@ -750,7 +761,7 @@ impl Wallet {
             "exp": now + 3600,
             "cnf": { "jwk": self.holder_key.to_jwk_public_key().as_ref() },
             "given_name": "Ada",
-            "family_name": "Lovelace",
+            "family_name": self.family_name,
             "birthdate": "1815-12-10",
             "address": { "locality": "London", "country": "GB" },
         }) else {
@@ -787,7 +798,12 @@ impl Wallet {
     }
 
     /// A presentation disclosing the claims named, bound to one request.
-    fn presented_disclosing(&self, audience: &str, nonce: &str, names: &[&str]) -> String {
+    pub(super) fn presented_disclosing(
+        &self,
+        audience: &str,
+        nonce: &str,
+        names: &[&str],
+    ) -> String {
         use crypto::jose::jwk::KeyPair;
         use crypto::jose::jws::ES256;
         let presentation = crypto::sd_jwt::select_disclosures(&self.issued(), |disclosure| {
@@ -829,7 +845,7 @@ fn path_of(address: &str) -> String {
 /// Read a request the way a wallet does: fetch it at the address the link
 /// gives, find the signing key in the realm's DID document by the `kid`, and
 /// verify it.
-async fn read_request(plane: &Plane, link: &str) -> serde_json::Map<String, Value> {
+pub(super) async fn read_request(plane: &Plane, link: &str) -> serde_json::Map<String, Value> {
     use crypto::jose::jws::EdDSA;
     let link = url::Url::parse(link).expect("an openid4vp link");
     assert_eq!(link.scheme(), "openid4vp");
@@ -909,7 +925,7 @@ async fn read_request(plane: &Plane, link: &str) -> serde_json::Map<String, Valu
 }
 
 /// Encrypt an answer to the key the request drew, as `direct_post.jwt` asks.
-fn encrypted(request: &serde_json::Map<String, Value>, answer: &Value) -> String {
+pub(super) fn encrypted(request: &serde_json::Map<String, Value>, answer: &Value) -> String {
     use crypto::jose::jwe::{ECDH_ES, JweHeader};
     let key = crypto::jose::jwk::Jwk::from_map(
         request["client_metadata"]["jwks"]["keys"][0]
@@ -928,7 +944,7 @@ fn encrypted(request: &serde_json::Map<String, Value>, answer: &Value) -> String
 
 /// Set a realm up to verify: the verifier running, an Ed25519 key, and a PID
 /// issuer named. Hands back the wallet that holds that issuer's credential.
-async fn realm_ready_to_verify(plane: &Plane, bearer: &str) -> Wallet {
+pub(super) async fn realm_ready_to_verify(plane: &Plane, bearer: &str) -> Wallet {
     use crypto::jose::jwk::KeyPair;
     verifier_running();
     let issuer_key = crypto::jose::jwk::alg::ed::EdKeyPair::generate(crypto::jose::jwk::Ed25519)
@@ -999,7 +1015,7 @@ async fn ask_for(
 }
 
 /// Post to the address the request names, as a wallet does.
-async fn answered(
+pub(super) async fn answered(
     plane: &Plane,
     request: &serde_json::Map<String, Value>,
     form: &[(&str, &str)],
@@ -1023,7 +1039,7 @@ async fn standing_of(plane: &Plane, bearer: &str, id: &Value) -> Value {
     standing
 }
 
-async fn plane_that_verifies() -> (Plane, String) {
+pub(super) async fn plane_that_verifies() -> (Plane, String) {
     let plane = Plane::with_actions(&[
         AdminAction::RealmRead,
         AdminAction::RealmWrite,

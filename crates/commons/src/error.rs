@@ -66,6 +66,7 @@ catalogue! {
     PresentationNotFound = 114, 404, "realm.presentation.not_found", "this realm asked for no such presentation";
     JsonLdContextNotFound = 115, 404, "realm.jsonld_context.not_found", "this realm pins no such JSON-LD context";
     JsonLdContextAlreadyPinned = 116, 409, "realm.jsonld_context.already_pinned", "this JSON-LD context is already pinned in this realm";
+    WalletIdentityNotFound = 117, 404, "realm.wallet_identity.not_found", "this realm does not know people by a wallet credential";
     RealmAlreadyExists = 101, 409, "realm.already_exists", "a realm with this identifier already exists";
     KeyNotFound = 110, 404, "realm.key.not_found", "this realm holds no such key";
     KeyStillActive = 111, 409, "realm.key.still_active", "this key is still in service; rotate its algorithm first";

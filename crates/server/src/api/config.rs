@@ -484,6 +484,7 @@ fn protocol_scope() -> impl HttpServiceFactory + 'static {
                 .route(web::get().to(page::magic_link))
                 .route(web::post().to(login::answer)),
         )
+        .service(web::resource("/login/wallet").route(web::get().to(login::read_wallet_standing)))
         .service(web::resource("/device-authorization").route(web::post().to(device::open)))
         .service(
             web::resource("/device")

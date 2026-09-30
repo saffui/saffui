@@ -7,7 +7,8 @@ use crypto::provider::CryptoProvider;
 use serde_json::{Value, json};
 use store::keyring::Signing;
 use store::providers::realms::credential_issuers;
-use store::providers::realms::wallet_identity::{self, WalletIdentity};
+use store::providers::realms::wallet_identity;
+pub use store::providers::realms::wallet_identity::WalletIdentity;
 use store::tenancy::UnitOfWork;
 
 use crate::verifier::presentation::{Unaskable, check_query};

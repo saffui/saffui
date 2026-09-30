@@ -10,6 +10,7 @@ use auth::login::wallet::{Asked, Presented, Purpose, Unasked, Wallet};
 use chrono::{DateTime, Utc};
 use serde_json::json;
 use store::keyring::Signing;
+use store::providers::protocol::login;
 use store::providers::protocol::presentations::{self, ForLogin, Standing};
 use store::providers::realms::{realm_features, wallet_identity};
 use store::tenancy::UnitOfWork;
@@ -85,6 +86,34 @@ impl Wallet for LoginVerifier<'_> {
         })
     }
 }
+
+/// Where the presentation a login waits on stands, read for that login alone:
+/// nothing when the login is over or waits on none.
+pub async fn read_awaited_presentation(
+    transaction: &UnitOfWork,
+    login_session: &str,
+    now: DateTime<Utc>,
+) -> Result<Option<Presented>, Unread> {
+    let Some(held) = login::resume(transaction, login_session)
+        .await
+        .map_err(|_| Unread)?
+    else {
+        return Ok(None);
+    };
+    let Some(awaited) = auth::login::wallet::find_waiting_request(&held.notes) else {
+        return Ok(None);
+    };
+    let standing =
+        presentations::standing_for_login(transaction, &awaited.request_id, login_session)
+            .await
+            .map_err(|_| Unread)?;
+    Ok(Some(read_presented(standing.as_ref(), now)))
+}
+
+/// The store could not be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("the store could not be read")]
+pub struct Unread;
 
 /// Where a login's presentation stands, as the login reads it: answered with
 /// an identity only when its answer verified and named one.

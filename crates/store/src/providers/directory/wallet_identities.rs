@@ -92,8 +92,8 @@ pub async fn of_user(transaction: &UnitOfWork, user_id: &str) -> StoreResult<Vec
         .collect())
 }
 
-/// Unlink the identity an account holds from this issuer, and say whether it
-/// held one.
+/// Unlink the identity an account holds from this issuer, say whether it held
+/// one, and tell whoever listens when it did.
 pub async fn unlink(transaction: &UnitOfWork, user_id: &str, issuer: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute(
@@ -102,5 +102,15 @@ pub async fn unlink(transaction: &UnitOfWork, user_id: &str, issuer: &str) -> St
         )
         .await
         .map_err(|_| StoreError::Backend)?;
-    Ok(removed > 0)
+    if removed == 0 {
+        return Ok(false);
+    }
+    crate::providers::events::outbox::emit(
+        transaction,
+        crate::providers::events::outbox::IDENTITY_UNLINKED,
+        user_id,
+        &serde_json::json!({ "provider": issuer }),
+    )
+    .await?;
+    Ok(true)
 }

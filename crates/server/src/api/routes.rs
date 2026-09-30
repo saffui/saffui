@@ -1634,6 +1634,12 @@ pub fn routes() -> Vec<AdminRoute> {
             handler: Some(|| web::delete().to(account::remove_own_recovery_codes)),
         },
         AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/account/wallet-identities/{identity}",
+            action: AdminAction::AccountWrite,
+            handler: Some(|| web::delete().to(account::unlink_own_wallet_identity)),
+        },
+        AdminRoute {
             method: Method::GET,
             pattern: "/admin/realms/{realm}/users/{user}/consents",
             action: AdminAction::UserRead,

@@ -147,6 +147,25 @@ pub async fn remove_own_key(
     remove_own(&admin, &tenancy, &realm_id, OwnFactor::Key(&credential_id)).await
 }
 
+/// Unlink an identity the caller linked from a wallet, named as the listing
+/// spells it.
+pub async fn unlink_own_wallet_identity(
+    admin: web::ReqData<Admin>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, identity) = path.into_inner();
+    let issuer = crate::api::rest::endpoints::account::read_identity_issuer(&identity)
+        .ok_or_else(|| ApiError::new(ErrorCode::BadRequest))?;
+    remove_own(
+        &admin,
+        &tenancy,
+        &realm_id,
+        OwnFactor::WalletIdentity(&issuer),
+    )
+    .await
+}
+
 /// Take away the caller's whole sheet of recovery codes.
 pub async fn remove_own_recovery_codes(
     admin: web::ReqData<Admin>,

@@ -236,6 +236,8 @@ pub struct OwnFactors {
     pub apps: Vec<CredentialModel>,
     pub keys: Vec<EnrolledCredential>,
     pub recovery_codes: i64,
+    /// The identities linked from a wallet, one per issuer.
+    pub wallet_identities: Vec<wallet_identities::Linked>,
     /// Until when the login the request rides may remove a factor, if it still may.
     pub fresh_until: Option<i64>,
     /// Whether that login is recent but weaker than the flow lets this person
@@ -245,11 +247,16 @@ pub struct OwnFactors {
 
 impl OwnFactors {
     fn second_factors(&self) -> usize {
-        self.apps.len() + self.keys.len()
+        self.apps.len() + self.keys.len() + self.wallet_identities.len()
     }
 
     /// Why an app has to stay, when it has to.
     pub fn app_kept_because(&self) -> Option<&'static str> {
+        (self.second_factors() <= 1).then_some(LAST_SECOND_FACTOR)
+    }
+
+    /// Why an identity linked from a wallet has to stay, when it has to.
+    pub fn wallet_identity_kept_because(&self) -> Option<&'static str> {
         (self.second_factors() <= 1).then_some(LAST_SECOND_FACTOR)
     }
 
@@ -268,6 +275,8 @@ pub enum OwnFactor<'a> {
     App(&'a str),
     Key(&'a [u8]),
     RecoveryCodes,
+    /// An identity linked from a wallet, named by the issuer that vouched.
+    WalletIdentity(&'a str),
 }
 
 /// What a person holds to sign in with, read for the person themselves.
@@ -302,13 +311,16 @@ pub async fn own_factors(
     let recovery_codes = credentials::count_recovery_codes(transaction, user_id)
         .await
         .map_err(|_| Unremoved::Backend)?;
+    let linked = wallet_identities::of_user(transaction, user_id)
+        .await
+        .map_err(|_| Unremoved::Backend)?;
     let holds = Holdings {
         password,
         authenticator_app,
         passkey: !keys.is_empty(),
         recovery_codes: recovery_codes > 0,
         verified_phone: read_verified_phone(transaction, user_id).await?,
-        wallet_identity: read_wallet_identity(transaction, user_id).await?,
+        wallet_identity: !linked.is_empty(),
     };
     let standing = judge_sign_in(transaction, session_id, presenter, &holds, now).await?;
     let strong = standing.is_strong_enough();
@@ -317,6 +329,7 @@ pub async fn own_factors(
         apps,
         keys,
         recovery_codes,
+        wallet_identities: linked,
         stronger_sign_in_needed: standing.fresh_until.is_some() && !strong,
         fresh_until: standing.fresh_until.filter(|_| strong),
     })
@@ -574,6 +587,21 @@ pub async fn remove_own_factor(
                 return Err(Unremoved::LastFactor(why));
             }
             webauthn::delete(transaction, user_id, credential_id)
+                .await
+                .map_err(|_| Unremoved::Backend)?;
+        }
+        OwnFactor::WalletIdentity(issuer) => {
+            if !held
+                .wallet_identities
+                .iter()
+                .any(|linked| linked.issuer == issuer)
+            {
+                return Err(Unremoved::NotFound);
+            }
+            if let Some(why) = held.wallet_identity_kept_because() {
+                return Err(Unremoved::LastFactor(why));
+            }
+            wallet_identities::unlink(transaction, user_id, issuer)
                 .await
                 .map_err(|_| Unremoved::Backend)?;
         }

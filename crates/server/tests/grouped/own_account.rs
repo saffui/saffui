@@ -698,6 +698,44 @@ async fn a_step_for_a_factor_the_person_lacks_raises_no_bar() {
     assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
 }
 
+/// An identity linked from a wallet is unlinked from the administrator's own
+/// account the way the account console unlinks it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_administrator_unlinks_their_own_wallet_identity() {
+    const ISSUER: &str = "https://issuer.example/pid";
+    let plane = Plane::with_actions(&[AdminAction::AccountRead, AdminAction::AccountWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let transaction = plane.scoped(&within()).await;
+    store::providers::directory::wallet_identities::link(
+        &transaction,
+        support::SUBJECT,
+        ISSUER,
+        "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+        &chrono::Utc::now(),
+    )
+    .await
+    .expect("the identities table");
+    transaction.commit().await.expect("the identity kept");
+    prove_sign_in_at(&plane, chrono::Utc::now().timestamp()).await;
+
+    let identity = data_encoding::BASE64URL_NOPAD.encode(ISSUER.as_bytes());
+    let (status, held) = asked(&plane, Method::GET, &own("credentials"), &bearer, None).await;
+    assert_eq!(status, StatusCode::OK, "{held}");
+    assert_eq!(held["wallet_identities"][0]["id"], identity, "{held}");
+    let (status, told) = asked(
+        &plane,
+        Method::DELETE,
+        &own(&format!("wallet-identities/{identity}")),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+    let (_, held) = asked(&plane, Method::GET, &own("credentials"), &bearer, None).await;
+    assert_eq!(held["wallet_identities"], json!([]), "{held}");
+}
+
 /// The last second factor stays until another takes its place, and a removal
 /// reaches nothing the caller does not hold.
 #[tokio::test]

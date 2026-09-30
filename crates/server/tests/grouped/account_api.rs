@@ -819,6 +819,20 @@ async fn a_person_unlinks_a_wallet_identity_like_a_second_factor() {
     );
 
     prove_sign_in_reaching(&plane, chrono::Utc::now().timestamp(), 1).await;
+    let unheld = data_encoding::BASE64URL_NOPAD.encode(b"https://other.example/pid");
+    let (status, _, told) = sent(
+        &plane,
+        Method::DELETE,
+        &own(&format!("wallet-identities/{unheld}")),
+        Some(&bearer),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, told["error_code"].as_str()),
+        (StatusCode::NOT_FOUND, Some("credential.not_found")),
+        "an identity from an issuer never linked was unlinked: {told}"
+    );
     let (status, _, told) = sent(
         &plane,
         Method::DELETE,

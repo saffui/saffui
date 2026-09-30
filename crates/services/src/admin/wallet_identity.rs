@@ -2,7 +2,7 @@
 //! credential a login asks for, the issuer that vouches for identities, and
 //! the claim that identifies somebody.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SubsecRound, Utc};
 use crypto::provider::CryptoProvider;
 use serde_json::{Value, json};
 use store::keyring::Signing;
@@ -82,13 +82,7 @@ pub async fn write(
         return Err(Unsettable::NotAClaimAsked);
     }
 
-    let profile = WalletIdentity {
-        credential_query: wanted.credential_query,
-        issuer,
-        identifier_path: wanted.identifier_path,
-        updated_by: by.to_owned(),
-        updated_at: now,
-    };
+    let profile = compose_profile(wanted, issuer, by, now);
     let drawn = draw_digest_key(signing.provider)?;
     wallet_identity::keep(
         transaction,
@@ -102,6 +96,18 @@ pub async fn write(
     Ok(profile)
 }
 
+/// The profile as the store keeps it, its instant to the microsecond: an
+/// answer finer than that names an instant no read of the profile repeats.
+fn compose_profile(wanted: Wanted, issuer: String, by: &str, now: DateTime<Utc>) -> WalletIdentity {
+    WalletIdentity {
+        credential_query: wanted.credential_query,
+        issuer,
+        identifier_path: wanted.identifier_path,
+        updated_by: by.to_owned(),
+        updated_at: now.trunc_subsecs(6),
+    }
+}
+
 fn draw_digest_key(provider: &dyn CryptoProvider) -> Result<[u8; DIGEST_KEY_BYTES], Unsettable> {
     let mut drawn = [0u8; DIGEST_KEY_BYTES];
     provider
@@ -109,4 +115,26 @@ fn draw_digest_key(provider: &dyn CryptoProvider) -> Result<[u8; DIGEST_KEY_BYTE
         .fill(&mut drawn)
         .map_err(|_| Unsettable::Unwritable)?;
     Ok(drawn)
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::TimeZone;
+
+    use super::*;
+
+    #[test]
+    fn a_profile_is_answered_at_the_instant_the_store_keeps() {
+        let wanted = Wanted {
+            credential_query: json!({ "id": "identity" }),
+            issuer: "https://issuer.example".to_owned(),
+            identifier_path: vec!["uin".to_owned()],
+        };
+        let now = Utc.timestamp_opt(1_790_000_000, 123_456_789).unwrap();
+        let profile = compose_profile(wanted, "https://issuer.example".to_owned(), "ada", now);
+        assert_eq!(
+            profile.updated_at,
+            Utc.timestamp_opt(1_790_000_000, 123_456_000).unwrap()
+        );
+    }
 }

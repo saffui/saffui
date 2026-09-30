@@ -17,7 +17,9 @@ x-saffui: &saffui
     # machine saffui runs on, so saying nothing would refuse to start.
     SAFFUI_DATABASE_TLS: verify-full
     SAFFUI_DATABASE_TLS_CA: /certs/server.crt
-    SAFFUI_PUBLIC_ORIGIN: ${SAFFUI_PUBLIC_ORIGIN:-http://localhost:8080}
+    # Where a browser reaches the server, on the port published below. The
+    # console's redirect is written from it: moving the port alone refuses every sign-in.
+    SAFFUI_PUBLIC_ORIGIN: ${SAFFUI_PUBLIC_ORIGIN:-http://localhost:8085}
     SAFFUI_ADMIN_AUDIENCES: saffui-console
     SAFFUI_ADMIN_PARTIES: saffui-console
     SAFFUI_CRYPTO_KEK: a-development-wrapping-key-of-decent-length
@@ -84,7 +86,7 @@ services:
       - provision
       - --tenant=local
       - --realm=main
-      - --console-redirect=http://localhost:8080/console/login/return
+      - --console-redirect=${SAFFUI_PUBLIC_ORIGIN:-http://localhost:8085}/console/login/return
       - --console-redirect=http://localhost:5173/callback
       - --client=${SAFFUI_CLIENT_ID:-conformance}
       - --redirect=${SAFFUI_CLIENT_REDIRECT:-https://localhost.emobix.co.uk:8443/test/a/saffui/callback}

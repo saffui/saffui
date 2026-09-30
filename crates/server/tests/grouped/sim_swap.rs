@@ -206,6 +206,64 @@ impl<'a> Login<'a> {
         let status = response.status();
         (status, test::read_body_json(response).await)
     }
+
+    /// This body alone, the way a browser posts it: with the proof an earlier
+    /// round handed over, keeping whatever proof this round hands over.
+    async fn answer_holding(
+        &self,
+        proof: &mut Option<String>,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let app =
+            test::init_service(App::new().configure(register(&mounted(self.plane, self.textbox))))
+                .await;
+        let mut cookies = format!("{}={}", support::AUTH_SESSION_COOKIE, self.binding);
+        if let Some(held) = proof.as_deref() {
+            cookies.push_str(&format!("; {}={held}", support::AUTH_PROOF_COOKIE));
+        }
+        let response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri(&format!(
+                    "/realms/{}/protocol/openid-connect/login",
+                    support::REALM
+                ))
+                .insert_header(("cookie", cookies))
+                .set_json(&body)
+                .to_request(),
+        )
+        .await;
+        let status = response.status();
+        let set: Vec<String> = response
+            .headers()
+            .get_all("set-cookie")
+            .filter_map(|value| value.to_str().ok())
+            .map(str::to_owned)
+            .collect();
+        if let Some(handed) = set
+            .iter()
+            .find(|header| header.starts_with(&format!("{}=", support::AUTH_PROOF_COOKIE)))
+        {
+            *proof = cookie_value(std::slice::from_ref(handed), support::AUTH_PROOF_COOKIE);
+        }
+        (status, test::read_body_json(response).await)
+    }
+}
+
+/// The code the subject's authenticator app shows right now.
+fn current_code() -> String {
+    use crypto::provider::CryptoProvider as _;
+    let provider = support::provider();
+    let secret = data_encoding::BASE32_NOPAD
+        .decode(support::TOTP_SECRET.as_bytes())
+        .expect("a base32 secret");
+    let code = crypto::otp::totp::totp_now(
+        provider.hmac(),
+        &secrecy::SecretBox::new(Box::new(secret)),
+        crypto::otp::totp::TotpParams::new(crypto::provider::HashAlg::Sha1),
+    )
+    .expect("a code");
+    crypto::otp::totp::format_code(code, 6)
 }
 
 /// The login events of one kind, as their details.
@@ -376,7 +434,8 @@ async fn a_changed_sim_holds_the_code_and_a_lone_code_step_refuses_the_login() {
 }
 
 /// Where the flow offers another way in, a changed SIM hands the login to it
-/// in the same answer.
+/// in the same answer, and what the round played again passed counts on the
+/// next round, which carries only the other way's answer.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_changed_sim_hands_the_login_to_the_other_way_in() {
@@ -390,7 +449,13 @@ async fn a_changed_sim_hands_the_login_to_the_other_way_in() {
     let textbox = Textbox::default();
 
     let login = Login::open(&plane, &textbox).await;
-    let (status, told) = login.answer(serde_json::json!({})).await;
+    let mut proof = None;
+    let (status, told) = login
+        .answer_holding(
+            &mut proof,
+            serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+        )
+        .await;
     assert_eq!(status, StatusCode::OK, "{told}");
     assert_eq!(told["status"], "challenge", "{told}");
     assert_eq!(told["execution"], "browser-totp", "{told}");
@@ -402,6 +467,55 @@ async fn a_changed_sim_hands_the_login_to_the_other_way_in() {
         textbox.held().is_empty(),
         "a code went to a SIM that changed"
     );
+    assert!(
+        proof.is_some(),
+        "the round played again handed over no proof"
+    );
+
+    let (status, told) = login
+        .answer_holding(&mut proof, serde_json::json!({ "totp": current_code() }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "admitted", "{told}");
+}
+
+/// A code held in a round that had already spent an app's code: the round
+/// played again counts the code the first play spent, so the flow waits on
+/// its other way in rather than refusing a code presented twice.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_changed_sim_keeps_what_its_round_already_passed() {
+    guarded();
+    let plane = Plane::with_actions(&[]).await;
+    let carrier = StandInCarrier::saying(CarrierSays::Changed);
+    arrange(&plane, &carrier, WhenUnanswered::Send).await;
+    add_step(&plane, "totp", 20, AuthenticatorRequirement::Required).await;
+    add_step(&plane, "sms-otp", 30, AuthenticatorRequirement::Alternative).await;
+    add_step(
+        &plane,
+        "webauthn",
+        40,
+        AuthenticatorRequirement::Alternative,
+    )
+    .await;
+    plane.enrol_soft_passkey().await;
+    let textbox = Textbox::default();
+
+    let login = Login::open(&plane, &textbox).await;
+    let mut proof = None;
+    let (status, told) = login
+        .answer_holding(
+            &mut proof,
+            serde_json::json!({
+                "username": support::SUBJECT,
+                "password": support::PASSWORD,
+                "totp": current_code(),
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "challenge", "{told}");
+    assert_eq!(told["execution"], "browser-webauthn", "{told}");
 }
 
 /// A carrier that says nothing sends where the realm sends on silence, with

@@ -1267,7 +1267,7 @@ features-closing-trail = The change lands in this realm's audit chain.
 features-closing-confirm = Close it
 features-closing-web-authn = Accounts holding only a passkey lose the step they sign in with. If the realm's flow requires it, they cannot sign in at all until it is reopened.
 features-closing-sms-otp = The code step stops running. Accounts that use it as their second factor fall back to whatever else the flow accepts, which may be a password alone.
-features-closing-wallet-verifier = The wallet step stops running. Accounts that prove their identity with a wallet fall back to whatever else the flow accepts, and if the flow requires the wallet they cannot sign in until it is reopened.
+features-closing-wallet-verifier = The wallet steps stop running. Accounts that sign in or prove their identity with a wallet fall back to whatever else the flow accepts, and if the flow requires the wallet they cannot sign in until it is reopened.
 features-lede = What this build carries, and what this realm runs of it. A capability the process was not started with cannot be opened here by any realm.
 features-on = on
 features-off = compiled, off
@@ -1707,7 +1707,7 @@ jsonld-contexts-url = Address
 jsonld-contexts-url-help = The context's address exactly as the credentials name it in their @context. A context that names another is pinned after that other.
 jsonld-contexts-pin-it = Pin this context
 wallet-identity-title = Sign in with a wallet
-wallet-identity-help = How this realm knows people by a credential their wallet presents: the one credential a login asks for, the issuer that vouches for identities, and the claim that identifies somebody. A person links their identity once from their account, then proves it at sign-in wherever a flow runs the wallet step. The identifier is never kept, only a keyed fingerprint of it.
+wallet-identity-help = How this realm knows people by a credential their wallet presents: the one credential a login asks for, the issuer that vouches for identities, and the claim that identifies somebody. A person links their identity once from their account, then proves it at sign-in wherever a flow runs the wallet step, or signs in with it on the device they use wherever a flow runs the wallet sign-in. The identifier is never kept, only a keyed fingerprint of it.
 wallet-identity-not-running = Stored, and not running: the process must run wallet-verifier (SAFFUI_FEATURES=+wallet-verifier).
 wallet-identity-none = This realm does not know people by a wallet credential yet.
 wallet-identity-kept = Kept by { $by } on { $at }

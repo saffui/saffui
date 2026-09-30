@@ -13,6 +13,7 @@ pub mod sms;
 pub mod tenants;
 pub mod trust_anchors;
 pub mod ussd;
+pub mod wallet_identity;
 pub mod whatsapp;
 
 use crate::tenancy::UnitOfWork;

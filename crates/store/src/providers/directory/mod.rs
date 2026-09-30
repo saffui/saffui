@@ -9,4 +9,5 @@ pub mod organizations;
 pub mod pairwise;
 pub mod roles;
 pub mod users;
+pub mod wallet_identities;
 pub mod webauthn;

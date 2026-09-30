@@ -25,8 +25,8 @@ use models::entities::credential_issuers::CredentialIssuer;
 use models::entities::keys::KeyUse;
 use serde_json::{Map, Value, json};
 use store::keyring::Signing;
-use store::providers::protocol::presentations::{self, Answering, KeptRequest, Standing};
-use store::providers::realms::{credential_issuers, realm_keys};
+use store::providers::protocol::presentations::{self, Answering, ForLogin, KeptRequest, Standing};
+use store::providers::realms::{credential_issuers, realm_keys, wallet_identity};
 use store::tenancy::UnitOfWork;
 
 use super::did::realm_did;
@@ -285,6 +285,40 @@ pub async fn ask(
     by: &str,
     now: DateTime<Utc>,
 ) -> Result<Asked, Unaskable> {
+    issue_request(transaction, signing, issuer, query, by, None, now).await
+}
+
+/// Ask for the presentation a login needs, bound to that login and the person
+/// it names, so its answer is read by that login alone.
+pub async fn ask_for_login(
+    transaction: &UnitOfWork,
+    signing: &Signing<'_>,
+    issuer: &str,
+    query: &Value,
+    for_login: ForLogin<'_>,
+    now: DateTime<Utc>,
+) -> Result<Asked, Unaskable> {
+    issue_request(
+        transaction,
+        signing,
+        issuer,
+        query,
+        for_login.user_id,
+        Some(for_login),
+        now,
+    )
+    .await
+}
+
+async fn issue_request(
+    transaction: &UnitOfWork,
+    signing: &Signing<'_>,
+    issuer: &str,
+    query: &Value,
+    by: &str,
+    for_login: Option<ForLogin<'_>>,
+    now: DateTime<Utc>,
+) -> Result<Asked, Unaskable> {
     check_query(query)?;
     let did = realm_did(issuer).ok_or(Unaskable::NoDid)?;
     let key = realm_keys::active(
@@ -348,7 +382,7 @@ pub async fn ask(
             request_object: &request_object,
             expires_at,
             created_by: by,
-            for_login: None,
+            for_login,
         },
     )
     .await
@@ -432,22 +466,47 @@ pub async fn settle_answer(
                 .map_err(|_| Unanswerable::Unwritable)?
                 .ok_or(Unanswerable::Unknown)?;
             let did = realm_did(issuer).ok_or(Unanswerable::Unwritable)?;
-            match verify_answer(
+            // A login's request is answered by who it identifies, read by the
+            // claim the realm names today.
+            let profile = match held.purpose {
+                Some(_) => wallet_identity::load(transaction)
+                    .await
+                    .map_err(|_| Unanswerable::Unwritable)?,
+                None => None,
+            };
+            let verified = verify_answer(
                 transaction,
                 signing,
                 &realm_client_id(&did),
                 &held,
                 response,
+                profile
+                    .as_ref()
+                    .map(|profile| profile.identifier_path.as_slice()),
                 now,
             )
-            .await?
-            {
-                Ok(credentials) => (
+            .await?;
+            let identified = match (&verified, held.purpose.is_some()) {
+                (Ok(answer), true) => Some(
+                    digest_presented_identity(transaction, signing, profile.as_ref(), answer)
+                        .await?,
+                ),
+                _ => None,
+            };
+            match (verified, identified) {
+                (Ok(answer), None) => (
                     held,
                     Settled::Verified,
-                    json!({ "credentials": credentials }),
+                    json!({ "credentials": answer.credentials }),
                 ),
-                Err(why) => (held, Settled::Failed(why), json!({ "reason": why })),
+                (Ok(answer), Some(Ok(identity))) => (
+                    held,
+                    Settled::Verified,
+                    json!({ "credentials": answer.credentials, "identity": identity }),
+                ),
+                (Ok(_), Some(Err(why))) | (Err(why), _) => {
+                    (held, Settled::Failed(why), json!({ "reason": why }))
+                }
             }
         }
     };
@@ -461,6 +520,70 @@ pub async fn settle_answer(
         .map_err(|_| Unanswerable::Unwritable)?
         .then_some(settled)
         .ok_or(Unanswerable::Unknown)
+}
+
+/// The identity a login's answer proves, as the realm keeps identities: the
+/// issuer that vouched, and the digest of the identifier under the realm's
+/// own key. The identifier goes no further than this.
+async fn digest_presented_identity(
+    transaction: &UnitOfWork,
+    signing: &Signing<'_>,
+    profile: Option<&wallet_identity::WalletIdentity>,
+    answer: &VerifiedAnswer,
+) -> Result<Result<Value, &'static str>, Unanswerable> {
+    let Some(profile) = profile else {
+        return Ok(Err(
+            "the realm no longer knows people by a wallet credential",
+        ));
+    };
+    let Some(presented) = &answer.identifier else {
+        return Ok(Err(
+            "a credential does not identify its holder by the claim the realm names",
+        ));
+    };
+    if presented.issuer != profile.issuer {
+        return Ok(Err(
+            "a credential's issuer is not the one the realm knows people by",
+        ));
+    }
+    let key = wallet_identity::open_digest_key(transaction, signing.ring, signing.envelope)
+        .await
+        .map_err(|_| Unanswerable::Unwritable)?
+        .ok_or(Unanswerable::Unwritable)?;
+    let digest = digest_identity(signing.provider, &key, &presented.issuer, &presented.value)
+        .map_err(|_| Unanswerable::Unwritable)?;
+    Ok(Ok(json!({ "issuer": presented.issuer, "digest": digest })))
+}
+
+/// The digest an identity is kept under: HMAC-SHA256 under the realm's key,
+/// over the issuer and the identifier each written after its length, so no
+/// two pairs run together into the same bytes.
+fn digest_identity(
+    provider: &dyn CryptoProvider,
+    key: &secrecy::SecretBox<Vec<u8>>,
+    issuer: &str,
+    identifier: &str,
+) -> Result<String, ()> {
+    let mut written = Vec::with_capacity(8 + issuer.len() + identifier.len());
+    for part in [issuer, identifier] {
+        let length = u32::try_from(part.len()).map_err(|_| ())?;
+        written.extend_from_slice(&length.to_be_bytes());
+        written.extend_from_slice(part.as_bytes());
+    }
+    provider
+        .hmac()
+        .hmac(crypto::provider::HmacAlg::Hs256, key, &written)
+        .map(|tag| HEXLOWER.encode(&tag))
+        .map_err(|_| ())
+}
+
+/// The text a claim holds at `path` below `root`. A number, a list or an
+/// object identifies nobody by its spelling, so it reads as none.
+pub(super) fn read_text_claim(root: &Value, path: &[String]) -> Option<String> {
+    path.iter()
+        .try_fold(root, |at, member| at.get(member))?
+        .as_str()
+        .map(str::to_owned)
 }
 
 /// The key an encrypted answer names, read before anything is decrypted:
@@ -486,7 +609,22 @@ fn answer_key_id(response: &str) -> Result<String, Unanswerable> {
         .ok_or(Unanswerable::Unreadable)
 }
 
-/// Decrypt an answer and verify every credential the query asked for.
+/// What a verified answer says: each credential without the value of any
+/// claim, and for a login's request the identifier it presents.
+struct VerifiedAnswer {
+    credentials: Vec<Value>,
+    identifier: Option<PresentedIdentifier>,
+}
+
+/// An identifier as a credential presented it, beside the issuer that
+/// vouched for it.
+struct PresentedIdentifier {
+    issuer: String,
+    value: String,
+}
+
+/// Decrypt an answer and verify every credential the query asked for, and
+/// read the identifier at `identifying` when a login asked.
 ///
 /// The outer result is whether the store could be read; the inner one is the
 /// verdict, a refusal in the realm's words when any check fails.
@@ -496,8 +634,9 @@ async fn verify_answer(
     client_id: &str,
     held: &Answering,
     response: &str,
+    identifying: Option<&[String]>,
     now: DateTime<Utc>,
-) -> Result<Result<Vec<Value>, &'static str>, Unanswerable> {
+) -> Result<Result<VerifiedAnswer, &'static str>, Unanswerable> {
     let key = signing
         .ring
         .open(
@@ -557,6 +696,7 @@ async fn verify_answer(
     let contexts = HeldContexts::new(&pinned);
 
     let mut verified = Vec::with_capacity(asked.len());
+    let mut identifier = None;
     for credential in &asked {
         let id = credential
             .get("id")
@@ -574,12 +714,24 @@ async fn verify_answer(
                 &held.nonce,
                 credential,
                 presented,
+                identifying,
                 now,
             )
             .await?
             {
-                Ok((issuer, vct, claims)) => {
-                    json!({ "id": id, "issuer": issuer, "vct": vct, "claims": claims })
+                Ok(outcome) => {
+                    if let Some(value) = outcome.identifier {
+                        identifier = Some(PresentedIdentifier {
+                            issuer: outcome.issuer.clone(),
+                            value,
+                        });
+                    }
+                    json!({
+                        "id": id,
+                        "issuer": outcome.issuer,
+                        "vct": outcome.vct,
+                        "claims": outcome.claims,
+                    })
                 }
                 Err(why) => return Ok(Err(why)),
             },
@@ -593,16 +745,25 @@ async fn verify_answer(
                 },
                 credential,
                 presented,
+                identifying,
                 now,
             )
             .await?
             {
-                Ok(outcome) => json!({
-                    "id": id,
-                    "issuer": outcome.issuer,
-                    "types": outcome.types,
-                    "claims": outcome.claims,
-                }),
+                Ok(outcome) => {
+                    if let Some(value) = outcome.identifier {
+                        identifier = Some(PresentedIdentifier {
+                            issuer: outcome.issuer.clone(),
+                            value,
+                        });
+                    }
+                    json!({
+                        "id": id,
+                        "issuer": outcome.issuer,
+                        "types": outcome.types,
+                        "claims": outcome.claims,
+                    })
+                }
                 Err(why) => return Ok(Err(why)),
             },
             _ => {
@@ -613,14 +774,30 @@ async fn verify_answer(
         };
         verified.push(outcome);
     }
-    Ok(Ok(verified))
+    Ok(Ok(VerifiedAnswer {
+        credentials: verified,
+        identifier,
+    }))
+}
+
+/// What a verified SD-JWT VC says: its issuer, its type and the names of the
+/// claims asked for, and the identifier a login asked for.
+struct VerifiedSdJwt {
+    issuer: String,
+    vct: String,
+    claims: Vec<String>,
+    identifier: Option<String>,
 }
 
 /// One SD-JWT VC presentation, verified against the issuer the realm names by
 /// its `iss`: the issuer's signature, the disclosures, the holder's key
 /// binding to this request, the type and the claims asked for. What comes
 /// back is the issuer, the type and the names of the claims asked for, never
-/// their values.
+/// their values, except the text at `identifying` when a login asked.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one presentation"
+)]
 async fn verify_credential(
     transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
@@ -628,8 +805,9 @@ async fn verify_credential(
     nonce: &str,
     asked: &Value,
     presented: &str,
+    identifying: Option<&[String]>,
     now: DateTime<Utc>,
-) -> Result<Result<(String, String, Vec<String>), &'static str>, Unanswerable> {
+) -> Result<Result<VerifiedSdJwt, &'static str>, Unanswerable> {
     let Ok(header) = sd_jwt::read_issuer_header(presented) else {
         return Ok(Err("a credential is not an SD-JWT"));
     };
@@ -719,11 +897,16 @@ async fn verify_credential(
             return Ok(Err("a credential lacks a claim the query asked for"));
         }
     }
-    Ok(Ok((
-        named.issuer,
-        vct.to_owned(),
-        paths.iter().map(|path| path.join(".")).collect(),
-    )))
+    let identifier = identifying.and_then(|path| {
+        let (first, rest) = path.split_first()?;
+        read_text_claim(verified.claims.get(first)?, rest)
+    });
+    Ok(Ok(VerifiedSdJwt {
+        issuer: named.issuer,
+        vct: vct.to_owned(),
+        claims: paths.iter().map(|path| path.join(".")).collect(),
+        identifier,
+    }))
 }
 
 /// The `iss` of an SD-JWT's issuer token, read before its signature is: only
@@ -868,6 +1051,60 @@ fn encoded(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An identity is digested as the realm's HMAC-SHA256 over the issuer and
+    /// the identifier, each written after its length, so a character moved
+    /// from one to the other digests apart. Vectors computed outside this code.
+    #[test]
+    fn an_identity_digests_its_issuer_and_identifier_apart() {
+        let provider = crypto::provider::openssl::OpenSslProvider::new(
+            &crypto::provider::CryptoConfig::default(),
+        )
+        .expect("a provider");
+        let key = secrecy::SecretBox::new(Box::new((0u8..32).collect::<Vec<u8>>()));
+        assert_eq!(
+            digest_identity(&provider, &key, "did:web:id.example", "4819265307").as_deref(),
+            Ok("fa0951450dfded4ad319d186edb1ceb4b7be401cc5adba085b6302f5d879ebdb")
+        );
+        assert_eq!(
+            digest_identity(&provider, &key, "did:web:id.example4", "819265307").as_deref(),
+            Ok("3c92fa09a07c0a7c4d00455b9126fa1876833a711df84cfa9c806f4d79f1200b")
+        );
+    }
+
+    /// An identifier is text: a number, a list or an object at the path, or
+    /// nothing there, identifies nobody.
+    #[test]
+    fn an_identifier_is_read_as_text_alone() {
+        let credential = json!({
+            "credentialSubject": {
+                "UIN": "4819265307",
+                "number": 4819265307u64,
+                "listed": ["4819265307"],
+                "nested": { "UIN": "4819265307" },
+            }
+        });
+        let path = |members: &[&str]| -> Vec<String> {
+            members.iter().map(|member| (*member).to_owned()).collect()
+        };
+        assert_eq!(
+            read_text_claim(&credential, &path(&["credentialSubject", "UIN"])).as_deref(),
+            Some("4819265307")
+        );
+        for members in [
+            &["credentialSubject", "number"][..],
+            &["credentialSubject", "listed"],
+            &["credentialSubject", "nested"],
+            &["credentialSubject", "absent"],
+            &["UIN"],
+        ] {
+            assert_eq!(
+                read_text_claim(&credential, &path(members)),
+                None,
+                "{members:?}"
+            );
+        }
+    }
 
     fn pid_query() -> Value {
         json!({

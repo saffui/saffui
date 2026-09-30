@@ -157,11 +157,13 @@ pub struct Standing {
     pub created_at: DateTime<Utc>,
 }
 
+/// Where a request an administrator asked for stands. One a login asked for
+/// is that login's alone to read.
 pub async fn standing(transaction: &UnitOfWork, request_id: &str) -> StoreResult<Option<Standing>> {
     Ok(transaction
         .query_opt(
             "SELECT request_id, status, outcome, expires_at, answered_at, created_by, created_at \
-             FROM presentation_requests WHERE request_id = $1",
+             FROM presentation_requests WHERE request_id = $1 AND purpose IS NULL",
             &[&request_id],
         )
         .await

@@ -18,7 +18,7 @@ use serde_json::{Map, Value};
 use store::providers::realms::credential_issuers;
 use store::tenancy::UnitOfWork;
 
-use super::presentation::{LEEWAY_SECONDS, Unanswerable, claim_path};
+use super::presentation::{LEEWAY_SECONDS, Unanswerable, claim_path, read_text_claim};
 
 /// What reading one proof may cost: a credential and the presentation holding
 /// it run to a few dozen statements.
@@ -43,13 +43,16 @@ pub(super) struct Binding<'a> {
     pub nonce: &'a str,
 }
 
-/// What a verified presentation says, without the value of any claim.
+/// What a verified presentation says, without the value of any claim but the
+/// identifier a login asked for.
 pub(super) struct Verified {
     pub issuer: String,
     /// The credential's types, expanded.
     pub types: Vec<String>,
     /// The claims asked for, each a path joined with dots.
     pub claims: Vec<String>,
+    /// The text at the path a login identifies by, when one asked.
+    pub identifier: Option<String>,
 }
 
 /// One presentation, verified: the holder's proof over it, for this request;
@@ -58,6 +61,10 @@ pub(super) struct Verified {
 /// type the query accepts, and holding each claim asked for in a member its
 /// proof tells apart. The outer result is whether the store could be read; the
 /// inner one is the verdict, in the realm's words.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one presentation"
+)]
 pub(super) async fn verify_ldp_presentation(
     transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
@@ -65,6 +72,7 @@ pub(super) async fn verify_ldp_presentation(
     binding: &Binding<'_>,
     asked: &Value,
     presented: &Value,
+    identifying: Option<&[String]>,
     now: DateTime<Utc>,
 ) -> Result<Result<Verified, &'static str>, Unanswerable> {
     let held = match verify_holder_proof(provider, contexts, binding, presented) {
@@ -78,7 +86,13 @@ pub(super) async fn verify_ldp_presentation(
         return Ok(Err("a credential's issuer is not one this realm names"));
     };
     Ok(verify_issued_credential(
-        provider, contexts, asked, &held, &named, now,
+        provider,
+        contexts,
+        asked,
+        &held,
+        &named,
+        identifying,
+        now,
     ))
 }
 
@@ -163,6 +177,7 @@ fn verify_issued_credential(
     asked: &Value,
     presented: &Presented<'_>,
     named: &CredentialIssuer,
+    identifying: Option<&[String]>,
     now: DateTime<Utc>,
 ) -> Result<Verified, &'static str> {
     let proof = read_proof(presented.credential)
@@ -229,10 +244,20 @@ fn verify_issued_credential(
     for path in &paths {
         read.check_claim(path).map_err(refused_claim)?;
     }
+    // Read off the document only once its proof tells the member apart, the
+    // way the holder's key is.
+    let identifier = match identifying {
+        Some(path) => {
+            read.check_claim(path).map_err(refused_claim)?;
+            read_text_claim(presented.credential, path)
+        }
+        None => None,
+    };
     Ok(Verified {
         issuer: named.issuer.clone(),
         types: types.into_iter().map(str::to_owned).collect(),
         claims: paths.iter().map(|path| path.join(".")).collect(),
+        identifier,
     })
 }
 

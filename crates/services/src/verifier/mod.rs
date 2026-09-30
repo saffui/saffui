@@ -2,6 +2,7 @@
 
 pub use jsonld::base58;
 pub mod did;
+pub mod identity;
 pub mod issuers;
 mod linked_data;
 pub mod presentation;

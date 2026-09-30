@@ -193,6 +193,21 @@ async fn a_request_asked_for_a_login_is_read_by_that_login_alone() {
     assert_eq!(read("r-login", "login-1").await.as_deref(), Some("r-login"));
     assert_eq!(read("r-login", "login-2").await, None);
     assert_eq!(read("r-admin", "login-1").await, None);
+    let read_by_admin = |request_id: &'static str| {
+        let transaction = &transaction;
+        async move {
+            presentations::standing(transaction, request_id)
+                .await
+                .unwrap()
+                .map(|standing| standing.request_id)
+        }
+    };
+    assert_eq!(read_by_admin("r-admin").await.as_deref(), Some("r-admin"));
+    assert_eq!(
+        read_by_admin("r-login").await,
+        None,
+        "an administrator read a login's request"
+    );
 
     let mut unbound = kept("r-half", "k-half", &query, closes);
     unbound.for_login = Some(presentations::ForLogin {

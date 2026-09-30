@@ -137,10 +137,10 @@ async fn a_flow_is_composed_and_guarded_over_the_plane() {
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
-    assert!(
-        told["message"]
-            .as_str()
-            .is_some_and(|held| held.contains("password, totp, webauthn, magic-link")),
+    assert_eq!(
+        told["message"],
+        "no authenticator answers to smoke-signal; one of: password, totp, webauthn, \
+         magic-link, kerberos, recovery-code, sms-otp, wallet, wallet-sign-in",
         "the catalogue is not named: {told}"
     );
 

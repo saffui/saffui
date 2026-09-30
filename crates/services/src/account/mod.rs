@@ -685,6 +685,20 @@ mod tests {
             Some(2)
         );
         assert_eq!(reachable_level(&levels(), &presented, &with_app), Some(1));
+        // A wallet on the person's device names them, and is open only to a
+        // person who linked an identity; proved again by a second wallet
+        // step, the one credential counts once.
+        let signed_in = [step("wallet-sign-in", Required), step("password", Required)];
+        assert_eq!(
+            reachable_level(&levels(), &signed_in, &with_identity),
+            Some(2)
+        );
+        assert_eq!(
+            reachable_level(&levels(), &signed_in, &with_password),
+            Some(1)
+        );
+        let twice = [step("wallet-sign-in", Required), step("wallet", Required)];
+        assert_eq!(reachable_level(&levels(), &twice, &with_identity), Some(1));
 
         let switched_off = [step("password", Required), step("totp", Disabled)];
         assert_eq!(

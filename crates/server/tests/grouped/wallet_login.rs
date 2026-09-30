@@ -907,20 +907,23 @@ async fn read_doors(plane: &Plane) -> String {
 }
 
 /// A person who linked their identity signs in with the wallet on the device
-/// they sign in from: the page offers it once the realm's flow does, one round
-/// asks the wallet, and the wallet brings them back to the page with a code
-/// that finishes the login. Answered and not yet brought back, the login waits.
+/// they sign in from: the page offers it only where the realm's flow runs the
+/// step and the realm can ask a wallet, one round asks it, and the wallet
+/// brings them back to the page with a code that finishes the login. Answered
+/// and not yet brought back, the login waits.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_person_signs_in_with_their_wallet_on_this_device() {
     let (plane, bearer) = plane_that_verifies().await;
-    let wallet = realm_signing_in_by_wallet(&plane, &bearer, true).await;
-    assert!(
-        !read_doors(&plane)
+    let wallet = realm_ready_to_verify(&plane, &bearer).await;
+    bind_offered_wallet_flow(&plane).await;
+    let offered = async || {
+        read_doors(&plane)
             .await
             .split(' ')
             .any(|door| door == "wallet")
-    );
+    };
+    assert!(!offered().await, "a door with no flow behind it");
     let (status, told) = asked(
         &plane,
         Method::PUT,
@@ -930,11 +933,12 @@ async fn a_person_signs_in_with_their_wallet_on_this_device() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{told}");
+    assert!(!offered().await, "a door with no profile behind it");
+    let (status, told) = keep_profile(&plane, &bearer, &identity_profile(&wallet)).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    link_by_ceremony(&plane, Holder::Pid(&wallet)).await;
     assert!(
-        read_doors(&plane)
-            .await
-            .split(' ')
-            .any(|door| door == "wallet"),
+        offered().await,
         "a realm signing in by wallet offered no way to"
     );
 
@@ -962,6 +966,21 @@ async fn a_person_signs_in_with_their_wallet_on_this_device() {
             .is_some_and(|to| to.starts_with(support::REDIRECT)),
         "{told}"
     );
+
+    // Closed for the realm, the door goes with the step behind it.
+    let transaction = plane
+        .scoped(&TenantContext::new(support::TENANT, REALM))
+        .await;
+    store::providers::realms::realm_features::keep_wish(
+        &transaction,
+        "wallet-verifier",
+        false,
+        "root",
+    )
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+    assert!(!offered().await, "a door stayed open on a closed verifier");
 }
 
 /// The code finishes the login only in the browser that asked: brought back
@@ -1058,4 +1077,12 @@ async fn a_wallet_sign_in_names_nobody_for_an_identity_nobody_linked() {
         "{told}"
     );
     assert_eq!(told["asks"]["refused"], json!(true), "{told}");
+    // The offered flow keeps the password as a way in: it is how somebody who
+    // has linked nothing yet gets in to link.
+    let (status, told) = play_password_round(&plane, &cookie).await;
+    assert_eq!(
+        (status, &told["status"]),
+        (StatusCode::OK, &json!("admitted")),
+        "{told}"
+    );
 }

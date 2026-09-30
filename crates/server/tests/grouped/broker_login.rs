@@ -14,6 +14,12 @@ const ALIAS: &str = "upstream";
 /// and the spawned side answers the broker's own dials. Egress is open
 /// because the upstream lives on the loopback here.
 pub(crate) fn mounted(plane: &Plane) -> Mounted {
+    mounted_at(plane, support::origin())
+}
+
+/// The same mount, served under another origin, for a provider that will not
+/// send a person back to the reserved `.test` domain.
+pub(crate) fn mounted_at(plane: &Plane, origin: config::serving::PublicOrigin) -> Mounted {
     Mounted {
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
@@ -21,7 +27,7 @@ pub(crate) fn mounted(plane: &Plane) -> Mounted {
             parties: vec![support::PARTY.to_owned()],
             scope: support::SCOPE.to_owned(),
         },
-        origin: support::origin(),
+        origin,
         login_ui: support::login_ui(),
         hops: config::proxying::Proxying::none(),
         egress: config::serving::Egress::Anywhere,
@@ -1002,10 +1008,9 @@ fn served_upstream(plane: &Plane) -> String {
     format!("http://127.0.0.1:{port}/realms/{REALM}/protocol/openid-connect")
 }
 
-/// One login through a provider: it leaves for the upstream, the upstream's
-/// own leg is compressed into a code, and the callback answers. What comes
-/// back is the callback's status, where it lands, and where the login left for.
-async fn crossed(plane: &Plane, alias: &str) -> (StatusCode, Option<String>, String) {
+/// A login of this realm leaving for the upstream: the login's cookie, and
+/// where it left for.
+async fn left_for(plane: &Plane, alias: &str) -> (String, String) {
     let cookie = opened_login(plane).await;
     let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
     let response = test::call_service(
@@ -1028,6 +1033,47 @@ async fn crossed(plane: &Plane, alias: &str) -> (StatusCode, Option<String>, Str
         .and_then(|held| held.to_str().ok())
         .expect("a departure")
         .to_owned();
+    (cookie, departure)
+}
+
+/// The way back from the upstream with `code`, in the browser that left: the
+/// callback's status and where it lands.
+async fn came_back(
+    plane: &Plane,
+    alias: &str,
+    cookie: &str,
+    code: &str,
+    state: &str,
+) -> (StatusCode, Option<String>) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{REALM}/protocol/openid-connect/broker/{alias}/endpoint?code={}&state={}",
+                support::urlencode(code),
+                support::urlencode(state),
+            ))
+            .insert_header((
+                "cookie",
+                format!("{}={cookie}", support::AUTH_SESSION_COOKIE),
+            ))
+            .to_request(),
+    )
+    .await;
+    let landing = response
+        .headers()
+        .get("location")
+        .and_then(|held| held.to_str().ok())
+        .map(str::to_owned);
+    (response.status(), landing)
+}
+
+/// One login through a provider: it leaves for the upstream, the upstream's
+/// own leg is compressed into a code, and the callback answers. What comes
+/// back is the callback's status, where it lands, and where the login left for.
+async fn crossed(plane: &Plane, alias: &str) -> (StatusCode, Option<String>, String) {
+    let (cookie, departure) = left_for(plane, alias).await;
     let state = param(&departure, "state").expect("a state");
     let challenge = param(&departure, "code_challenge");
     let landing = format!(
@@ -1053,27 +1099,8 @@ async fn crossed(plane: &Plane, alias: &str) -> (StatusCode, Option<String>, Str
                 .await
         }
     };
-    let response = test::call_service(
-        &app,
-        test::TestRequest::get()
-            .uri(&format!(
-                "/realms/{REALM}/protocol/openid-connect/broker/{alias}/endpoint?code={}&state={}",
-                support::urlencode(&code),
-                support::urlencode(&state),
-            ))
-            .insert_header((
-                "cookie",
-                format!("{}={cookie}", support::AUTH_SESSION_COOKIE),
-            ))
-            .to_request(),
-    )
-    .await;
-    let landing = response
-        .headers()
-        .get("location")
-        .and_then(|held| held.to_str().ok())
-        .map(str::to_owned);
-    (response.status(), landing, departure)
+    let (status, landing) = came_back(plane, alias, &cookie, &code, &state).await;
+    (status, landing, departure)
 }
 
 /// A plain OAuth 2.0 upstream gives no identity token: the login leaves with
@@ -2882,4 +2909,233 @@ async fn a_realm_logout_leaves_for_the_saml_provider_and_resumes_when_it_answers
     .await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     assert_eq!(location_of(&response), Some(resumed_at.clone()));
+}
+
+/// A provider of eSignet 1.x's making on a real socket, the rules read from
+/// eSignet 1.6's token service: a client assertion verifies under RS256 alone,
+/// with the key the client registered, named by its kid, and only addressed to
+/// the token endpoint exactly. The identity token is RS256 too, and each code
+/// carries the nonce its departure named.
+struct OlderProvider {
+    base: String,
+    registered:
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, crypto::jose::jwk::Jwk>>>,
+    codes: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
+}
+
+impl OlderProvider {
+    fn serve() -> Self {
+        use actix_web::{HttpResponse, HttpServer, web};
+        use crypto::jose::jwk::KeyPair as _;
+        use crypto::jose::jws::{JwsHeader, RS256};
+        use crypto::jose::jwt::{self, JwtPayload};
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+        let base = format!(
+            "http://127.0.0.1:{}",
+            listener.local_addr().expect("an address").port()
+        );
+        let signing = RS256.generate_key_pair(2048).expect("the provider's key");
+        let mut published = signing.to_jwk_public_key();
+        published.set_key_id("older-1");
+        published.set_key_use("sig");
+        let keys = json!({ "keys": [published.as_ref()] });
+        let signing_pem = signing.to_pem_private_key();
+        let registered: Arc<Mutex<HashMap<String, crypto::jose::jwk::Jwk>>> = Arc::default();
+        let codes: Arc<Mutex<HashMap<String, String>>> = Arc::default();
+        let (held_keys, held_codes, issuer) = (registered.clone(), codes.clone(), base.clone());
+        let server = HttpServer::new(move || {
+            let (keys, held_keys, held_codes, issuer, signing_pem) = (
+                keys.clone(),
+                held_keys.clone(),
+                held_codes.clone(),
+                issuer.clone(),
+                signing_pem.clone(),
+            );
+            App::new()
+                .route(
+                    "/jwks",
+                    web::get().to(move || {
+                        let keys = keys.clone();
+                        async move { HttpResponse::Ok().json(keys) }
+                    }),
+                )
+                .route(
+                    "/token",
+                    web::post().to(move |form: web::Form<HashMap<String, String>>| {
+                        let answered = (|| -> Option<Value> {
+                            let client = form.get("client_id")?;
+                            if form.get("client_assertion_type").map(String::as_str)
+                                != Some(services::client::assertion::JWT_BEARER)
+                            {
+                                return None;
+                            }
+                            let key = held_keys.lock().ok()?.get(client)?.clone();
+                            let (said, header) = jwt::decode_with_verifier(
+                                form.get("client_assertion")?,
+                                &RS256.verifier_from_jwk(&key).ok()?,
+                            )
+                            .ok()?;
+                            let token_endpoint = format!("{issuer}/token");
+                            let held = header.algorithm() == Some("RS256")
+                                && header.key_id() == key.key_id()
+                                && said.issuer() == Some(client.as_str())
+                                && said.subject() == Some(client.as_str())
+                                && said.audience() == Some(vec![token_endpoint.as_str()]);
+                            if !held {
+                                return None;
+                            }
+                            let nonce = held_codes.lock().ok()?.remove(form.get("code")?)?;
+                            // Whole seconds, as eSignet writes them.
+                            let now = chrono::Utc::now().timestamp();
+                            let mut claims = JwtPayload::new();
+                            claims.set_issuer(&issuer);
+                            claims.set_subject("older-person-1");
+                            claims.set_audience(vec![client.as_str()]);
+                            for (claim, value) in [
+                                ("iat", json!(now)),
+                                ("exp", json!(now + 120)),
+                                ("nonce", json!(nonce)),
+                            ] {
+                                claims.set_claim(claim, Some(value)).ok()?;
+                            }
+                            claims
+                                .set_claim("preferred_username", Some(json!("older-person")))
+                                .ok()?;
+                            let mut header = JwsHeader::new();
+                            header.set_token_type("JWT");
+                            header.set_key_id("older-1");
+                            let id_token = jwt::encode_with_signer(
+                                &claims,
+                                &header,
+                                &RS256.signer_from_pem(&signing_pem).ok()?,
+                            )
+                            .ok()?;
+                            Some(json!({
+                                "access_token": "older-access",
+                                "token_type": "Bearer",
+                                "expires_in": 120,
+                                "id_token": id_token,
+                            }))
+                        })();
+                        async move {
+                            match answered {
+                                Some(answer) => HttpResponse::Ok().json(answer),
+                                None => HttpResponse::BadRequest()
+                                    .json(json!({ "error": "invalid_client" })),
+                            }
+                        }
+                    }),
+                )
+        })
+        .listen(listener)
+        .expect("a listener")
+        .workers(1)
+        .disable_signals()
+        .run();
+        tokio::spawn(server);
+        Self {
+            base,
+            registered,
+            codes,
+        }
+    }
+
+    /// A provider pointed at this one, its client named by `alias`, and its
+    /// shown assertion key registered here.
+    async fn onboard(&self, plane: &Plane, bearer: &str, alias: &str, settings: Value) {
+        let mut configs = json!({
+            "issuer": { "Str": self.base },
+            "authorization_endpoint": { "Str": format!("{}/authorize", self.base) },
+            "token_endpoint": { "Str": format!("{}/token", self.base) },
+            "jwks_uri": { "Str": format!("{}/jwks", self.base) },
+            "client_id": { "Str": alias },
+            "token_auth": { "Str": "private_key_jwt" },
+            "allowed_algs": { "Str": "RS256" },
+        });
+        for (key, value) in settings.as_object().expect("settings") {
+            configs[key] = value.clone();
+        }
+        let (status, born) = asked(
+            plane,
+            Method::POST,
+            &format!("/admin/realms/{REALM}/identity-providers"),
+            bearer,
+            Some(json!({
+                "provider_id": alias,
+                "name": alias,
+                "display_name": alias,
+                "description": "",
+                "trust_email": false,
+                "configs": configs,
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{born}");
+        let shown = born["configs"]["assertion_jwk"]["Str"]
+            .as_str()
+            .expect("a shown assertion key");
+        let key = crypto::jose::jwk::Jwk::from_bytes(shown.as_bytes()).expect("a JWK");
+        self.registered
+            .lock()
+            .expect("the registrations")
+            .insert(alias.to_owned(), key);
+    }
+
+    /// One login through `alias`, the person's leg here compressed into a code
+    /// carrying the departure's nonce.
+    async fn crossed(&self, plane: &Plane, alias: &str) -> StatusCode {
+        let (cookie, departure) = left_for(plane, alias).await;
+        assert!(departure.starts_with(&format!("{}/authorize?", self.base)));
+        let state = param(&departure, "state").expect("a state");
+        let nonce = param(&departure, "nonce").expect("a nonce");
+        let code = format!("code-for-{alias}");
+        self.codes
+            .lock()
+            .expect("the codes")
+            .insert(code.clone(), nonce);
+        came_back(plane, alias, &cookie, &code, &state).await.0
+    }
+}
+
+/// A provider verifying RS256 alone, addressed to its token endpoint, as
+/// eSignet 1.x does, admits the login this realm signs for it that way, and
+/// refuses the same login addressed to its issuer or signed PS256.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_provider_verifying_rs256_alone_admits_an_assertion_addressed_to_its_token_endpoint() {
+    let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let older = OlderProvider::serve();
+    for (alias, settings, admitted) in [
+        (
+            "older",
+            json!({
+                "assertion_alg": { "Str": "RS256" },
+                "assertion_audience": { "Str": "token_endpoint" },
+            }),
+            true,
+        ),
+        (
+            "to-the-issuer",
+            json!({ "assertion_alg": { "Str": "RS256" } }),
+            false,
+        ),
+        (
+            "signing-ps256",
+            json!({ "assertion_audience": { "Str": "token_endpoint" } }),
+            false,
+        ),
+    ] {
+        older.onboard(&plane, &bearer, alias, settings).await;
+        let status = older.crossed(&plane, alias).await;
+        let expected = if admitted {
+            StatusCode::SEE_OTHER
+        } else {
+            StatusCode::BAD_REQUEST
+        };
+        assert_eq!(status, expected, "{alias}");
+    }
 }

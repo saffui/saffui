@@ -187,7 +187,7 @@ export const PROVIDER_CATALOG: ProviderPreset[] = [
   { id: "paypal", name: "PayPal", logo: paypalLogo, protocol: "OpenID Connect", availability: "backend" },
   {
     id: "esignet",
-    name: "MOSIP eSignet",
+    name: "MOSIP eSignet 2.0",
     glyph: "verified",
     protocol: "OpenID Connect",
     availability: "manual",
@@ -203,6 +203,23 @@ export const PROVIDER_CATALOG: ProviderPreset[] = [
         null,
         2,
       ),
+    },
+  },
+  {
+    id: "esignet-1",
+    name: "MOSIP eSignet 1.x",
+    glyph: "verified",
+    protocol: "OpenID Connect",
+    availability: "manual",
+    draft: {
+      scope: "openid profile",
+      algorithms: "RS256",
+      tokenAuth: "private_key_jwt",
+      // eSignet 1.x verifies RS256 alone, addressed to its token endpoint. Its
+      // userinfo is signed by a key it does not publish, so the identity token
+      // alone says who arrived, and nothing more is asked of the person.
+      assertionAlgorithm: "RS256",
+      assertionAudience: "token_endpoint",
     },
   },
   {

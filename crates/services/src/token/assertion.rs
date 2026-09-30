@@ -2,7 +2,7 @@
 //! a client assertion, RFC 7523, the way `private_key_jwt` wants it.
 
 use chrono::{DateTime, Utc};
-use crypto::jose::jws::{ES256, JwsHeader, JwsSigner, PS256};
+use crypto::jose::jws::{ES256, JwsHeader, JwsSigner, PS256, RS256};
 use crypto::jose::jwt::{self, JwtPayload};
 use crypto::provider::CryptoProvider;
 use secrecy::{ExposeSecret, SecretBox};
@@ -12,11 +12,13 @@ use secrecy::{ExposeSecret, SecretBox};
 const LIFESPAN: i64 = 60;
 
 /// What an assertion is signed with: ES256 under a P-256 key, as CAMARA
-/// operators take it, or PS256 under an RSA-PSS key, as eSignet does.
+/// operators take it, PS256 under an RSA-PSS key, as eSignet 2.0 does, or
+/// RS256 under an RSA key, the one eSignet 1.x verifies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssertionAlgorithm {
     Es256,
     Ps256,
+    Rs256,
 }
 
 impl AssertionAlgorithm {
@@ -24,6 +26,7 @@ impl AssertionAlgorithm {
         match self {
             Self::Es256 => "ES256",
             Self::Ps256 => "PS256",
+            Self::Rs256 => "RS256",
         }
     }
 }
@@ -78,6 +81,7 @@ pub fn client_assertion(
     let signer: Box<dyn JwsSigner> = match key.algorithm {
         AssertionAlgorithm::Es256 => Box::new(ES256.signer_from_pem(pem).map_err(|_| Unsigned)?),
         AssertionAlgorithm::Ps256 => Box::new(PS256.signer_from_pem(pem).map_err(|_| Unsigned)?),
+        AssertionAlgorithm::Rs256 => Box::new(RS256.signer_from_pem(pem).map_err(|_| Unsigned)?),
     };
     jwt::encode_with_signer(&payload, &header, &*signer).map_err(|_| Unsigned)
 }
@@ -87,6 +91,7 @@ mod tests {
     use super::*;
     use crypto::jose::jwk::KeyPair;
     use crypto::jose::jwk::alg::ec::EcKeyPair;
+    use crypto::jose::jwk::alg::rsa::RsaKeyPair;
     use crypto::jose::jwk::alg::rsapss::RsaPssKeyPair;
     use crypto::jose::jws::JwsVerifier;
     use crypto::jose::util::HashAlgorithm;
@@ -138,27 +143,59 @@ mod tests {
         assert_eq!(header.key_id(), Some("rsa-1"));
         assert_eq!(payload.issuer(), Some("rp-1"));
         assert_eq!(payload.subject(), Some("rp-1"));
+
+        let classic = RsaKeyPair::generate(2048).expect("an RSA key");
+        let classic_pem = SecretBox::new(Box::new(classic.to_pem_private_key()));
+        let (header, payload) = read_signed(
+            &AssertionKey {
+                kid: "rsa-2",
+                private_pem: &classic_pem,
+                algorithm: AssertionAlgorithm::Rs256,
+            },
+            &RS256
+                .verifier_from_jwk(&classic.to_jwk_public_key())
+                .expect("a verifier"),
+        );
+        assert_eq!(header.algorithm(), Some("RS256"));
+        assert_eq!(header.key_id(), Some("rsa-2"));
+        assert_eq!(payload.audience(), Some(vec!["https://idp.test"]));
     }
 
+    /// A key signs under the one scheme it was drawn for: an RSA-PSS key never
+    /// signs RS256, nor a classic RSA key PS256.
     #[test]
     fn a_key_of_another_family_signs_nothing() {
         let provider = OpenSslProvider::new(&CryptoConfig::default()).expect("a provider");
-        let ec = EcKeyPair::generate(crypto::jose::jwk::P_256).expect("an EC key");
-        let ec_pem = SecretBox::new(Box::new(ec.to_pem_private_key()));
         let now = DateTime::from_timestamp(1_800_000_000, 0).expect("a moment");
-        assert_eq!(
-            client_assertion(
-                &provider,
-                &AssertionKey {
-                    kid: "ec-1",
-                    private_pem: &ec_pem,
-                    algorithm: AssertionAlgorithm::Ps256,
-                },
-                "rp-1",
-                "https://idp.test",
-                now,
+        let pem_of = |pem: Vec<u8>| SecretBox::new(Box::new(pem));
+        let ec = EcKeyPair::generate(crypto::jose::jwk::P_256).expect("an EC key");
+        let pss = RsaPssKeyPair::generate(2048, HashAlgorithm::Sha256, HashAlgorithm::Sha256, 32)
+            .expect("an RSA-PSS key");
+        let classic = RsaKeyPair::generate(2048).expect("an RSA key");
+        for (pem, algorithm) in [
+            (pem_of(ec.to_pem_private_key()), AssertionAlgorithm::Ps256),
+            (pem_of(pss.to_pem_private_key()), AssertionAlgorithm::Rs256),
+            (
+                pem_of(classic.to_pem_private_key()),
+                AssertionAlgorithm::Ps256,
             ),
-            Err(Unsigned)
-        );
+        ] {
+            assert_eq!(
+                client_assertion(
+                    &provider,
+                    &AssertionKey {
+                        kid: "key-1",
+                        private_pem: &pem,
+                        algorithm,
+                    },
+                    "rp-1",
+                    "https://idp.test",
+                    now,
+                ),
+                Err(Unsigned),
+                "{}",
+                algorithm.name()
+            );
+        }
     }
 }

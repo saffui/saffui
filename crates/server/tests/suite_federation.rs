@@ -8,6 +8,8 @@ mod broker_login;
 mod caep;
 #[path = "grouped/esignet.rs"]
 mod esignet;
+#[path = "grouped/esignet_1x.rs"]
+mod esignet_1x;
 #[path = "grouped/events_live.rs"]
 mod events_live;
 #[path = "grouped/ldap_front.rs"]

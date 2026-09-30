@@ -17,6 +17,7 @@ import {
   mapperTypesFor,
   providerDraft,
   providerMutation,
+  readHeldAssertionAlgorithm,
   readProviderPublicKey,
   samlMetadataAddress,
 } from "./forms";
@@ -120,12 +121,42 @@ describe("national sign-in provider forms", () => {
       scope: { Str: "openid profile" },
       allowed_algs: { Str: "PS256" },
       token_auth: { Str: "private_key_jwt" },
+      assertion_alg: { Str: "PS256" },
+      assertion_audience: { Str: "issuer" },
       userinfo_response: { Str: "jwe" },
       userinfo_endpoint: { Str: "https://esignet.example/oauth2/userinfo" },
       userinfo_algs: { Str: "RS256 PS256" },
       claims: { Str: draft.claimsRequest },
       accepted_acrs: { Str: "mosip:idp:acr:biometrics=mfa" },
     });
+  });
+
+  test("round-trips an assertion signed RS256 to the token endpoint, and sends none without one", () => {
+    const older = providerDraft({
+      ...row,
+      configs: { ...row.configs, assertion_alg: { Str: "RS256" }, assertion_audience: { Str: "token_endpoint" } },
+    });
+    expect([older.assertionAlgorithm, older.assertionAudience]).toEqual(["RS256", "token_endpoint"]);
+    const configs = providerMutation(older).configs;
+    expect([configs.assertion_alg, configs.assertion_audience]).toEqual([{ Str: "RS256" }, { Str: "token_endpoint" }]);
+    const plain = providerMutation({ ...older, protocol: "oauth2" }).configs;
+    expect([plain.assertion_alg, plain.assertion_audience]).toEqual([{ Str: "RS256" }, undefined]);
+    const secret = providerMutation({ ...older, tokenAuth: "client_secret_basic" }).configs;
+    expect([secret.assertion_alg, secret.assertion_audience]).toEqual([undefined, undefined]);
+  });
+
+  test("reads the algorithm a drawn key holds, and a saved provider's from its key when unsaid", () => {
+    const keyed = (alg: string) => ({
+      ...row,
+      configs: { ...row.configs, assertion_jwk: { Str: JSON.stringify({ ...JSON.parse(assertionJwk), alg }) } },
+    });
+    expect(readHeldAssertionAlgorithm(row)).toBe("PS256");
+    expect(readHeldAssertionAlgorithm(keyed("RS256"))).toBe("RS256");
+    expect(readHeldAssertionAlgorithm(keyed("ES256"))).toBeNull();
+    expect(readHeldAssertionAlgorithm({ ...row, configs: { ...row.configs, assertion_jwk: { Str: "not json" } } })).toBeNull();
+    expect(readHeldAssertionAlgorithm(undefined)).toBeNull();
+    expect(providerDraft(keyed("RS256")).assertionAlgorithm).toBe("RS256");
+    expect(providerDraft({ ...row, configs: { ...row.configs, assertion_jwk: { Str: "" } } }).assertionAlgorithm).toBe("PS256");
   });
 
   test("reads a plain JSON userinfo with no algorithm of its own", () => {
@@ -167,9 +198,15 @@ describe("national sign-in provider forms", () => {
       id_token_algs: ["PS256", "ES256"],
       acr_values: ["mosip:idp:acr:biometrics"],
       iss_parameter: true,
+      assertion_alg: "RS256" as const,
       gaps: [],
     };
     const applied = applyDiscoveredProvider(draft, found);
+    expect(applied.assertionAlgorithm).toBe("RS256");
+    expect(applyDiscoveredProvider(draft, found, "PS256").assertionAlgorithm).toBe("PS256");
+    expect(applyDiscoveredProvider(draft, { ...found, assertion_alg: null }).assertionAlgorithm).toBe(
+      draft.assertionAlgorithm,
+    );
     expect(applied.authorizationEndpoint).toBe("https://esignet.example/v1/authorize");
     expect(applied.tokenEndpoint).toBe("https://esignet.example/v1/token");
     expect(applied.jwksUri).toBe("https://esignet.example/v1/jwks");

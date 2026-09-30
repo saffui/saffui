@@ -60,6 +60,9 @@ export interface DiscoveredProvider {
   id_token_algs: string[];
   acr_values: string[];
   iss_parameter: boolean;
+  /// What the provider's own key would sign assertions with: PS256, or RS256
+  /// for a provider that verifies nothing else; none when it takes neither.
+  assertion_alg: "PS256" | "RS256" | null;
   gaps: DiscoveryGap[];
 }
 

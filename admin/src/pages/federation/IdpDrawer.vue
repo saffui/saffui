@@ -35,6 +35,7 @@ import {
   mapperTypesFor,
   providerDraft,
   providerMutation,
+  readHeldAssertionAlgorithm,
   readProtocol,
   readProviderPublicKey,
   samlMetadataAddress,
@@ -63,6 +64,8 @@ const savedProtocol = computed(() => (props.row ? readProtocol(props.row) : draf
 const mapperTypes = computed(() => mapperTypesFor(savedProtocol.value));
 const blocker = computed(() => findProviderBlocker(draft.value));
 const neededKeys = computed(() => listNeededProviderKeys(draft.value));
+/// The algorithm a saved provider's assertion key signs, which stays with it.
+const heldAssertionAlgorithm = computed(() => readHeldAssertionAlgorithm(props.row));
 const KEY_LABELS: Record<ProviderKeyField, string> = {
   assertion_jwk: "idp-key-assertion",
   encryption_jwk: "idp-key-encryption",
@@ -147,7 +150,7 @@ async function discoverFromIssuer() {
   discovering.value = true;
   try {
     const found = await discoverProvider(props.realm, draft.value.issuer.trim());
-    draft.value = applyDiscoveredProvider(draft.value, found);
+    draft.value = applyDiscoveredProvider(draft.value, found, heldAssertionAlgorithm.value);
     discovered.value = found;
   } catch {
     // The toast carries the refusal.
@@ -315,6 +318,9 @@ async function dropMapper(row: IdpMapperRow) {
             <p>{{ say("idp-discovered") }}</p>
             <p v-if="discovered.acr_values.length">
               {{ say("idp-discovered-contexts", { contexts: discovered.acr_values.join(", ") }) }}
+            </p>
+            <p v-if="discovered.assertion_alg === 'RS256'">
+              {{ say("idp-discovered-rs256", { issuer: `${discovered.issuer.replace(/\/+$/, "")}/v1/esignet` }) }}
             </p>
             <p v-for="gap in discovered.gaps" :key="gap" class="text-warn">{{ say(`idp-gap-${gap}`) }}</p>
           </div>
@@ -533,6 +539,33 @@ async function dropMapper(row: IdpMapperRow) {
               <option value="private_key_jwt">{{ say("idp-token-auth-private-key-jwt") }}</option>
             </select>
           </label>
+          <template v-if="draft.tokenAuth === 'private_key_jwt'">
+            <label class="text-[11px] font-medium text-muted">
+              <span class="inline-flex items-center gap-1">
+                {{ say("idp-assertion-alg") }} <AppHint name="idp-assertion-alg-help" />
+              </span>
+              <select
+                v-model="draft.assertionAlgorithm"
+                :disabled="Boolean(heldAssertionAlgorithm)"
+                class="sf-field mt-1 disabled:opacity-60"
+              >
+                <option value="PS256">PS256</option>
+                <option value="RS256">RS256</option>
+              </select>
+            </label>
+            <label v-if="draft.protocol === 'oidc'" class="text-[11px] font-medium text-muted">
+              <span class="inline-flex items-center gap-1">
+                {{ say("idp-assertion-audience") }} <AppHint name="idp-assertion-audience-help" />
+              </span>
+              <select v-model="draft.assertionAudience" class="sf-field mt-1">
+                <option value="issuer">{{ say("idp-assertion-audience-issuer") }}</option>
+                <option value="token_endpoint">{{ say("idp-assertion-audience-token-endpoint") }}</option>
+              </select>
+            </label>
+            <p v-if="heldAssertionAlgorithm" class="text-[11px] leading-4 text-muted sm:col-span-2">
+              {{ say("idp-assertion-alg-held", { algorithm: heldAssertionAlgorithm }) }}
+            </p>
+          </template>
           <span class="inline-flex items-center gap-1 sm:col-span-2">
             <AppToggle v-model="draft.pkce">{{ say("idp-pkce") }}</AppToggle>
             <AppHint name="idp-pkce-help" />

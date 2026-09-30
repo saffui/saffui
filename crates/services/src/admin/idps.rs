@@ -12,11 +12,11 @@ use store::providers::federation::brokering;
 use store::tenancy::UnitOfWork;
 
 use crate::federation::brokering::{
-    ATTRIBUTE_IDP_MAPPER, ATTRIBUTE_NAME, ATTRIBUTE_VALUE, CLAIM, KNOWN_IDP_MAPPERS,
-    PROVIDER_ASSERTION_ALGORITHM, ProviderKey, ROLE, ROLE_IDP_MAPPER, SAML_ATTRIBUTE_IDP_MAPPER,
-    SAML_ROLE_IDP_MAPPER, SYNC_MODE, USER_ATTRIBUTE, Upstream, list_needed_provider_keys,
-    rule_fits_provider,
+    ATTRIBUTE_IDP_MAPPER, ATTRIBUTE_NAME, ATTRIBUTE_VALUE, CLAIM, KNOWN_IDP_MAPPERS, ProviderKey,
+    ROLE, ROLE_IDP_MAPPER, SAML_ATTRIBUTE_IDP_MAPPER, SAML_ROLE_IDP_MAPPER, SYNC_MODE, TokenAuth,
+    USER_ATTRIBUTE, Upstream, list_needed_provider_keys, rule_fits_provider,
 };
+use crate::token::assertion::AssertionAlgorithm;
 
 /// What the sealed upstream secret is scoped to.
 const PURPOSE: &str = "identity-provider-secret";
@@ -278,7 +278,8 @@ fn read_plain_upstream(provider: &IdentityProviderModel) -> Option<Upstream> {
 /// not be the one the private half signs for. A rewrite keeps the standing
 /// pair, since the provider registered its public half once and a new one is a
 /// new registration there. A key no longer needed stays, for the day the
-/// setting comes back.
+/// setting comes back. The assertion key signs the one algorithm it was drawn
+/// for, so another is refused while it stands.
 async fn keep_or_draw_provider_keys(
     crypto: &dyn CryptoProvider,
     ring: &RealmKeyring,
@@ -286,9 +287,15 @@ async fn keep_or_draw_provider_keys(
     provider: &mut IdentityProviderModel,
     standing: Option<&IdentityProviderModel>,
 ) -> Result<(), Unwritable> {
-    let needed = read_plain_upstream(provider)
-        .map(|upstream| list_needed_provider_keys(&upstream))
+    let upstream = read_plain_upstream(provider);
+    let needed = upstream
+        .as_ref()
+        .map(list_needed_provider_keys)
         .unwrap_or_default();
+    let assertion_algorithm = match upstream.map(|upstream| upstream.token_auth) {
+        Some(TokenAuth::PrivateKeyJwt(settings)) => Some(settings.algorithm),
+        _ => None,
+    };
     let internal_id = provider.internal_id.clone();
     let bag = provider.configs.get_or_insert_with(Default::default);
     for key in ProviderKey::ALL {
@@ -303,10 +310,18 @@ async fn keep_or_draw_provider_keys(
                 ))
             });
         if let Some((sealed, public)) = kept {
+            if let (ProviderKey::Assertion, Some(asked)) = (key, assertion_algorithm) {
+                check_assertion_key_algorithm(public, asked)?;
+            }
             bag.insert(key.sealed_field_name().to_owned(), sealed.clone());
             bag.insert(key.public_field_name().to_owned(), public.clone());
         } else if needed.contains(&key) {
-            let (private_pem, public) = draw_provider_key(crypto, key)?;
+            let (private_pem, public) = match (key, assertion_algorithm) {
+                (ProviderKey::Assertion, Some(algorithm)) => draw_assertion_key(crypto, algorithm)?,
+                (ProviderKey::Encryption, _) => draw_encryption_key(crypto)?,
+                // Needed only for private_key_jwt, which names its algorithm.
+                (ProviderKey::Assertion, None) => return Err(Unwritable::Backend),
+            };
             let sealed = ring
                 .seal(envelope, key.sealing_purpose(), &internal_id, &private_pem)
                 .await
@@ -324,20 +339,38 @@ async fn keep_or_draw_provider_keys(
     Ok(())
 }
 
-/// A fresh pair for one of a provider's keys, the private half as PEM and the
-/// public half as the JWK the provider is given, named by its thumbprint.
-///
-/// Both are RSA at 3072 bits, because a provider will not let either be
-/// replaced without a new registration: the assertion key an RSA-PSS pair for
-/// PS256, the encryption key the only kind eSignet encrypts to.
-fn draw_provider_key(
+/// Refuse an assertion algorithm the standing key was not drawn for: the
+/// provider registered that key once, so another algorithm means another key,
+/// and another registration there.
+fn check_assertion_key_algorithm(
+    public: &AttributeValue,
+    asked: AssertionAlgorithm,
+) -> Result<(), Unwritable> {
+    let held = public
+        .as_str()
+        .and_then(|written| serde_json::from_str::<serde_json::Value>(written).ok())
+        .and_then(|jwk| jwk.get("alg")?.as_str().map(str::to_owned));
+    if held.as_deref() == Some(asked.name()) {
+        return Ok(());
+    }
+    Err(Unwritable::Invalid(format!(
+        "this provider's assertion key signs {}: signing {} takes a new provider, whose key is registered anew where it signs in",
+        held.as_deref().unwrap_or("under no named algorithm"),
+        asked.name()
+    )))
+}
+
+/// A fresh pair for a provider's assertions, RSA at 3072 bits because the
+/// provider will not let it be replaced without a new registration: RSA-PSS
+/// for PS256, a classic RSA pair for RS256, each signing its scheme alone.
+fn draw_assertion_key(
     crypto: &dyn CryptoProvider,
-    which: ProviderKey,
+    algorithm: AssertionAlgorithm,
 ) -> Result<(Vec<u8>, String), Unwritable> {
     use crypto::jose::jwk::KeyPair as _;
     use crypto::jose::util::HashAlgorithm;
-    let (private, private_pem) = match which {
-        ProviderKey::Assertion => {
+    let (private, private_pem) = match algorithm {
+        AssertionAlgorithm::Ps256 => {
             let pair = crypto::jose::jwk::alg::rsapss::RsaPssKeyPair::generate(
                 3072,
                 HashAlgorithm::Sha256,
@@ -347,28 +380,44 @@ fn draw_provider_key(
             .map_err(|_| Unwritable::Backend)?;
             (pair.to_jwk_key_pair(), pair.to_pem_private_key())
         }
-        ProviderKey::Encryption => {
+        AssertionAlgorithm::Rs256 => {
             let pair = crypto::jose::jwk::alg::rsa::RsaKeyPair::generate(3072)
                 .map_err(|_| Unwritable::Backend)?;
             (pair.to_jwk_key_pair(), pair.to_pem_private_key())
         }
+        // A provider's own key is RSA: its settings name PS256 or RS256 alone.
+        AssertionAlgorithm::Es256 => return Err(Unwritable::Backend),
     };
+    let public = name_public_key(crypto, &private, algorithm.name(), "sig")?;
+    Ok((private_pem, public))
+}
+
+/// A fresh pair the provider encrypts its userinfo to: RSA at 3072 bits, the
+/// only kind eSignet encrypts to, and never replaced without a new
+/// registration either.
+fn draw_encryption_key(crypto: &dyn CryptoProvider) -> Result<(Vec<u8>, String), Unwritable> {
+    use crypto::jose::jwk::KeyPair as _;
+    let pair =
+        crypto::jose::jwk::alg::rsa::RsaKeyPair::generate(3072).map_err(|_| Unwritable::Backend)?;
+    let public = name_public_key(crypto, &pair.to_jwk_key_pair(), "RSA-OAEP-256", "enc")?;
+    Ok((pair.to_pem_private_key(), public))
+}
+
+/// The public half of a drawn pair as the JWK the provider is given, named by
+/// its thumbprint and labelled with what it is for.
+fn name_public_key(
+    crypto: &dyn CryptoProvider,
+    private: &crypto::jose::jwk::Jwk,
+    algorithm: &str,
+    key_use: &str,
+) -> Result<String, Unwritable> {
     let mut public = private.to_public_key().map_err(|_| Unwritable::Backend)?;
     let kid = crypto::thumbprint::jwk_sha256_thumbprint(crypto, &public)
         .map_err(|_| Unwritable::Backend)?;
     public.set_key_id(&kid);
-    match which {
-        ProviderKey::Assertion => {
-            public.set_algorithm(PROVIDER_ASSERTION_ALGORITHM.name());
-            public.set_key_use("sig");
-        }
-        ProviderKey::Encryption => {
-            public.set_algorithm("RSA-OAEP-256");
-            public.set_key_use("enc");
-        }
-    }
-    let public = serde_json::to_string(public.as_ref()).map_err(|_| Unwritable::Backend)?;
-    Ok((private_pem, public))
+    public.set_algorithm(algorithm);
+    public.set_key_use(key_use);
+    serde_json::to_string(public.as_ref()).map_err(|_| Unwritable::Backend)
 }
 
 /// The contexts a provider pairs with the realm's are refused unless the realm

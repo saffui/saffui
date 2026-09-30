@@ -12,6 +12,7 @@ use store::providers::protocol::replay;
 use store::tenancy::UnitOfWork;
 
 use crate::oidc::mappers::{MULTIVALUED, config_bool};
+use crate::token::assertion::AssertionAlgorithm;
 
 /// How long what left for the upstream is honoured on the way back.
 pub const STATE_LIFESPAN: Duration = Duration::minutes(10);
@@ -48,7 +49,26 @@ pub enum TokenAuth {
     /// The client id and secret as form fields.
     Post,
     /// An assertion, RFC 7523, signed with a key drawn for this provider alone.
-    PrivateKeyJwt,
+    PrivateKeyJwt(AssertionSettings),
+}
+
+/// How a provider reads the assertions this realm signs for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AssertionSettings {
+    /// What the provider's own key was drawn to sign: PS256, or RS256 for a
+    /// provider that verifies nothing else, as eSignet 1.x does.
+    pub algorithm: AssertionAlgorithm,
+    pub audience: AssertionAudience,
+}
+
+/// Where an assertion is addressed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssertionAudience {
+    /// The provider's issuer, as the 2025 advisory on audience injection
+    /// recommends and eSignet 2.0 requires.
+    Issuer,
+    /// Its token endpoint, exactly, as eSignet 1.x requires.
+    TokenEndpoint,
 }
 
 /// How the upstream says who arrived.
@@ -152,6 +172,16 @@ pub enum Unusable {
         "iss_parameter needs an issuer to compare, which a plain OAuth 2.0 provider is not given"
     )]
     IssParameterWithoutIssuer,
+    #[error("no assertion algorithm answers to {0}: a provider's own key signs PS256 or RS256")]
+    UnknownAssertionAlgorithm(String),
+    #[error("assertion_audience is issuer or token_endpoint, not {0}")]
+    UnknownAssertionAudience(String),
+    #[error(
+        "assertion_audience issuer needs an issuer, which a plain OAuth 2.0 provider is not given"
+    )]
+    AudienceWithoutIssuer,
+    #[error("{0} needs private_key_jwt")]
+    AssertionWithoutPrivateKeyJwt(&'static str),
 }
 
 pub(crate) fn text<'a>(bag: &'a AttributesMap, key: &str) -> Option<&'a str> {
@@ -181,9 +211,16 @@ impl Upstream {
         let token_auth = match text(bag, "token_auth").unwrap_or("client_secret_basic") {
             "client_secret_basic" => TokenAuth::Basic,
             "client_secret_post" => TokenAuth::Post,
-            "private_key_jwt" => TokenAuth::PrivateKeyJwt,
+            "private_key_jwt" => TokenAuth::PrivateKeyJwt(read_assertion_settings(bag, &identity)?),
             other => return Err(Unusable::UnknownTokenAuth(other.to_owned())),
         };
+        if !matches!(token_auth, TokenAuth::PrivateKeyJwt(_)) {
+            for key in ASSERTION_SETTINGS {
+                if text(bag, key).is_some_and(|said| !said.is_empty()) {
+                    return Err(Unusable::AssertionWithoutPrivateKeyJwt(key));
+                }
+            }
+        }
         let unsaid_scope = match identity {
             Identity::Signed(_) => "openid",
             Identity::Asked(_) => "",
@@ -212,6 +249,38 @@ impl Upstream {
             identity,
         })
     }
+}
+
+/// The settings an assertion is signed and addressed by.
+const ASSERTION_SETTINGS: [&str; 2] = ["assertion_alg", "assertion_audience"];
+
+/// How the provider reads this realm's assertions: signed PS256 unless it
+/// verifies RS256 alone, and addressed to its issuer unless it takes its token
+/// endpoint only. A plain OAuth 2.0 provider has no issuer to address.
+fn read_assertion_settings(
+    bag: &AttributesMap,
+    identity: &Identity,
+) -> Result<AssertionSettings, Unusable> {
+    let algorithm = match text(bag, "assertion_alg").filter(|said| !said.is_empty()) {
+        None | Some("PS256") => AssertionAlgorithm::Ps256,
+        Some("RS256") => AssertionAlgorithm::Rs256,
+        Some(other) => return Err(Unusable::UnknownAssertionAlgorithm(other.to_owned())),
+    };
+    let audience = match (
+        text(bag, "assertion_audience").filter(|said| !said.is_empty()),
+        identity,
+    ) {
+        (None | Some("issuer"), Identity::Signed(_)) => AssertionAudience::Issuer,
+        (None, Identity::Asked(_)) | (Some("token_endpoint"), _) => {
+            AssertionAudience::TokenEndpoint
+        }
+        (Some("issuer"), Identity::Asked(_)) => return Err(Unusable::AudienceWithoutIssuer),
+        (Some(other), _) => return Err(Unusable::UnknownAssertionAudience(other.to_owned())),
+    };
+    Ok(AssertionSettings {
+        algorithm,
+        audience,
+    })
 }
 
 /// A claims request is an object naming `userinfo`, `id_token` or both, each
@@ -391,15 +460,10 @@ impl ProviderKey {
     }
 }
 
-/// What a provider's own assertion key signs with: PS256 under RSA, which
-/// eSignet takes where it refuses RS256.
-pub const PROVIDER_ASSERTION_ALGORITHM: crate::token::assertion::AssertionAlgorithm =
-    crate::token::assertion::AssertionAlgorithm::Ps256;
-
 /// The keys an upstream needs this realm to hold for it.
 pub fn list_needed_provider_keys(upstream: &Upstream) -> Vec<ProviderKey> {
     let mut needed = Vec::new();
-    if upstream.token_auth == TokenAuth::PrivateKeyJwt {
+    if matches!(upstream.token_auth, TokenAuth::PrivateKeyJwt(_)) {
         needed.push(ProviderKey::Assertion);
     }
     if let Identity::Signed(signed) = &upstream.identity
@@ -668,13 +732,21 @@ pub fn arrived(
     })
 }
 
-/// Where a client assertion for this upstream is addressed: its issuer when it
-/// names one, as the 2025 advisory on audience injection recommends and eSignet
-/// requires, and its token endpoint otherwise.
+/// Where a client assertion for this upstream is addressed: its issuer, or its
+/// token endpoint for a provider that takes nothing else and for a plain OAuth
+/// 2.0 provider, which names no issuer. Either is safe from the audience
+/// injection the 2025 advisory warns of, because each provider holds a key of
+/// its own: an assertion signed for one is worth nothing at another.
 pub fn choose_assertion_audience(upstream: &Upstream) -> &str {
-    match &upstream.identity {
-        Identity::Signed(signed) => &signed.issuer,
-        Identity::Asked(_) => &upstream.token_endpoint,
+    match (upstream.token_auth, &upstream.identity) {
+        (
+            TokenAuth::PrivateKeyJwt(AssertionSettings {
+                audience: AssertionAudience::Issuer,
+                ..
+            }),
+            Identity::Signed(signed),
+        ) => &signed.issuer,
+        _ => &upstream.token_endpoint,
     }
 }
 
@@ -820,7 +892,7 @@ pub fn compose_code_exchange(
     let basic = match (upstream.token_auth, secret) {
         // No secret travels: the assertion is the proof, and one that could not
         // be made leaves the client id alone for the provider to refuse.
-        (TokenAuth::PrivateKeyJwt, _) => {
+        (TokenAuth::PrivateKeyJwt(_), _) => {
             form.push(("client_id".to_owned(), upstream.client_id.clone()));
             if let Some(assertion) = assertion {
                 form.push((
@@ -2303,7 +2375,13 @@ mod tests {
                 ),
                 ("userinfo_algs", "RS256 PS256"),
             ]);
-            assert_eq!(upstream.token_auth, TokenAuth::PrivateKeyJwt);
+            assert_eq!(
+                upstream.token_auth,
+                TokenAuth::PrivateKeyJwt(AssertionSettings {
+                    algorithm: AssertionAlgorithm::Ps256,
+                    audience: AssertionAudience::Issuer,
+                })
+            );
             assert_eq!(
                 upstream.accepted_acrs,
                 vec![
@@ -2434,6 +2512,75 @@ mod tests {
                 .expect_err("a pairing no identity token would check")
                 .to_string(),
                 "accepted_acrs needs an identity token, which a plain OAuth 2.0 provider does not give"
+            );
+        }
+
+        /// A provider of eSignet 1.x verifies RS256 alone, addressed to its token
+        /// endpoint: both are read, and whatever else is named is refused by
+        /// name, as are the settings without an assertion to sign.
+        #[test]
+        fn an_assertion_is_signed_and_addressed_as_the_provider_reads_it() {
+            let older = national(&[
+                ("assertion_alg", "RS256"),
+                ("assertion_audience", "token_endpoint"),
+            ]);
+            assert_eq!(
+                older.token_auth,
+                TokenAuth::PrivateKeyJwt(AssertionSettings {
+                    algorithm: AssertionAlgorithm::Rs256,
+                    audience: AssertionAudience::TokenEndpoint,
+                })
+            );
+            assert_eq!(
+                choose_assertion_audience(&older),
+                "https://esignet.example/oauth2/token"
+            );
+            let unsaid = national(&[("assertion_alg", ""), ("assertion_audience", "")]);
+            assert_eq!(
+                unsaid.token_auth,
+                TokenAuth::PrivateKeyJwt(AssertionSettings {
+                    algorithm: AssertionAlgorithm::Ps256,
+                    audience: AssertionAudience::Issuer,
+                })
+            );
+            let refusal = |said: &[(&str, &str)]| {
+                Upstream::parse(&national_provider(said))
+                    .expect_err("a setting that cannot be used")
+                    .to_string()
+            };
+            assert_eq!(
+                refusal(&[("assertion_alg", "ES256")]),
+                "no assertion algorithm answers to ES256: a provider's own key signs PS256 or RS256"
+            );
+            assert_eq!(
+                refusal(&[("assertion_audience", "both")]),
+                "assertion_audience is issuer or token_endpoint, not both"
+            );
+            for key in ["assertion_alg", "assertion_audience"] {
+                assert_eq!(
+                    refusal(&[("token_auth", "client_secret_basic"), (key, "RS256")]),
+                    format!("{key} needs private_key_jwt")
+                );
+            }
+            let secret = national(&[("token_auth", "client_secret_post"), ("assertion_alg", "")]);
+            assert_eq!(secret.token_auth, TokenAuth::Post);
+
+            let plain = |said: &[(&str, &str)]| {
+                Upstream::parse(&plain_provider(
+                    &[&[("token_auth", "private_key_jwt")], said].concat(),
+                ))
+            };
+            assert_eq!(
+                plain(&[("assertion_audience", "issuer")])
+                    .expect_err("an issuer nobody holds to address")
+                    .to_string(),
+                "assertion_audience issuer needs an issuer, which a plain OAuth 2.0 provider is not given"
+            );
+            let addressed =
+                plain(&[("assertion_audience", "token_endpoint")]).expect("a plain provider");
+            assert_eq!(
+                choose_assertion_audience(&addressed),
+                addressed.token_endpoint
             );
         }
 

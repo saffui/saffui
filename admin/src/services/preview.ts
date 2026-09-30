@@ -959,6 +959,7 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
       id_token_algs: ["PS256"],
       acr_values: ["mosip:idp:acr:biometrics", "mosip:idp:acr:generated-code", "mosip:idp:acr:knowledge"],
       iss_parameter: true,
+      assertion_alg: "PS256",
       gaps: ["no-pkce-s256"],
     });
   }
@@ -987,7 +988,8 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
           jwks_uri: { Str: "https://esignet.id.example/v1/esignet/oauth/.well-known/jwks.json" },
           userinfo_endpoint: { Str: "https://esignet.id.example/v1/esignet/oidc/userinfo" },
           client_id: { Str: "saffui-national" }, scope: { Str: "openid profile" }, allowed_algs: { Str: "PS256" },
-          token_auth: { Str: "private_key_jwt" }, userinfo_response: { Str: "jwe" }, userinfo_algs: { Str: "RS256 PS256" },
+          token_auth: { Str: "private_key_jwt" }, assertion_alg: { Str: "PS256" }, assertion_audience: { Str: "issuer" },
+          userinfo_response: { Str: "jwe" }, userinfo_algs: { Str: "RS256 PS256" },
           claims: { Str: '{"userinfo":{"name":{"essential":true},"birthdate":{"essential":false}}}' },
           accepted_acrs: { Str: "mosip:idp:acr:biometrics=mfa mosip:idp:acr:knowledge=password" },
           assertion_jwk: { Str: '{"kty":"RSA","e":"AQAB","use":"sig","kid":"hKrqtAOSedkENSeYLOp6eOdhYi2fwyOhDAWRQrT4VT8","alg":"PS256","n":"wbf4izL-jHsqjMpLUl_B1jJuLV8NvDjNT-YUP5PGwjVJx9Z01TK4lyfCYsRQ4IzfrezIeyeZBK1KEDLf27s2eiA2JDjw-iS-_t7i35VyGkkdlQcsCRuMOd4LdZG2EXkRUA80ZoF7ia0GbvOt9-tdsCo6dKwxWm96WowLMhkK44XMyNhSR5Clq4KyMa8c6rxypUK9VuwA8yJ_TZtegA4PiK3-xRvG6OXqlMhNjG97LUTzeAumEDMVq7vFRUAFubmsEEtK_n7bzsOgjUtuRb7H2sWnIOc2x3wEMuuBr-nI5ecX9TSbpi4V2r2TUr7VlxdqlcLqSa1pfgTimf9Z8XBk9Le-Eugo4YfhZw65TEUNO4cKMwz2rswObmhj5sVqieHjpPZtoiSYV6etUKplmAHQHXIRsZ6x1zp53nYdbZjgN0jA3HryS5DxWUPxgf1TJZwS0NmqGmIOVYlOUZtEY-9a4KVdJS5KayswsOdp4gTw93cCAEzm0fqHpaWLK7LEoesx"}' },

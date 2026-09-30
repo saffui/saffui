@@ -6,7 +6,7 @@ use crypto::provider::SignAlg;
 use serde::Serialize;
 use serde_json::Value;
 
-use super::brokering::{PROVIDER_ASSERTION_ALGORITHM, USERINFO_ENCRYPTIONS};
+use super::brokering::USERINFO_ENCRYPTIONS;
 
 /// How much of what a provider wrote a refusal repeats.
 const QUOTED: usize = 200;
@@ -35,7 +35,7 @@ pub enum Undiscoverable {
 pub enum DiscoveryGap {
     /// No signed assertion at its token endpoint.
     NoPrivateKeyJwt,
-    /// Signed assertions, but none under the algorithm a provider's own key
+    /// Signed assertions, but under neither algorithm a provider's own key
     /// signs with here.
     NoAssertionAlgorithm,
     /// No userinfo encrypted under RSA-OAEP-256 around AES-GCM.
@@ -59,6 +59,9 @@ pub struct DiscoveredProvider {
     pub acr_values: Vec<String>,
     /// Whether its way back names its issuer, RFC 9207.
     pub iss_parameter: bool,
+    /// What its own key would sign assertions with here: PS256, or RS256 for a
+    /// provider that verifies nothing else. None when it takes neither.
+    pub assertion_alg: Option<&'static str>,
     pub gaps: Vec<DiscoveryGap>,
 }
 
@@ -131,14 +134,21 @@ pub fn read_discovery_document(
     }
 
     let mut gaps = Vec::new();
+    let mut assertion_alg = None;
     if !named("token_endpoint_auth_methods_supported").contains(&"private_key_jwt") {
         gaps.push(DiscoveryGap::NoPrivateKeyJwt);
     } else {
-        // Unsaid, the provider has not ruled the algorithm out.
+        // Unsaid, the provider has not ruled PS256 out; RS256 is taken only
+        // from a provider that verifies nothing better.
         let signing = named("token_endpoint_auth_signing_alg_values_supported");
-        if !signing.is_empty() && !signing.contains(&PROVIDER_ASSERTION_ALGORITHM.name()) {
+        assertion_alg = if signing.is_empty() || signing.contains(&"PS256") {
+            Some("PS256")
+        } else if signing.contains(&"RS256") {
+            Some("RS256")
+        } else {
             gaps.push(DiscoveryGap::NoAssertionAlgorithm);
-        }
+            None
+        };
     }
     if !named("userinfo_encryption_alg_values_supported").contains(&"RSA-OAEP-256")
         || !named("userinfo_encryption_enc_values_supported")
@@ -167,6 +177,7 @@ pub fn read_discovery_document(
             .collect(),
         iss_parameter: said.get("authorization_response_iss_parameter_supported")
             == Some(&Value::Bool(true)),
+        assertion_alg,
         gaps,
     })
 }
@@ -266,6 +277,7 @@ mod tests {
             ["mosip:idp:acr:biometrics", "mosip:idp:acr:knowledge"]
         );
         assert!(found.iss_parameter);
+        assert_eq!(found.assertion_alg, Some("PS256"));
         assert_eq!(found.gaps, []);
     }
 
@@ -354,6 +366,7 @@ mod tests {
         assert_eq!(found.id_token_algs, ["RS256"]);
         assert_eq!(found.userinfo_endpoint, None);
         assert!(!found.iss_parameter);
+        assert_eq!(found.assertion_alg, None);
         assert_eq!(
             found.gaps,
             [
@@ -365,10 +378,12 @@ mod tests {
         );
 
         let mut elsewhere = published();
-        elsewhere["token_endpoint_auth_signing_alg_values_supported"] = json!(["RS256"]);
+        elsewhere["token_endpoint_auth_signing_alg_values_supported"] = json!(["ES256", "EdDSA"]);
         elsewhere["userinfo_encryption_enc_values_supported"] = json!(["A128CBC-HS256"]);
+        let found = read(&elsewhere).expect("a provider");
+        assert_eq!(found.assertion_alg, None);
         assert_eq!(
-            read(&elsewhere).expect("a provider").gaps,
+            found.gaps,
             [
                 DiscoveryGap::NoAssertionAlgorithm,
                 DiscoveryGap::NoUserinfoEncryption
@@ -380,9 +395,31 @@ mod tests {
             .expect("an object")
             .remove("token_endpoint_auth_signing_alg_values_supported");
         unsaid["userinfo_encryption_alg_values_supported"] = json!(["RSA-OAEP"]);
-        assert_eq!(
-            read(&unsaid).expect("a provider").gaps,
-            [DiscoveryGap::NoUserinfoEncryption]
-        );
+        let found = read(&unsaid).expect("a provider");
+        assert_eq!(found.assertion_alg, Some("PS256"));
+        assert_eq!(found.gaps, [DiscoveryGap::NoUserinfoEncryption]);
+    }
+
+    /// RS256 is proposed only to a provider that verifies nothing better, as
+    /// eSignet 1.x announces; PS256 wins wherever it is listed.
+    #[test]
+    fn an_assertion_is_proposed_under_the_best_algorithm_the_provider_takes() {
+        for (listed, proposed) in [
+            (json!(["RS256"]), Some("RS256")),
+            (json!(["RS256", "ES256"]), Some("RS256")),
+            (json!(["RS256", "PS256"]), Some("PS256")),
+            (json!(["PS256"]), Some("PS256")),
+            (json!(["ES256", "HS256"]), None),
+        ] {
+            let mut document = published();
+            document["token_endpoint_auth_signing_alg_values_supported"] = listed.clone();
+            let found = read(&document).expect("a provider");
+            assert_eq!(found.assertion_alg, proposed, "{listed}");
+            assert_eq!(
+                found.gaps.contains(&DiscoveryGap::NoAssertionAlgorithm),
+                proposed.is_none(),
+                "{listed}"
+            );
+        }
     }
 }

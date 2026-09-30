@@ -9,7 +9,7 @@ describe("identity provider catalogue", () => {
   });
 
   test("uses local logos for branded providers, and a glyph where no mark is shipped", () => {
-    const unmarked = new Set(["oidc", "saml", "esignet"]);
+    const unmarked = new Set(["oidc", "saml", "esignet", "esignet-1"]);
 
     for (const provider of PROVIDER_CATALOG) {
       if (unmarked.has(provider.id)) {
@@ -50,6 +50,15 @@ describe("identity provider catalogue", () => {
     expect(esignet.userinfoForm).toBe("jwe");
     expect(JSON.parse(esignet.claimsRequest).userinfo.name).toEqual({ essential: true });
     expect(esignet.issuer).toBe("");
+  });
+
+  test("prefills eSignet 1.x with what it takes: RS256 alone, addressed to its token endpoint", () => {
+    const older = presetDraft(PROVIDER_CATALOG.find((provider) => provider.id === "esignet-1"));
+    expect(older.tokenAuth).toBe("private_key_jwt");
+    expect([older.assertionAlgorithm, older.assertionAudience]).toEqual(["RS256", "token_endpoint"]);
+    expect([older.algorithms, older.userinfoForm, older.claimsRequest]).toEqual(["RS256", "", ""]);
+    const newer = presetDraft(PROVIDER_CATALOG.find((provider) => provider.id === "esignet"));
+    expect([newer.assertionAlgorithm, newer.assertionAudience]).toEqual(["PS256", "issuer"]);
   });
 
   test("opens SAML 2.0 on the SAML form", () => {

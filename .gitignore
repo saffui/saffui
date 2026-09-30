@@ -26,5 +26,7 @@ account/dist/
 # What macOS leaves in a folder somebody opened in Finder.
 .DS_Store
 
-# What deploy/esignet/fetch.sh takes from MOSIP at run time.
+# What deploy/esignet/fetch.sh and deploy/esignet-1x/fetch.sh take from MOSIP
+# at run time.
 deploy/esignet/upstream/
+deploy/esignet-1x/upstream/

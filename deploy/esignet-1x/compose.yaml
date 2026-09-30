@@ -1,0 +1,89 @@
+# A MOSIP eSignet 1.x on this machine: the generation MOSIP's Collab
+# environment runs, which verifies client assertions in RS256 alone.
+#
+# eSignet 1.6.2 with the plugins MOSIP ships, the mock identity system it
+# verifies people against, their database, the cache eSignet 1.x needs, and
+# eSignet's own sign-in page, whose proxy is the host eSignet names itself by.
+# The database is laid out by MOSIP's init.sql, which fetch.sh takes from their
+# repository at the commit this rig was checked against.
+#
+#   ./fetch.sh
+#   docker compose -p saffui-esignet-1x up -d
+#
+# Every port is published on the host's loopback only, clear of the 2.0 rig's.
+services:
+  database:
+    image: postgres:17
+    ports:
+      - "127.0.0.1:15455:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    volumes:
+      - ./upstream/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:6.0
+
+  mock-identity-system:
+    image: mosipid/mock-identity-system:0.11.2
+    user: root
+    ports:
+      - "127.0.0.1:18082:8082"
+    environment:
+      - container_user=mosip
+      - active_profile_env=default,local
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://database:5432/mosip_mockidentitysystem?currentSchema=mockidentitysystem
+      - SPRING_DATASOURCE_USERNAME=postgres
+      - SPRING_DATASOURCE_PASSWORD=postgres
+      - MOSIP_MOCK_IDA_KYC_TRANSACTION_TIMEOUT_SECS=900
+      - MOSIP_ESIGNET_HOST=localhost:13000
+    depends_on:
+      database:
+        condition: service_healthy
+
+  esignet:
+    image: mosipid/esignet-with-plugins:1.6.2
+    user: root
+    ports:
+      - "127.0.0.1:18088:8088"
+    environment:
+      - container_user=mosip
+      - active_profile_env=default,local
+      - plugin_name_env=esignet-mock-plugin.jar
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://database:5432/mosip_esignet?currentSchema=esignet
+      - MOSIP_ESIGNET_MOCK_DOMAIN_URL=http://mock-identity-system:8082
+      - MOSIP_ESIGNET_INTEGRATION_KEY_BINDER=MockKeyBindingWrapperService
+      # The host a deployment serves eSignet under: its discovery document
+      # names it as the issuer, while its tokens name it followed by
+      # /v1/esignet, as Collab's do.
+      - MOSIP_ESIGNET_DOMAIN_URL=http://localhost:13000
+      - SPRING_CACHE_TYPE=redis
+      - SPRING_REDIS_HOST=redis
+      - SPRING_REDIS_PASSWORD=
+      - KAFKA_ENABLED=false
+      - SPRING_AUTOCONFIGURE_EXCLUDE=org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
+    depends_on:
+      database:
+        condition: service_healthy
+      mock-identity-system:
+        condition: service_started
+      redis:
+        condition: service_started
+
+  esignet-ui:
+    image: mosipid/oidc-ui:1.6.2
+    user: root
+    ports:
+      - "127.0.0.1:13000:3000"
+    environment:
+      - container_user=mosip
+    volumes:
+      - ./upstream/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - esignet

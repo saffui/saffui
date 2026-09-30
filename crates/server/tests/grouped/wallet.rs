@@ -69,7 +69,7 @@ async fn fetched(
 }
 
 /// The same request, from a server that may dial where the egress policy says.
-async fn asked_under(
+pub(super) async fn asked_under(
     plane: &Plane,
     egress: config::serving::Egress,
     method: Method,
@@ -687,7 +687,7 @@ async fn a_realm_pins_the_contexts_its_credentials_name() {
 }
 
 /// A PID issuer on a real socket, publishing one key in its JWT VC metadata.
-fn serve_pid_issuer(key: Value) -> String {
+pub(super) fn serve_pid_issuer(key: Value) -> String {
     use actix_web::{App, HttpResponse, HttpServer, web};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
     let base = format!(
@@ -727,7 +727,7 @@ pub(super) struct Wallet {
 }
 
 impl Wallet {
-    fn new(issuer: String, issuer_key: crypto::jose::jwk::alg::ed::EdKeyPair) -> Self {
+    pub(super) fn new(issuer: String, issuer_key: crypto::jose::jwk::alg::ed::EdKeyPair) -> Self {
         Self {
             issuer,
             issuer_key,
@@ -1415,8 +1415,8 @@ async fn an_answer_that_does_not_hold_settles_its_request_once() {
 }
 
 /// The type the scripted issuer's identity credentials hold, expanded.
-const IDENTITY_TYPE: &str = "https://issuer.example/vocab#IdentityCredential";
-const CREDENTIAL_TYPE: &str = "https://www.w3.org/2018/credentials#VerifiableCredential";
+pub(super) const IDENTITY_TYPE: &str = "https://issuer.example/vocab#IdentityCredential";
+pub(super) const CREDENTIAL_TYPE: &str = "https://www.w3.org/2018/credentials#VerifiableCredential";
 
 /// The context the identity credentials name: their type and claims MOSIP's
 /// identity credentials hold; two claims written to one property, as issuers'
@@ -1499,14 +1499,14 @@ fn serve_identity_issuer(keys: Vec<(&'static str, Value)>) -> String {
 /// wallets do: the credential alone in a presentation, signed with a detached
 /// JWS by the `did:jwk` key the credential binds, for one request.
 #[derive(Clone)]
-struct IdentityWallet {
+pub(super) struct IdentityWallet {
     base: String,
     issuer_key: crypto::jose::jwk::alg::ed::EdKeyPair,
     holder_key: crypto::jose::jwk::alg::ec::EcKeyPair,
 }
 
 impl IdentityWallet {
-    fn issuer(&self) -> String {
+    pub(super) fn issuer(&self) -> String {
         format!("{}/identity", self.base)
     }
 
@@ -1609,7 +1609,7 @@ impl IdentityWallet {
         self.issued_as(|credential, _| change(credential))
     }
 
-    fn issued(&self) -> Value {
+    pub(super) fn issued(&self) -> Value {
         self.issued_with(|_| {})
     }
 
@@ -1669,7 +1669,7 @@ impl IdentityWallet {
         presentation
     }
 
-    fn presented(&self, credential: Value, client_id: &str, nonce: &str) -> Value {
+    pub(super) fn presented(&self, credential: Value, client_id: &str, nonce: &str) -> Value {
         self.presented_as(vec![credential], client_id, nonce, |_, _| {})
     }
 }
@@ -1678,7 +1678,7 @@ impl IdentityWallet {
 /// running, an Ed25519 key, the issuer named with an Ed25519 key and an RSA
 /// one, and its context pinned. Hands back the wallet that holds that issuer's
 /// credential.
-async fn realm_ready_for_identity(plane: &Plane, bearer: &str) -> IdentityWallet {
+pub(super) async fn realm_ready_for_identity(plane: &Plane, bearer: &str) -> IdentityWallet {
     use crypto::jose::jwk::KeyPair;
     verifier_running();
     let issuer_key = crypto::jose::jwk::alg::ed::EdKeyPair::generate(crypto::jose::jwk::Ed25519)
@@ -1746,7 +1746,10 @@ fn identity_query(claims: &[&[&str]]) -> Value {
     })
 }
 
-fn identity_answer(presentation: Value, request: &serde_json::Map<String, Value>) -> Value {
+pub(super) fn identity_answer(
+    presentation: Value,
+    request: &serde_json::Map<String, Value>,
+) -> Value {
     json!({ "vp_token": { "identity": [presentation] }, "state": request["state"] })
 }
 

@@ -1,8 +1,9 @@
 use super::support;
 use super::support::Plane;
 use super::wallet::{
-    Wallet, answered, asked, encrypted, plane_that_verifies, read_request, realm_ready_to_verify,
-    served,
+    CREDENTIAL_TYPE, IDENTITY_TYPE, IdentityWallet, Wallet, answered, asked, asked_under,
+    encrypted, identity_answer, plane_that_verifies, read_request, realm_ready_for_identity,
+    realm_ready_to_verify, serve_pid_issuer, served,
 };
 use actix_web::http::{Method, StatusCode};
 use serde_json::{Value, json};
@@ -154,26 +155,54 @@ async fn read_settled(plane: &Plane, cookie: Option<&str>) -> (StatusCode, Value
     (status, told)
 }
 
+/// A wallet as these cases play one: a PID in SD-JWT, or an identity
+/// credential in JSON-LD.
+#[derive(Clone, Copy)]
+enum Holder<'a> {
+    Pid(&'a Wallet),
+    Identity(&'a IdentityWallet),
+}
+
 /// The wallet answering the request a challenge links to, disclosing the
-/// claims the realm asks for. Hands back the request's id.
-async fn present(plane: &Plane, wallet: &Wallet, asks: &Value) -> String {
+/// claims the realm asks for, and the request's id beside what the realm said.
+async fn answer_as(
+    plane: &Plane,
+    holder: Holder<'_>,
+    asks: &Value,
+) -> (String, StatusCode, String) {
     let request = read_request(plane, asks["wallet"]["uri"].as_str().expect("a link")).await;
     let client_id = request["client_id"].as_str().expect("a client_id");
     let nonce = request["nonce"].as_str().expect("a nonce");
-    let answer = json!({
-        "vp_token": {
-            "pid": [wallet.presented_disclosing(client_id, nonce, &["family_name", "given_name"])],
-        },
-        "state": request["state"],
-    });
+    let answer = match holder {
+        Holder::Pid(wallet) => json!({
+            "vp_token": {
+                "pid": [wallet.presented_disclosing(client_id, nonce, &["family_name", "given_name"])],
+            },
+            "state": request["state"],
+        }),
+        Holder::Identity(wallet) => identity_answer(
+            wallet.presented(wallet.issued(), client_id, nonce),
+            &request,
+        ),
+    };
     let (status, told) = answered(
         plane,
         &request,
         &[("response", &encrypted(&request, &answer))],
     )
     .await;
+    (
+        request["state"].as_str().expect("a state").to_owned(),
+        status,
+        told,
+    )
+}
+
+/// The same answer, taken. Hands back the request's id.
+async fn present(plane: &Plane, holder: Holder<'_>, asks: &Value) -> String {
+    let (request_id, status, told) = answer_as(plane, holder, asks).await;
     assert_eq!(status, StatusCode::OK, "{told}");
-    request["state"].as_str().expect("a state").to_owned()
+    request_id
 }
 
 /// The wallet declining the request a challenge links to.
@@ -212,9 +241,9 @@ async fn keep_profile(plane: &Plane, bearer: &str, profile: &Value) -> (StatusCo
     .await
 }
 
-/// Link the subject's PID to their account through the ceremony an
-/// application asks for, the way the page and the wallet play it.
-async fn link_by_ceremony(plane: &Plane, wallet: &Wallet) {
+/// Open the ceremony an application asks for, as far as the wallet's request:
+/// the login's cookie, and what its challenge asks.
+async fn open_linking(plane: &Plane) -> (String, Value) {
     let cookie = open_login(plane, &[("enrol", "link-wallet-identity")]).await;
     let (status, told) = play_password_round(plane, &cookie).await;
     assert_eq!(status, StatusCode::OK, "{told}");
@@ -232,12 +261,19 @@ async fn link_by_ceremony(plane: &Plane, wallet: &Wallet) {
         "{told}"
     );
     assert_shows_its_link(&told["asks"]);
+    (cookie, told["asks"].clone())
+}
+
+/// Link the subject's identity to their account through the ceremony an
+/// application asks for, the way the page and the wallet play it.
+async fn link_by_ceremony(plane: &Plane, holder: Holder<'_>) {
+    let (cookie, asks) = open_linking(plane).await;
     assert_eq!(
         read_settled(plane, Some(&cookie)).await,
         (StatusCode::OK, json!({ "settled": false }))
     );
 
-    present(plane, wallet, &told["asks"]).await;
+    present(plane, holder, &asks).await;
     assert_eq!(
         read_settled(plane, Some(&cookie)).await,
         (StatusCode::OK, json!({ "settled": true }))
@@ -354,7 +390,7 @@ async fn a_person_links_their_wallet_identity_then_signs_in_with_it() {
     let (status, read) = asked(&plane, Method::GET, &profile_door, &bearer, None).await;
     assert_eq!((status, &read), (StatusCode::OK, &kept));
 
-    link_by_ceremony(&plane, &wallet).await;
+    link_by_ceremony(&plane, Holder::Pid(&wallet)).await;
     let transaction = plane
         .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
@@ -426,7 +462,7 @@ async fn a_person_links_their_wallet_identity_then_signs_in_with_it() {
     );
     assert_shows_its_link(&told["asks"]);
     assert_eq!(told["asks"].get("refused"), None, "{told}");
-    let request_id = present(&plane, &wallet, &told["asks"]).await;
+    let request_id = present(&plane, Holder::Pid(&wallet), &told["asks"]).await;
     let (status, told) = asked(
         &plane,
         Method::GET,
@@ -458,6 +494,25 @@ async fn a_person_links_their_wallet_identity_then_signs_in_with_it() {
         (StatusCode::OK, &json!("admitted")),
         "{told}"
     );
+    // What each request was asked for: the link once, then the factor at
+    // each of the two sign ins, the one without a script included.
+    let transaction = plane
+        .scoped(&TenantContext::new(support::TENANT, REALM))
+        .await;
+    let asked_for: Vec<(String, i64)> = transaction
+        .query(
+            "SELECT purpose, count(*) FROM presentation_requests GROUP BY purpose ORDER BY purpose",
+            &[],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    assert_eq!(
+        asked_for,
+        [("factor".to_owned(), 2), ("link".to_owned(), 1)]
+    );
 }
 
 /// A wallet that declines is asked again, saying so, and a wallet proving
@@ -469,7 +524,7 @@ async fn a_wallet_step_asks_again_after_a_refusal_and_refuses_another_identity()
     let wallet = realm_ready_to_verify(&plane, &bearer).await;
     let (status, told) = keep_profile(&plane, &bearer, &identity_profile(&wallet)).await;
     assert_eq!(status, StatusCode::OK, "{told}");
-    link_by_ceremony(&plane, &wallet).await;
+    link_by_ceremony(&plane, Holder::Pid(&wallet)).await;
     bind_wallet_flow(&plane).await;
 
     let cookie = open_login(&plane, &[]).await;
@@ -494,7 +549,7 @@ async fn a_wallet_step_asks_again_after_a_refusal_and_refuses_another_identity()
     );
 
     let somebody_else = wallet.holding_pid_of("Byron");
-    present(&plane, &somebody_else, &again["asks"]).await;
+    present(&plane, Holder::Pid(&somebody_else), &again["asks"]).await;
     let (status, told) = play_password_round(&plane, &cookie).await;
     assert_eq!(
         (status, &told["status"]),
@@ -547,5 +602,161 @@ async fn a_profile_names_what_can_identify_somebody() {
         status,
         StatusCode::NOT_FOUND,
         "a refused profile was kept: {told}"
+    );
+}
+
+async fn read_linked_issuers(plane: &Plane) -> Vec<String> {
+    let transaction = plane
+        .scoped(&TenantContext::new(support::TENANT, REALM))
+        .await;
+    store::providers::directory::wallet_identities::of_user(&transaction, support::SUBJECT)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|linked| linked.issuer)
+        .collect()
+}
+
+/// A credential from an issuer the realm names, and not the one it knows
+/// people by, proves nobody: the ceremony asks again, saying the wallet
+/// proved nothing, the request keeps why, and nothing is linked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_credential_from_another_named_issuer_links_nobody() {
+    use crypto::jose::jwk::KeyPair;
+    let (plane, bearer) = plane_that_verifies().await;
+    let wallet = realm_ready_to_verify(&plane, &bearer).await;
+    let (status, told) = keep_profile(&plane, &bearer, &identity_profile(&wallet)).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let other_key = crypto::jose::jwk::alg::ed::EdKeyPair::generate(crypto::jose::jwk::Ed25519)
+        .expect("an issuer key");
+    let mut public = other_key.to_jwk_public_key();
+    public.set_key_id("pid-2026");
+    let other = serve_pid_issuer(Value::Object(public.as_ref().clone()));
+    let (status, told) = asked_under(
+        &plane,
+        config::serving::Egress::Anywhere,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/credential-issuers"),
+        &bearer,
+        Some(json!({ "name": "Another PID", "issuer": format!("{other}/pid") })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+    let elsewhere = Wallet::new(other, other_key);
+
+    let (cookie, asks) = open_linking(&plane).await;
+    let (_, status, told) = answer_as(&plane, Holder::Pid(&elsewhere), &asks).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&told).expect("a JSON refusal")["error_description"],
+        "a credential's issuer is not the one the realm knows people by"
+    );
+    let (status, told) = play_password_round(&plane, &cookie).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(
+        (&told["execution"], &told["asks"]["refused"]),
+        (&json!("link-wallet-identity"), &json!(true)),
+        "{told}"
+    );
+    assert_eq!(read_linked_issuers(&plane).await, Vec::<String>::new());
+    let transaction = plane
+        .scoped(&TenantContext::new(support::TENANT, REALM))
+        .await;
+    let outcome: Value = transaction
+        .query_one(
+            "SELECT outcome FROM presentation_requests WHERE status = 'failed'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        outcome,
+        json!({ "reason": "a credential's issuer is not the one the realm knows people by" })
+    );
+}
+
+/// A realm that keeps no profile, or that closed the verifier, asks no wallet
+/// and links nothing: the ceremony an application asks for passes, and the
+/// login goes on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_realm_not_knowing_people_by_a_wallet_links_nothing() {
+    let (plane, bearer) = plane_that_verifies().await;
+    let wallet = realm_ready_to_verify(&plane, &bearer).await;
+    let cookie = open_login(&plane, &[("enrol", "link-wallet-identity")]).await;
+    let (status, told) = play_password_round(&plane, &cookie).await;
+    assert_eq!(
+        (status, &told["status"]),
+        (StatusCode::OK, &json!("admitted")),
+        "a realm keeping no profile asked a wallet: {told}"
+    );
+
+    let (status, told) = keep_profile(&plane, &bearer, &identity_profile(&wallet)).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let transaction = plane
+        .scoped(&TenantContext::new(support::TENANT, REALM))
+        .await;
+    store::providers::realms::realm_features::keep_wish(
+        &transaction,
+        "wallet-verifier",
+        false,
+        "root",
+    )
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+    let cookie = open_login(&plane, &[("enrol", "link-wallet-identity")]).await;
+    let (status, told) = play_password_round(&plane, &cookie).await;
+    assert_eq!(
+        (status, &told["status"]),
+        (StatusCode::OK, &json!("admitted")),
+        "a realm that closed the verifier asked a wallet: {told}"
+    );
+    let transaction = plane
+        .scoped(&TenantContext::new(support::TENANT, REALM))
+        .await;
+    let asked: i64 = transaction
+        .query_one("SELECT count(*) FROM presentation_requests", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(asked, 0, "a wallet was asked");
+    assert_eq!(read_linked_issuers(&plane).await, Vec::<String>::new());
+}
+
+/// A JSON-LD credential identifies somebody the same way: the identifier read
+/// from what its issuer signed, linked, then proved at the sign in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_json_ld_credential_links_and_proves_an_identity() {
+    let (plane, bearer) = plane_that_verifies().await;
+    let wallet = realm_ready_for_identity(&plane, &bearer).await;
+    let profile = json!({
+        "credential_query": {
+            "id": "identity",
+            "format": "ldp_vc",
+            "meta": { "type_values": [[CREDENTIAL_TYPE, IDENTITY_TYPE]] },
+            "claims": [{ "path": ["credentialSubject", "fullName"] }]
+        },
+        "issuer": wallet.issuer(),
+        "identifier_path": ["credentialSubject", "fullName"],
+    });
+    let (status, told) = keep_profile(&plane, &bearer, &profile).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    link_by_ceremony(&plane, Holder::Identity(&wallet)).await;
+    assert_eq!(read_linked_issuers(&plane).await, [wallet.issuer()]);
+
+    bind_wallet_flow(&plane).await;
+    let cookie = open_login(&plane, &[]).await;
+    let (_, told) = play_password_round(&plane, &cookie).await;
+    assert_eq!(told["execution"], "exec-wallet-2", "{told}");
+    present(&plane, Holder::Identity(&wallet), &told["asks"]).await;
+    let (status, told) = play_password_round(&plane, &cookie).await;
+    assert_eq!(
+        (status, &told["status"]),
+        (StatusCode::OK, &json!("admitted")),
+        "{told}"
     );
 }

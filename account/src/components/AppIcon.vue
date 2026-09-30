@@ -13,6 +13,7 @@ import {
   ShieldCheck,
   Smartphone,
   UserRound,
+  Wallet,
   type LucideProps,
 } from "lucide-vue-next";
 import type { FunctionalComponent } from "vue";
@@ -31,6 +32,7 @@ const GLYPHS: Record<string, FunctionalComponent<LucideProps>> = {
   security: ShieldCheck,
   app: Smartphone,
   key: KeyRound,
+  wallet: Wallet,
   add: Plus,
   application: AppWindow,
   visit: ExternalLink,

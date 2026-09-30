@@ -945,6 +945,15 @@ pub(super) fn encrypted(request: &serde_json::Map<String, Value>, answer: &Value
 /// Set a realm up to verify: the verifier running, an Ed25519 key, and a PID
 /// issuer named. Hands back the wallet that holds that issuer's credential.
 pub(super) async fn realm_ready_to_verify(plane: &Plane, bearer: &str) -> Wallet {
+    let wallet = name_pid_issuer(plane, bearer).await;
+    mint_request_key(plane, bearer).await;
+    wallet
+}
+
+/// The verifier running and a PID issuer named, the realm holding no key to
+/// sign a request with yet. Hands back the wallet that holds that issuer's
+/// credential.
+pub(super) async fn name_pid_issuer(plane: &Plane, bearer: &str) -> Wallet {
     use crypto::jose::jwk::KeyPair;
     verifier_running();
     let issuer_key = crypto::jose::jwk::alg::ed::EdKeyPair::generate(crypto::jose::jwk::Ed25519)
@@ -962,6 +971,11 @@ pub(super) async fn realm_ready_to_verify(plane: &Plane, bearer: &str) -> Wallet
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{told}");
+    Wallet::new(base, issuer_key)
+}
+
+/// The Ed25519 key the realm signs its requests with.
+pub(super) async fn mint_request_key(plane: &Plane, bearer: &str) {
     let (status, told) = asked(
         plane,
         Method::POST,
@@ -971,7 +985,6 @@ pub(super) async fn realm_ready_to_verify(plane: &Plane, bearer: &str) -> Wallet
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{told}");
-    Wallet::new(base, issuer_key)
 }
 
 fn pid_query() -> Value {
@@ -1722,15 +1735,7 @@ pub(super) async fn realm_ready_for_identity(plane: &Plane, bearer: &str) -> Ide
         .await;
         assert_eq!(status, StatusCode::CREATED, "{told}");
     }
-    let (status, told) = asked(
-        plane,
-        Method::POST,
-        &format!("/admin/realms/{REALM}/keys"),
-        bearer,
-        Some(json!({ "algorithm": "EdDSA" })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "{told}");
+    mint_request_key(plane, bearer).await;
     wallet
 }
 

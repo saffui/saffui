@@ -11,7 +11,7 @@ use store::providers::realms::wallet_identity;
 pub use store::providers::realms::wallet_identity::WalletIdentity;
 use store::tenancy::UnitOfWork;
 
-use crate::verifier::presentation::{Unaskable, check_query};
+use crate::verifier::presentation::{Unaskable, check_query, find_request_key};
 
 /// How long the key an identity is digested under is, in bytes.
 const DIGEST_KEY_BYTES: usize = 32;
@@ -27,6 +27,8 @@ pub enum Unsettable {
     UnknownIssuer(String),
     #[error("the identifier is one of the claims the credential is asked for, by its path")]
     NotAClaimAsked,
+    #[error("{}", Unaskable::NoSigningKey)]
+    NoSigningKey,
     #[error("the profile could not be read or written")]
     Unwritable,
 }
@@ -48,8 +50,9 @@ pub async fn read(transaction: &UnitOfWork) -> Result<WalletIdentity, Unsettable
 /// Keep how the realm knows people. The credential is one this verifier can
 /// check, the issuer one the realm names, and the identifier a claim the
 /// credential is asked for: a claim left out of the query is one a wallet
-/// never discloses. The key identities are digested under is drawn the first
-/// time and kept through every rewrite.
+/// never discloses. The realm holds the key its requests are signed with, or
+/// every login asking for an identity would be refused. The key identities are
+/// digested under is drawn the first time and kept through every rewrite.
 pub async fn write(
     transaction: &UnitOfWork,
     signing: &Signing<'_>,
@@ -81,6 +84,12 @@ pub async fn write(
     if !asked_for {
         return Err(Unsettable::NotAClaimAsked);
     }
+    find_request_key(transaction, signing)
+        .await
+        .map_err(|why| match why {
+            Unaskable::NoSigningKey => Unsettable::NoSigningKey,
+            _ => Unsettable::Unwritable,
+        })?;
 
     let profile = compose_profile(wanted, issuer, by, now);
     let drawn = draw_digest_key(signing.provider)?;

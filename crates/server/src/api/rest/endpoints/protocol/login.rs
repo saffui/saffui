@@ -650,11 +650,11 @@ async fn finish(
                             }
                             answer.json(body)
                         }
-                        // A key needs the script; a code needs only the
-                        // field, in the panel of the step that sent it and
-                        // in the words of the way it went; a link followed
-                        // in the wrong browser needs to be told so rather
-                        // than shown either.
+                        // A key and a wallet need the script; a code needs
+                        // only the field, in the panel of the step that sent
+                        // it and in the words of the way it went; a link
+                        // followed in the wrong browser needs to be told so
+                        // rather than shown either.
                         Spoken::Form => shown(
                             page,
                             match &asks {
@@ -676,6 +676,7 @@ async fn finish(
                                     }
                                 }
                                 Some(asks) if asks.get("ask_phone").is_some() => "phone",
+                                Some(asks) if asks.get("wallet").is_some() => "wallet-needs-script",
                                 Some(_) => "key-needs-script",
                                 None => "code",
                             },

@@ -921,3 +921,130 @@ test("a phone's code gone over WhatsApp is told so, and the text offered", async
   await page.press("phone-code-by-sms");
   assert.equal(page.sent[1].body.code_channel, "sms");
 });
+
+const WALLET_LINK = "openid4vp://authorize?client_id=x&request_uri=y";
+const STANDING = "/realms/main/protocol/openid-connect/login/wallet";
+
+// A round replays every step, a password's hash among them, so a wallet is
+// never waited on by rounds: the page looks at a door that says settled or
+// not, and plays one round once it is, carrying everything already answered.
+test("a wallet is waited on at its own door, then one round carries the answers", async () => {
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg"></svg>';
+  const page = opened({
+    rounds: [
+      {
+        told: {
+          status: "challenge",
+          execution: "exec-wallet",
+          asks: { wallet: { uri: WALLET_LINK, qr: svg } },
+        },
+      },
+      { told: { settled: false } },
+      { told: { settled: true } },
+      { told: { status: "admitted", redirect_to: "https://app.example/cb?code=abc" } },
+    ],
+  });
+  await page.signIn();
+
+  assert.equal(page.element("wallet").hidden, false);
+  assert.equal(page.element("credentials").hidden, true);
+  assert.equal(page.element("wallet-qr").hidden, false);
+  assert.equal(page.element("wallet-qr-frame").hidden, false);
+  assert.equal(page.element("wallet-qr").src, "data:image/svg+xml;utf8," + encodeURIComponent(svg));
+  assert.equal(page.element("wallet-open").href, WALLET_LINK);
+  assert.equal(page.element("wallet-lede").hidden, false);
+  assert.equal(page.element("wallet-link-lede").hidden, true);
+  assert.equal(page.element("continue").hidden, true, "a button offered with nothing to send");
+  assert.equal(page.element("enroll-later").hidden, true, "a factor the flow requires offered a way out");
+  assert.equal(page.sent.length, 1, "the page looked before any time passed");
+
+  await page.pass();
+  assert.deepEqual(page.sent[1], { where: STANDING, body: undefined });
+  assert.equal(page.sent.length, 2, "an open request played a round");
+  await page.pass();
+  assert.deepEqual(page.sent[2], { where: STANDING, body: undefined });
+  assert.deepEqual(page.sent[3], {
+    where: "/realms/main/protocol/openid-connect/login",
+    body: { username: "ada", password: "a-password" },
+  });
+  assert.deepEqual(page.went, ["https://app.example/cb?code=abc"]);
+});
+
+test("a wallet linked at the application's asking says so and can be declined", async () => {
+  const page = opened({
+    rounds: [
+      {
+        told: {
+          status: "challenge",
+          execution: "link-wallet-identity",
+          asks: { wallet: { uri: WALLET_LINK, qr: "" }, optional: true },
+        },
+      },
+      { told: { status: "admitted", redirect_to: "https://app.example/cb?code=abc" } },
+    ],
+  });
+  await page.signIn();
+
+  assert.equal(page.element("wallet-link-lede").hidden, false);
+  assert.equal(page.element("wallet-lede").hidden, true);
+  assert.equal(page.element("wallet-qr").hidden, true, "an empty drawing was shown");
+  assert.equal(page.element("wallet-qr-frame").hidden, true, "an empty frame was shown");
+  assert.equal(page.element("enroll-later").hidden, false, "an asked factor offers no way out");
+
+  await page.press("enroll-later");
+  assert.equal(page.sent[1].body.enrolment_declined, true);
+  assert.deepEqual(page.went, ["https://app.example/cb?code=abc"]);
+  await page.pass();
+  assert.equal(page.sent.length, 2, "a wait outlived the round that ended it");
+});
+
+test("what stood in the way of a wallet's answer is said in the page's words", async () => {
+  for (const [flag, said] of [
+    ["refused", "Your wallet shared nothing that proves who you are. Try again."],
+    ["held_elsewhere", "This identity is already linked to another account here."],
+    [
+      "issuer_linked",
+      "This account already holds an identity from this issuer. Unlink it from your account first.",
+    ],
+  ]) {
+    const page = opened({
+      rounds: [
+        {
+          told: {
+            status: "challenge",
+            execution: "link-wallet-identity",
+            asks: { wallet: { uri: WALLET_LINK, qr: "" }, [flag]: true },
+          },
+        },
+      ],
+    });
+    await page.signIn();
+    assert.equal(page.element("notice").textContent, said, flag);
+    assert.equal(page.element("notice").hidden, false, flag);
+  }
+});
+
+test("a login gone while a wallet was waited on is told by the round that follows", async () => {
+  const page = opened({
+    rounds: [
+      {
+        told: {
+          status: "challenge",
+          execution: "exec-wallet",
+          asks: { wallet: { uri: WALLET_LINK, qr: "" } },
+        },
+      },
+      { status: 404, told: { status: "no-such-login" } },
+      { status: 404, told: { status: "no-such-login" } },
+    ],
+  });
+  await page.signIn();
+  await page.pass();
+
+  assert.deepEqual(page.sent[1], { where: STANDING, body: undefined });
+  assert.equal(page.sent[2].where, "/realms/main/protocol/openid-connect/login");
+  assert.equal(
+    page.element("notice").textContent,
+    "This sign-in has expired or was never started. Go back to the application and try again.",
+  );
+});

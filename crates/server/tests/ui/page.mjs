@@ -154,6 +154,8 @@ export function opened({ rounds = [], fetching = true, doors = "", policy = [] }
   const answers = [...rounds];
   /// What the page handed the browser's key ceremony, in order.
   const ceremonies = [];
+  /// The waits the script set, run only when a test lets the time pass.
+  const waits = [];
   const context = {
     document: {
       getElementById: element,
@@ -188,10 +190,18 @@ export function opened({ rounds = [], fetching = true, doors = "", policy = [] }
     },
     JSON,
     Promise,
+    Object,
     console,
+    setTimeout: (run) => {
+      waits.push(run);
+      return waits.length;
+    },
     fetch: fetching
       ? (where, options) => {
-          sent.push({ where, body: JSON.parse(options.body) });
+          sent.push({
+            where,
+            body: options.body === undefined ? undefined : JSON.parse(options.body),
+          });
           const answer = answers.shift() || { status: 500, told: {} };
           return Promise.resolve({
             status: answer.status ?? 200,
@@ -222,6 +232,11 @@ export function opened({ rounds = [], fetching = true, doors = "", policy = [] }
     },
     async press(id) {
       element(id).fire("click");
+      await settle();
+    },
+    /// Let the time the script is waiting out pass: every wait it set runs.
+    async pass() {
+      waits.splice(0).forEach((run) => run());
       await settle();
     },
     form,

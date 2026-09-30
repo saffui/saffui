@@ -183,6 +183,18 @@ phone-ask = Votre realm vous demande de prouver un numéro de téléphone. Saisi
 phone-bad = Cela ne ressemble pas à un numéro international. Il commence par + et l'indicatif du pays.
 phone-number = Numéro de téléphone
 
+## Une attestation que présente le portefeuille de la personne.
+wallet-title = Votre portefeuille d'identité
+wallet-lede = Partagez l'attestation que détient votre portefeuille pour prouver que c'est vous.
+wallet-link-lede = Liez à ce compte l'identité que détient votre portefeuille, et connectez-vous avec la prochaine fois.
+wallet-scan = Scannez ce code avec le portefeuille de votre téléphone, ou ouvrez le portefeuille sur cet appareil.
+wallet-open = Ouvrir dans mon portefeuille
+wallet-waiting = En attente de la réponse de votre portefeuille.
+wallet-refused = Votre portefeuille n'a rien partagé qui prouve qui vous êtes. Réessayez.
+wallet-held-elsewhere = Cette identité est déjà liée à un autre compte ici.
+wallet-issuer-linked = Ce compte détient déjà une identité de cet émetteur. Déliez-la d'abord depuis votre compte.
+flash-wallet-needs-script = Un portefeuille demande que les scripts soient activés sur cette page.
+
 ## La page qu'ouvre un lien de réinitialisation.
 reset-title = Choisir un nouveau mot de passe
 reset-password = Nouveau mot de passe

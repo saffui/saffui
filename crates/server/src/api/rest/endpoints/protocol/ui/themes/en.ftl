@@ -183,6 +183,18 @@ phone-ask = Your realm asks you to prove a phone number. Enter it in internation
 phone-bad = That does not look like an international number. It starts with + and the country code.
 phone-number = Phone number
 
+## A credential the person's wallet presents.
+wallet-title = Your identity wallet
+wallet-lede = Share the credential your wallet holds to prove it is you.
+wallet-link-lede = Link the identity your wallet holds to this account, and sign in with it next time.
+wallet-scan = Scan this code with the wallet on your phone, or open the wallet on this device.
+wallet-open = Open in my wallet
+wallet-waiting = Waiting for your wallet to answer.
+wallet-refused = Your wallet shared nothing that proves who you are. Try again.
+wallet-held-elsewhere = This identity is already linked to another account here.
+wallet-issuer-linked = This account already holds an identity from this issuer. Unlink it from your account first.
+flash-wallet-needs-script = A wallet needs scripts enabled on this page.
+
 ## The page a reset link opens.
 reset-title = Set a new password
 reset-password = New password

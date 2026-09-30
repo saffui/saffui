@@ -109,6 +109,38 @@ async fn play_password_round(plane: &Plane, cookie: &str) -> (StatusCode, Value)
     (status, told)
 }
 
+/// The same round, posted by a browser running no script: a form carrying
+/// what the page was served with.
+async fn play_password_round_as_a_form(plane: &Plane, cookie: &str) -> (StatusCode, String) {
+    use actix_web::{App, test};
+    use server::api::config::register;
+    let minted = support::page_token_for(plane, cookie).await;
+    let app = test::init_service(
+        App::new().configure(register(&served(plane, config::serving::Egress::Outward))),
+    )
+    .await;
+    let request = test::TestRequest::post()
+        .uri(&format!("/realms/{REALM}/protocol/openid-connect/login"))
+        .insert_header((
+            "cookie",
+            format!("{}={cookie}", support::AUTH_SESSION_COOKIE),
+        ))
+        .set_form([
+            ("username", support::SUBJECT),
+            ("password", support::PASSWORD),
+            ("page_token", minted.as_str()),
+        ])
+        .to_request();
+    let response = test::call_service(&app, request).await;
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|held| held.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    (response.status(), location)
+}
+
 /// Whether the presentation the login waits on is settled, as the page asks.
 async fn read_settled(plane: &Plane, cookie: Option<&str>) -> (StatusCode, Value) {
     let (status, told, _) = browsed(
@@ -330,6 +362,14 @@ async fn a_person_links_their_wallet_identity_then_signs_in_with_it() {
     assert_eq!(status, StatusCode::OK, "{told}");
 
     bind_wallet_flow(&plane).await;
+    let scriptless = open_login(&plane, &[]).await;
+    let (status, location) = play_password_round_as_a_form(&plane, &scriptless).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert!(
+        location.ends_with("#wallet-needs-script"),
+        "a browser running no script was sent elsewhere: {location}"
+    );
+
     let cookie = open_login(&plane, &[]).await;
     assert_eq!(
         read_settled(&plane, Some(&cookie)).await,

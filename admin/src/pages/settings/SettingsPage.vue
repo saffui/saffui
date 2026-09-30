@@ -7,6 +7,7 @@ import PageTabs from "@/components/PageTabs.vue";
 import AppIcon from "@/components/AppIcon.vue";
 import DangerDialog from "@/components/DangerDialog.vue";
 import PresentationRequestCard from "./PresentationRequestCard.vue";
+import WalletIdentityCard from "./WalletIdentityCard.vue";
 import AppToggle from "@/components/AppToggle.vue";
 import { useRouter } from "vue-router";
 import {
@@ -813,6 +814,7 @@ const NOTICE_KINDS = [
   "recovery-code-used",
   "address-changed",
   "provider-linked",
+  "provider-unlinked",
 ] as const;
 const templates = ref<Record<string, Record<string, MailTemplate>>>({});
 const templateKind = ref<string>("magic_link");
@@ -3122,6 +3124,12 @@ async function saveSmsTemplate() {
               </button>
             </form>
           </div>
+
+          <WalletIdentityCard
+            :realm="realm"
+            :running="credentialIssuers?.running ?? null"
+            :issuers="credentialIssuers?.items ?? []"
+          />
 
           <PresentationRequestCard :realm="realm" :running="credentialIssuers?.running ?? null" />
         </div>

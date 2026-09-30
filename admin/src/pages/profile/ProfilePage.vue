@@ -10,6 +10,7 @@ import {
   removeOwnApp,
   removeOwnKey,
   removeOwnRecoveryCodes,
+  unlinkOwnWalletIdentity,
   type OwnFactors,
 } from "@/services/account";
 import { ApiError } from "@/services/http";
@@ -303,6 +304,32 @@ async function changePassword() {
             {{ say("profile-factor-remove") }}
           </button>
         </div>
+        <div
+          v-for="identity in factors.wallet_identities"
+          :key="identity.id"
+          class="flex items-center gap-3 px-4 py-2.5"
+        >
+          <span class="flex-1">
+            <strong class="font-medium">{{ say("profile-factor-wallet") }}</strong>
+            <span class="ml-2 font-mono text-muted">{{ identity.issuer }}</span>
+            <span class="ml-2 text-muted">
+              {{ say("profile-factor-linked", { when: when(identity.linked_at) }) }}
+            </span>
+          </span>
+          <AppHint v-if="identity.kept_because" :text="identity.kept_because" />
+          <button
+            type="button"
+            class="sf-button"
+            :disabled="previewing || identity.kept_because !== null"
+            @click="
+              removeFactor(say('profile-factor-wallet-named', { issuer: identity.issuer }), () =>
+                unlinkOwnWalletIdentity(realm, identity.id),
+              )
+            "
+          >
+            {{ say("profile-factor-unlink") }}
+          </button>
+        </div>
         <div v-if="factors.recovery_codes > 0" class="flex items-center gap-3 px-4 py-2.5">
           <span class="flex-1">
             <strong class="font-medium">
@@ -318,7 +345,10 @@ async function changePassword() {
             {{ say("profile-factor-remove") }}
           </button>
         </div>
-        <p v-if="!factors.apps.length && !factors.keys.length" class="px-4 py-3 text-muted">
+        <p
+          v-if="!factors.apps.length && !factors.keys.length && !factors.wallet_identities.length"
+          class="px-4 py-3 text-muted"
+        >
           {{ say("profile-factors-none") }}
         </p>
       </div>

@@ -38,11 +38,24 @@ export interface OwnKey {
   kept_because: string | null;
 }
 
+/// An identity the person linked from a wallet, named by the issuer that
+/// vouched for it: the identifier itself is never kept.
+export interface OwnWalletIdentity {
+  /// The issuer in base64url, as the unlinking door names it.
+  id: string;
+  issuer: string;
+  linked_at: string;
+  kept_because: string | null;
+}
+
 export interface OwnFactors {
   password: boolean;
   apps: OwnApp[];
   keys: OwnKey[];
   recovery_codes: number;
+  wallet_identities: OwnWalletIdentity[];
+  /// Whether the realm knows people by a wallet credential, so one can be linked.
+  wallet_offered: boolean;
   /// Until when, in epoch seconds, the sign-in behind this page may remove a factor.
   fresh_until: number | null;
   /// Whether that sign-in is recent but weaker than the flow lets this person sign in.
@@ -62,6 +75,13 @@ export async function removeOwnApp(realm: string, id: string): Promise<void> {
 
 export async function removeOwnKey(realm: string, id: string): Promise<void> {
   await api<void>(adminPath(realm, `account/keys/${encodeURIComponent(id)}`), {
+    method: "DELETE",
+    subject: say("subject-own-factor"),
+  });
+}
+
+export async function unlinkOwnWalletIdentity(realm: string, id: string): Promise<void> {
+  await api<void>(adminPath(realm, `account/wallet-identities/${encodeURIComponent(id)}`), {
     method: "DELETE",
     subject: say("subject-own-factor"),
   });

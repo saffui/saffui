@@ -34,6 +34,7 @@ const CATALOGUE = [
     provider: "recovery-code",
     title: "Draw recovery codes",
   },
+  { action: "link-wallet-identity", provider: "wallet", title: "Link a wallet identity" },
 ] as const;
 
 async function load() {

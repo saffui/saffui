@@ -1,10 +1,11 @@
 use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, HttpResponseBuilder, web};
-use config::serving::PublicOrigin;
+use config::serving::{LoginUi, PublicOrigin};
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
 use crate::api::rest::endpoints::protocol::dto::{answer_unavailable, uncached};
+use crate::api::rest::endpoints::protocol::page;
 
 /// The realm's DID document, where a wallet finds the key that signs the
 /// realm's presentation requests.
@@ -106,12 +107,15 @@ pub struct PostedAnswer {
 
 /// Where every answer to the realm's presentation requests arrives. The answer
 /// settles its request, once; what it came to is the asker's to read, and the
-/// wallet is told only whether it was taken.
+/// wallet is told only whether it was taken. A sign-in's wallet is told where
+/// to bring the person back, carrying a code in the fragment, which no server
+/// on the way reads and no log keeps.
 pub async fn response(
     realm: web::Path<String>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<outbound::Sealing>,
     origin: web::Data<PublicOrigin>,
+    login_ui: web::Data<LoginUi>,
     posted: web::Form<PostedAnswer>,
 ) -> HttpResponse {
     use services::verifier::presentation::{Answer, Settled, Unanswerable, settle_answer};
@@ -167,12 +171,25 @@ pub async fn response(
             if transaction.commit().await.is_err() {
                 return refused(StatusCode::INTERNAL_SERVER_ERROR);
             }
-            match settled {
-                Settled::Verified | Settled::Refused => {
+            match (settled.settled, settled.response_code) {
+                (Settled::Failed(why), _) => wallet_error(why),
+                (_, Some(code)) => {
+                    // Back to the page the login is answered on, as the
+                    // authorization request sent the browser there.
+                    let answering = login_ui
+                        .answering()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| page::location(&origin, &realm));
+                    uncached(&mut HttpResponseBuilder::new(StatusCode::OK)).json(
+                        serde_json::json!({
+                            "redirect_uri": format!("{answering}#response_code={code}"),
+                        }),
+                    )
+                }
+                (Settled::Verified | Settled::Refused, None) => {
                     uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
                         .json(serde_json::json!({}))
                 }
-                Settled::Failed(why) => wallet_error(why),
             }
         }
         Err(Unanswerable::Unknown) => wallet_error("no request is waiting for this answer"),

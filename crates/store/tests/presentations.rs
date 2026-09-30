@@ -84,12 +84,12 @@ async fn a_request_is_settled_once_inside_its_window() {
 
     let outcome = json!({ "credentials": [] });
     assert!(
-        presentations::settle(&transaction, "r1", "verified", &outcome, &now)
+        presentations::settle(&transaction, "r1", "verified", &outcome, None, &now)
             .await
             .unwrap()
     );
     assert!(
-        !presentations::settle(&transaction, "r1", "failed", &json!({}), &now)
+        !presentations::settle(&transaction, "r1", "failed", &json!({}), None, &now)
             .await
             .unwrap()
     );
@@ -163,7 +163,7 @@ async fn a_request_asked_for_a_login_is_read_by_that_login_alone() {
     for_login.for_login = Some(presentations::ForLogin {
         purpose: "factor",
         login_session: "login-1",
-        user_id: "u-1",
+        user_id: Some("u-1"),
     });
     presentations::keep(&transaction, &for_login).await.unwrap();
     presentations::keep(&transaction, &kept("r-admin", "k-admin", &query, closes))
@@ -211,12 +211,155 @@ async fn a_request_asked_for_a_login_is_read_by_that_login_alone() {
 
     let mut unbound = kept("r-half", "k-half", &query, closes);
     unbound.for_login = Some(presentations::ForLogin {
-        purpose: "sign-in",
+        purpose: "identify",
         login_session: "login-1",
-        user_id: "u-1",
+        user_id: Some("u-1"),
     });
     assert!(
         presentations::keep(&transaction, &unbound).await.is_err(),
         "a purpose the schema does not know was kept"
     );
+}
+
+/// A sign-in names nobody: its answer is what names the person. The code its
+/// answer was handed is kept as a digest and spent once, by the login that
+/// asked, while the request lasts.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_sign_in_names_nobody_and_its_code_is_spent_once_by_its_login() {
+    let fixture = Fixture::with_user_and_client().await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
+    let now = DateTime::from_timestamp(Utc::now().timestamp(), 0).expect("a time");
+    let closes = now + Duration::seconds(300);
+    let query = json!({ "credentials": [{ "id": "identity" }] });
+    let mut sign_in = kept("r-sign-in", "k-sign-in", &query, closes);
+    sign_in.for_login = Some(presentations::ForLogin {
+        purpose: "sign-in",
+        login_session: "login-1",
+        user_id: None,
+    });
+    presentations::keep(&transaction, &sign_in).await.unwrap();
+
+    let code = "a".repeat(64);
+    let other = "b".repeat(64);
+    let redeemed = |login: &'static str, presented: &str, at: DateTime<Utc>| {
+        let transaction = &transaction;
+        let presented = presented.to_owned();
+        async move {
+            presentations::redeem(transaction, "r-sign-in", login, &presented, &at)
+                .await
+                .unwrap()
+                .map(|standing| standing.request_id)
+        }
+    };
+    assert_eq!(
+        redeemed("login-1", &code, now).await,
+        None,
+        "a code was spent before any answer"
+    );
+    let outcome =
+        json!({ "identity": { "issuer": "did:web:id.example", "digest": "c".repeat(64) } });
+    assert!(
+        presentations::settle(
+            &transaction,
+            "r-sign-in",
+            "verified",
+            &outcome,
+            Some(&code),
+            &now
+        )
+        .await
+        .unwrap()
+    );
+    for (login, presented, at) in [
+        ("login-2", &code, now),
+        ("login-1", &other, now),
+        ("login-1", &code, closes),
+    ] {
+        assert_eq!(
+            redeemed(login, presented, at).await,
+            None,
+            "spent by {login} at {at}"
+        );
+    }
+    let spent = presentations::redeem(&transaction, "r-sign-in", "login-1", &code, &now)
+        .await
+        .unwrap()
+        .expect("the code, spent");
+    assert_eq!(spent.status, "verified");
+    assert_eq!(spent.outcome, Some(outcome));
+    assert_eq!(spent.redeemed_at, Some(now));
+    assert_eq!(
+        redeemed("login-1", &code, now).await,
+        None,
+        "a code was spent twice"
+    );
+    let standing = presentations::standing_for_login(&transaction, "r-sign-in", "login-1")
+        .await
+        .unwrap()
+        .expect("the request");
+    assert_eq!(standing.redeemed_at, Some(now));
+}
+
+/// What a login asks for is bound by the schema: a proof or a link names the
+/// person, a sign-in names nobody, and a sign-in alone keeps a code, written
+/// as a digest.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn what_a_login_asks_for_is_bound_by_the_schema() {
+    let fixture = Fixture::with_user_and_client().await;
+    let context = TenantContext::new("acme", "main");
+    let now = DateTime::from_timestamp(Utc::now().timestamp(), 0).expect("a time");
+    let closes = now + Duration::seconds(300);
+    let query = json!({ "credentials": [{ "id": "identity" }] });
+    let asked = |purpose: &'static str, user_id: Option<&'static str>| {
+        let mut request = kept("r-bound", "k-bound", &query, closes);
+        request.for_login = Some(presentations::ForLogin {
+            purpose,
+            login_session: "login-1",
+            user_id,
+        });
+        request
+    };
+    // Each in its own unit of work, since a refused write ends the one it ran in.
+    for (purpose, user_id, why) in [
+        ("factor", None, "a proof naming nobody"),
+        ("link", None, "a link naming nobody"),
+        ("sign-in", Some("u-1"), "a sign-in naming somebody"),
+    ] {
+        let transaction = fixture.scoped(&context).await;
+        assert!(
+            presentations::keep(&transaction, &asked(purpose, user_id))
+                .await
+                .is_err(),
+            "{why} was kept"
+        );
+    }
+    for (purpose, user_id, code, why) in [
+        ("factor", Some("u-1"), "a".repeat(64), "a proof kept a code"),
+        (
+            "sign-in",
+            None,
+            "not-a-digest".to_owned(),
+            "a code was kept in the clear",
+        ),
+    ] {
+        let transaction = fixture.scoped(&context).await;
+        presentations::keep(&transaction, &asked(purpose, user_id))
+            .await
+            .unwrap();
+        assert!(
+            presentations::settle(
+                &transaction,
+                "r-bound",
+                "verified",
+                &json!({}),
+                Some(&code),
+                &now
+            )
+            .await
+            .is_err(),
+            "{why}"
+        );
+    }
 }

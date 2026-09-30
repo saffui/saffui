@@ -486,7 +486,7 @@ impl Holdings {
             Authenticator::Webauthn => self.passkey,
             Authenticator::RecoveryCode => self.recovery_codes,
             Authenticator::SmsOtp => self.verified_phone,
-            Authenticator::Wallet => self.wallet_identity,
+            Authenticator::Wallet | Authenticator::WalletSignIn => self.wallet_identity,
             Authenticator::MagicLink | Authenticator::Kerberos => true,
         }
     }

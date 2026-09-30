@@ -15,7 +15,7 @@ use store::providers::protocol::presentations::{self, ForLogin, Standing};
 use store::providers::realms::{realm_features, wallet_identity};
 use store::tenancy::UnitOfWork;
 
-use super::presentation::ask_for_login;
+use super::presentation::{ask_for_login, digest_response_code};
 
 /// The realm's verifier, as a login asks it.
 pub struct LoginVerifier<'a> {
@@ -32,7 +32,7 @@ impl Wallet for LoginVerifier<'_> {
         transaction: &'a UnitOfWork,
         purpose: Purpose,
         login_session: &'a str,
-        user_id: &'a str,
+        user_id: Option<&'a str>,
     ) -> Pin<Box<dyn Future<Output = Result<Asked, Unasked>> + Send + 'a>> {
         Box::pin(async move {
             if !realm_features::runs_for_realm(
@@ -85,6 +85,23 @@ impl Wallet for LoginVerifier<'_> {
             Ok(read_presented(standing.as_ref(), self.now))
         })
     }
+
+    fn redeem<'a>(
+        &'a self,
+        transaction: &'a UnitOfWork,
+        request_id: &'a str,
+        login_session: &'a str,
+        response_code: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Presented>, ()>> + Send + 'a>> {
+        Box::pin(async move {
+            let digest = digest_response_code(self.signing.provider, response_code)?;
+            let spent =
+                presentations::redeem(transaction, request_id, login_session, &digest, &self.now)
+                    .await
+                    .map_err(|_| ())?;
+            Ok(spent.map(|held| read_presented(Some(&held), self.now)))
+        })
+    }
 }
 
 /// Where the presentation a login waits on stands, read for that login alone:
@@ -116,7 +133,8 @@ pub async fn read_awaited_presentation(
 pub struct Unread;
 
 /// Where a login's presentation stands, as the login reads it: answered with
-/// an identity only when its answer verified and named one.
+/// an identity only when its answer verified and named one, and brought back
+/// once the browser that asked spent its code.
 pub fn read_presented(standing: Option<&Standing>, now: DateTime<Utc>) -> Presented {
     let Some(held) = standing else {
         return Presented::Lapsed;
@@ -129,9 +147,11 @@ pub fn read_presented(standing: Option<&Standing>, now: DateTime<Utc>) -> Presen
             .as_ref()
             .and_then(|outcome| outcome.get("identity"))
             .and_then(|identity| {
-                Some(Presented::Identified {
-                    issuer: identity.get("issuer")?.as_str()?.to_owned(),
-                    digest: identity.get("digest")?.as_str()?.to_owned(),
+                let issuer = identity.get("issuer")?.as_str()?.to_owned();
+                let digest = identity.get("digest")?.as_str()?.to_owned();
+                Some(match held.redeemed_at {
+                    Some(_) => Presented::Redeemed { issuer, digest },
+                    None => Presented::Identified { issuer, digest },
                 })
             })
             .unwrap_or(Presented::Unproven),
@@ -158,6 +178,7 @@ mod tests {
             answered_at: None,
             created_by: "ada".to_owned(),
             created_at: now,
+            redeemed_at: None,
         }
     }
 
@@ -186,6 +207,21 @@ mod tests {
                 issuer: "did:web:id.example".to_owned(),
                 digest: "ab".to_owned(),
             }
+        );
+        let mut brought_back = standing("verified", Some(identity.clone()), -60, now);
+        brought_back.redeemed_at = Some(now);
+        assert_eq!(
+            read_presented(Some(&brought_back), now),
+            Presented::Redeemed {
+                issuer: "did:web:id.example".to_owned(),
+                digest: "ab".to_owned(),
+            }
+        );
+        let mut refused_back = standing("refused", Some(identity.clone()), -60, now);
+        refused_back.redeemed_at = Some(now);
+        assert_eq!(
+            read_presented(Some(&refused_back), now),
+            Presented::Unproven
         );
         for (status, outcome) in [
             ("verified", Some(json!({ "credentials": [] }))),

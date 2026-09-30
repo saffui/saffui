@@ -2,7 +2,7 @@ use super::support;
 use super::support::Plane;
 use super::wallet::{
     CREDENTIAL_TYPE, IDENTITY_TYPE, IdentityWallet, Wallet, answered, asked, asked_under,
-    encrypted, identity_answer, mint_request_key, name_pid_issuer, plane_that_verifies,
+    encrypted, fetched, identity_answer, mint_request_key, name_pid_issuer, plane_that_verifies,
     read_request, realm_ready_for_identity, realm_ready_to_verify, serve_pid_issuer, served,
 };
 use actix_web::http::{Method, StatusCode};
@@ -793,4 +793,269 @@ async fn a_json_ld_credential_links_and_proves_an_identity() {
         (StatusCode::OK, &json!("admitted")),
         "{told}"
     );
+}
+
+/// The login door, as the page posts to it.
+const LOGIN_DOOR: &str = "/realms/main/protocol/openid-connect/login";
+
+/// The flow every realm is offered for signing in with a wallet, a wallet on
+/// this device or a password, bound to the confidential client.
+async fn bind_offered_wallet_flow(plane: &Plane) {
+    let transaction = plane
+        .scoped(&TenantContext::new(support::TENANT, REALM))
+        .await;
+    services::realm::provisioning::provision_offered_flows(&transaction, support::TENANT, REALM)
+        .await
+        .expect("the offered flows");
+    transaction.commit().await.unwrap();
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, "wallet")
+        .await;
+}
+
+/// The realm knows people by the PID's family name, and the subject linked
+/// theirs; the offered wallet flow is bound. Hands back the wallet.
+async fn realm_signing_in_by_wallet(plane: &Plane, bearer: &str, linked: bool) -> Wallet {
+    let wallet = realm_ready_to_verify(plane, bearer).await;
+    let (status, told) = keep_profile(plane, bearer, &identity_profile(&wallet)).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    if linked {
+        link_by_ceremony(plane, Holder::Pid(&wallet)).await;
+    }
+    bind_offered_wallet_flow(plane).await;
+    wallet
+}
+
+/// One round asking the wallet on this device, as the page's button plays it:
+/// its link, and never a drawing of it.
+async fn ask_wallet_here(plane: &Plane, cookie: &str) -> Value {
+    let (status, told, _) = browsed(
+        plane,
+        Method::POST,
+        LOGIN_DOOR,
+        Some(cookie),
+        Some(json!({ "wallet_sign_in": true })),
+    )
+    .await;
+    assert_eq!(
+        (status, &told["status"]),
+        (StatusCode::OK, &json!("challenge")),
+        "{told}"
+    );
+    let asks = told["asks"].clone();
+    assert!(
+        asks["wallet"]["uri"]
+            .as_str()
+            .is_some_and(|uri| uri.starts_with("openid4vp://authorize?")),
+        "{asks}"
+    );
+    assert_eq!(asks["wallet"]["same_device"], json!(true), "{asks}");
+    assert!(
+        asks["wallet"].get("qr").is_none(),
+        "a sign-in was drawn to scan: {asks}"
+    );
+    asks
+}
+
+/// Where the wallet is told to bring the person back once its answer is
+/// taken: the page the login is answered on, the one the deployment names in
+/// these suites, with the code in the fragment.
+fn read_way_back(told: &str) -> String {
+    let told: Value = serde_json::from_str(told).expect("an answer in JSON");
+    let back = told["redirect_uri"].as_str().expect("a way back");
+    let (page, code) = back
+        .split_once("#response_code=")
+        .expect("a code in the fragment");
+    assert_eq!(Some(page), support::login_ui().answering());
+    assert_eq!(code.len(), 43, "not 256 bits written unpadded: {code}");
+    code.to_owned()
+}
+
+/// One round carrying what the wallet was handed, as the page it brought the
+/// person back to plays it.
+async fn bring_back(plane: &Plane, cookie: Option<&str>, code: &str) -> (StatusCode, Value) {
+    let (status, told, _) = browsed(
+        plane,
+        Method::POST,
+        LOGIN_DOOR,
+        cookie,
+        Some(json!({ "wallet_response_code": code })),
+    )
+    .await;
+    (status, told)
+}
+
+/// One round answering nothing, as a tab left open plays it.
+async fn play_empty_round(plane: &Plane, cookie: &str) -> (StatusCode, Value) {
+    let (status, told, _) = browsed(
+        plane,
+        Method::POST,
+        LOGIN_DOOR,
+        Some(cookie),
+        Some(json!({})),
+    )
+    .await;
+    (status, told)
+}
+
+/// The doors the sign-in page opens, as its body carries them.
+async fn read_doors(plane: &Plane) -> String {
+    let (status, page) = fetched(plane, Method::GET, LOGIN_DOOR, None).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let from = page.find("data-doors=\"").expect("the doors") + "data-doors=\"".len();
+    page[from..][..page[from..].find('"').expect("the doors closed")].to_owned()
+}
+
+/// A person who linked their identity signs in with the wallet on the device
+/// they sign in from: the page offers it once the realm's flow does, one round
+/// asks the wallet, and the wallet brings them back to the page with a code
+/// that finishes the login. Answered and not yet brought back, the login waits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_person_signs_in_with_their_wallet_on_this_device() {
+    let (plane, bearer) = plane_that_verifies().await;
+    let wallet = realm_signing_in_by_wallet(&plane, &bearer, true).await;
+    assert!(
+        !read_doors(&plane)
+            .await
+            .split(' ')
+            .any(|door| door == "wallet")
+    );
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}"),
+        &bearer,
+        Some(json!({ "browser_flow": "wallet" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert!(
+        read_doors(&plane)
+            .await
+            .split(' ')
+            .any(|door| door == "wallet"),
+        "a realm signing in by wallet offered no way to"
+    );
+
+    let cookie = open_login(&plane, &[]).await;
+    let asks = ask_wallet_here(&plane, &cookie).await;
+    let (_, status, told) = answer_as(&plane, Holder::Pid(&wallet), &asks).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let code = read_way_back(&told);
+
+    let (status, told) = play_empty_round(&plane, &cookie).await;
+    assert_eq!(
+        (status, &told["status"], &told["asks"]),
+        (StatusCode::OK, &json!("challenge"), &asks),
+        "an answer nobody brought back finished the login: {told}"
+    );
+    let (status, told) = bring_back(&plane, Some(&cookie), &code).await;
+    assert_eq!(
+        (status, &told["status"]),
+        (StatusCode::OK, &json!("admitted")),
+        "{told}"
+    );
+    assert!(
+        told["redirect_to"]
+            .as_str()
+            .is_some_and(|to| to.starts_with(support::REDIRECT)),
+        "{told}"
+    );
+}
+
+/// The code finishes the login only in the browser that asked: brought back
+/// to a browser holding no login, or another login, it names nobody; the
+/// browser that asked finishes nothing without it, or with a guess; and it
+/// is spent once. So a link forwarded to somebody else's wallet signs its
+/// sender in as nobody.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_wallet_sign_in_is_finished_only_by_the_browser_that_asked() {
+    let (plane, bearer) = plane_that_verifies().await;
+    let wallet = realm_signing_in_by_wallet(&plane, &bearer, true).await;
+    let asking = open_login(&plane, &[]).await;
+    let asks = ask_wallet_here(&plane, &asking).await;
+    let (_, status, told) = answer_as(&plane, Holder::Pid(&wallet), &asks).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let code = read_way_back(&told);
+
+    let (status, told) = bring_back(&plane, None, &code).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{told}");
+    let other = open_login(&plane, &[]).await;
+    let (status, told) = bring_back(&plane, Some(&other), &code).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_ne!(
+        told["status"],
+        json!("admitted"),
+        "another login was finished: {told}"
+    );
+    let (status, told) = bring_back(&plane, Some(&asking), &"A".repeat(43)).await;
+    assert_eq!(
+        (status, &told["status"], &told["asks"]),
+        (StatusCode::OK, &json!("challenge"), &asks),
+        "a guessed code finished the login: {told}"
+    );
+
+    let (status, told) = bring_back(&plane, Some(&asking), &code).await;
+    assert_eq!(
+        (status, &told["status"]),
+        (StatusCode::OK, &json!("admitted")),
+        "{told}"
+    );
+    let again = open_login(&plane, &[]).await;
+    ask_wallet_here(&plane, &again).await;
+    let (status, told) = bring_back(&plane, Some(&again), &code).await;
+    assert_ne!(
+        (status, &told["status"]),
+        (StatusCode::OK, &json!("admitted")),
+        "a spent code finished a second login: {told}"
+    );
+}
+
+/// An identity no account linked names nobody: brought back, the login asks
+/// the wallet again and says so, and no account is made. A wallet declining
+/// is brought back too, and asked again, saying it shared nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_wallet_sign_in_names_nobody_for_an_identity_nobody_linked() {
+    let (plane, bearer) = plane_that_verifies().await;
+    let wallet = realm_signing_in_by_wallet(&plane, &bearer, false).await;
+    let cookie = open_login(&plane, &[]).await;
+    let asks = ask_wallet_here(&plane, &cookie).await;
+    let (_, status, told) = answer_as(&plane, Holder::Pid(&wallet), &asks).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let (status, told) = bring_back(&plane, Some(&cookie), &read_way_back(&told)).await;
+    assert_eq!(
+        (status, &told["status"]),
+        (StatusCode::OK, &json!("challenge")),
+        "{told}"
+    );
+    assert_eq!(told["asks"]["unlinked"], json!(true), "{told}");
+    assert_ne!(
+        told["asks"]["wallet"]["uri"], asks["wallet"]["uri"],
+        "{told}"
+    );
+    assert!(
+        read_linked_issuers(&plane).await.is_empty(),
+        "an identity was linked"
+    );
+
+    let asks = told["asks"].clone();
+    let request = read_request(&plane, asks["wallet"]["uri"].as_str().expect("a link")).await;
+    let state = request["state"].as_str().expect("a state").to_owned();
+    let (status, told) = answered(
+        &plane,
+        &request,
+        &[("error", "access_denied"), ("state", &state)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let (status, told) = bring_back(&plane, Some(&cookie), &read_way_back(&told)).await;
+    assert_eq!(
+        (status, &told["status"]),
+        (StatusCode::OK, &json!("challenge")),
+        "{told}"
+    );
+    assert_eq!(told["asks"]["refused"], json!(true), "{told}");
 }

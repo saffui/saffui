@@ -29,6 +29,7 @@
       </label>
       <p id="forgot-row" hidden><a id="forgot" href="#">{{login-forgot}}</a></p>
       <button type="button" id="passkey-open" hidden>{{login-passkey}}</button>
+      <button type="button" id="wallet-sign-in-open" hidden>{{login-wallet}}</button>
       <div id="idp">
         <p id="idp-lede" aria-hidden="true">{{login-continue-with}}</p>
         {idps}
@@ -105,10 +106,13 @@
       <h2>{{wallet-title}}</h2>
       <p class="panel-lede" id="wallet-lede">{{wallet-lede}}</p>
       <p class="panel-lede" id="wallet-link-lede" hidden>{{wallet-link-lede}}</p>
+      <p class="panel-lede" id="wallet-sign-in-lede" hidden>{{wallet-sign-in-lede}}</p>
       <div id="wallet-qr-frame" class="qr-frame"><img id="wallet-qr" alt="{{wallet-title}}" hidden></div>
-      <p class="panel-lede">{{wallet-scan}}</p>
+      <p class="panel-lede" id="wallet-scan">{{wallet-scan}}</p>
       <p class="app-open"><a id="wallet-open" href="">{{wallet-open}}</a></p>
-      <p role="status">{{wallet-waiting}}</p>
+      <p role="status" id="wallet-waiting">{{wallet-waiting}}</p>
+      <p role="status" id="wallet-sign-in-waiting" hidden>{{wallet-sign-in-waiting}}</p>
+      <p id="wallet-again-row" hidden><button type="button" id="wallet-again">{{wallet-again}}</button></p>
     </div>
     <div id="sheet" hidden>
       <p>{{recovery-keep}}</p>
@@ -204,6 +208,8 @@
   <p id="wallet-refused" hidden>{{wallet-refused}}</p>
   <p id="wallet-held-elsewhere" hidden>{{wallet-held-elsewhere}}</p>
   <p id="wallet-issuer-linked" hidden>{{wallet-issuer-linked}}</p>
+  <p id="wallet-unlinked" hidden>{{wallet-unlinked}}</p>
+  <p id="wallet-elsewhere" hidden>{{wallet-elsewhere}}</p>
 </main>
 <script src="login.js"></script>
 </body>

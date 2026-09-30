@@ -332,6 +332,11 @@ async fn doors_of_realm(
     {
         doors.push("recovery-code");
     }
+    if services::oidc::sign_in::offers_wallet_sign_in(&transaction, held.browser_flow.as_deref())
+        .await
+    {
+        doors.push("wallet");
+    }
     if both_ways_carried && services::messaging::delivery::carries_both_ways(&transaction).await {
         doors.push("code-ways");
     }

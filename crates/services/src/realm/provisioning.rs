@@ -809,6 +809,40 @@ pub async fn provision_offered_flows(
         )
         .await?,
     );
+
+    // A wallet on the device the person signs in from, or a password. The
+    // password is the way in, not a convenience: an identity is linked from
+    // an account somebody is already signed in to, so a wallet-only realm
+    // shuts out everyone who has not linked one yet, the first person ever to
+    // sign in included. Both are alternatives, and the one that passes settles
+    // the other.
+    //
+    // What it needs is said because none of it is in the flow: the verifier
+    // running, a profile saying how the realm knows people, and the person
+    // having linked the identity their wallet holds.
+    made += u32::from(
+        offer(
+            transaction,
+            tenant,
+            realm_id,
+            "wallet",
+            "A wallet on this device, or a password. Needs the wallet verifier running \
+             and a profile saying how the realm knows people by a wallet credential",
+            &[
+                (
+                    "wallet-sign-in",
+                    "wallet-sign-in",
+                    AuthenticatorRequirement::Alternative,
+                ),
+                (
+                    "password",
+                    "password",
+                    AuthenticatorRequirement::Alternative,
+                ),
+            ],
+        )
+        .await?,
+    );
     Ok(made)
 }
 

@@ -88,12 +88,15 @@ function namedOnThePage() {
 /// Run the script over the page, with the rounds a server would answer with.
 ///
 /// `rounds` is read in order, one per post. Whatever the script sends is kept
-/// in `sent`, and wherever it navigates to in `went`.
-export function opened({ rounds = [], fetching = true, doors = "", policy = [] } = {}) {
+/// in `sent`, and wherever it navigates to in `went`. `hash` is the fragment
+/// the page was opened with, and what the script puts in the address instead
+/// is kept in `replaced`.
+export function opened({ rounds = [], fetching = true, doors = "", policy = [], hash = "" } = {}) {
   const named = namedOnThePage();
   const elements = new Map();
   const sent = [];
   const went = [];
+  const replaced = [];
 
   const element = (id) => {
     if (!named.has(id)) return null;
@@ -165,7 +168,15 @@ export function opened({ rounds = [], fetching = true, doors = "", policy = [] }
     },
     location: {
       pathname: "/realms/main/protocol/openid-connect/login",
+      search: "",
+      hash,
       assign: (where) => went.push(where),
+    },
+    history: {
+      replaceState: (_state, _title, where) => {
+        replaced.push(where);
+        context.location.hash = "";
+      },
     },
     window: {},
     // Enough of the key ceremony to see what the page asks the browser for.
@@ -220,6 +231,7 @@ export function opened({ rounds = [], fetching = true, doors = "", policy = [] }
   return {
     sent,
     went,
+    replaced,
     ceremonies,
     element,
     form,

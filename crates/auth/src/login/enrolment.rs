@@ -12,7 +12,9 @@ use models::entities::user::{RequiredAction, UserModel};
 use secrecy::SecretBox;
 use serde_json::{Value, json};
 use std::str::FromStr;
-use store::providers::directory::{credentials, one_time_tokens, users, webauthn};
+use store::providers::directory::{
+    credentials, one_time_tokens, users, wallet_identities, webauthn,
+};
 use store::tenancy::{TenantContext, UnitOfWork};
 use uuid::Uuid;
 use webauthn_rs::prelude::{
@@ -20,6 +22,9 @@ use webauthn_rs::prelude::{
 };
 
 use crate::login::authenticator::{Challenge, redacted, relying_party};
+use crate::login::wallet::{
+    Asking, Presented, Purpose, Unasked, draw_challenge, read_kept_request,
+};
 
 /// The names the ceremonies' state and answers travel under. Not an
 /// authenticator's name, so the flow's own steps can never collide with them.
@@ -29,6 +34,7 @@ pub const VERIFY_EMAIL: &str = "verify-email";
 pub const VERIFY_PHONE: &str = "verify-phone";
 pub const CONFIGURE_RECOVERY_CODES: &str = "recovery-codes-register";
 pub const UPDATE_PASSWORD: &str = "update-password";
+pub const LINK_WALLET_IDENTITY: &str = "link-wallet-identity";
 
 /// The mail's template kind, spelled the way a realm's templates are keyed.
 pub const VERIFY_EMAIL_TEMPLATE: &str = "verify_email";
@@ -118,6 +124,8 @@ pub async fn required(
     remembered: &Value,
     // What a mailed ceremony needs. Absent where the realm requires none.
     posting: Option<crate::login::authenticator::Posting<'_>>,
+    // The verifier a wallet is asked through, bound to this login.
+    wallet: Option<Asking<'_>>,
 ) -> Enrolment {
     // Read fresh rather than off the model the login loaded at its start: a
     // step of this same login may have attached an instruction since, the
@@ -220,6 +228,16 @@ pub async fn required(
             posting,
         )
         .await;
+    }
+    if pending(RequiredAction::LinkWalletIdentity) {
+        let round = link_wallet_identity(
+            transaction,
+            subject,
+            remembered.get(LINK_WALLET_IDENTITY),
+            wallet,
+        )
+        .await;
+        return offered(round, asked == Some(RequiredAction::LinkWalletIdentity));
     }
     Enrolment::Settled
 }
@@ -1071,6 +1089,118 @@ async fn verify_phone_round(
             ),
         ))),
     }
+}
+
+/// One round of linking an identity: the realm's credential asked of the
+/// person's wallet, waited on, and the identity it proves linked to this
+/// account. What stands in the way is said, and the wallet asked again: the
+/// person has already proved who they are.
+async fn link_wallet_identity(
+    transaction: &UnitOfWork,
+    subject: &UserModel,
+    kept: Option<&Value>,
+    wallet: Option<Asking<'_>>,
+) -> Enrolment {
+    // Nothing here asks a wallet: a ceremony this build cannot run, left
+    // standing.
+    let Some(asking) = wallet else {
+        return Enrolment::Settled;
+    };
+    let mut said = None;
+    if let Some(kept) = kept.and_then(read_kept_request) {
+        match asking
+            .verifier
+            .standing(transaction, &kept.request_id, asking.login_session)
+            .await
+        {
+            Ok(Presented::Waiting) => {
+                return Enrolment::Asked {
+                    named: LINK_WALLET_IDENTITY,
+                    challenge: draw_challenge(&kept),
+                    sending: None,
+                };
+            }
+            Ok(Presented::Identified { issuer, digest }) => {
+                match keep_identity_link(transaction, subject, &issuer, &digest).await {
+                    Ok(None) => return Enrolment::Settled,
+                    Ok(Some(standing_in_the_way)) => said = Some(standing_in_the_way),
+                    Err(()) => return Enrolment::Refused,
+                }
+            }
+            Ok(Presented::Lapsed) => {}
+            Ok(Presented::Unproven) => said = Some("refused"),
+            Err(()) => return Enrolment::Refused,
+        }
+    }
+    match asking
+        .verifier
+        .ask(
+            transaction,
+            Purpose::Link,
+            asking.login_session,
+            &subject.user_id,
+        )
+        .await
+    {
+        Ok(asked) => {
+            let mut challenge = draw_challenge(&asked);
+            if let Some(said) = said {
+                challenge.shown[said] = Value::Bool(true);
+            }
+            Enrolment::Asked {
+                named: LINK_WALLET_IDENTITY,
+                challenge,
+                sending: None,
+            }
+        }
+        // The realm keeps no profile: left standing, like a ceremony this
+        // build cannot run.
+        Err(Unasked::NotOffered) => Enrolment::Settled,
+        Err(Unasked::Unavailable) => Enrolment::Refused,
+    }
+}
+
+/// Link an identity to the account and strike the instruction, or name what
+/// stands in the way: another account holding it, or one from the same issuer
+/// this account already holds. An identity it holds already is linked.
+async fn keep_identity_link(
+    transaction: &UnitOfWork,
+    subject: &UserModel,
+    issuer: &str,
+    digest: &str,
+) -> Result<Option<&'static str>, ()> {
+    match wallet_identities::holder(transaction, issuer, digest)
+        .await
+        .map_err(|_| ())?
+    {
+        Some(holder) if holder == subject.user_id => {}
+        Some(_) => return Ok(Some("held_elsewhere")),
+        None => {
+            let held = wallet_identities::of_user(transaction, &subject.user_id)
+                .await
+                .map_err(|_| ())?;
+            if held.iter().any(|linked| linked.issuer == issuer) {
+                return Ok(Some("issuer_linked"));
+            }
+            wallet_identities::link(
+                transaction,
+                &subject.user_id,
+                issuer,
+                digest,
+                &chrono::Utc::now(),
+            )
+            .await
+            .map_err(|_| ())?;
+        }
+    }
+    users::clear_required_action(
+        transaction,
+        &subject.user_id,
+        RequiredAction::LinkWalletIdentity,
+    )
+    .await
+    .map_err(|_| ())?;
+    Ok(None)
 }
 
 /// A number in international form, kept as typed apart from spacing: a plus

@@ -454,7 +454,7 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
         held("organization", "preview", "realm", "narrows", "Group accounts under an organization carrying its own brokers and domains.", true),
         held("pq-hybrid", "preview", "process", "weakens", "ML-DSA signatures and ML-KEM encapsulation.", false),
         held("rebac-store", "experimental", "realm", "narrows", "Relation tuples and the walks over them: the ReBAC side of the authorization engine, and the sharing of user-managed resources that rides it.", false),
-        held("wallet-verifier", "experimental", "realm", "narrows", "Verify the credentials a person presents from a digital identity wallet, against the authorities the realm trusts.", false),
+        held("wallet-verifier", "experimental", "realm", "weakens", "Verify the credentials a person presents from a digital identity wallet, against the authorities the realm trusts, and sign in with one as a factor. Closing it takes that factor away.", false),
       ],
     });
   }

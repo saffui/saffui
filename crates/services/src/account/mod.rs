@@ -20,7 +20,7 @@ use models::entities::realm::RealmModel;
 use models::entities::user::{RequiredAction, UserModel, UserStorage};
 use secrecy::SecretBox;
 use store::providers::directory::webauthn::EnrolledCredential;
-use store::providers::directory::{credentials, users, webauthn};
+use store::providers::directory::{credentials, users, wallet_identities, webauthn};
 use store::providers::protocol::sessions;
 use store::providers::realms::auth_flows;
 use store::providers::{clients, realms};
@@ -308,6 +308,7 @@ pub async fn own_factors(
         passkey: !keys.is_empty(),
         recovery_codes: recovery_codes > 0,
         verified_phone: read_verified_phone(transaction, user_id).await?,
+        wallet_identity: read_wallet_identity(transaction, user_id).await?,
     };
     let standing = judge_sign_in(transaction, session_id, presenter, &holds, now).await?;
     let strong = standing.is_strong_enough();
@@ -350,8 +351,16 @@ pub async fn read_sign_in_standing(
             .map_err(|_| Unread)?
             > 0,
         verified_phone: read_verified_phone(transaction, user_id).await?,
+        wallet_identity: read_wallet_identity(transaction, user_id).await?,
     };
     judge_sign_in(transaction, session_id, presenter, &holds, now).await
+}
+
+async fn read_wallet_identity(transaction: &UnitOfWork, user_id: &str) -> Result<bool, Unread> {
+    Ok(!wallet_identities::of_user(transaction, user_id)
+        .await
+        .map_err(|_| Unread)?
+        .is_empty())
 }
 
 async fn read_verified_phone(transaction: &UnitOfWork, user_id: &str) -> Result<bool, Unread> {
@@ -440,6 +449,7 @@ struct Holdings {
     passkey: bool,
     recovery_codes: bool,
     verified_phone: bool,
+    wallet_identity: bool,
 }
 
 impl Holdings {
@@ -450,6 +460,7 @@ impl Holdings {
             Authenticator::Webauthn => self.passkey,
             Authenticator::RecoveryCode => self.recovery_codes,
             Authenticator::SmsOtp => self.verified_phone,
+            Authenticator::Wallet => self.wallet_identity,
             Authenticator::MagicLink | Authenticator::Kerberos => true,
         }
     }
@@ -622,6 +633,17 @@ mod tests {
 
         let keyed = [step("password", Required), step("webauthn", Required)];
         assert_eq!(reachable_level(&levels(), &keyed, &with_app), Some(1));
+
+        let presented = [step("password", Required), step("wallet", Required)];
+        let with_identity = Holdings {
+            wallet_identity: true,
+            ..with_password
+        };
+        assert_eq!(
+            reachable_level(&levels(), &presented, &with_identity),
+            Some(2)
+        );
+        assert_eq!(reachable_level(&levels(), &presented, &with_app), Some(1));
 
         let switched_off = [step("password", Required), step("totp", Disabled)];
         assert_eq!(

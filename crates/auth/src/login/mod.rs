@@ -6,6 +6,7 @@ pub mod enrolment;
 pub mod lockout;
 pub mod step;
 pub mod throttle;
+pub mod wallet;
 
 use chrono::{DateTime, Utc};
 use config::serving::PublicOrigin;
@@ -103,6 +104,8 @@ pub async fn run_flow(
     posting: Option<Posting<'_>>,
     // The directory this realm federates from. Absent where it holds none.
     federations: &[directory::Named<'_>],
+    // The verifier a wallet step asks through, bound to this login.
+    wallet: Option<wallet::Asking<'_>>,
     // Where this pass came from, recorded against a failure, and when it is.
     from: Option<&str>,
     lock: Lock,
@@ -159,6 +162,7 @@ pub async fn run_flow(
             remembered_before.get(named.as_str()),
             posting,
             federations,
+            wallet,
         )
         .await;
         let outcome = answered.outcome;

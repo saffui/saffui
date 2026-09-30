@@ -199,8 +199,8 @@ registry! {
         "Passkeys and roaming authenticators as a factor. Closing it sends people back to what is left.";
     SmsOtp = "sms-otp", Stable, RuntimeOnly, Realm, Weakens, On,
         "A code delivered by the SMS gateway, as a first or second factor. Closing it takes a factor away.";
-    WalletVerifier = "wallet-verifier", Experimental, RuntimeOnly, Realm, Narrows, Off,
-        "Verify the credentials a person presents from a digital identity wallet, against the authorities the realm trusts.";
+    WalletVerifier = "wallet-verifier", Experimental, RuntimeOnly, Realm, Weakens, Off,
+        "Verify the credentials a person presents from a digital identity wallet, against the authorities the realm trusts, and sign in with one as a factor. Closing it takes that factor away.";
     SimSwapGuard = "sim-swap-guard", Experimental, RuntimeOnly, Process, Weakens, Off,
         "Ask the carrier, over CAMARA, whether the SIM behind a number changed lately before a code goes to it. A realm opts in by naming its carrier.";
 }
@@ -785,13 +785,16 @@ mod tests {
     }
 
     /// A capability a realm may move says which way closing it points, and
-    /// the two that take a factor away are the two that say so.
+    /// the ones that take a factor away are the ones that say so.
     #[test]
     fn a_capability_says_what_closing_it_costs() {
         for feature in Feature::ALL.iter().copied() {
             let spec = feature.spec();
             let weakens = spec.closing == Closing::Weakens;
-            let takes_a_factor = matches!(feature, Feature::WebAuthn | Feature::SmsOtp);
+            let takes_a_factor = matches!(
+                feature,
+                Feature::WebAuthn | Feature::SmsOtp | Feature::WalletVerifier
+            );
             if takes_a_factor {
                 assert!(
                     weakens,

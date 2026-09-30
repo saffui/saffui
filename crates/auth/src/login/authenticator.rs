@@ -14,7 +14,7 @@ use models::entities::realm::RealmModel;
 use models::entities::user::UserModel;
 use models::messaging::Channel;
 use secrecy::{ExposeSecret, SecretBox};
-use store::providers::directory::{credentials, one_time_tokens, users};
+use store::providers::directory::{credentials, one_time_tokens, users, wallet_identities};
 use store::tenancy::UnitOfWork;
 
 use crate::messaging::{Message, Outgoing};
@@ -90,6 +90,9 @@ pub enum Authenticator {
     RecoveryCode,
     /// A code texted to the phone this account has proven, typed back.
     SmsOtp,
+    /// A credential the person's wallet presents, proving an identity the
+    /// account linked.
+    Wallet,
 }
 
 /// A name no build knows. Refused where a flow is read, so a realm cannot be
@@ -110,6 +113,7 @@ impl FromStr for Authenticator {
             "kerberos" => Ok(Self::Kerberos),
             "recovery-code" => Ok(Self::RecoveryCode),
             "sms-otp" => Ok(Self::SmsOtp),
+            "wallet" => Ok(Self::Wallet),
             other => Err(Unknown(other.to_owned())),
         }
     }
@@ -120,6 +124,7 @@ fn capability_behind(authenticator: Authenticator) -> Option<commons::feature::F
     match authenticator {
         Authenticator::Webauthn => Some(commons::feature::Feature::WebAuthn),
         Authenticator::SmsOtp => Some(commons::feature::Feature::SmsOtp),
+        Authenticator::Wallet => Some(commons::feature::Feature::WalletVerifier),
         _ => None,
     }
 }
@@ -134,6 +139,7 @@ impl Authenticator {
             Self::Kerberos => "kerberos",
             Self::RecoveryCode => "recovery-code",
             Self::SmsOtp => "sms-otp",
+            Self::Wallet => "wallet",
         }
     }
 
@@ -162,6 +168,8 @@ impl Authenticator {
             Self::RecoveryCode => "mfa",
             // A code on the phone is a thing the person has, like the app's.
             Self::SmsOtp => "mfa",
+            // A credential held in a wallet, like a code in an app.
+            Self::Wallet => "mfa",
         }
     }
 
@@ -170,11 +178,13 @@ impl Authenticator {
     ///
     /// A one-time code proves one thing the person has. Beside anything else
     /// that passed it is the second thing proved; alone it is the only one,
-    /// the class of a single factor, like a password. A key is two things on
-    /// its own, since its ceremony has the person verify themselves on it.
+    /// the class of a single factor, like a password. A wallet's credential
+    /// is the same: nothing in a presentation says the wallet asked who was
+    /// holding it. A key is two things on its own, since its ceremony has the
+    /// person verify themselves on it.
     pub fn context_among(self, passed: &[Self]) -> &'static str {
         match self {
-            Self::Totp | Self::SmsOtp | Self::RecoveryCode
+            Self::Totp | Self::SmsOtp | Self::RecoveryCode | Self::Wallet
                 if passed.iter().all(|other| *other == self) =>
             {
                 Self::Password.context()
@@ -249,6 +259,8 @@ pub async fn verify_answer(
     posting: Option<Posting<'_>>,
     // The directories this realm federates from. Only the password step asks.
     federations: &[crate::login::directory::Named<'_>],
+    // The verifier a wallet is asked through. Only the wallet step asks.
+    wallet: Option<crate::login::wallet::Asking<'_>>,
 ) -> Answered {
     // A factor the realm has closed does not run. Skipped rather than failed,
     // because the flow is what decides whether a login can still finish: an
@@ -293,6 +305,9 @@ pub async fn verify_answer(
             )
             .await
         }
+        Authenticator::Wallet => {
+            prove_wallet_identity(transaction, subject, remembered, wallet).await
+        }
     }
 }
 
@@ -327,6 +342,97 @@ fn negotiate(subject: Option<&UserModel>, answers: &[Answer]) -> Answered {
             Answered::plain(Outcome::Passed)
         }
         _ => Answered::plain(Outcome::Failed),
+    }
+}
+
+/// An identity the account linked, proved by a credential its wallet presents.
+///
+/// Asked once a step before it named the person, and only of an account that
+/// linked one: a request no wallet can answer is a screen the person waits at
+/// forever. The request is bound to this login and its link rides the notes,
+/// so every round reads where the same presentation stands. A wallet that
+/// declined, or an answer that verified nothing, is asked again rather than
+/// failed: nothing is guessed at here, and a request's state is public, so a
+/// refusal counted against the person could be posted by anybody who saw the
+/// code.
+async fn prove_wallet_identity(
+    transaction: &UnitOfWork,
+    subject: Option<&UserModel>,
+    remembered: Option<&serde_json::Value>,
+    wallet: Option<crate::login::wallet::Asking<'_>>,
+) -> Answered {
+    use crate::login::wallet::{Presented, Purpose, Unasked, draw_challenge, read_kept_request};
+
+    let Some(asking) = wallet else {
+        return Answered::plain(Outcome::Failed);
+    };
+    // Nobody named yet: waiting rather than failed, so a flow that opens with
+    // a password asks for it instead of refusing a round nobody answered.
+    let Some(subject) = subject else {
+        return Answered::plain(Outcome::Pending);
+    };
+    let mut unproven = false;
+    if let Some(kept) = remembered.and_then(read_kept_request) {
+        match asking
+            .verifier
+            .standing(transaction, &kept.request_id, asking.login_session)
+            .await
+        {
+            Ok(Presented::Waiting) => {
+                return Answered {
+                    outcome: Outcome::Pending,
+                    asks: Some(draw_challenge(&kept)),
+                    sending: None,
+                };
+            }
+            Ok(Presented::Identified { issuer, digest }) => {
+                return match wallet_identities::holds(
+                    transaction,
+                    &subject.user_id,
+                    &issuer,
+                    &digest,
+                )
+                .await
+                {
+                    Ok(true) => Answered::plain(Outcome::Passed),
+                    _ => Answered::plain(Outcome::Failed),
+                };
+            }
+            Ok(Presented::Lapsed) => {}
+            Ok(Presented::Unproven) => unproven = true,
+            Err(()) => return Answered::plain(Outcome::Failed),
+        }
+    }
+
+    match wallet_identities::of_user(transaction, &subject.user_id).await {
+        Ok(linked) if !linked.is_empty() => {}
+        _ => return Answered::plain(Outcome::Failed),
+    }
+    match asking
+        .verifier
+        .ask(
+            transaction,
+            Purpose::Factor,
+            asking.login_session,
+            &subject.user_id,
+        )
+        .await
+    {
+        Ok(asked) => {
+            let mut challenge = draw_challenge(&asked);
+            if unproven {
+                challenge.shown["refused"] = serde_json::Value::Bool(true);
+            }
+            Answered {
+                outcome: Outcome::Pending,
+                asks: Some(challenge),
+                sending: None,
+            }
+        }
+        // No profile to ask by: the flow decides what a step that cannot run
+        // leaves, as it does for a closed factor.
+        Err(Unasked::NotOffered) => Answered::plain(Outcome::Skipped),
+        Err(Unasked::Unavailable) => Answered::plain(Outcome::Failed),
     }
 }
 
@@ -1269,16 +1375,17 @@ mod tests {
     use super::*;
 
     /// A one-time code proves one thing the person has: alone it reaches the
-    /// class of a single factor, beside anything else the second one. A key is
-    /// two things on its own.
+    /// class of a single factor, beside anything else the second one, and a
+    /// wallet's credential with it. A key is two things on its own.
     #[test]
     fn a_code_alone_is_one_factor_and_a_key_is_two() {
-        use Authenticator::{MagicLink, Password, RecoveryCode, SmsOtp, Totp, Webauthn};
+        use Authenticator::{MagicLink, Password, RecoveryCode, SmsOtp, Totp, Wallet, Webauthn};
         let map = AcrLoaMap::from_pairs([("password", 1), ("mfa", 2)]);
 
-        for alone in [SmsOtp, Totp, RecoveryCode] {
+        for alone in [SmsOtp, Totp, RecoveryCode, Wallet] {
             assert_eq!(reached_level(&map, &[alone]), Some(1), "{alone:?} alone");
         }
+        assert_eq!(reached_level(&map, &[Password, Wallet]), Some(2));
         assert_eq!(reached_level(&map, &[Password, SmsOtp]), Some(2));
         assert_eq!(reached_level(&map, &[Password, Totp]), Some(2));
         assert_eq!(reached_level(&map, &[MagicLink, SmsOtp]), Some(2));

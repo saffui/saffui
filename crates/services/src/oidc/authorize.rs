@@ -596,10 +596,11 @@ async fn established(
 /// The ceremonies an application may ask for: each adds a factor and nothing
 /// else. Replacing a password or re-verifying an address stays the realm's to
 /// demand, never an application's.
-const ASKABLE_ENROLMENTS: [RequiredAction; 3] = [
+const ASKABLE_ENROLMENTS: [RequiredAction; 4] = [
     RequiredAction::ConfigureTotp,
     RequiredAction::ConfigureWebauthn,
     RequiredAction::ConfigureRecoveryCodes,
+    RequiredAction::LinkWalletIdentity,
 ];
 
 /// The factor an application asks the person to add, read whole.

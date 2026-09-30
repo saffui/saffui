@@ -251,6 +251,7 @@ pub(crate) fn describe_own_factors(held: &OwnFactors) -> serde_json::Value {
             "linked_at": linked.linked_at,
             "kept_because": identity_kept,
         })).collect::<Vec<_>>(),
+        "wallet_offered": held.wallet_offered,
         "fresh_until": held.fresh_until,
         "stronger_sign_in_needed": held.stronger_sign_in_needed,
     })

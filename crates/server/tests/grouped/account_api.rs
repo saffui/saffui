@@ -813,6 +813,10 @@ async fn a_person_unlinks_a_wallet_identity_like_a_second_factor() {
         "{held}"
     );
     assert!(listed["linked_at"].is_string(), "{held}");
+    assert_eq!(
+        held["wallet_offered"], false,
+        "a realm keeping no profile offered a link: {held}"
+    );
 
     prove_sign_in_reaching(&plane, chrono::Utc::now().timestamp(), 1).await;
     let (status, _, told) = sent(

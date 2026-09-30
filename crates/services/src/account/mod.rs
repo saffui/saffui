@@ -238,6 +238,9 @@ pub struct OwnFactors {
     pub recovery_codes: i64,
     /// The identities linked from a wallet, one per issuer.
     pub wallet_identities: Vec<wallet_identities::Linked>,
+    /// Whether the realm knows people by a wallet credential, so one can be
+    /// linked.
+    pub wallet_offered: bool,
     /// Until when the login the request rides may remove a factor, if it still may.
     pub fresh_until: Option<i64>,
     /// Whether that login is recent but weaker than the flow lets this person
@@ -314,6 +317,15 @@ pub async fn own_factors(
     let linked = wallet_identities::of_user(transaction, user_id)
         .await
         .map_err(|_| Unremoved::Backend)?;
+    let wallet_offered = realms::realm_features::runs_for_realm(
+        transaction,
+        commons::feature::Feature::WalletVerifier,
+    )
+    .await
+        && realms::wallet_identity::load(transaction)
+            .await
+            .map_err(|_| Unremoved::Backend)?
+            .is_some();
     let holds = Holdings {
         password,
         authenticator_app,
@@ -330,6 +342,7 @@ pub async fn own_factors(
         keys,
         recovery_codes,
         wallet_identities: linked,
+        wallet_offered,
         stronger_sign_in_needed: standing.fresh_until.is_some() && !strong,
         fresh_until: standing.fresh_until.filter(|_| strong),
     })

@@ -250,6 +250,40 @@ async fn link_by_ceremony(plane: &Plane, wallet: &Wallet) {
     );
 }
 
+/// What the account console reads of the subject's factors, as it reads them.
+async fn read_own_factors(plane: &Plane) -> Value {
+    let transaction = plane
+        .scoped(&TenantContext::new(support::TENANT, REALM))
+        .await;
+    services::realm::provisioning::provision_account_console(
+        &transaction,
+        support::TENANT,
+        REALM,
+        &services::realm::provisioning::AccountConsole {
+            redirect_uris: vec![services::account::api::compose_account_console_redirect(
+                &support::origin().issuer(REALM),
+            )],
+        },
+    )
+    .await
+    .expect("the account console");
+    transaction
+        .commit()
+        .await
+        .expect("the account console kept");
+    let bearer = plane.token(&support::account_console_claims());
+    let (status, told) = asked(
+        plane,
+        Method::GET,
+        &format!("/realms/{REALM}/account-api/v1/me/credentials"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    told
+}
+
 /// The flow a password and then a wallet, bound to the confidential client.
 async fn bind_wallet_flow(plane: &Plane) {
     use models::auditable::AuditableModel;
@@ -341,6 +375,13 @@ async fn a_person_links_their_wallet_identity_then_signs_in_with_it() {
         .unwrap()
         .get(0);
     assert_eq!(digest.len(), 64, "{digest}");
+    let factors = read_own_factors(&plane).await;
+    assert_eq!(factors["wallet_offered"], true, "{factors}");
+    assert_eq!(
+        factors["wallet_identities"][0]["issuer"],
+        json!(format!("{}/pid", wallet.issuer)),
+        "{factors}"
+    );
     let kept_outcomes: Vec<Option<Value>> = transaction
         .query("SELECT outcome FROM presentation_requests", &[])
         .await

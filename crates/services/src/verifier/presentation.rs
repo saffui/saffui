@@ -22,7 +22,7 @@ use crypto::sd_jwt::{self, KeyBinding, VerifyingPolicy};
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
 use jsonld::built_in::HeldContexts;
 use models::entities::credential_issuers::CredentialIssuer;
-use models::entities::keys::KeyUse;
+use models::entities::keys::{KeyUse, RealmSigningKey};
 use serde_json::{Map, Value, json};
 use store::keyring::Signing;
 use store::providers::protocol::presentations::{self, Answering, ForLogin, KeptRequest, Standing};
@@ -310,6 +310,23 @@ pub async fn ask_for_login(
     .await
 }
 
+/// The key the realm signs its requests with: its active Ed25519 one.
+pub(crate) async fn find_request_key(
+    transaction: &UnitOfWork,
+    signing: &Signing<'_>,
+) -> Result<RealmSigningKey, Unaskable> {
+    realm_keys::active(
+        transaction,
+        signing.ring,
+        signing.envelope,
+        KeyUse::Sig,
+        Some(SignAlg::EdDsa),
+    )
+    .await
+    .map_err(|_| Unaskable::Unwritable)?
+    .ok_or(Unaskable::NoSigningKey)
+}
+
 async fn issue_request(
     transaction: &UnitOfWork,
     signing: &Signing<'_>,
@@ -321,16 +338,7 @@ async fn issue_request(
 ) -> Result<Asked, Unaskable> {
     check_query(query)?;
     let did = realm_did(issuer).ok_or(Unaskable::NoDid)?;
-    let key = realm_keys::active(
-        transaction,
-        signing.ring,
-        signing.envelope,
-        KeyUse::Sig,
-        Some(SignAlg::EdDsa),
-    )
-    .await
-    .map_err(|_| Unaskable::Unwritable)?
-    .ok_or(Unaskable::NoSigningKey)?;
+    let key = find_request_key(transaction, signing).await?;
 
     let request_id = HEXLOWER.encode(&draw::<16>(signing.provider)?);
     let nonce = BASE64URL_NOPAD.encode(&draw::<32>(signing.provider)?);

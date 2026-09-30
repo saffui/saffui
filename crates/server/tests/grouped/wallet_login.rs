@@ -2,8 +2,8 @@ use super::support;
 use super::support::Plane;
 use super::wallet::{
     CREDENTIAL_TYPE, IDENTITY_TYPE, IdentityWallet, Wallet, answered, asked, asked_under,
-    encrypted, identity_answer, plane_that_verifies, read_request, realm_ready_for_identity,
-    realm_ready_to_verify, serve_pid_issuer, served,
+    encrypted, identity_answer, mint_request_key, name_pid_issuer, plane_that_verifies,
+    read_request, realm_ready_for_identity, realm_ready_to_verify, serve_pid_issuer, served,
 };
 use actix_web::http::{Method, StatusCode};
 use serde_json::{Value, json};
@@ -603,6 +603,40 @@ async fn a_profile_names_what_can_identify_somebody() {
         StatusCode::NOT_FOUND,
         "a refused profile was kept: {told}"
     );
+}
+
+/// A realm holding no key to sign a wallet's request with could ask no
+/// wallet, and every login asking for an identity would be refused: the
+/// profile waits for the key, and says which one to mint.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_profile_waits_for_the_key_its_requests_are_signed_with() {
+    let (plane, bearer) = plane_that_verifies().await;
+    let wallet = name_pid_issuer(&plane, &bearer).await;
+    let (status, told) = keep_profile(&plane, &bearer, &identity_profile(&wallet)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert_eq!(
+        told["message"],
+        "the realm holds no Ed25519 key to sign a request with: mint one under its keys",
+        "{told}"
+    );
+    let (status, told) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/wallet-identity"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a profile nothing can ask by was kept: {told}"
+    );
+
+    mint_request_key(&plane, &bearer).await;
+    let (status, told) = keep_profile(&plane, &bearer, &identity_profile(&wallet)).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
 }
 
 async fn read_linked_issuers(plane: &Plane) -> Vec<String> {

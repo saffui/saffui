@@ -5,6 +5,10 @@ use actix_web::{HttpRequest, HttpResponseBuilder};
 /// The login in progress.
 pub const AUTH_SESSION: &str = "saffui_auth_session";
 
+/// What a browser presents to have the steps it passed in a login counted on
+/// that login's later rounds.
+pub const AUTH_PROOF: &str = "saffui_auth_proof";
+
 /// The login that finished, which is what makes a second client's `/authorize`
 /// something other than a fresh sign-in.
 pub const SSO_SESSION: &str = "saffui_session";
@@ -44,6 +48,18 @@ pub fn set_device(response: &mut HttpResponseBuilder, value: &str, realm_id: &st
         .max_age(Duration::seconds(auth::login::device::LIFETIME))
         .finish();
     response.cookie(cookie);
+}
+
+/// Hand over the proof, on a response already built. Strict for the reason the
+/// device token is, and gone with the window: the login it counts for is shorter.
+pub fn hand_proof(response: &mut actix_web::HttpResponse, value: &str, realm_id: &str) {
+    let cookie = Cookie::build(AUTH_PROOF, value.to_owned())
+        .path(format!("/realms/{realm_id}"))
+        .http_only(true)
+        .secure(true)
+        .same_site(SameSite::Strict)
+        .finish();
+    let _ = response.add_cookie(&cookie);
 }
 
 /// Set the value the iframe reads, on the terms it has to be readable on.

@@ -2939,6 +2939,11 @@ async fn logging_out_ends_the_login_and_what_hangs_off_it() {
         .find(|header| header.starts_with(support::SSO_COOKIE))
         .expect("the browser was not told to forget its login");
     assert!(expiring.contains("Max-Age=0"), "{expiring}");
+    let proof = cleared
+        .iter()
+        .find(|header| header.starts_with(support::AUTH_PROOF_COOKIE))
+        .expect("the browser was not told to forget a login's proof");
+    assert!(proof.contains("Max-Age=0"), "{proof}");
 
     assert!(
         !plane.login_is_open(&session).await,
@@ -3412,6 +3417,429 @@ async fn two_factors_reach_the_level_two_factors_are_worth() {
         support::STRONG_ACR,
         "a login that ran two factors reported the level of one"
     );
+}
+
+/// Have the client ask the person before anything is minted for it.
+async fn demand_consent(plane: &Plane) {
+    let transaction = plane
+        .scoped(&store::tenancy::TenantContext::new(
+            support::TENANT,
+            support::REALM,
+        ))
+        .await;
+    let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
+        .await
+        .expect("the clients table")
+        .expect("a planted client");
+    client.consent_required = Some(true);
+    store::providers::clients::update(&transaction, &client)
+        .await
+        .expect("the clients table");
+    transaction.commit().await.expect("the setting kept");
+}
+
+/// Answer a login step the way a browser does: with the login's cookie and
+/// the proof an earlier round handed over, keeping whatever this round hands
+/// over or takes away.
+async fn login_step_holding(
+    plane: &Plane,
+    binding: &str,
+    proof: &mut Option<String>,
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let mut cookies = format!("{}={binding}", support::AUTH_SESSION_COOKIE);
+    if let Some(held) = proof.as_deref() {
+        cookies.push_str(&format!("; {}={held}", support::AUTH_PROOF_COOKIE));
+    }
+    let request = test::TestRequest::post()
+        .uri(&format!(
+            "/realms/{}/protocol/openid-connect/login",
+            support::REALM
+        ))
+        .insert_header(("cookie", cookies))
+        .set_json(&body)
+        .to_request();
+    let response = test::call_service(&app, request).await;
+    let status = response.status();
+    let set: Vec<String> = response
+        .headers()
+        .get_all("set-cookie")
+        .map(|value| value.to_str().unwrap().to_owned())
+        .collect();
+    if let Some(handed) = set
+        .iter()
+        .find(|header| header.starts_with(&format!("{}=", support::AUTH_PROOF_COOKIE)))
+    {
+        *proof = cookie_value(std::slice::from_ref(handed), support::AUTH_PROOF_COOKIE);
+    }
+    (status, test::read_body_json(response).await)
+}
+
+/// The page keeps everything it was told and posts it all again with each
+/// answer, so the round answering the consent screen carries the code the
+/// flow already spent. The browser that spent it is the one answering, and
+/// the level is the one both factors reached.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_code_spent_passing_the_flow_does_not_refuse_the_consent_round() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::STRONG_FLOW)
+        .await;
+    demand_consent(&plane).await;
+
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let mut proof = None;
+    let mut answered =
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD });
+    let (_, told) = login_step_holding(&plane, &auth_session, &mut proof, answered.clone()).await;
+    assert_eq!(told["status"], "challenge", "{told}");
+    assert!(
+        proof.is_some(),
+        "a password that passed handed over no proof"
+    );
+
+    answered["totp"] = serde_json::json!(current_code());
+    let (status, told) =
+        login_step_holding(&plane, &auth_session, &mut proof, answered.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "consent", "{told}");
+
+    answered["consent"] = serde_json::json!("granted");
+    let held = proof.clone();
+    let (status, told) =
+        login_step_holding(&plane, &auth_session, &mut proof, answered.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "admitted", "{told}");
+    assert_eq!(proof, None, "the proof outlived the login");
+
+    let landing = told["redirect_to"].as_str().expect("somewhere to land");
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code_in(landing)),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(
+        plane
+            .claims_of(granted["id_token"].as_str().expect("an id token"))
+            .await["acr"],
+        support::STRONG_ACR,
+        "a factor counted without running again did not count toward the level"
+    );
+
+    // The login is over, and its proof goes with it.
+    let mut stale = held;
+    let (status, told) = login_step_holding(&plane, &auth_session, &mut stale, answered).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{told}");
+    assert_eq!(stale, None, "a proof for a finished login was kept");
+}
+
+/// The same for a ceremony the realm requires once the flow has passed: its
+/// answer rides beside the code that passed the flow.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_code_spent_passing_the_flow_does_not_refuse_the_ceremony_round() {
+    use models::entities::user::RequiredAction;
+
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::STRONG_FLOW)
+        .await;
+    plane
+        .require_of_subject(RequiredAction::ConfigureWebauthn)
+        .await;
+    let key = support::soft_key::SoftKey::new();
+
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let mut proof = None;
+    let mut answered = serde_json::json!({
+        "username": support::SUBJECT,
+        "password": support::PASSWORD,
+        "totp": current_code(),
+    });
+    let (status, told) =
+        login_step_holding(&plane, &auth_session, &mut proof, answered.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["execution"], "webauthn-register", "{told}");
+
+    answered["webauthn_register"] = serde_json::json!(
+        key.attest(told.get("asks").expect("creation options"), support::ORIGIN)
+            .to_string()
+    );
+    let (status, told) = login_step_holding(&plane, &auth_session, &mut proof, answered).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "admitted", "{told}");
+    assert_eq!(plane.subject_owes().await, vec![], "the instruction stands");
+}
+
+/// And for the organization chooser, which two memberships and nothing to
+/// pick between them put in front of the person once the flow has passed.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_code_spent_passing_the_flow_does_not_refuse_the_organization_round() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::STRONG_FLOW)
+        .await;
+    {
+        let transaction = plane
+            .scoped(&store::tenancy::TenantContext::new(
+                support::TENANT,
+                support::REALM,
+            ))
+            .await;
+        for name in ["acme", "beta"] {
+            let organization = models::entities::organization::OrganizationMutationModel {
+                name: name.to_owned(),
+                display_name: name.to_owned(),
+                description: String::new(),
+                enabled: true,
+                redirect_url: None,
+                attributes: None,
+            }
+            .into_model(
+                format!("org-{name}"),
+                support::REALM.to_owned(),
+                models::auditable::AuditableModel::from_creator(
+                    support::TENANT.to_owned(),
+                    "root".to_owned(),
+                ),
+            );
+            store::providers::directory::organizations::create(&transaction, &organization)
+                .await
+                .expect("the organizations table");
+        }
+        transaction.commit().await.expect("the organizations kept");
+    }
+    for organization in ["org-acme", "org-beta"] {
+        plane.add_org_member(organization, support::SUBJECT).await;
+    }
+
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let mut proof = None;
+    let mut answered = serde_json::json!({
+        "username": support::SUBJECT,
+        "password": support::PASSWORD,
+        "totp": current_code(),
+    });
+    let (status, told) =
+        login_step_holding(&plane, &auth_session, &mut proof, answered.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "organization", "{told}");
+
+    answered["organization"] = serde_json::json!("beta");
+    let (status, told) = login_step_holding(&plane, &auth_session, &mut proof, answered).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "admitted", "{told}");
+}
+
+/// A key's counter is spent the way a code is: the assertion that passed the
+/// flow, posted again with the consent answer, is not asked to count twice,
+/// and a person saying no is the client's answer rather than a refused login.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_key_that_passed_the_flow_is_not_asked_again_on_the_consent_round() {
+    let plane = Plane::with_actions(&[]).await;
+    let mut key = plane.enrol_soft_passkey().await;
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::KEYED_FLOW)
+        .await;
+    demand_consent(&plane).await;
+
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let mut proof = None;
+    let mut answered =
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD });
+    let (_, told) = login_step_holding(&plane, &auth_session, &mut proof, answered.clone()).await;
+    answered["webauthn"] =
+        serde_json::json!(key.answer(told.get("asks").expect("a challenge"), support::ORIGIN));
+    let (status, told) =
+        login_step_holding(&plane, &auth_session, &mut proof, answered.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "consent", "{told}");
+
+    answered["consent"] = serde_json::json!("refused");
+    let (status, told) = login_step_holding(&plane, &auth_session, &mut proof, answered).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "sent_back", "{told}");
+    assert_eq!(proof, None, "the proof outlived the login");
+}
+
+/// A step passed on one round is not asked for on the next, so a round may
+/// carry only what it is asked: a form posted without script, or from the
+/// page a mailed link opens, carries nothing else.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_step_passed_on_one_round_is_not_asked_on_the_next() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::STRONG_FLOW)
+        .await;
+
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let mut proof = None;
+    let (_, told) = login_step_holding(
+        &plane,
+        &auth_session,
+        &mut proof,
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(told["status"], "challenge", "{told}");
+
+    let (status, told) = login_step_holding(
+        &plane,
+        &auth_session,
+        &mut proof,
+        serde_json::json!({ "totp": current_code() }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "admitted", "{told}");
+}
+
+/// Whoever holds the login's cookie without the proof its browser was handed,
+/// having planted that cookie there, finishes nothing the person's factors
+/// opened: every step is asked afresh, a forged proof counts for nothing, and
+/// the person's own round still goes through.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_round_without_the_proof_counts_nothing_the_login_passed() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::STRONG_FLOW)
+        .await;
+    demand_consent(&plane).await;
+
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let mut proof = None;
+    let mut answered = serde_json::json!({
+        "username": support::SUBJECT,
+        "password": support::PASSWORD,
+        "totp": current_code(),
+    });
+    let (_, told) = login_step_holding(&plane, &auth_session, &mut proof, answered.clone()).await;
+    assert_eq!(told["status"], "consent", "{told}");
+
+    let granting = serde_json::json!({ "consent": "granted" });
+    let (status, told, set) = login_step(&plane, Some(&auth_session), granting.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "challenge", "{told}");
+    assert_eq!(told["execution"], "exec-strong-1", "{told}");
+    assert_eq!(
+        cookie_value(&set, support::AUTH_PROOF_COOKIE),
+        None,
+        "a proof was handed over for nothing passed"
+    );
+
+    let mut forged = Some("a-proof-nobody-was-handed".to_owned());
+    let (status, told) = login_step_holding(&plane, &auth_session, &mut forged, granting).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(
+        told["status"], "challenge",
+        "a forged proof counted: {told}"
+    );
+
+    answered["consent"] = serde_json::json!("granted");
+    let (status, told) = login_step_holding(&plane, &auth_session, &mut proof, answered).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "admitted", "{told}");
+}
+
+/// A person switched off between two rounds keeps nothing the login passed:
+/// the round is answered as it would be for nobody.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_person_switched_off_mid_login_keeps_nothing_it_passed() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::STRONG_FLOW)
+        .await;
+    demand_consent(&plane).await;
+
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let mut proof = None;
+    let mut answered = serde_json::json!({
+        "username": support::SUBJECT,
+        "password": support::PASSWORD,
+        "totp": current_code(),
+    });
+    let (_, told) = login_step_holding(&plane, &auth_session, &mut proof, answered.clone()).await;
+    assert_eq!(told["status"], "consent", "{told}");
+
+    plane.disable_subject().await;
+    answered["consent"] = serde_json::json!("granted");
+    let (status, told) = login_step_holding(&plane, &auth_session, &mut proof, answered).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
+    assert_eq!(told["status"], "refused", "{told}");
+}
+
+/// A factor the realm closes after it passed counts for nothing, as it would
+/// had it been asked then: the flow that requires it refuses.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_factor_closed_after_it_passed_counts_for_nothing() {
+    let plane = Plane::with_actions(&[]).await;
+    let mut key = plane.enrol_soft_passkey().await;
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::KEYED_FLOW)
+        .await;
+    demand_consent(&plane).await;
+
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let mut proof = None;
+    let mut answered =
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD });
+    let (_, told) = login_step_holding(&plane, &auth_session, &mut proof, answered.clone()).await;
+    answered["webauthn"] =
+        serde_json::json!(key.answer(told.get("asks").expect("a challenge"), support::ORIGIN));
+    let (_, told) = login_step_holding(&plane, &auth_session, &mut proof, answered.clone()).await;
+    assert_eq!(told["status"], "consent", "{told}");
+
+    {
+        let transaction = plane
+            .scoped(&store::tenancy::TenantContext::new(
+                support::TENANT,
+                support::REALM,
+            ))
+            .await;
+        store::providers::realms::realm_features::keep_wish(
+            &transaction,
+            commons::feature::Feature::WebAuthn.slug(),
+            false,
+            "root",
+        )
+        .await
+        .expect("the features table");
+        transaction.commit().await.expect("the wish kept");
+    }
+    answered["consent"] = serde_json::json!("granted");
+    let (status, told) = login_step_holding(&plane, &auth_session, &mut proof, answered).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
+    assert_eq!(told["status"], "refused", "{told}");
 }
 
 /// A password step issues nothing. The form is the caller's own and the server

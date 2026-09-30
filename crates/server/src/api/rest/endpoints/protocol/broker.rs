@@ -616,6 +616,7 @@ pub(crate) fn answer_admitted(
     tracing::info!(session = %admitted.session_id, alias, "brokered login admitted");
     let mut response = HttpResponseBuilder::new(StatusCode::SEE_OTHER);
     binding::clear(&mut response, binding::AUTH_SESSION, realm_id);
+    binding::clear(&mut response, binding::AUTH_PROOF, realm_id);
     // No box was ticked on the upstream's page: the session cookie dies with
     // the browser, like an unremembered local login.
     binding::set(

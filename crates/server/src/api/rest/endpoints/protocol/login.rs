@@ -280,8 +280,9 @@ pub async fn answer(
         .collect();
 
     let device_token = binding::read(&request, binding::DEVICE);
+    let proof = binding::read(&request, binding::AUTH_PROOF);
     // Played once, and once more where the carrier held the code it drew.
-    let play = async |transaction: &store::tenancy::UnitOfWork| {
+    let play = async |transaction: &store::tenancy::UnitOfWork, presented: Option<&str>| {
         browser::answer_step(
             transaction,
             sealing.provider.as_ref(),
@@ -294,9 +295,9 @@ pub async fn answer(
             negotiated
                 .as_deref()
                 .or(filled(&answered.username).as_deref()),
-            // Everything the body carried. The flow runs every step against what it
-            // was given, so a login resumed with a second factor still has to
-            // satisfy the first, and each step takes the kind it understands.
+            // Everything the body carried, each step taking the kind it
+            // understands. A step this login already passed is not run again
+            // for a browser presenting the proof it was handed then.
             &answers,
             auth::login::enrolment::Answers {
                 attestation: attestation.as_deref(),
@@ -321,6 +322,7 @@ pub async fn answer(
                 envelope: &sealing.envelope,
             }),
             device_token.as_deref(),
+            presented,
             signing.as_ref(),
             // Anything other than the two words is no answer at all, so the
             // screen is shown again rather than read as one of them.
@@ -347,12 +349,14 @@ pub async fn answer(
         spoken,
         now,
     };
-    let step = play(&transaction).await;
+    let step = play(&transaction, proof.as_deref()).await;
+    let handing = proof_to_hand(&step, None);
     match finish(step, transaction, round).await {
-        Finished::Told(response) => response,
+        Finished::Told(response) => with_proof(response, handing, &context.realm_id),
         // The carrier held the code: nothing went. The round is played again,
         // where the step that drew the code fails and whatever else the flow
-        // offers answers in its place.
+        // offers answers in its place. What the first play passed counts
+        // there, under the proof it drew and the browser has not yet seen.
         Finished::Held(holding) => {
             let again = match tenancy.begin(&context).await {
                 Ok(transaction) => transaction,
@@ -372,9 +376,10 @@ pub async fn answer(
             {
                 return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
             }
-            let step = play(&again).await;
+            let step = play(&again, handing.as_deref().or(proof.as_deref())).await;
+            let handing = proof_to_hand(&step, handing);
             match finish(step, again, round).await {
-                Finished::Told(response) => response,
+                Finished::Told(response) => with_proof(response, handing, &context.realm_id),
                 // The step that drew the code is marked held and draws none,
                 // so a second hold has nothing to hold.
                 Finished::Held(_) => told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
@@ -430,6 +435,26 @@ struct Round<'a> {
     page: &'a str,
     spoken: Spoken,
     now: DateTime<Utc>,
+}
+
+/// The proof to hand over with this answer: the one its round drew, or the
+/// first play's where the round was played again, and only while the login
+/// stays open for another answer. An answer that ends it takes the login's
+/// cookies away instead.
+fn proof_to_hand(step: &Result<Step, Unanswerable>, drawn_first: Option<String>) -> Option<String> {
+    match step {
+        Ok(open @ (Step::Challenge { .. } | Step::Consent { .. } | Step::Organization { .. })) => {
+            open.drawn_proof().map(str::to_owned).or(drawn_first)
+        }
+        _ => None,
+    }
+}
+
+fn with_proof(mut response: HttpResponse, proof: Option<String>, realm_id: &str) -> HttpResponse {
+    if let Some(proof) = proof {
+        binding::hand_proof(&mut response, &proof, realm_id);
+    }
+    response
 }
 
 /// Commit what the round wrote, send what it drew, and tell the browser.
@@ -525,6 +550,7 @@ async fn finish(
                     execution_id,
                     mut asks,
                     sending,
+                    ..
                 } => {
                     let drawn = sending.as_deref().and_then(Drawn::of);
                     let sent = match sending {
@@ -638,6 +664,7 @@ async fn finish(
                         Spoken::Form => StatusCode::SEE_OTHER,
                     });
                     binding::clear(&mut response, binding::AUTH_SESSION, &context.realm_id);
+                    binding::clear(&mut response, binding::AUTH_PROOF, &context.realm_id);
                     // Remembered, the cookie survives the browser closing for
                     // as long as the session itself may live; otherwise it is
                     // the browser's session cookie and dies with the window.
@@ -682,6 +709,7 @@ async fn finish(
                     scopes,
                     policy_uri,
                     tos_uri,
+                    ..
                 } => match spoken {
                     Spoken::Json => uncached(&mut HttpResponseBuilder::new(StatusCode::OK)).json(
                         serde_json::json!({
@@ -695,7 +723,7 @@ async fn finish(
                     ),
                     Spoken::Form => shown(page, "consent"),
                 },
-                Step::Organization { held } => match spoken {
+                Step::Organization { held, .. } => match spoken {
                     Spoken::Json => uncached(&mut HttpResponseBuilder::new(StatusCode::OK)).json(
                         serde_json::json!({
                             "status": "organization",
@@ -750,6 +778,7 @@ async fn finish(
                         Spoken::Form => StatusCode::SEE_OTHER,
                     });
                     binding::clear(&mut response, binding::AUTH_SESSION, &context.realm_id);
+                    binding::clear(&mut response, binding::AUTH_PROOF, &context.realm_id);
                     hand_over(&mut response, &context.realm_id, ticket.as_deref());
                     told_landing(&mut response, spoken, "sent_back", &landing, origin, realm)
                 }
@@ -763,6 +792,7 @@ async fn finish(
             // refusal until the window closes.
             let mut response = tell(StatusCode::NOT_FOUND, "no-such-login");
             binding::strike(&mut response, binding::AUTH_SESSION, &context.realm_id);
+            binding::strike(&mut response, binding::AUTH_PROOF, &context.realm_id);
             response
         }
         Err(_) => told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),

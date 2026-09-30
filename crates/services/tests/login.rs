@@ -1,7 +1,7 @@
 mod support;
 
-use auth::login::authenticator::Answer;
-use auth::login::{Lock, Progress, Unrunnable, run_flow};
+use auth::login::authenticator::{Answer, Authenticator};
+use auth::login::{Lock, PassedSteps, Progress, Unrunnable, run_flow};
 use chrono::Utc;
 use models::auditable::AuditableModel;
 use models::entities::auth::{
@@ -110,6 +110,7 @@ async fn a_password_flow_admits_refuses_and_asks() {
         &flow,
         Some(&user),
         &[],
+        &PassedSteps::new(),
         &serde_json::Value::Null,
         None,
         &[],
@@ -126,6 +127,7 @@ async fn a_password_flow_admits_refuses_and_asks() {
             execution_id: "exec-1".to_owned(),
             asks: None,
             remember: serde_json::Map::new(),
+            passed: PassedSteps::new(),
         },
         "a step with no answer refused instead of asking"
     );
@@ -140,6 +142,7 @@ async fn a_password_flow_admits_refuses_and_asks() {
             &flow,
             Some(&user),
             std::slice::from_ref(&right),
+            &PassedSteps::new(),
             &serde_json::Value::Null,
             None,
             &[],
@@ -163,6 +166,7 @@ async fn a_password_flow_admits_refuses_and_asks() {
             &flow,
             Some(&user),
             std::slice::from_ref(&wrong),
+            &PassedSteps::new(),
             &serde_json::Value::Null,
             None,
             &[],
@@ -174,6 +178,65 @@ async fn a_password_flow_admits_refuses_and_asks() {
         .map(|(progress, _)| progress)
         .unwrap(),
         Progress::Refused
+    );
+}
+
+/// A step an earlier round of the login passed counts without its answer, as
+/// the authenticator it ran and nothing else: rewritten since to run another,
+/// it asks again.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_step_the_login_passed_counts_as_what_it_ran() {
+    let fixture = Fixture::with_user().await;
+    let transaction = fixture.scoped(&tenant()).await;
+
+    let flow = plant_flow(&transaction, AuthenticatorRequirement::Required, "password").await;
+    let realm = realms::load(&transaction, "main").await.unwrap().unwrap();
+    let user = store::providers::directory::users::load(&transaction, "ada")
+        .await
+        .unwrap()
+        .unwrap();
+    let unanswered = async |already: &PassedSteps| {
+        run_flow(
+            &transaction,
+            &provider(),
+            &realm,
+            &origin(),
+            &flow,
+            Some(&user),
+            &[],
+            already,
+            &serde_json::Value::Null,
+            None,
+            &[],
+            None,
+            Lock::Applies,
+            Utc::now(),
+        )
+        .await
+        .map(|(progress, _)| progress)
+        .unwrap()
+    };
+
+    let counted = PassedSteps::from([("exec-1".to_owned(), Authenticator::Password)]);
+    assert_eq!(
+        unanswered(&counted).await,
+        Progress::Admitted {
+            passed: counted.clone()
+        },
+        "a step the login passed was asked again"
+    );
+
+    let rewritten = PassedSteps::from([("exec-1".to_owned(), Authenticator::Totp)]);
+    assert_eq!(
+        unanswered(&rewritten).await,
+        Progress::Waiting {
+            execution_id: "exec-1".to_owned(),
+            asks: None,
+            remember: serde_json::Map::new(),
+            passed: PassedSteps::new(),
+        },
+        "a step counted as an authenticator it no longer runs"
     );
 }
 
@@ -199,6 +262,7 @@ async fn an_unknown_subject_is_refused_like_a_wrong_password() {
             &flow,
             None,
             std::slice::from_ref(&offered),
+            &PassedSteps::new(),
             &serde_json::Value::Null,
             None,
             &[],
@@ -239,6 +303,7 @@ async fn a_step_this_build_cannot_run_stops_the_flow() {
             &flow,
             None,
             &[],
+            &PassedSteps::new(),
             &serde_json::Value::Null,
             None,
             &[],
@@ -269,6 +334,7 @@ async fn a_flow_that_is_not_there_is_not_a_refusal() {
             "no-such-flow",
             None,
             &[],
+            &PassedSteps::new(),
             &serde_json::Value::Null,
             None,
             &[],
@@ -309,6 +375,7 @@ async fn a_flow_whose_only_step_is_disabled_admits_nobody() {
             &flow,
             Some(&user),
             std::slice::from_ref(&right),
+            &PassedSteps::new(),
             &serde_json::Value::Null,
             None,
             &[],

@@ -654,8 +654,11 @@ pub fn read_bitstring_list(
 
     let list = Node::Iri(uri.to_owned());
     let types = values_of(&quads, &list, RDF_TYPE);
-    if !names_iri(&types, VERIFIABLE_CREDENTIAL) || !names_iri(&types, LIST_CREDENTIAL) {
+    if types.is_empty() {
         return Err(LIST_ELSEWHERE);
+    }
+    if !names_iri(&types, VERIFIABLE_CREDENTIAL) || !names_iri(&types, LIST_CREDENTIAL) {
+        return Err(LIST_UNREAD);
     }
     match one(&values_of(&quads, &list, ISSUER)) {
         Some(Object::Node(Node::Iri(named))) if named == issuer => {}
@@ -1549,10 +1552,9 @@ mod tests {
         use crypto::jose::jwk::KeyPair;
         use crypto::provider::HashAlg;
         let provider = provider();
-        let none_pinned = HashMap::new();
+        let pinned = raw_list_context();
         let hash = |document: &Value| {
-            let quads =
-                to_rdf(document, &HeldContexts::new(&none_pinned), 1_000).expect("a dataset");
+            let quads = to_rdf(document, &HeldContexts::new(&pinned), 1_000).expect("a dataset");
             let canonical = jsonld::canon::canonicalize(&provider, HashAlg::Sha256, &quads, 500)
                 .expect("canonical");
             provider
@@ -1581,6 +1583,18 @@ mod tests {
         let mut list = list;
         list["proof"] = options;
         list
+    }
+
+    const RAW_LIST_CONTEXT: &str = "https://issuer.example/contexts/raw-list";
+
+    /// A context naming the encoded list's property as a plain string.
+    fn raw_list_context() -> HashMap<String, Value> {
+        HashMap::from([(
+            RAW_LIST_CONTEXT.to_owned(),
+            serde_json::json!({ "@context": {
+                "rawList": "https://www.w3.org/ns/credentials/status#encodedList"
+            } }),
+        )])
     }
 
     fn bitstring_list(subject: Value) -> Value {
@@ -1690,6 +1704,40 @@ mod tests {
                 now()
             ),
             Err(LIST_UNREAD)
+        );
+        let mut untyped = bitstring_list(serde_json::json!({
+            "id": format!("{LIST}#list"),
+            "type": "BitstringStatusList",
+            "statusPurpose": "revocation",
+            "encodedList": encoded(&[0u8; 16_384]),
+        }));
+        untyped["type"] = serde_json::json!(["VerifiableCredential"]);
+        let untyped = signed_bitstring_list(&pair, untyped, "assertionMethod").to_string();
+        assert_eq!(
+            read_bitstring_list(&provider(), &contexts, ISSUER, &keys, LIST, &untyped, now()),
+            Err(LIST_UNREAD)
+        );
+        let mut raw = bitstring_list(serde_json::json!({
+            "id": format!("{LIST}#list"),
+            "type": "BitstringStatusList",
+            "statusPurpose": "revocation",
+            "rawList": encoded(&[0u8; 16_384]),
+        }));
+        raw["@context"] = serde_json::json!([jsonld::built_in::CREDENTIALS_V2, RAW_LIST_CONTEXT]);
+        let raw = signed_bitstring_list(&pair, raw, "assertionMethod").to_string();
+        let pinned = raw_list_context();
+        assert_eq!(
+            read_bitstring_list(
+                &provider(),
+                &HeldContexts::new(&pinned),
+                ISSUER,
+                &keys,
+                LIST,
+                &raw,
+                now()
+            ),
+            Err(LIST_UNREAD),
+            "an encoded list not written as multibase was read"
         );
     }
 

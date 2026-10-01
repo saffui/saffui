@@ -267,6 +267,27 @@ pub async fn note_unread(
     Ok(())
 }
 
+/// Forget what was kept of a list, its address still followed: as if never
+/// read, until a reading is kept.
+pub async fn forget_reading(
+    transaction: &UnitOfWork,
+    issuer_id: &str,
+    uri: &str,
+    format: &str,
+) -> StoreResult<()> {
+    transaction
+        .execute(
+            "UPDATE credential_status_lists \
+             SET statuses = NULL, bits = NULL, purposes = NULL, issued_at = NULL, \
+                 read_at = NULL, usable_until = NULL \
+             WHERE issuer_id = $1 AND uri = $2 AND format = $3",
+            &[&issuer_id, &uri, &format],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(())
+}
+
 /// Forget the lists no credential cited since `cited_before`.
 pub async fn drop_uncited(
     transaction: &UnitOfWork,

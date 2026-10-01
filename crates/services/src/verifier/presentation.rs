@@ -5,11 +5,11 @@
 //! under the certificate an authority issued for its verifier key, as the
 //! realm chose, and fetched by the wallet at its `request_uri`. The identifier
 //! it was asked under is kept with it, and its answer held to that one. The
-//! answer comes back to one
-//! address per realm, encrypted to a key drawn for that request alone; the
-//! encrypted answer names that key, which is how it finds its request. A
-//! request is answered once, and nothing a person disclosed is kept: the
-//! outcome names issuers, types and claims, never their values.
+//! answer comes back to one address per realm, encrypted to a key drawn for
+//! that request alone; the encrypted answer names that key, which is how it
+//! finds its request. A request is answered once, and nothing a person
+//! disclosed is kept: the outcome names issuers, types and claims, never
+//! their values.
 
 use std::collections::{HashMap, HashSet};
 
@@ -25,6 +25,7 @@ use crypto::provider::{CryptoProvider, HashAlg, SignAlg};
 use crypto::sd_jwt::{self, KeyBinding, VerifyingPolicy};
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
 use jsonld::built_in::HeldContexts;
+use models::entities::credential_issuers::IssuerTrust;
 use models::entities::keys::{KeyUse, RealmSigningKey};
 use models::entities::verifier::{ServingVerifierKey, VerifierIdentity, VerifierSettings};
 use secrecy::ExposeSecret;
@@ -34,8 +35,10 @@ use store::providers::protocol::presentations::{self, Answering, ForLogin, KeptR
 use store::providers::realms::{credential_issuers, realm_keys, verifier, wallet_identity};
 use store::tenancy::UnitOfWork;
 
+use super::certificates::{self, ChainLink};
 use super::did::realm_did;
 use super::linked_data::{Binding, verify_ldp_presentation};
+use super::revocation;
 use super::status::{self, Citation};
 
 /// How long a request waits for its answer, in seconds.
@@ -65,14 +68,18 @@ const HOLDER_ALGORITHMS: [&str; 4] = ["EdDSA", "ES256", "ES384", "ES512"];
 
 /// The members of a credential query this verifier checks, and those of a
 /// claims query.
-const CREDENTIAL_QUERY_MEMBERS: [&str; 6] = [
+const CREDENTIAL_QUERY_MEMBERS: [&str; 7] = [
     "id",
     "format",
     "multiple",
     "meta",
     "claims",
     "require_cryptographic_holder_binding",
+    "trusted_authorities",
 ];
+/// The most authorities, and the most key identifiers, a query trusts.
+const MOST_TRUSTED_AUTHORITIES: usize = 10;
+const MOST_AUTHORITY_KEY_IDENTIFIERS: usize = 50;
 const CLAIMS_QUERY_MEMBERS: [&str; 2] = ["id", "path"];
 
 const SEALING_PURPOSE: &str = "presentation-response-key";
@@ -177,14 +184,9 @@ pub fn check_query(query: &Value) -> Result<(), Unaskable> {
                 "claim sets are not read yet: name the claims every credential must hold",
             ));
         }
-        if credential.get("trusted_authorities").is_some() {
-            return Err(refused(
-                "trusted authorities are not matched: the issuers the realm names decide",
-            ));
-        }
         if has_member_outside(credential, &CREDENTIAL_QUERY_MEMBERS) {
             return Err(refused(
-                "a credential is asked for by its id, format, multiple, meta, claims and require_cryptographic_holder_binding alone",
+                "a credential is asked for by its id, format, multiple, meta, claims, require_cryptographic_holder_binding and trusted_authorities alone",
             ));
         }
         let types_member = match credential.get("format").and_then(Value::as_str) {
@@ -237,8 +239,79 @@ pub fn check_query(query: &Value) -> Result<(), Unaskable> {
         if let Some(claims) = credential.get("claims") {
             check_claims_query(claims)?;
         }
+        if let Some(authorities) = credential.get("trusted_authorities") {
+            if types_member != "vct_values" {
+                return Err(refused(
+                    "trusted authorities are matched on dc+sd-jwt credentials alone",
+                ));
+            }
+            check_trusted_authorities(authorities)?;
+        }
     }
     Ok(())
+}
+
+/// The authorities one credential is trusted under, OpenID4VP 1.0 §6.1.1:
+/// matched by the authority key identifiers of its chain (§6.1.1.1), the one
+/// type HAIP 1.0 §5 has a verifier support. The verifier holds the answer to
+/// them itself (§14.9).
+fn check_trusted_authorities(authorities: &Value) -> Result<(), Unaskable> {
+    let refused = Unaskable::NotAQuery;
+    let authorities = authorities
+        .as_array()
+        .filter(|listed| !listed.is_empty() && listed.len() <= MOST_TRUSTED_AUTHORITIES)
+        .ok_or(refused(
+            "trusted authorities are one to ten entries, each a type and its values",
+        ))?;
+    for authority in authorities {
+        if has_member_outside(authority, &["type", "values"]) {
+            return Err(refused(
+                "trusted authorities are one to ten entries, each a type and its values",
+            ));
+        }
+        if authority.get("type").and_then(Value::as_str) != Some("aki") {
+            return Err(refused("trusted authorities are matched by aki alone"));
+        }
+        let held = authority
+            .get("values")
+            .and_then(Value::as_array)
+            .filter(|values| {
+                !values.is_empty()
+                    && values.len() <= MOST_AUTHORITY_KEY_IDENTIFIERS
+                    && values
+                        .iter()
+                        .all(|value| read_key_identifier(value).is_some())
+            });
+        if held.is_none() {
+            return Err(refused(
+                "an aki entry holds one to fifty key identifiers in base64url",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// A key identifier as an aki value writes it: base64url without padding, of
+/// one to sixty-four bytes.
+fn read_key_identifier(value: &Value) -> Option<Vec<u8>> {
+    BASE64URL_NOPAD
+        .decode(value.as_str()?.as_bytes())
+        .ok()
+        .filter(|identifier| (1..=64).contains(&identifier.len()))
+}
+
+/// The authority key identifiers a credential query trusts, when it names
+/// any: every value of its aki entries.
+fn read_trusted_authorities(asked: &Value) -> Option<Vec<Vec<u8>>> {
+    let authorities = asked.get("trusted_authorities")?.as_array()?;
+    Some(
+        authorities
+            .iter()
+            .filter_map(|authority| authority.get("values")?.as_array())
+            .flatten()
+            .filter_map(read_key_identifier)
+            .collect(),
+    )
 }
 
 /// The claims one credential is asked for: each named once, by a path of
@@ -861,9 +934,10 @@ async fn verify_answer(
 
     let mut verified = Vec::with_capacity(asked.len());
     let mut identifier = None;
-    // The statuses each credential cites, under its issuer, read once every
-    // credential has verified.
+    // The statuses each credential cites, and the certificates its chain runs
+    // through, under its issuer, read once every credential has verified.
     let mut cited = Vec::with_capacity(asked.len());
+    let mut chains = Vec::new();
     for credential in &asked {
         let id = credential
             .get("id")
@@ -892,6 +966,9 @@ async fn verify_answer(
                             issuer: outcome.issuer.clone(),
                             value,
                         });
+                    }
+                    if !outcome.chain.is_empty() {
+                        chains.push((outcome.issuer_id.clone(), outcome.chain));
                     }
                     cited.push((outcome.issuer_id, outcome.citation.into_iter().collect()));
                     json!({
@@ -943,7 +1020,16 @@ async fn verify_answer(
         };
         verified.push(outcome);
     }
-    if let Err(why) = status::check_citations(transaction, &cited, now).await? {
+    let chained = revocation::check_chains(transaction, signing.provider, &chains, now).await?;
+    // A revocation list still to be read lets the status lists be written
+    // down beside it, so one pass reads both.
+    if let Err(why) = chained
+        && why != revocation::REVOCATION_NOT_READ_YET
+    {
+        return Ok(Err(why));
+    }
+    let cited = status::check_citations(transaction, &cited, now).await?;
+    if let Err(why) = chained.and(cited) {
         return Ok(Err(why));
     }
     Ok(Ok(VerifiedAnswer {
@@ -961,14 +1047,19 @@ struct VerifiedSdJwt {
     claims: Vec<String>,
     identifier: Option<String>,
     citation: Option<Citation>,
+    /// The certificates its chain runs through, when its issuer is trusted by
+    /// certificate: what their revocation is read for.
+    chain: Vec<ChainLink>,
 }
 
 /// One SD-JWT VC presentation, verified against the issuer the realm names by
-/// its `iss`: the issuer's signature, the disclosures, the holder's key
-/// binding to this request, the type and the claims asked for. What comes
-/// back is the issuer, the type and the names of the claims asked for, never
-/// their values, except the text at `identifying` when a login asked, and the
-/// status the issuer signed it as citing.
+/// its `iss`, under the keys it publishes or the chain the credential carries
+/// as the realm trusts it: the issuer's signature, the disclosures, the
+/// holder's key binding to this request, the type and the claims asked for.
+/// What comes back is the issuer, the type and the names of the claims asked
+/// for, never their values, except the text at `identifying` when a login
+/// asked, the status the issuer signed it as citing, and the certificates
+/// its chain runs through.
 #[allow(
     clippy::too_many_arguments,
     reason = "each is a distinct fact about one presentation"
@@ -1010,6 +1101,20 @@ async fn verify_credential(
         return Ok(Err("a credential names no algorithm"));
     };
     let kid = header.get("kid").and_then(Value::as_str);
+    // One way per issuer: its keys when the realm trusts it by its metadata,
+    // whatever chain the credential carries; its chain otherwise.
+    let trusted = match &named.trust {
+        IssuerTrust::Metadata { .. } => None,
+        IssuerTrust::Certificate { .. } => {
+            let anchors = credential_issuers::anchor_certificates(transaction, &named.issuer_id)
+                .await
+                .map_err(|_| Unanswerable::Unwritable)?;
+            match certificates::trust_chain(&header, &anchors, now) {
+                Ok(chain) => Some(chain),
+                Err(why) => return Ok(Err(why.of_credential())),
+            }
+        }
+    };
 
     let paths: Vec<Vec<String>> = asked
         .get("claims")
@@ -1030,13 +1135,19 @@ async fn verify_credential(
         leeway: LEEWAY_SECONDS,
     };
 
-    // The key the header names, or every key of the issuer when it names none.
-    let candidates = candidate_keys(named.trust.keys(), kid);
+    // The key the header names, or every key of the issuer when it names
+    // none; the key its certificate certifies when it is trusted by one.
+    let verifiers: Vec<Box<dyn JwsVerifier>> = match &trusted {
+        Some(chain) => certificates::verifier_for_certified(algorithm, &chain.leaf_key)
+            .into_iter()
+            .collect(),
+        None => candidate_keys(named.trust.keys(), kid)
+            .iter()
+            .filter_map(|jwk| verifier_for(algorithm, jwk))
+            .collect(),
+    };
     let mut outcome = Err("a credential's signature is not its issuer's");
-    for jwk in candidates {
-        let Some(verifier) = verifier_for(algorithm, &jwk) else {
-            continue;
-        };
+    for verifier in verifiers {
         match sd_jwt::verify_presentation(provider, presented, verifier.as_ref(), &policy) {
             Ok(verified) => {
                 outcome = Ok(verified);
@@ -1066,6 +1177,28 @@ async fn verify_credential(
     if !accepted {
         return Ok(Err("a credential is of a type the query did not accept"));
     }
+    if let IssuerTrust::Certificate {
+        credential_types, ..
+    } = &named.trust
+        && !credential_types.iter().any(|issued| issued == vct)
+    {
+        return Ok(Err(
+            "a credential is of a type its issuer is not trusted to issue",
+        ));
+    }
+    if let Some(trusted_authorities) = read_trusted_authorities(asked) {
+        let named_one = trusted.as_ref().is_some_and(|chain| {
+            chain
+                .authority_key_identifiers
+                .iter()
+                .any(|stated| trusted_authorities.contains(stated))
+        });
+        if !named_one {
+            return Ok(Err(
+                "a credential's chain names none of the authorities the query trusts",
+            ));
+        }
+    }
     for path in &paths {
         let mut at = verified.claims.get(&path[0]);
         for member in &path[1..] {
@@ -1091,6 +1224,7 @@ async fn verify_credential(
         claims: paths.iter().map(|path| path.join(".")).collect(),
         identifier,
         citation,
+        chain: trusted.map(|chain| chain.links).unwrap_or_default(),
     }))
 }
 
@@ -1477,11 +1611,6 @@ mod tests {
                 "claim sets are not read yet: name the claims every credential must hold",
             ),
             (
-                "trusted_authorities",
-                json!([{ "type": "aki", "values": ["s9tIpPmhxdiuNkHMEWNpYim8S8Y"] }]),
-                "trusted authorities are not matched: the issuers the realm names decide",
-            ),
-            (
                 "require_cryptographic_holder_binding",
                 json!(false),
                 "each credential is asked for bound to its holder",
@@ -1494,7 +1623,7 @@ mod tests {
             (
                 "purpose",
                 json!("age check"),
-                "a credential is asked for by its id, format, multiple, meta, claims and require_cryptographic_holder_binding alone",
+                "a credential is asked for by its id, format, multiple, meta, claims, require_cryptographic_holder_binding and trusted_authorities alone",
             ),
             (
                 "meta",
@@ -1541,6 +1670,97 @@ mod tests {
             });
             assert_eq!(refusal_of(&query), why, "{claims}");
         }
+    }
+
+    /// The authorities a query trusts are matched by the key identifiers of a
+    /// chain, on the one format that carries a chain here, within the bounds:
+    /// whatever else it says of them is refused where it is asked.
+    #[test]
+    fn a_query_trusts_authorities_by_their_key_identifiers_alone() {
+        let identifier = "s9tIpPmhxdiuNkHMEWNpYim8S8Y";
+        let trusting = |authorities: Value| {
+            pid_query_with(|credential| {
+                credential.insert("trusted_authorities".into(), authorities);
+            })
+        };
+        let entry = |values: Value| json!([{ "type": "aki", "values": values }]);
+        let longest = BASE64URL_NOPAD.encode(&[7u8; 64]);
+        for authorities in [
+            entry(json!([identifier])),
+            entry(json!(vec![identifier; 50])),
+            entry(json!([longest])),
+            json!(vec![json!({ "type": "aki", "values": [identifier] }); 10]),
+        ] {
+            assert_eq!(
+                check_query(&trusting(authorities.clone())),
+                Ok(()),
+                "{authorities}"
+            );
+        }
+        assert_eq!(
+            read_trusted_authorities(
+                &trusting(json!([
+                    { "type": "aki", "values": ["AQI", "AwQ"] },
+                    { "type": "aki", "values": ["BQY"] },
+                ]))["credentials"][0]
+            ),
+            Some(vec![vec![1, 2], vec![3, 4], vec![5, 6]])
+        );
+        assert_eq!(
+            read_trusted_authorities(&pid_query()["credentials"][0]),
+            None
+        );
+
+        let entries = "trusted authorities are one to ten entries, each a type and its values";
+        let by_aki = "trusted authorities are matched by aki alone";
+        let identifiers = "an aki entry holds one to fifty key identifiers in base64url";
+        for (authorities, why) in [
+            (json!([]), entries),
+            (json!({ "type": "aki", "values": [identifier] }), entries),
+            (
+                json!(vec![json!({ "type": "aki", "values": [identifier] }); 11]),
+                entries,
+            ),
+            (
+                json!([{ "type": "aki", "values": [identifier], "purpose": "any" }]),
+                entries,
+            ),
+            (json!(["aki"]), by_aki),
+            (json!([{ "values": [identifier] }]), by_aki),
+            (
+                json!([{ "type": "etsi_tl", "values": ["https://lotl.example"] }]),
+                by_aki,
+            ),
+            (
+                json!([{ "type": "openid_federation", "values": ["https://trust.example"] }]),
+                by_aki,
+            ),
+            (json!([{ "type": "aki" }]), identifiers),
+            (entry(json!(identifier)), identifiers),
+            (entry(json!([])), identifiers),
+            (entry(json!(vec![identifier; 51])), identifiers),
+            (entry(json!([7])), identifiers),
+            (entry(json!([""])), identifiers),
+            (entry(json!(["s9tIpPmhxdiuNkHMEWNpYim8S8Y="])), identifiers),
+            (entry(json!(["s9tIpPmhxdiuNkHMEWNpYim8S8Y+/"])), identifiers),
+            (
+                entry(json!([BASE64URL_NOPAD.encode(&[7u8; 65])])),
+                identifiers,
+            ),
+            (entry(json!([identifier, "not base64url!"])), identifiers),
+        ] {
+            assert_eq!(
+                refusal_of(&trusting(authorities.clone())),
+                why,
+                "{authorities}"
+            );
+        }
+        let mut identity = identity_query();
+        identity["credentials"][0]["trusted_authorities"] = entry(json!([identifier]));
+        assert_eq!(
+            refusal_of(&identity),
+            "trusted authorities are matched on dc+sd-jwt credentials alone"
+        );
     }
 
     #[test]

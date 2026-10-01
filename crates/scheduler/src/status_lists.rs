@@ -4,7 +4,7 @@
 
 use chrono::Utc;
 use services::verifier::status::{
-    LIST_OLDER, ListFormat, claim_due_lists, keep_list, note_unread_list, read_due_list,
+    ListFormat, claim_due_lists, keep_list, note_unread_list, read_due_list,
 };
 use store::tenancy::{Tenancy, TenantContext};
 
@@ -65,8 +65,7 @@ async fn refresh_realm(tenancy: &Tenancy, sealing: &Sealing, realm: &TenantConte
         let failure = match &read {
             Ok(reading) => {
                 match keep_list(&transaction, sealing.provider.as_ref(), list, reading, now).await {
-                    Ok(true) => None,
-                    Ok(false) => Some(LIST_OLDER),
+                    Ok(refused) => refused,
                     Err(()) => continue,
                 }
             }

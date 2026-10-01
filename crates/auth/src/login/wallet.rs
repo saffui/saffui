@@ -14,6 +14,8 @@ pub enum Purpose {
     Link,
     /// To prove an identity the account already linked.
     Factor,
+    /// To name the person signing in, by an identity an account linked.
+    SignIn,
 }
 
 impl Purpose {
@@ -21,6 +23,7 @@ impl Purpose {
         match self {
             Self::Link => "link",
             Self::Factor => "factor",
+            Self::SignIn => "sign-in",
         }
     }
 }
@@ -49,6 +52,9 @@ pub enum Presented {
     /// Answered with a credential that verified, naming the identity it
     /// proves by its issuer and the digest the realm keeps identities under.
     Identified { issuer: String, digest: String },
+    /// The same, and brought back by the browser that asked, with the code
+    /// only the answering wallet was handed: a sign-in's alone.
+    Redeemed { issuer: String, digest: String },
     /// Run out unanswered, or gone.
     Lapsed,
     /// Answered, and it proved nothing: refused in the wallet, or a
@@ -62,13 +68,14 @@ pub enum Presented {
 /// request, its signature and its verification live with whoever hands the
 /// implementation in. Both run inside the login's own transaction.
 pub trait Wallet: Send + Sync {
-    /// Ask for the realm's credential, for this login and the person it names.
+    /// Ask for the realm's credential, for this login and the person it names,
+    /// when it names one.
     fn ask<'a>(
         &'a self,
         transaction: &'a UnitOfWork,
         purpose: Purpose,
         login_session: &'a str,
-        user_id: &'a str,
+        user_id: Option<&'a str>,
     ) -> Pin<Box<dyn Future<Output = Result<Asked, Unasked>> + Send + 'a>>;
 
     /// Where a presentation stands, read for the login that asked for it: a
@@ -79,6 +86,17 @@ pub trait Wallet: Send + Sync {
         request_id: &'a str,
         login_session: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Presented, ()>> + Send + 'a>>;
+
+    /// Spend the code a wallet carried back to this login's browser against
+    /// the request the login keeps, and say where that request stands:
+    /// nothing when the code is not that request's, or was spent.
+    fn redeem<'a>(
+        &'a self,
+        transaction: &'a UnitOfWork,
+        request_id: &'a str,
+        login_session: &'a str,
+        response_code: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Presented>, ()>> + Send + 'a>>;
 }
 
 /// The verifier, and the login every presentation it asks for is bound to.
@@ -99,6 +117,23 @@ pub fn draw_challenge(asked: &Asked) -> Challenge {
         }),
         remembered: json!({ "request": asked.request_id, "uri": asked.uri }),
     }
+}
+
+/// What a sign-in shows and keeps: the link a wallet on this device opens,
+/// and never a drawing. A code another device can scan is one a stranger can
+/// forward to whoever they want signed in as.
+pub fn draw_sign_in_challenge(asked: &Asked) -> Challenge {
+    Challenge {
+        shown: json!({ "wallet": { "uri": asked.uri, "same_device": true } }),
+        remembered: json!({ "request": asked.request_id, "uri": asked.uri }),
+    }
+}
+
+/// The request a sign-in kept, read off the login's notes.
+pub fn find_sign_in_request(notes: &Value) -> Option<Asked> {
+    notes
+        .get(Authenticator::WalletSignIn.as_str())
+        .and_then(read_kept_request)
 }
 
 /// The request a round kept under the step's or the ceremony's name.
@@ -167,5 +202,28 @@ mod tests {
             find_waiting_request(&json!({ "wallet": { "request": "r-1" } })),
             None
         );
+    }
+
+    /// A sign-in shows its link and no drawing of it, and keeps the request
+    /// under its own name, apart from the proof's.
+    #[test]
+    fn a_sign_in_is_shown_its_link_alone_and_kept_apart() {
+        let asked = Asked {
+            request_id: "r-2".to_owned(),
+            uri: "openid4vp://authorize?client_id=x&request_uri=z".to_owned(),
+        };
+        let challenge = draw_sign_in_challenge(&asked);
+        assert_eq!(
+            challenge.shown,
+            json!({ "wallet": { "uri": asked.uri, "same_device": true } })
+        );
+        assert_eq!(
+            challenge.remembered,
+            json!({ "request": "r-2", "uri": asked.uri })
+        );
+        let proof = json!({ "request": "r-1", "uri": "openid4vp://proof" });
+        let notes = json!({ "wallet": proof, "wallet-sign-in": challenge.remembered });
+        assert_eq!(find_sign_in_request(&notes), Some(asked));
+        assert_eq!(find_sign_in_request(&json!({ "wallet": proof })), None);
     }
 }

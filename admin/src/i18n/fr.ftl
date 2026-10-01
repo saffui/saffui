@@ -1267,7 +1267,7 @@ features-closing-trail = Le changement est consigné dans la chaîne d'audit du 
 features-closing-confirm = Fermer
 features-closing-web-authn = Les comptes qui ne détiennent qu'une passkey perdent l'étape par laquelle ils se connectent. Si le flux du realm l'exige, ils ne peuvent plus se connecter du tout tant qu'elle n'est pas rouverte.
 features-closing-sms-otp = L'étape du code cesse de tourner. Les comptes qui l'utilisent comme second facteur retombent sur ce que le flux accepte d'autre, éventuellement le mot de passe seul.
-features-closing-wallet-verifier = L'étape du portefeuille cesse de tourner. Les comptes qui prouvent leur identité par un portefeuille retombent sur ce que le flux accepte d'autre, et si le flux exige le portefeuille, ils ne peuvent plus se connecter avant sa réouverture.
+features-closing-wallet-verifier = Les étapes du portefeuille cessent de tourner. Les comptes qui se connectent ou prouvent leur identité par un portefeuille retombent sur ce que le flux accepte d'autre, et si le flux exige le portefeuille, ils ne peuvent plus se connecter avant sa réouverture.
 features-lede = Ce que ce build embarque, et ce que ce realm en fait tourner. Une capacité avec laquelle le processus n'a pas démarré ne peut être ouverte ici par aucun realm.
 features-on = actif
 features-off = compilé, inactif
@@ -1707,7 +1707,7 @@ jsonld-contexts-url = Adresse
 jsonld-contexts-url-help = L'adresse du contexte, exactement comme les attestations la nomment dans leur @context. Un contexte qui en nomme un autre s'épingle après cet autre.
 jsonld-contexts-pin-it = Épingler ce contexte
 wallet-identity-title = Connexion par portefeuille
-wallet-identity-help = Comment ce realm connaît les personnes par une attestation que présente leur portefeuille : la seule attestation qu'une connexion demande, l'émetteur qui se porte garant des identités, et la revendication qui identifie quelqu'un. Une personne lie son identité une fois depuis son compte, puis la prouve à la connexion partout où un flux exécute l'étape portefeuille. L'identifiant n'est jamais gardé, seulement une empreinte à clé.
+wallet-identity-help = Comment ce realm connaît les personnes par une attestation que présente leur portefeuille : la seule attestation qu'une connexion demande, l'émetteur qui se porte garant des identités, et la revendication qui identifie quelqu'un. Une personne lie son identité une fois depuis son compte, puis la prouve à la connexion partout où un flux exécute l'étape portefeuille, ou se connecte avec elle sur l'appareil qu'elle utilise partout où un flux exécute la connexion par portefeuille. L'identifiant n'est jamais gardé, seulement une empreinte à clé.
 wallet-identity-not-running = Enregistré, mais inactif : le processus doit faire tourner wallet-verifier (SAFFUI_FEATURES=+wallet-verifier).
 wallet-identity-none = Ce realm ne connaît pas encore les personnes par une attestation de portefeuille.
 wallet-identity-kept = Enregistré par { $by } le { $at }

@@ -161,6 +161,7 @@ signup-done = Votre compte est prêt. Connectez-vous avec.
 signup-verify = Consultez votre messagerie pour continuer : une vérification est en route.
 signup-mismatch = Les deux mots de passe ne sont pas identiques.
 login-passkey = Se connecter avec une passkey
+login-wallet = Se connecter avec mon portefeuille
 
 ## Codes de récupération : le chemin de retour quand le second facteur a disparu.
 recovery-use = Utiliser un code de récupération
@@ -193,6 +194,11 @@ wallet-waiting = En attente de la réponse de votre portefeuille.
 wallet-refused = Votre portefeuille n'a rien partagé qui prouve qui vous êtes. Réessayez.
 wallet-held-elsewhere = Cette identité est déjà liée à un autre compte ici.
 wallet-issuer-linked = Ce compte détient déjà une identité de cet émetteur. Déliez-la d'abord depuis votre compte.
+wallet-sign-in-lede = Partagez l'attestation que détient votre portefeuille pour vous connecter. Votre portefeuille vous ramène ensuite ici.
+wallet-sign-in-waiting = Une fois l'attestation partagée, votre portefeuille vous ramène sur cette page.
+wallet-again = Redemander à mon portefeuille
+wallet-unlinked = Aucun compte d'ici n'est lié à cette identité. Connectez-vous autrement, puis liez votre portefeuille depuis votre compte.
+wallet-elsewhere = Cette connexion a commencé dans un autre navigateur ou sur un autre appareil. Recommencez depuis l'application, ici.
 flash-wallet-needs-script = Un portefeuille demande que les scripts soient activés sur cette page.
 
 ## La page qu'ouvre un lien de réinitialisation.

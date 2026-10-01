@@ -91,6 +91,20 @@
     delete answered.password;
     round();
   });
+  // A wallet on this device: one round asks it, and the link that round hands
+  // back opens it. The ask rides that round alone, never the ones after.
+  const walletSignInOpen = document.getElementById("wallet-sign-in-open");
+  walletSignInOpen.hidden = doors.indexOf("wallet") === -1;
+  function askWallet() {
+    answered.wallet_sign_in = true;
+    delete answered.username;
+    delete answered.password;
+    round().then(function () {
+      delete answered.wallet_sign_in;
+    });
+  }
+  walletSignInOpen.addEventListener("click", askWallet);
+  document.getElementById("wallet-again").addEventListener("click", askWallet);
 
   // The registration half. A realm registering by address alone never shows
   // the name field; the address is the identifier and the server knows it.
@@ -256,7 +270,11 @@
     refused: "wallet-refused",
     held_elsewhere: "wallet-held-elsewhere",
     issuer_linked: "wallet-issuer-linked",
+    unlinked: "wallet-unlinked",
   };
+  // Whether the round in flight spends a code a wallet brought back, whose
+  // login may have been started somewhere else.
+  let broughtBack = false;
 
   function say(text) {
     notice.textContent = text;
@@ -436,7 +454,7 @@
       return;
     }
     if (status === 404) {
-      say(spoken("no-such-login"));
+      say(spoken(broughtBack ? "wallet-elsewhere" : "no-such-login"));
       // Nothing on this page can finish the login any more, but the page was
       // served while it was alive and still knows where it came from.
       backRow.hidden = doors.indexOf("back") === -1;
@@ -557,8 +575,15 @@
   function awaitWallet(told) {
     const asks = told.asks;
     const linking = told.execution === "link-wallet-identity";
-    document.getElementById("wallet-lede").hidden = linking;
+    // A sign-in opens a wallet on this device and is never drawn to scan.
+    const signingIn = asks.wallet.same_device === true;
+    document.getElementById("wallet-lede").hidden = linking || signingIn;
     document.getElementById("wallet-link-lede").hidden = !linking;
+    document.getElementById("wallet-sign-in-lede").hidden = !signingIn;
+    document.getElementById("wallet-scan").hidden = signingIn;
+    document.getElementById("wallet-waiting").hidden = signingIn;
+    document.getElementById("wallet-sign-in-waiting").hidden = !signingIn;
+    document.getElementById("wallet-again-row").hidden = !signingIn;
     const qr = document.getElementById("wallet-qr");
     qr.hidden = !asks.wallet.qr;
     document.getElementById("wallet-qr-frame").hidden = !asks.wallet.qr;
@@ -575,6 +600,11 @@
     // Nothing to type: the wallet answers, and the page plays the round.
     button.hidden = true;
     walletTurn += 1;
+    // What settles a sign-in is the wallet bringing the person back with the
+    // code only this device was handed, not a door any tab can read.
+    if (signingIn) {
+      return;
+    }
     const turn = walletTurn;
     setTimeout(function () {
       readWalletStanding(turn);
@@ -693,6 +723,20 @@
       delete answered.enrolment_declined;
     });
   });
+
+  // Brought back by a wallet: the code rides the fragment, which no server on
+  // the way saw. It leaves the address before anything else runs, so a reload
+  // or a copied address carries nothing, and it is spent in one round.
+  const returned = /(?:^#|&)response_code=([^&]+)/.exec(location.hash);
+  if (returned) {
+    history.replaceState(null, "", location.pathname + location.search);
+    answered.wallet_response_code = decodeURIComponent(returned[1]);
+    broughtBack = true;
+    round().then(function () {
+      delete answered.wallet_response_code;
+      broughtBack = false;
+    });
+  }
 
   form.addEventListener("submit", function (event) {
     event.preventDefault();

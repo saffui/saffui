@@ -93,6 +93,9 @@ pub enum Authenticator {
     /// A credential the person's wallet presents, proving an identity the
     /// account linked.
     Wallet,
+    /// A credential the person's wallet presents on the device they sign in
+    /// from, naming them by an identity their account linked.
+    WalletSignIn,
 }
 
 /// A name no build knows. Refused where a flow is read, so a realm cannot be
@@ -114,6 +117,7 @@ impl FromStr for Authenticator {
             "recovery-code" => Ok(Self::RecoveryCode),
             "sms-otp" => Ok(Self::SmsOtp),
             "wallet" => Ok(Self::Wallet),
+            "wallet-sign-in" => Ok(Self::WalletSignIn),
             other => Err(Unknown(other.to_owned())),
         }
     }
@@ -124,7 +128,9 @@ fn capability_behind(authenticator: Authenticator) -> Option<commons::feature::F
     match authenticator {
         Authenticator::Webauthn => Some(commons::feature::Feature::WebAuthn),
         Authenticator::SmsOtp => Some(commons::feature::Feature::SmsOtp),
-        Authenticator::Wallet => Some(commons::feature::Feature::WalletVerifier),
+        Authenticator::Wallet | Authenticator::WalletSignIn => {
+            Some(commons::feature::Feature::WalletVerifier)
+        }
         _ => None,
     }
 }
@@ -150,6 +156,7 @@ impl Authenticator {
             Self::RecoveryCode => "recovery-code",
             Self::SmsOtp => "sms-otp",
             Self::Wallet => "wallet",
+            Self::WalletSignIn => "wallet-sign-in",
         }
     }
 
@@ -179,7 +186,7 @@ impl Authenticator {
             // A code on the phone is a thing the person has, like the app's.
             Self::SmsOtp => "mfa",
             // A credential held in a wallet, like a code in an app.
-            Self::Wallet => "mfa",
+            Self::Wallet | Self::WalletSignIn => "mfa",
         }
     }
 
@@ -190,17 +197,26 @@ impl Authenticator {
     /// that passed it is the second thing proved; alone it is the only one,
     /// the class of a single factor, like a password. A wallet's credential
     /// is the same: nothing in a presentation says the wallet asked who was
-    /// holding it. A key is two things on its own, since its ceremony has the
-    /// person verify themselves on it.
+    /// holding it, and presented once to name the person and again to prove
+    /// them, it is still the one thing proved. A key is two things on its own,
+    /// since its ceremony has the person verify themselves on it.
     pub fn context_among(self, passed: &[Self]) -> &'static str {
         match self {
-            Self::Totp | Self::SmsOtp | Self::RecoveryCode | Self::Wallet
-                if passed.iter().all(|other| *other == self) =>
+            Self::Totp | Self::SmsOtp | Self::RecoveryCode | Self::Wallet | Self::WalletSignIn
+                if passed.iter().all(|other| other.proves_the_same_as(self)) =>
             {
                 Self::Password.context()
             }
             _ => self.context(),
         }
+    }
+
+    /// Whether two steps prove the same thing: each proves itself, and a
+    /// wallet's credential is one thing whether it named the person or proved
+    /// them.
+    fn proves_the_same_as(self, other: Self) -> bool {
+        let wallet = |held: Self| matches!(held, Self::Wallet | Self::WalletSignIn);
+        self == other || (wallet(self) && wallet(other))
     }
 }
 
@@ -240,6 +256,13 @@ pub enum Answer {
     /// The texted code, as typed. Normalised where it is checked, so the
     /// spaces a person copies between the digits are theirs to get wrong.
     SmsOtp(String),
+    /// The person asked to sign in with their wallet, or to be asked again;
+    /// nothing proven yet. What it does is let the sign-in step ask a wallet
+    /// before anybody is named.
+    WalletAsk,
+    /// The code a wallet carried back to this browser, as the page read it
+    /// off the address the wallet sent it to.
+    WalletCode(SecretBox<String>),
     /// The way the person asked their code to come instead of the way it went.
     CodeChannel(Channel),
 }
@@ -315,6 +338,9 @@ pub async fn verify_answer(
         }
         Authenticator::Wallet => {
             prove_wallet_identity(transaction, subject, remembered, wallet).await
+        }
+        Authenticator::WalletSignIn => {
+            sign_in_with_wallet(transaction, subject, answers, remembered, wallet).await
         }
     }
 }
@@ -408,7 +434,8 @@ async fn prove_wallet_identity(
             }
             Ok(Presented::Lapsed) => {}
             Ok(Presented::Unproven) => unproven = true,
-            Err(()) => return Answered::plain(Outcome::Failed),
+            // A proof is never brought back with a code: a sign-in alone keeps one.
+            Ok(Presented::Redeemed { .. }) | Err(()) => return Answered::plain(Outcome::Failed),
         }
     }
 
@@ -422,7 +449,7 @@ async fn prove_wallet_identity(
             transaction,
             Purpose::Factor,
             asking.login_session,
-            &subject.user_id,
+            Some(&subject.user_id),
         )
         .await
     {
@@ -439,6 +466,92 @@ async fn prove_wallet_identity(
         }
         // No profile to ask by: the flow decides what a step that cannot run
         // leaves, as it does for a closed factor.
+        Err(Unasked::NotOffered) => Answered::plain(Outcome::Skipped),
+        Err(Unasked::Unavailable) => Answered::plain(Outcome::Failed),
+    }
+}
+
+/// A person signing in with the identity their wallet proves, on the device
+/// they sign in from.
+///
+/// Asked only once the person asks, as a key alone is: a page offering a
+/// password beside it asks no wallet it never uses. The link opens a wallet on
+/// this device and is never drawn to scan. The wallet brings the person back
+/// with a code it alone was handed and only this login's browser can spend,
+/// and spending it is what names them: a presentation this browser never
+/// brought back names nobody, whoever it proves, since the link that asked
+/// may have been forwarded to them. An identity no account linked is asked
+/// again with that said: signing in never makes an account.
+async fn sign_in_with_wallet(
+    transaction: &UnitOfWork,
+    subject: Option<&UserModel>,
+    answers: &[Answer],
+    remembered: Option<&serde_json::Value>,
+    wallet: Option<crate::login::wallet::Asking<'_>>,
+) -> Answered {
+    use crate::login::wallet::{
+        Presented, Purpose, Unasked, draw_sign_in_challenge, read_kept_request,
+    };
+
+    let Some(asking) = wallet else {
+        return Answered::plain(Outcome::Failed);
+    };
+    let asked_now = of_kind(answers, |answer| matches!(answer, Answer::WalletAsk)).is_some();
+    let mut said = None;
+    match remembered.and_then(read_kept_request) {
+        Some(kept) if !asked_now => match asking
+            .verifier
+            .standing(transaction, &kept.request_id, asking.login_session)
+            .await
+        {
+            // Answered or not, it waits on the browser the wallet brings back.
+            Ok(Presented::Waiting | Presented::Identified { .. }) => {
+                return Answered {
+                    outcome: Outcome::Pending,
+                    asks: Some(draw_sign_in_challenge(&kept)),
+                    sending: None,
+                };
+            }
+            Ok(Presented::Redeemed { issuer, digest }) => match subject {
+                Some(person) => {
+                    return match wallet_identities::holds(
+                        transaction,
+                        &person.user_id,
+                        &issuer,
+                        &digest,
+                    )
+                    .await
+                    {
+                        Ok(true) => Answered::plain(Outcome::Passed),
+                        _ => Answered::plain(Outcome::Failed),
+                    };
+                }
+                None => said = Some("unlinked"),
+            },
+            Ok(Presented::Lapsed) => {}
+            Ok(Presented::Unproven) => said = Some("refused"),
+            Err(()) => return Answered::plain(Outcome::Failed),
+        },
+        // Nothing asked, and the person did not ask: the page offers it.
+        None if !asked_now => return Answered::plain(Outcome::Pending),
+        _ => {}
+    }
+    match asking
+        .verifier
+        .ask(transaction, Purpose::SignIn, asking.login_session, None)
+        .await
+    {
+        Ok(asked) => {
+            let mut challenge = draw_sign_in_challenge(&asked);
+            if let Some(said) = said {
+                challenge.shown[said] = serde_json::Value::Bool(true);
+            }
+            Answered {
+                outcome: Outcome::Pending,
+                asks: Some(challenge),
+                sending: None,
+            }
+        }
         Err(Unasked::NotOffered) => Answered::plain(Outcome::Skipped),
         Err(Unasked::Unavailable) => Answered::plain(Outcome::Failed),
     }
@@ -1386,13 +1499,21 @@ mod tests {
     /// wallet's credential with it. A key is two things on its own.
     #[test]
     fn a_code_alone_is_one_factor_and_a_key_is_two() {
-        use Authenticator::{MagicLink, Password, RecoveryCode, SmsOtp, Totp, Wallet, Webauthn};
+        use Authenticator::{
+            MagicLink, Password, RecoveryCode, SmsOtp, Totp, Wallet, WalletSignIn, Webauthn,
+        };
         let map = AcrLoaMap::from_pairs([("password", 1), ("mfa", 2)]);
 
-        for alone in [SmsOtp, Totp, RecoveryCode, Wallet] {
+        for alone in [SmsOtp, Totp, RecoveryCode, Wallet, WalletSignIn] {
             assert_eq!(reached_level(&map, &[alone]), Some(1), "{alone:?} alone");
         }
+        assert_eq!(
+            reached_level(&map, &[WalletSignIn, Wallet]),
+            Some(1),
+            "one credential counted twice"
+        );
         assert_eq!(reached_level(&map, &[Password, Wallet]), Some(2));
+        assert_eq!(reached_level(&map, &[WalletSignIn, Password]), Some(2));
         assert_eq!(reached_level(&map, &[Password, SmsOtp]), Some(2));
         assert_eq!(reached_level(&map, &[Password, Totp]), Some(2));
         assert_eq!(reached_level(&map, &[MagicLink, SmsOtp]), Some(2));

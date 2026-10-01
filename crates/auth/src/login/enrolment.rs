@@ -1129,7 +1129,8 @@ async fn link_wallet_identity(
             }
             Ok(Presented::Lapsed) => {}
             Ok(Presented::Unproven) => said = Some("refused"),
-            Err(()) => return Enrolment::Refused,
+            // A link is never brought back with a code: a sign-in alone keeps one.
+            Ok(Presented::Redeemed { .. }) | Err(()) => return Enrolment::Refused,
         }
     }
     match asking
@@ -1138,7 +1139,7 @@ async fn link_wallet_identity(
             transaction,
             Purpose::Link,
             asking.login_session,
-            &subject.user_id,
+            Some(&subject.user_id),
         )
         .await
     {

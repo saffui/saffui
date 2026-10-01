@@ -46,7 +46,7 @@ pub(super) fn served(plane: &Plane, egress: config::serving::Egress) -> server::
 
 /// A public door asked as a wallet asks it: no bearer, a form when posting,
 /// and the body kept as it came.
-async fn fetched(
+pub(super) async fn fetched(
     plane: &Plane,
     method: Method,
     path: &str,

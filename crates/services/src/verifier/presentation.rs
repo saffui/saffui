@@ -17,7 +17,7 @@ use crypto::jose::jwk::{Jwk, KeyPair};
 use crypto::jose::jws::{
     ES256, ES384, ES512, EdDSA, JwsVerifier, PS256, PS384, PS512, RS256, RS384, RS512,
 };
-use crypto::provider::{CryptoProvider, SignAlg};
+use crypto::provider::{CryptoProvider, HashAlg, SignAlg};
 use crypto::sd_jwt::{self, KeyBinding, VerifyingPolicy};
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
 use jsonld::built_in::HeldContexts;
@@ -289,7 +289,7 @@ pub async fn ask(
 }
 
 /// Ask for the presentation a login needs, bound to that login and the person
-/// it names, so its answer is read by that login alone.
+/// it names when it names one, so its answer is read by that login alone.
 pub async fn ask_for_login(
     transaction: &UnitOfWork,
     signing: &Signing<'_>,
@@ -303,7 +303,9 @@ pub async fn ask_for_login(
         signing,
         issuer,
         query,
-        for_login.user_id,
+        // Asked by the person the login names, or by the sign-in itself while
+        // it names nobody.
+        for_login.user_id.unwrap_or(for_login.purpose),
         Some(for_login),
         now,
     )
@@ -446,6 +448,14 @@ pub enum Settled {
     Failed(&'static str),
 }
 
+/// What an answer came to, and the code a sign-in's browser spends it with:
+/// handed to the wallet, which brings the person back carrying it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Settlement {
+    pub settled: Settled,
+    pub response_code: Option<String>,
+}
+
 /// Settle the request an answer is for, once.
 pub async fn settle_answer(
     transaction: &UnitOfWork,
@@ -453,7 +463,7 @@ pub async fn settle_answer(
     issuer: &str,
     answer: Answer<'_>,
     now: DateTime<Utc>,
-) -> Result<Settled, Unanswerable> {
+) -> Result<Settlement, Unanswerable> {
     let (held, settled, outcome) = match answer {
         Answer::Refused { error, state } => {
             let held = presentations::claim_by_request_id(transaction, state, &now)
@@ -523,11 +533,51 @@ pub async fn settle_answer(
         Settled::Refused => "refused",
         Settled::Failed(_) => "failed",
     };
-    presentations::settle(transaction, &held.request_id, status, &outcome, &now)
-        .await
-        .map_err(|_| Unanswerable::Unwritable)?
-        .then_some(settled)
-        .ok_or(Unanswerable::Unknown)
+    // A sign-in names the person only once the browser that asked brings back
+    // what the wallet was handed. A refusal is handed a code too, so the
+    // person comes back to be asked again; an answer that failed is told so.
+    let response_code = match (held.purpose.as_deref(), &settled) {
+        (Some(signing_in), Settled::Verified | Settled::Refused)
+            if signing_in == auth::login::wallet::Purpose::SignIn.as_str() =>
+        {
+            let drawn = draw::<32>(signing.provider).map_err(|_| Unanswerable::Unwritable)?;
+            Some(BASE64URL_NOPAD.encode(&drawn))
+        }
+        _ => None,
+    };
+    let kept_digest = response_code
+        .as_deref()
+        .map(|code| digest_response_code(signing.provider, code))
+        .transpose()
+        .map_err(|()| Unanswerable::Unwritable)?;
+    presentations::settle(
+        transaction,
+        &held.request_id,
+        status,
+        &outcome,
+        kept_digest.as_deref(),
+        &now,
+    )
+    .await
+    .map_err(|_| Unanswerable::Unwritable)?
+    .then_some(Settlement {
+        settled,
+        response_code,
+    })
+    .ok_or(Unanswerable::Unknown)
+}
+
+/// The digest a sign-in's code is kept under, so nothing the store holds is a
+/// code anybody could spend.
+pub(crate) fn digest_response_code(
+    provider: &dyn CryptoProvider,
+    code: &str,
+) -> Result<String, ()> {
+    provider
+        .digest()
+        .hash(HashAlg::Sha256, code.as_bytes())
+        .map(|digest| HEXLOWER.encode(&digest))
+        .map_err(|_| ())
 }
 
 /// The identity a login's answer proves, as the realm keeps identities: the

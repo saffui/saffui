@@ -22,12 +22,12 @@ pub struct KeptRequest<'a> {
 }
 
 /// A request asked for a login: what it is for, the login, and the person that
-/// login names.
+/// login names. A sign-in names nobody until its answer does.
 #[derive(Debug, Clone, Copy)]
 pub struct ForLogin<'a> {
     pub purpose: &'a str,
     pub login_session: &'a str,
-    pub user_id: &'a str,
+    pub user_id: Option<&'a str>,
 }
 
 pub async fn keep(transaction: &UnitOfWork, request: &KeptRequest<'_>) -> StoreResult<()> {
@@ -51,7 +51,7 @@ pub async fn keep(transaction: &UnitOfWork, request: &KeptRequest<'_>) -> StoreR
                 &request.created_by,
                 &for_login.map(|bound| bound.purpose),
                 &for_login.map(|bound| bound.login_session),
-                &for_login.map(|bound| bound.user_id),
+                &for_login.and_then(|bound| bound.user_id),
             ],
         )
         .await
@@ -126,19 +126,22 @@ pub async fn claim_by_request_id(
         .map(read_answering))
 }
 
-/// Settle a request, and say whether it was still pending.
+/// Settle a request, and say whether it was still pending. A sign-in's keeps
+/// the digest of the code its browser redeems it with.
 pub async fn settle(
     transaction: &UnitOfWork,
     request_id: &str,
     status: &str,
     outcome: &Value,
+    response_code_digest: Option<&str>,
     at: &DateTime<Utc>,
 ) -> StoreResult<bool> {
     let settled = transaction
         .execute(
-            "UPDATE presentation_requests SET status = $2, outcome = $3, answered_at = $4 \
+            "UPDATE presentation_requests \
+             SET status = $2, outcome = $3, answered_at = $4, response_code_digest = $5 \
              WHERE request_id = $1 AND status = 'pending'",
-            &[&request_id, &status, outcome, at],
+            &[&request_id, &status, outcome, at, &response_code_digest],
         )
         .await
         .map_err(|_| StoreError::Backend)?;
@@ -155,6 +158,9 @@ pub struct Standing {
     pub answered_at: Option<DateTime<Utc>>,
     pub created_by: String,
     pub created_at: DateTime<Utc>,
+    /// When the browser that asked brought back the code its answer was
+    /// handed: a sign-in's alone.
+    pub redeemed_at: Option<DateTime<Utc>>,
 }
 
 /// Where a request an administrator asked for stands. One a login asked for
@@ -162,21 +168,14 @@ pub struct Standing {
 pub async fn standing(transaction: &UnitOfWork, request_id: &str) -> StoreResult<Option<Standing>> {
     Ok(transaction
         .query_opt(
-            "SELECT request_id, status, outcome, expires_at, answered_at, created_by, created_at \
+            "SELECT request_id, status, outcome, expires_at, answered_at, created_by, created_at, \
+                    redeemed_at \
              FROM presentation_requests WHERE request_id = $1 AND purpose IS NULL",
             &[&request_id],
         )
         .await
         .map_err(|_| StoreError::Backend)?
-        .map(|row| Standing {
-            request_id: row.get("request_id"),
-            status: row.get("status"),
-            outcome: row.get("outcome"),
-            expires_at: row.get("expires_at"),
-            answered_at: row.get("answered_at"),
-            created_by: row.get("created_by"),
-            created_at: row.get("created_at"),
-        }))
+        .map(read_standing))
 }
 
 /// Where a request a login asked for stands, read by that login alone.
@@ -187,21 +186,39 @@ pub async fn standing_for_login(
 ) -> StoreResult<Option<Standing>> {
     Ok(transaction
         .query_opt(
-            "SELECT request_id, status, outcome, expires_at, answered_at, created_by, created_at \
+            "SELECT request_id, status, outcome, expires_at, answered_at, created_by, created_at, \
+                    redeemed_at \
              FROM presentation_requests WHERE request_id = $1 AND login_session = $2",
             &[&request_id, &login_session],
         )
         .await
         .map_err(|_| StoreError::Backend)?
-        .map(|row| Standing {
-            request_id: row.get("request_id"),
-            status: row.get("status"),
-            outcome: row.get("outcome"),
-            expires_at: row.get("expires_at"),
-            answered_at: row.get("answered_at"),
-            created_by: row.get("created_by"),
-            created_at: row.get("created_at"),
-        }))
+        .map(read_standing))
+}
+
+/// Spend the code a sign-in's answer was handed, brought back by the login that
+/// asked, while its request has not run out. Once: a second presentation of
+/// the same code finds it spent, and a code another login asked for is not
+/// this one's to spend.
+pub async fn redeem(
+    transaction: &UnitOfWork,
+    request_id: &str,
+    login_session: &str,
+    response_code_digest: &str,
+    now: &DateTime<Utc>,
+) -> StoreResult<Option<Standing>> {
+    Ok(transaction
+        .query_opt(
+            "UPDATE presentation_requests SET redeemed_at = $4 \
+             WHERE request_id = $1 AND login_session = $2 AND response_code_digest = $3 \
+               AND redeemed_at IS NULL AND expires_at > $4 \
+             RETURNING request_id, status, outcome, expires_at, answered_at, created_by, \
+                       created_at, redeemed_at",
+            &[&request_id, &login_session, &response_code_digest, now],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .map(read_standing))
 }
 
 /// Take away the requests whose window closed before `before`, answered or not.
@@ -213,6 +230,19 @@ pub async fn drop_expired(transaction: &UnitOfWork, before: DateTime<Utc>) -> St
         )
         .await
         .map_err(|_| StoreError::Backend)
+}
+
+fn read_standing(row: Row) -> Standing {
+    Standing {
+        request_id: row.get("request_id"),
+        status: row.get("status"),
+        outcome: row.get("outcome"),
+        expires_at: row.get("expires_at"),
+        answered_at: row.get("answered_at"),
+        created_by: row.get("created_by"),
+        created_at: row.get("created_at"),
+        redeemed_at: row.get("redeemed_at"),
+    }
 }
 
 fn read_answering(row: Row) -> Answering {

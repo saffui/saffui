@@ -161,6 +161,7 @@ signup-done = Your account is ready. Sign in with it.
 signup-verify = Check your mail to continue: a verification is on its way.
 signup-mismatch = The two passwords are not the same.
 login-passkey = Sign in with a passkey
+login-wallet = Sign in with my wallet
 
 ## Recovery codes: the way back when the second factor is gone.
 recovery-use = Use a recovery code
@@ -193,6 +194,11 @@ wallet-waiting = Waiting for your wallet to answer.
 wallet-refused = Your wallet shared nothing that proves who you are. Try again.
 wallet-held-elsewhere = This identity is already linked to another account here.
 wallet-issuer-linked = This account already holds an identity from this issuer. Unlink it from your account first.
+wallet-sign-in-lede = Share the credential your wallet holds to sign in. Your wallet then brings you back here.
+wallet-sign-in-waiting = Once you have shared it, your wallet brings you back to this page.
+wallet-again = Ask my wallet again
+wallet-unlinked = No account here is linked to this identity. Sign in another way, then link your wallet from your account.
+wallet-elsewhere = This sign-in was started in another browser or on another device. Start again from the application, here.
 flash-wallet-needs-script = A wallet needs scripts enabled on this page.
 
 ## The page a reset link opens.

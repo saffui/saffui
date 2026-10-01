@@ -3,6 +3,7 @@ use config::serving::PublicOrigin;
 use crypto::provider::{CryptoProvider, HashAlg};
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
 use models::sessions::records::{UserSessionModel, UserSessionState};
+use secrecy::ExposeSecret;
 use serde_json::Value;
 use store::providers::directory::users;
 use store::providers::protocol::login::AuthSession;
@@ -230,6 +231,12 @@ pub async fn answer_step(
         return Ok(Step::Throttled { until });
     }
 
+    // A code a wallet carried back is spent before anybody is named: the
+    // identity it proves is what names the person, and only this login's
+    // browser holds the cookie it is spent under.
+    let returned =
+        redeem_wallet_code(transaction, wallet, auth_session_id, &login, answers).await?;
+
     // Resolved here rather than inside the flow: an authenticator says whether
     // an answer is right, not who is answering. A name nobody holds is passed
     // through as absent, and the flow spends the same time on it.
@@ -241,6 +248,7 @@ pub async fn answer_step(
         &login,
         answers,
         username,
+        returned.as_ref(),
         federations,
         now,
     )
@@ -922,6 +930,8 @@ async fn named_subject(
     login: &AuthSession,
     answers: &[Answer],
     username: Option<&str>,
+    // Where a wallet was brought back to this browser, what it proved.
+    returned: Option<&crate::login::wallet::Presented>,
     federations: &[crate::login::directory::Named<'_>],
     now: DateTime<Utc>,
 ) -> Result<Option<models::entities::user::UserModel>, Unanswerable> {
@@ -951,6 +961,19 @@ async fn named_subject(
                     .await
         {
             return Ok(users::load(transaction, &enrolled.user_id)
+                .await
+                .map_err(|_| Unanswerable::Unreadable)?
+                .filter(|held| held.enabled));
+        }
+        // A wallet brought back with its code names whoever linked the
+        // identity it proved: one identity answers for one account.
+        if let Some(crate::login::wallet::Presented::Redeemed { issuer, digest }) = returned
+            && let Some(holder) =
+                store::providers::directory::wallet_identities::holder(transaction, issuer, digest)
+                    .await
+                    .map_err(|_| Unanswerable::Unreadable)?
+        {
+            return Ok(users::load(transaction, &holder)
                 .await
                 .map_err(|_| Unanswerable::Unreadable)?
                 .filter(|held| held.enabled));
@@ -1026,6 +1049,39 @@ async fn named_subject(
         return Ok(Some(shadow));
     }
     Ok(None)
+}
+
+/// Spend the code a wallet carried back against the sign-in this login keeps,
+/// and say where that request stands: nothing where no code came back, or it
+/// is not that request's.
+async fn redeem_wallet_code(
+    transaction: &UnitOfWork,
+    wallet: Option<&dyn crate::login::wallet::Wallet>,
+    auth_session_id: &str,
+    login: &AuthSession,
+    answers: &[Answer],
+) -> Result<Option<crate::login::wallet::Presented>, Unanswerable> {
+    let Some(code) = answers.iter().find_map(|answer| match answer {
+        Answer::WalletCode(code) => Some(code),
+        _ => None,
+    }) else {
+        return Ok(None);
+    };
+    let (Some(verifier), Some(kept)) = (
+        wallet,
+        crate::login::wallet::find_sign_in_request(&login.notes),
+    ) else {
+        return Ok(None);
+    };
+    verifier
+        .redeem(
+            transaction,
+            &kept.request_id,
+            auth_session_id,
+            code.expose_secret(),
+        )
+        .await
+        .map_err(|_| Unanswerable::Unreadable)
 }
 
 /// The local mirror of a person the directory owns.

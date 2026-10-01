@@ -1048,3 +1048,83 @@ test("a login gone while a wallet was waited on is told by the round that follow
     "This sign-in has expired or was never started. Go back to the application and try again.",
   );
 });
+
+// A sign-in on this device: the wallet's own link, never a drawing to scan, and
+// no door waited on, since what settles it is the wallet bringing the person
+// back.
+const SIGN_IN = { status: "challenge", execution: "exec-wallet", asks: { wallet: { uri: WALLET_LINK, same_device: true } } };
+
+test("a realm signing people in with a wallet offers it, and one round asks the wallet", async () => {
+  assert.equal(opened().element("wallet-sign-in-open").hidden, true, "a door nothing stands behind");
+  const page = opened({
+    doors: "wallet",
+    rounds: [{ told: SIGN_IN }, { told: SIGN_IN }, { status: 401, told: { status: "refused" } }],
+  });
+  assert.equal(page.element("wallet-sign-in-open").hidden, false);
+  page.form.username.value = "ada";
+  await page.press("wallet-sign-in-open");
+
+  assert.deepEqual(page.sent[0].body, { wallet_sign_in: true });
+  assert.equal(page.element("wallet").hidden, false);
+  assert.equal(page.element("credentials").hidden, true);
+  assert.equal(page.element("wallet-open").href, WALLET_LINK);
+  for (const shown of ["wallet-sign-in-lede", "wallet-sign-in-waiting", "wallet-again-row"]) {
+    assert.equal(page.element(shown).hidden, false, shown);
+  }
+  for (const kept of ["wallet-lede", "wallet-link-lede", "wallet-scan", "wallet-waiting", "wallet-qr", "wallet-qr-frame"]) {
+    assert.equal(page.element(kept).hidden, true, kept);
+  }
+  await page.pass();
+  assert.equal(page.sent.length, 1, "a sign-in waited on a door");
+
+  await page.press("wallet-again");
+  assert.deepEqual(page.sent[1].body, { wallet_sign_in: true });
+  await page.signIn();
+  assert.deepEqual(
+    page.sent[2].body,
+    { username: "ada", password: "a-password" },
+    "the ask rode a round after its own",
+  );
+});
+
+test("a code a wallet brought back leaves the address and is spent in one round", async () => {
+  const page = opened({
+    hash: "#response_code=Zm9v_YmFy-",
+    rounds: [{ told: { status: "admitted", redirect_to: "https://app.example/cb?code=abc" } }],
+  });
+  await page.settle();
+
+  assert.deepEqual(page.replaced, ["/realms/main/protocol/openid-connect/login"]);
+  assert.deepEqual(page.sent[0], {
+    where: "/realms/main/protocol/openid-connect/login",
+    body: { wallet_response_code: "Zm9v_YmFy-" },
+  });
+  assert.deepEqual(page.went, ["https://app.example/cb?code=abc"]);
+  assert.equal(opened({ hash: "#code=abc" }).sent.length, 0, "a fragment without a code played a round");
+});
+
+test("a code brought back to a browser holding no login says the sign-in began elsewhere", async () => {
+  const page = opened({
+    hash: "#response_code=abc",
+    rounds: [
+      { status: 404, told: { status: "no-such-login" } },
+      { status: 404, told: { status: "no-such-login" } },
+    ],
+  });
+  await page.settle();
+  assert.equal(page.element("notice").textContent, page.element("wallet-elsewhere").textContent);
+
+  await page.signIn();
+  assert.deepEqual(page.sent[1].body, { username: "ada", password: "a-password" }, "the code was spent twice");
+  assert.equal(page.element("notice").textContent, page.element("no-such-login").textContent);
+});
+
+test("an identity no account linked is said, and the wallet asked again", async () => {
+  const page = opened({
+    hash: "#response_code=abc",
+    rounds: [{ told: { ...SIGN_IN, asks: { ...SIGN_IN.asks, unlinked: true } } }],
+  });
+  await page.settle();
+  assert.equal(page.element("wallet").hidden, false);
+  assert.equal(page.element("notice").textContent, page.element("wallet-unlinked").textContent);
+});

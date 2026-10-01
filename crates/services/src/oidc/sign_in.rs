@@ -3,7 +3,7 @@
 
 use models::entities::auth::ExecutionStep;
 use store::providers::protocol::login::{self, AuthSession};
-use store::providers::realms::auth_flows;
+use store::providers::realms::{auth_flows, realm_features, wallet_identity};
 use store::tenancy::UnitOfWork;
 
 /// The login a browser holds, while it is still open.
@@ -22,11 +22,27 @@ pub async fn read_open_login(
 /// is named, so a client that overrides the binding to a flow of its own is not
 /// read here. Offering the field where no step takes it costs a person one
 /// wrong guess; hiding it where one does would cost them the way back.
+pub async fn offers_recovery_codes(transaction: &UnitOfWork, bound: Option<&str>) -> bool {
+    flow_runs_step(transaction, bound, "recovery-code").await
+}
+
+/// Whether this realm's browser flow signs people in with a wallet, and the
+/// realm can ask one: the verifier running, and a profile saying how it knows
+/// people. A door with nothing behind it is a button that leads nowhere.
+pub async fn offers_wallet_sign_in(transaction: &UnitOfWork, bound: Option<&str>) -> bool {
+    flow_runs_step(transaction, bound, "wallet-sign-in").await
+        && realm_features::runs_for_realm(transaction, commons::feature::Feature::WalletVerifier)
+            .await
+        && matches!(wallet_identity::load(transaction).await, Ok(Some(_)))
+}
+
+/// Whether the realm's browser flow runs this authenticator in an enabled
+/// step.
 ///
 /// One level deep. A sub-flow is walked, because the built browser flow keeps
 /// its second factors in one, and a step buried two flows down is a shape
 /// nothing this build provisions.
-pub async fn offers_recovery_codes(transaction: &UnitOfWork, bound: Option<&str>) -> bool {
+async fn flow_runs_step(transaction: &UnitOfWork, bound: Option<&str>, named: &str) -> bool {
     let Ok(Some(flow)) = auth_flows::flow_by_alias(transaction, bound.unwrap_or("browser")).await
     else {
         return false;
@@ -40,7 +56,7 @@ pub async fn offers_recovery_codes(transaction: &UnitOfWork, bound: Option<&str>
         }
         match &step.step {
             ExecutionStep::Authenticator { authenticator, .. } => {
-                if authenticator == "recovery-code" {
+                if authenticator == named {
                     return true;
                 }
             }
@@ -53,7 +69,7 @@ pub async fn offers_recovery_codes(transaction: &UnitOfWork, bound: Option<&str>
                         && matches!(
                             &held.step,
                             ExecutionStep::Authenticator { authenticator, .. }
-                                if authenticator == "recovery-code"
+                                if authenticator == named
                         )
                 }) {
                     return true;

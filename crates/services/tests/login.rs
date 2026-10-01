@@ -440,7 +440,7 @@ fn wallet_running() {
 struct ScriptedWallet {
     offers: Result<(), Unasked>,
     stands: Mutex<Result<Presented, ()>>,
-    asked: Mutex<Vec<(Purpose, String, String)>>,
+    asked: Mutex<Vec<(Purpose, String, Option<String>)>>,
     read: Mutex<Vec<(String, String)>>,
 }
 
@@ -462,7 +462,7 @@ impl ScriptedWallet {
         *self.stands.lock().unwrap() = Err(());
     }
 
-    fn asked(&self) -> Vec<(Purpose, String, String)> {
+    fn asked(&self) -> Vec<(Purpose, String, Option<String>)> {
         self.asked.lock().unwrap().clone()
     }
 
@@ -484,12 +484,16 @@ impl Wallet for ScriptedWallet {
         _transaction: &'a UnitOfWork,
         purpose: Purpose,
         login_session: &'a str,
-        user_id: &'a str,
+        user_id: Option<&'a str>,
     ) -> Pin<Box<dyn Future<Output = Result<Asked, Unasked>> + Send + 'a>> {
         Box::pin(async move {
             self.offers?;
             let mut asked = self.asked.lock().unwrap();
-            asked.push((purpose, login_session.to_owned(), user_id.to_owned()));
+            asked.push((
+                purpose,
+                login_session.to_owned(),
+                user_id.map(str::to_owned),
+            ));
             Ok(drawn_request(asked.len()))
         })
     }
@@ -507,6 +511,18 @@ impl Wallet for ScriptedWallet {
                 .push((request_id.to_owned(), login_session.to_owned()));
             self.stands.lock().unwrap().clone()
         })
+    }
+
+    // Spending a code is the login's, ahead of the flow; the flow only ever
+    // reads where the request it kept stands.
+    fn redeem<'a>(
+        &'a self,
+        _transaction: &'a UnitOfWork,
+        _request_id: &'a str,
+        _login_session: &'a str,
+        _response_code: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Presented>, ()>> + Send + 'a>> {
+        Box::pin(async move { Err(()) })
     }
 }
 
@@ -688,7 +704,7 @@ async fn a_wallet_step_waits_on_its_request_and_passes_on_the_linked_identity() 
     );
     assert_eq!(
         wallet.asked(),
-        [(Purpose::Factor, LOGIN.to_owned(), "ada".to_owned())]
+        [(Purpose::Factor, LOGIN.to_owned(), Some("ada".to_owned()))]
     );
 
     // The same request, read for this login, while it stays open.
@@ -874,6 +890,213 @@ async fn a_wallet_step_asks_only_what_can_be_answered() {
     assert_eq!(offering.asked(), [], "a closed factor asked a wallet");
 }
 
+/// What a page is shown for a sign-in: the link alone.
+fn shown_for_sign_in(asked: &Asked) -> Value {
+    json!({ "wallet": { "uri": asked.uri, "same_device": true } })
+}
+
+/// A sign-in asks a wallet only once the person asks, shows its link and never
+/// a drawing of it, and names nobody in asking. It answers like the proof
+/// where it cannot run.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_wallet_sign_in_asks_only_once_asked_and_shows_no_drawing() {
+    wallet_running();
+    let fixture = Fixture::with_user().await;
+    let transaction = fixture.scoped(&tenant()).await;
+    let realm = realms::load(&transaction, "main").await.unwrap().unwrap();
+    let step = async |answers: &[Answer], wallet: Option<Asking<'_>>| -> Answered {
+        verify_answer(
+            &transaction,
+            &provider(),
+            &realm,
+            &origin(),
+            None,
+            Authenticator::WalletSignIn,
+            answers,
+            None,
+            None,
+            &[],
+            wallet,
+        )
+        .await
+    };
+    let offering = ScriptedWallet::offering(Ok(()));
+
+    let answered = step(&[Answer::WalletAsk], None).await;
+    assert_eq!(answered.outcome, Outcome::Failed, "no verifier");
+    let answered = step(&[], Some(offering.bound())).await;
+    assert_eq!(answered.outcome, Outcome::Pending, "not asked yet");
+    assert!(answered.asks.is_none(), "{:?}", answered.asks);
+    assert_eq!(offering.asked(), [], "a wallet was asked unasked");
+
+    let answered = step(&[Answer::WalletAsk], Some(offering.bound())).await;
+    assert_eq!(answered.outcome, Outcome::Pending);
+    let challenge = answered.asks.expect("a challenge");
+    let first = drawn_request(1);
+    assert_eq!(challenge.shown, shown_for_sign_in(&first));
+    assert_eq!(challenge.remembered, kept_for(&first));
+    assert_eq!(
+        offering.asked(),
+        [(Purpose::SignIn, LOGIN.to_owned(), None)]
+    );
+
+    let not_offered = ScriptedWallet::offering(Err(Unasked::NotOffered));
+    let answered = step(&[Answer::WalletAsk], Some(not_offered.bound())).await;
+    assert_eq!(answered.outcome, Outcome::Skipped, "no profile");
+    let unavailable = ScriptedWallet::offering(Err(Unasked::Unavailable));
+    let answered = step(&[Answer::WalletAsk], Some(unavailable.bound())).await;
+    assert_eq!(answered.outcome, Outcome::Failed, "asking failed");
+
+    realm_features::keep_wish(&transaction, "wallet-verifier", false, "root")
+        .await
+        .unwrap();
+    let answered = step(&[Answer::WalletAsk], Some(offering.bound())).await;
+    assert_eq!(answered.outcome, Outcome::Skipped, "the realm closed it");
+    assert_eq!(offering.asked().len(), 1, "a closed sign-in asked a wallet");
+}
+
+/// A sign-in waits on its request until the browser that asked brings the
+/// wallet's code back, and passes only then, on the identity the person it
+/// named linked. Answered and not brought back, it passes nobody, a person
+/// named by a typed name included: the link may have been forwarded to
+/// whoever answered it. An identity no account linked is asked again, said,
+/// and so are a request run out, a refusal and a person asking again.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_wallet_sign_in_passes_only_on_what_this_browser_brought_back() {
+    wallet_running();
+    let fixture = Fixture::with_user().await;
+    let transaction = fixture.scoped(&tenant()).await;
+    let flow = plant_flow(
+        &transaction,
+        AuthenticatorRequirement::Required,
+        "wallet-sign-in",
+    )
+    .await;
+    wallet_identities::link(&transaction, "ada", ISSUER, MINE, &Utc::now())
+        .await
+        .unwrap();
+    let realm = realms::load(&transaction, "main").await.unwrap().unwrap();
+    let ada = load_ada(&transaction).await;
+    let wallet = ScriptedWallet::offering(Ok(()));
+    let first = drawn_request(1);
+    let notes = json!({ "wallet-sign-in": kept_for(&first) });
+    let waiting_on = |asked: &Asked, shown: Value| Progress::Waiting {
+        execution_id: "exec-1".to_owned(),
+        asks: Some(shown),
+        remember: [("wallet-sign-in".to_owned(), kept_for(asked))]
+            .into_iter()
+            .collect(),
+        passed: PassedSteps::new(),
+    };
+    let redeemed = |digest: &str| Presented::Redeemed {
+        issuer: ISSUER.to_owned(),
+        digest: digest.to_owned(),
+    };
+
+    for (standing, subject) in [
+        (Presented::Waiting, None),
+        (identified(MINE), None),
+        (identified(MINE), Some(&ada)),
+    ] {
+        wallet.stand(standing.clone());
+        assert_eq!(
+            run_round(&transaction, &realm, &flow, subject, &[], &notes, &wallet).await,
+            waiting_on(&first, shown_for_sign_in(&first)),
+            "{standing:?} for {:?}",
+            subject.map(|person| &person.user_id)
+        );
+    }
+    assert_eq!(wallet.asked(), [], "an open request was asked again");
+
+    wallet.stand(redeemed(MINE));
+    assert_eq!(
+        run_round(
+            &transaction,
+            &realm,
+            &flow,
+            Some(&ada),
+            &[],
+            &notes,
+            &wallet
+        )
+        .await,
+        Progress::Admitted {
+            passed: PassedSteps::from([("exec-1".to_owned(), Authenticator::WalletSignIn)]),
+        }
+    );
+    wallet.stand(redeemed(THEIRS));
+    assert_eq!(
+        run_round(
+            &transaction,
+            &realm,
+            &flow,
+            Some(&ada),
+            &[],
+            &notes,
+            &wallet
+        )
+        .await,
+        Progress::Refused,
+        "an identity this person never linked passed"
+    );
+
+    let said = |nth: usize, flag: Option<&str>| {
+        let asked = drawn_request(nth);
+        let mut shown = shown_for_sign_in(&asked);
+        if let Some(flag) = flag {
+            shown[flag] = json!(true);
+        }
+        waiting_on(&asked, shown)
+    };
+    wallet.stand(redeemed(MINE));
+    assert_eq!(
+        run_round(&transaction, &realm, &flow, None, &[], &notes, &wallet).await,
+        said(1, Some("unlinked"))
+    );
+    wallet.stand(Presented::Lapsed);
+    assert_eq!(
+        run_round(&transaction, &realm, &flow, None, &[], &notes, &wallet).await,
+        said(2, None)
+    );
+    wallet.stand(Presented::Unproven);
+    assert_eq!(
+        run_round(&transaction, &realm, &flow, None, &[], &notes, &wallet).await,
+        said(3, Some("refused"))
+    );
+    wallet.stand(Presented::Waiting);
+    assert_eq!(
+        run_round(
+            &transaction,
+            &realm,
+            &flow,
+            None,
+            &[Answer::WalletAsk],
+            &notes,
+            &wallet
+        )
+        .await,
+        said(4, None),
+        "a person asking again was held on the request before"
+    );
+    assert!(
+        wallet
+            .asked()
+            .iter()
+            .all(|(purpose, _, named)| *purpose == Purpose::SignIn && named.is_none()),
+        "{:?}",
+        wallet.asked()
+    );
+
+    wallet.stand_unreadable();
+    assert_eq!(
+        run_round(&transaction, &realm, &flow, None, &[], &notes, &wallet).await,
+        Progress::Refused,
+        "a sign-in nobody could read passed"
+    );
+}
+
 /// One round of the ceremony that links an identity, as a login runs it.
 async fn run_linking(
     transaction: &UnitOfWork,
@@ -954,7 +1177,7 @@ async fn a_linking_ceremony_links_what_the_wallet_proves_and_says_what_stands_in
     assert_eq!(read_asked(round), asked(&first, &[]));
     assert_eq!(
         wallet.asked(),
-        [(Purpose::Link, LOGIN.to_owned(), "ada".to_owned())]
+        [(Purpose::Link, LOGIN.to_owned(), Some("ada".to_owned()))]
     );
 
     let notes = json!({ "link-wallet-identity": kept_for(&first) });

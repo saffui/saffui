@@ -332,6 +332,7 @@ const AUTHENTICATORS = [
   "recovery-code",
   "sms-otp",
   "wallet",
+  "wallet-sign-in",
 ] as const;
 const adding = ref(false);
 /// Where the next step lands in the running order; the end when unsaid.

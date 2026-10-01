@@ -50,6 +50,10 @@ pub struct Answered {
     pub magic_link: Option<String>,
     /// The texted code, answering a second factor.
     pub sms_otp: Option<String>,
+    /// The person asked to sign in with their wallet, or to be asked again.
+    pub wallet_sign_in: Option<bool>,
+    /// The code a wallet carried back, as the page read it off its address.
+    pub wallet_response_code: Option<String>,
     /// The number a person offered the phone ceremony, international form.
     pub phone: Option<String>,
     /// The texted code proving that number, typed back.
@@ -170,6 +174,12 @@ pub async fn answer(
     }
     if let Some(typed) = filled(&answered.sms_otp) {
         answers.push(Answer::SmsOtp(typed));
+    }
+    if answered.wallet_sign_in == Some(true) {
+        answers.push(Answer::WalletAsk);
+    }
+    if let Some(brought_back) = filled(&answered.wallet_response_code) {
+        answers.push(Answer::WalletCode(SecretBox::new(Box::new(brought_back))));
     }
     // Anything but a way a phone takes is no ask at all, and the code goes
     // the way it would have.

@@ -1,6 +1,7 @@
 //! The contexts this server holds from the start, compiled in: the W3C
-//! credentials context and the two suite contexts MOSIP's issuers and Inji's
-//! wallets sign under. A realm pins any other, and none of these.
+//! credentials contexts of VCDM 1.1 and 2.0, and the two suite contexts
+//! MOSIP's issuers and Inji's wallets sign under. A realm pins any other, and
+//! none of these.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -11,13 +12,18 @@ use crate::context::Contexts;
 use crate::json::parse_strict;
 
 pub const CREDENTIALS_V1: &str = "https://www.w3.org/2018/credentials/v1";
+pub const CREDENTIALS_V2: &str = "https://www.w3.org/ns/credentials/v2";
 pub const ED25519_2020_V1: &str = "https://w3id.org/security/suites/ed25519-2020/v1";
 pub const JWS_2020_V1: &str = "https://w3id.org/security/suites/jws-2020/v1";
 
-const WRITTEN: [(&str, &str); 3] = [
+const WRITTEN: [(&str, &str); 4] = [
     (
         CREDENTIALS_V1,
         include_str!("../contexts/w3c/credentials-v1.jsonld"),
+    ),
+    (
+        CREDENTIALS_V2,
+        include_str!("../contexts/w3c/credentials-v2.jsonld"),
     ),
     (
         ED25519_2020_V1,

@@ -12,6 +12,7 @@ authors.workspace = true
 # answers a request.
 
 [dependencies]
+commons = { workspace = true }
 config = { workspace = true }
 outbound = { workspace = true }
 services = { workspace = true }

@@ -6,7 +6,7 @@ use store::providers::protocol::{
     backchannel, devices, dpop, form_post, login, oidc, presentations, pushed, replay, sessions,
     source_failures,
 };
-use store::providers::realms::{page_previews, sms, ussd};
+use store::providers::realms::{page_previews, sms, status_lists, ussd};
 use store::tenancy::UnitOfWork;
 
 /// How long the sign-in log looks back. A window, not an archive: long
@@ -29,6 +29,10 @@ pub const NOTICES_KEPT_DAYS: i64 = 30;
 /// How long a presentation request is kept past its window, answered or not:
 /// long enough for whoever asked to read what it came to.
 pub const PRESENTATIONS_KEPT_HOURS: i64 = 24;
+
+/// How long a status list no credential cites is still read. One cited again
+/// after this is read anew, its first credential refused meanwhile.
+pub const STATUS_LISTS_KEPT_DAYS: i64 = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the sweep could not run")]
@@ -75,6 +79,8 @@ pub struct Swept {
     pub logout_notices: u64,
     /// Presentation requests a day past their window.
     pub presentation_requests: u64,
+    /// Status lists no credential cited for a month.
+    pub status_lists: u64,
 }
 
 impl Swept {
@@ -106,6 +112,7 @@ impl Swept {
             + self.security_notices
             + self.logout_notices
             + self.presentation_requests
+            + self.status_lists
     }
 
     pub fn add(&mut self, other: Swept) {
@@ -136,6 +143,7 @@ impl Swept {
         self.security_notices += other.security_notices;
         self.logout_notices += other.logout_notices;
         self.presentation_requests += other.presentation_requests;
+        self.status_lists += other.status_lists;
     }
 }
 
@@ -222,6 +230,12 @@ pub async fn drop_expired_rows(
         presentation_requests: presentations::drop_expired(
             transaction,
             now - chrono::Duration::hours(PRESENTATIONS_KEPT_HOURS),
+        )
+        .await
+        .map_err(failed)?,
+        status_lists: status_lists::drop_uncited(
+            transaction,
+            now - chrono::Duration::days(STATUS_LISTS_KEPT_DAYS),
         )
         .await
         .map_err(failed)?,

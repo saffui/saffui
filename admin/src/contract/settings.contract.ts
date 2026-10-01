@@ -176,7 +176,7 @@ describe("realm settings", () => {
   test("lists the JSON-LD contexts, those built in, and whether the verifier runs", async () => {
     const held = await keepAnswer(listJsonLdContexts, REALM);
     expect(typeof held.running).toBe("boolean");
-    expect(held.built_in).toHaveLength(3);
+    expect(held.built_in).toHaveLength(4);
     expect(Array.isArray(held.items)).toBe(true);
   });
 

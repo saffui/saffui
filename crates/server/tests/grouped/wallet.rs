@@ -589,7 +589,7 @@ async fn a_realm_pins_the_contexts_its_credentials_name() {
     assert_eq!(listed["running"], true);
     assert_eq!(
         listed["built_in"].as_array().map(Vec::len),
-        Some(3),
+        Some(4),
         "{listed}"
     );
     assert_eq!(
@@ -724,6 +724,9 @@ pub(super) struct Wallet {
     vct: &'static str,
     /// Whose PID it holds, by family name.
     pub(super) family_name: &'static str,
+    /// The status its issuer signs it as citing, and whether as a disclosure.
+    status: Option<Value>,
+    status_concealed: bool,
 }
 
 impl Wallet {
@@ -737,7 +740,40 @@ impl Wallet {
             .expect("a holder key"),
             vct: "urn:eudi:pid:1",
             family_name: "Lovelace",
+            status: None,
+            status_concealed: false,
         }
+    }
+
+    /// The same wallet, holding a PID its issuer signed as citing `status`.
+    pub(super) fn citing(&self, status: Value) -> Self {
+        Self {
+            status: Some(status),
+            ..self.clone()
+        }
+    }
+
+    /// The same wallet, its PID's status written as a disclosure, which the
+    /// specification forbids.
+    pub(super) fn concealing_status(&self) -> Self {
+        Self {
+            status_concealed: true,
+            ..self.clone()
+        }
+    }
+
+    /// A status list token the issuer signs, as its key set names that key.
+    pub(super) fn signed_status_list(&self, claims: &Value) -> String {
+        use crypto::jose::jwk::KeyPair;
+        use crypto::jose::jws::{EdDSA, JwsHeader};
+        let mut header = JwsHeader::new();
+        header.set_token_type("statuslist+jwt");
+        header.set_key_id("pid-2026");
+        let signer = EdDSA
+            .signer_from_pem(self.issuer_key.to_pem_private_key())
+            .expect("an issuer signer");
+        crypto::jose::jws::serialize_compact(claims.to_string().as_bytes(), &header, &signer)
+            .expect("signed")
     }
 
     /// The same wallet, holding somebody else's PID from the same issuer.
@@ -754,7 +790,7 @@ impl Wallet {
         use crypto::jose::jws::{EdDSA, JwsHeader};
         use crypto::sd_jwt::{Concealed, conceal_claims};
         let now = chrono::Utc::now().timestamp();
-        let Value::Object(claims) = json!({
+        let Value::Object(mut claims) = json!({
             "iss": format!("{}/pid", self.issuer),
             "vct": self.vct,
             "iat": now,
@@ -767,19 +803,21 @@ impl Wallet {
         }) else {
             unreachable!()
         };
-        let concealment = conceal_claims(
-            &support::provider(),
-            claims,
-            &[
-                Concealed::Property(&["given_name"]),
-                Concealed::Property(&["family_name"]),
-                Concealed::Property(&["birthdate"]),
-                Concealed::Property(&["address", "locality"]),
-                Concealed::Property(&["address", "country"]),
-            ],
-            2,
-        )
-        .expect("concealed");
+        if let Some(status) = &self.status {
+            claims.insert("status".to_owned(), status.clone());
+        }
+        let mut concealed = vec![
+            Concealed::Property(&["given_name"]),
+            Concealed::Property(&["family_name"]),
+            Concealed::Property(&["birthdate"]),
+            Concealed::Property(&["address", "locality"]),
+            Concealed::Property(&["address", "country"]),
+        ];
+        if self.status_concealed {
+            concealed.push(Concealed::Property(&["status"]));
+        }
+        let concealment =
+            conceal_claims(&support::provider(), claims, &concealed, 2).expect("concealed");
         let mut header = JwsHeader::new();
         header.set_token_type("dc+sd-jwt");
         header.set_key_id("pid-2026");
@@ -827,9 +865,14 @@ impl Wallet {
         .expect("bound")
     }
 
-    /// The presentation the PID query asks for.
-    fn presented(&self, audience: &str, nonce: &str) -> String {
-        self.presented_disclosing(audience, nonce, &["given_name", "family_name", "locality"])
+    /// The presentation the PID query asks for, and the status when it is a
+    /// disclosure.
+    pub(super) fn presented(&self, audience: &str, nonce: &str) -> String {
+        self.presented_disclosing(
+            audience,
+            nonce,
+            &["given_name", "family_name", "locality", "status"],
+        )
     }
 }
 
@@ -987,7 +1030,7 @@ pub(super) async fn mint_request_key(plane: &Plane, bearer: &str) {
     assert_eq!(status, StatusCode::CREATED, "{told}");
 }
 
-fn pid_query() -> Value {
+pub(super) fn pid_query() -> Value {
     json!({
         "credentials": [{
             "id": "pid",
@@ -1009,7 +1052,7 @@ async fn ask_for_pid(plane: &Plane, bearer: &str) -> (Value, serde_json::Map<Str
 
 /// Ask the realm for what `query` names, and read the request as the wallet
 /// reads it.
-async fn ask_for(
+pub(super) async fn ask_for(
     plane: &Plane,
     bearer: &str,
     query: &Value,
@@ -1038,7 +1081,7 @@ pub(super) async fn answered(
 }
 
 /// Where a request stands, read by the administrator who asked.
-async fn standing_of(plane: &Plane, bearer: &str, id: &Value) -> Value {
+pub(super) async fn standing_of(plane: &Plane, bearer: &str, id: &Value) -> Value {
     let id = id.as_str().expect("an id");
     let (status, standing) = asked(
         plane,
@@ -1244,7 +1287,7 @@ async fn answer_to_fails(
     assert_eq!(standing["outcome"]["reason"], reason);
 }
 
-fn client_id_and_nonce(request: &serde_json::Map<String, Value>) -> (&str, &str) {
+pub(super) fn client_id_and_nonce(request: &serde_json::Map<String, Value>) -> (&str, &str) {
     (
         request["client_id"].as_str().expect("a client_id"),
         request["nonce"].as_str().expect("a nonce"),
@@ -1565,8 +1608,7 @@ impl IdentityWallet {
 
     /// The credential the issuer signs, `change` made to it and to its proof's
     /// options first.
-    fn issued_as(&self, change: impl FnOnce(&mut Value, &mut Value)) -> Value {
-        use crypto::jose::jws::EdDSA;
+    pub(super) fn issued_as(&self, change: impl FnOnce(&mut Value, &mut Value)) -> Value {
         let now = chrono::Utc::now();
         let written = |at: chrono::DateTime<chrono::Utc>| {
             at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
@@ -1597,10 +1639,17 @@ impl IdentityWallet {
             "proofPurpose": "assertionMethod",
         });
         change(&mut credential, &mut options);
-        options["@context"] = credential["@context"].clone();
+        self.signed(credential, options)
+    }
+
+    /// `document` with the issuer's proof over it, its options read as the
+    /// suite's signers read them: under the suite's own context.
+    fn signed(&self, mut document: Value, mut options: Value) -> Value {
+        use crypto::jose::jws::EdDSA;
+        options["@context"] = json!(jsonld::built_in::ED25519_2020_V1);
         let signed = [
             self.hash_canonical(&options),
-            self.hash_canonical(&credential),
+            self.hash_canonical(&document),
         ]
         .concat();
         let signer = EdDSA
@@ -1613,8 +1662,40 @@ impl IdentityWallet {
             "proofValue".to_owned(),
             json!(format!("z{}", jsonld::base58::encode(&signature))),
         );
-        credential["proof"] = options;
-        credential
+        document["proof"] = options;
+        document
+    }
+
+    /// A Bitstring Status List credential at `uri`, the issuer's proof over
+    /// it, serving `purpose` with `statuses` compressed as the specification
+    /// writes them.
+    pub(super) fn signed_status_list(&self, uri: &str, purpose: &str, statuses: &[u8]) -> Value {
+        use std::io::Write;
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        gzip.write_all(statuses).expect("compressed");
+        let encoded = data_encoding::BASE64URL_NOPAD.encode(&gzip.finish().expect("compressed"));
+        let now = chrono::Utc::now();
+        let list = json!({
+            "@context": [jsonld::built_in::CREDENTIALS_V2],
+            "id": uri,
+            "type": ["VerifiableCredential", "BitstringStatusListCredential"],
+            "issuer": self.issuer(),
+            "validFrom": (now - chrono::Duration::minutes(5))
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            "credentialSubject": {
+                "id": format!("{uri}#list"),
+                "type": "BitstringStatusList",
+                "statusPurpose": purpose,
+                "encodedList": format!("u{encoded}"),
+            },
+        });
+        let options = json!({
+            "type": "Ed25519Signature2020",
+            "created": now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "verificationMethod": format!("{}#key-1", self.issuer()),
+            "proofPurpose": "assertionMethod",
+        });
+        self.signed(list, options)
     }
 
     /// The credential the issuer signs, `change` made to it first.
@@ -1629,7 +1710,7 @@ impl IdentityWallet {
     /// A presentation of `credentials` for the request `client_id` and `nonce`
     /// name, `change` made to it and to its proof's options before the holder
     /// signs.
-    fn presented_as(
+    pub(super) fn presented_as(
         &self,
         credentials: Vec<Value>,
         client_id: &str,
@@ -1740,7 +1821,7 @@ pub(super) async fn realm_ready_for_identity(plane: &Plane, bearer: &str) -> Ide
 }
 
 /// A query for the identity credential, and the claims `claims` names.
-fn identity_query(claims: &[&[&str]]) -> Value {
+pub(super) fn identity_query(claims: &[&[&str]]) -> Value {
     json!({
         "credentials": [{
             "id": "identity",

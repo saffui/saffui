@@ -16,6 +16,10 @@ pub const PATIENCE: Duration = Duration::from_secs(5);
 /// this it is something else.
 const CEILING: u64 = 64 * 1024;
 
+/// The most a status list will be read to as served: its statuses travel
+/// compressed, a few kilobytes for most lists.
+const LIST_CEILING: u64 = 1024 * 1024;
+
 /// A resolver that hands back only addresses outside this deployment.
 ///
 /// The check belongs here and not before the request: checked earlier, the
@@ -133,19 +137,42 @@ fn agent(egress: Egress, patience: Duration, status_as_error: bool) -> ureq::Age
 
 /// What the client hosts at this URI, or nothing.
 pub async fn fetch(uri: String, egress: Egress) -> Option<String> {
+    fetch_within(uri, egress, None, CEILING).await
+}
+
+/// What an issuer publishes at a status list's address, asked for as the
+/// media type its format names, or nothing.
+pub async fn fetch_status_list(
+    uri: String,
+    egress: Egress,
+    asked_as: Option<&'static str>,
+) -> Option<String> {
+    fetch_within(uri, egress, asked_as, LIST_CEILING).await
+}
+
+async fn fetch_within(
+    uri: String,
+    egress: Egress,
+    asked_as: Option<&'static str>,
+    ceiling: u64,
+) -> Option<String> {
     if !may_dial(&uri, egress) {
         return None;
     }
     tokio::task::spawn_blocking(move || {
         let agent = outward_agent(egress, PATIENCE);
-        let mut response = agent.get(&uri).call().ok()?;
+        let mut asked = agent.get(&uri);
+        if let Some(media_type) = asked_as {
+            asked = asked.header("Accept", media_type);
+        }
+        let mut response = asked.call().ok()?;
         if response.status() != 200 {
             return None;
         }
         response
             .body_mut()
             .with_config()
-            .limit(CEILING)
+            .limit(ceiling)
             .read_to_string()
             .ok()
     })

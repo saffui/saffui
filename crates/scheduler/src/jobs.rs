@@ -221,6 +221,44 @@ pub async fn deliver_every_realm_with_egress(
     }
 }
 
+/// Read again the status lists the credentials of every realm cite, as each
+/// falls due, for as long as this node runs. Nothing where the process does
+/// not run the wallet verifier, and says so. Every node may run it: a list is
+/// claimed by one reader at a time.
+pub fn refresh_status_lists(
+    tenancy: Tenancy,
+    sealing: std::sync::Arc<outbound::Sealing>,
+    every: Option<Duration>,
+) -> Option<JoinHandle<()>> {
+    if !commons::feature::installed().is_enabled(commons::feature::Feature::WalletVerifier) {
+        tracing::info!("credential status lists are never read: the wallet verifier does not run");
+        return None;
+    }
+    let Some(every) = every else {
+        tracing::info!("credential status lists are never read");
+        return None;
+    };
+    tracing::info!(seconds = every.as_secs(), "reading credential status lists");
+    Some(tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(every);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            match crate::status_lists::refresh_every_realm(&tenancy, &sealing).await {
+                Some(refreshed) if refreshed.kept + refreshed.unread > 0 => tracing::info!(
+                    kept = refreshed.kept,
+                    unread = refreshed.unread,
+                    "read credential status lists"
+                ),
+                Some(_) => {}
+                None => {
+                    tracing::warn!("the status list pass could not list this deployment's realms")
+                }
+            }
+        }
+    }))
+}
+
 /// Which job the federation advisory lock is for.
 const FEDERATE: i32 = 0x4C44_4150_u32 as i32;
 

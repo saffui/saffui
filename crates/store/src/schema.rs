@@ -709,6 +709,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V117__wallet_sign_in.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 118,
+            name: "credential_status_lists",
+            sql: include_str!("../migrations/V118__credential_status_lists.sql"),
+            transactional: true,
+        }),
     ]
 }
 

@@ -16,10 +16,10 @@ upstream ships them, under *IBM Plex*. The canonicalization tests of the `jsonld
 crate run the W3C suite's own files, under *W3C RDF Dataset Canonicalization
 test suite*, and its reading of JSON-LD runs the toRdf tests of the W3C JSON-LD
 suite, under *W3C JSON-LD 1.1 test suite*. The `jsonld` crate compiles in the
-W3C credentials context and the two suite contexts MOSIP's issuers and Inji's
-wallets sign under, the first three entries after the JSON-LD suite; its proof
-tests verify a credential MOSIP's vc-verifier keeps, under those and the one
-context the last entry holds.
+W3C credentials contexts of VCDM 1.1 and 2.0 and the two suite contexts MOSIP's
+issuers and Inji's wallets sign under, the first four entries after the JSON-LD
+suite; its proof tests verify a credential and a status list MOSIP's
+vc-verifier keeps, under those and the one context the last entry holds.
 
 ---
 
@@ -324,6 +324,24 @@ Code meant for the whole crate goes into a module of its own rather than into
 - Upstream tracking: none. A context is fixed once credentials name it: a newer
   revision would change what those credentials mean.
 
+## W3C Verifiable Credentials context v2
+
+- Upstream: https://github.com/w3c/vc-data-model, file `contexts/credentials/v2`,
+  served as https://www.w3.org/ns/credentials/v2
+- Version taken: commit `08b83e46c10ee37b0f4fb44b31459e611e521da0` (2025-02-25),
+  the last to change the file: the Recommendation of 2025-05-15 names this
+  document
+- Date taken: 2026-10-01
+- Licence: the W3C Software and Document License, as upstream's `LICENSE.md`
+  states; it is the note copied under the entry above.
+- Files derived: `crates/jsonld/contexts/w3c/credentials-v2.jsonld`
+- Modifications: none. The file is renamed only. Its SHA-256,
+  `59955ced6697d61e03f2b2556febe5308ab16842846f5b586d7f1f7adec92734`, is pinned
+  by a test, as are those of the three other contexts compiled in.
+- Use: compiled into the product, as above.
+- Distribution: under the licence note above.
+- Upstream tracking: none, for the same reason.
+
 ## W3C JSON Web Signature 2020 context v1
 
 - Upstream: https://github.com/w3c/vc-jws-2020, file `contexts/v1/index.json`,
@@ -355,24 +373,30 @@ Code meant for the whole crate goes into a module of its own rather than into
   carries it at `/usr/share/licenses/saffui/jsonld-contexts/digitalbazaar/LICENSE`.
 - Upstream tracking: none, for the same reason.
 
-## MOSIP vc-verifier insurance credential
+## MOSIP vc-verifier insurance credential and status list
 
-- Upstream: https://github.com/inji/vc-verifier, file
+- Upstream: https://github.com/inji/vc-verifier, files
   `vc-verifier/kotlin/vcverifier/src/test/resources/ldp_vc/Ed25519Signature2020SignedSunbirdVC.json`
+  and `vc-verifier/kotlin/vcverifier/src/test/resources/ldp_vc/mosipRevokedStatusList.json`
 - Version taken: commit `a85e9dc819769b3c496f00198e33b43d683e1c0f` (2026-08-04)
-- Date taken: 2026-09-29
-- Licence: Apache-2.0, upstream's `LICENSE` copied beside the file. Upstream has
+- Date taken: 2026-09-29, the status list 2026-10-01
+- Licence: Apache-2.0, upstream's `LICENSE` copied beside the files. Upstream has
   no `NOTICE` file.
 - Files derived:
   - `crates/jsonld/tests/proofs/vc-verifier/Ed25519Signature2020SignedSunbirdVC.json`
+  - `crates/jsonld/tests/proofs/vc-verifier/mosipRevokedStatusList.json`
   - `crates/jsonld/tests/proofs/vc-verifier/LICENSE`
-- Modifications: none. The file is a credential an issuer of MOSIP's `released`
-  environment signed; one changed byte breaks its signature, which is what the
-  tests check. Its claims are test data. The issuer's public key is written in
-  the tests as a constant, as its DID document published it on 2026-09-28; the
-  document itself is not copied.
+- Modifications: none. The first file is a credential an issuer of MOSIP's
+  `released` environment signed; one changed byte breaks its signature, which is
+  what the tests check. Its claims are test data. The issuer's public key is
+  written in the tests as a constant, as its DID document published it on
+  2026-09-28; the document itself is not copied. The second is a Bitstring
+  Status List credential the mock issuer of MOSIP's `qa-inji1` environment
+  signed; its issuer's key is written in the tests as a constant, as the copy of
+  that issuer's DID document upstream keeps beside it (`ldp_vc/mockDid.json`, same
+  commit) writes it.
 - Use: test fixtures only. Nothing in them is compiled into the product.
-- Upstream tracking: none. The credential is fixed by its signature.
+- Upstream tracking: none. Each file is fixed by its signature.
 
 ## Insurance context of holashchand/test_project
 

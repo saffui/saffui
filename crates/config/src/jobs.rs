@@ -34,6 +34,16 @@ pub fn outbox_every() -> Result<Option<Duration>, ConfigError> {
     Ok((seconds > 0).then(|| Duration::from_secs(seconds)))
 }
 
+/// How often the status lists credentials cite are looked at for any that is
+/// due to be read again. On by default where the wallet verifier runs: a list
+/// nobody reads refuses every credential citing it. Zero means never.
+const STATUS_LISTS: &str = "STATUS_LISTS_SECONDS";
+
+pub fn status_lists_every() -> Result<Option<Duration>, ConfigError> {
+    let seconds = crate::parse_or(STATUS_LISTS, 60)?;
+    Ok((seconds > 0).then(|| Duration::from_secs(seconds)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,5 +79,11 @@ mod tests {
             Some(Duration::from_secs(900))
         );
         clear(&[FEDERATION_SYNC]);
+
+        clear(&[STATUS_LISTS]);
+        assert_eq!(status_lists_every().unwrap(), Some(Duration::from_secs(60)));
+        set(STATUS_LISTS, "0");
+        assert_eq!(status_lists_every().unwrap(), None);
+        clear(&[STATUS_LISTS]);
     }
 }

@@ -3,15 +3,16 @@
 //! detached JWS over unencoded bytes (RFC 7797), on a presentation.
 //!
 //! Both sign the SHA-256 of the proof's options in canonical form followed by
-//! the SHA-256 of the document without its proof in canonical form. The
-//! options are read under the document's own `@context`, as those wallets and
-//! issuers read them: the `jws-2020` context alone does not even name `type`.
+//! the SHA-256 of the document without its proof in canonical form. Each suite
+//! reads the options under the context its signers read them under (see
+//! `options_context`).
 
 use crypto::ecdsa::der_from_raw_signature;
 use crypto::provider::{CryptoProvider, HashAlg, PublicKey, SignAlg};
 use data_encoding::BASE64URL_NOPAD;
 use serde_json::{Map, Value};
 
+use crate::built_in::ED25519_2020_V1;
 use crate::canon::{Refused, canonicalize};
 use crate::context::Contexts;
 use crate::json::parse_strict;
@@ -108,7 +109,7 @@ pub fn verify_proof(
     let context = unsigned
         .get("@context")
         .ok_or(Unproven::Malformed("a document without a context"))?;
-    options.insert("@context".to_owned(), context.clone());
+    options.insert("@context".to_owned(), options_context(read.suite, context));
     let signed_data = [
         hash_canonical(provider, &Value::Object(options), contexts, bounds)?,
         hash_canonical(provider, &Value::Object(unsigned), contexts, bounds)?,
@@ -135,6 +136,19 @@ pub fn verify_proof(
         })
         .then_some(read)
         .ok_or(Unproven::Signature)
+}
+
+/// The context a proof's options are read under. An `Ed25519Signature2020`
+/// signer reads them under the suite's own context whatever the document
+/// names: Inji Certify signs its status lists under the VCDM 2.0 context
+/// alone, which does not define the suite. Inji's wallets read a
+/// `JsonWebSignature2020` proof's under the document's: the `jws-2020` context
+/// alone does not even name `type`.
+fn options_context(suite: Suite, document_context: &Value) -> Value {
+    match suite {
+        Suite::Ed25519Signature2020 => Value::String(ED25519_2020_V1.to_owned()),
+        Suite::JsonWebSignature2020 => document_context.clone(),
+    }
 }
 
 /// The signature a proof carries, decoded.

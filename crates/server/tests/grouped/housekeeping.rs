@@ -530,3 +530,56 @@ async fn a_pass_drops_the_minutes_no_window_reaches_any_more() {
         assert_eq!(left, kept, "{realm} kept the wrong minutes");
     }
 }
+
+/// A status list no credential cited for a month is no longer read, and one
+/// cited since stays.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_status_list_no_credential_cites_is_forgotten() {
+    let plane = Plane::with_actions(&[]).await;
+    let transaction = plane
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
+        .await;
+    transaction
+        .execute(
+            "INSERT INTO realm_credential_issuers \
+                 (tenant, realm_id, issuer_id, name, issuer, keys, read_from, read_at, created_by) \
+             VALUES ($1, $2, 'i1', 'Issuer', 'https://issuer.example', '[{\"kty\": \"OKP\"}]', \
+                     'https://issuer.example/.well-known/jwt-vc-issuer', now(), 'admin')",
+            &[&support::TENANT, &support::REALM],
+        )
+        .await
+        .expect("an issuer");
+    for (uri, days) in [
+        ("https://issuer.example/lists/uncited", 31),
+        ("https://issuer.example/lists/cited", 29),
+    ] {
+        transaction
+            .execute(
+                "INSERT INTO credential_status_lists \
+                     (tenant, realm_id, issuer_id, uri, format, due_at, cited_at) \
+                 VALUES ($1, $2, 'i1', $3, 'token', now(), \
+                         now() - make_interval(days => $4::int))",
+                &[&support::TENANT, &support::REALM, &uri, &days],
+            )
+            .await
+            .expect("a list");
+    }
+    transaction.commit().await.expect("the seed kept");
+
+    let swept = sweep_every_realm(&plane.tenancy())
+        .await
+        .expect("the realms were listed");
+    assert_eq!(swept.status_lists, 1, "{swept:?}");
+    let transaction = plane
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
+        .await;
+    let left: Vec<String> = transaction
+        .query("SELECT uri FROM credential_status_lists", &[])
+        .await
+        .expect("a census")
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(left, ["https://issuer.example/lists/cited"]);
+}

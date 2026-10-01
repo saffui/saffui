@@ -1,10 +1,10 @@
-//! Data Integrity proofs, against a credential a real issuer signed and
-//! presentations signed here in the exact shape Inji's wallets give them, read
-//! under the contexts built in and the one context a realm would pin for the
-//! credential.
+//! Data Integrity proofs, against a credential and a status list real issuers
+//! signed and presentations signed here in the exact shape Inji's wallets give
+//! them, read under the contexts built in and the one context a realm would
+//! pin for the credential.
 //!
-//! The credential and that context are in `tests/proofs`, one folder per
-//! upstream, recorded in THIRD-PARTY.md.
+//! The credential, the list and that context are in `tests/proofs`, one folder
+//! per upstream, recorded in THIRD-PARTY.md.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -30,6 +30,10 @@ const BOUNDS: Bounds = Bounds {
 /// The key of the insurance credential's issuer, as its DID document
 /// published it when this test was written.
 const INSURANCE_ISSUER_KEY: &str = "z6Mkjp2mZ8erefcvzpUgHD4ybxcW6xrY5QmYqcowxEELZ2q7";
+
+/// The Ed25519 key of the issuer of MOSIP's status list, as vc-verifier's copy
+/// of its DID document writes it (`ldp_vc/mockDid.json`).
+const STATUS_LIST_ISSUER_KEY: &str = "z6Mki13hAgnc8jDw86MnBhNQ12C4DuMs5kjmpg9orskHTd45";
 
 const ED25519_PUBLIC_KEY_PREFIX: [u8; 12] = [
     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
@@ -60,7 +64,11 @@ fn insurance_credential() -> Value {
 }
 
 fn issuer_key() -> PublicKey {
-    let decoded = base58::decode(&INSURANCE_ISSUER_KEY[1..]).expect("base58");
+    multibase_key(INSURANCE_ISSUER_KEY)
+}
+
+fn multibase_key(written: &str) -> PublicKey {
+    let decoded = base58::decode(&written[1..]).expect("base58");
     let raw = decoded
         .strip_prefix(&[0xed, 0x01][..])
         .expect("an Ed25519 multicodec prefix");
@@ -108,6 +116,47 @@ fn a_changed_claim_or_another_key_verifies_nothing() {
         ),
         Err(Unproven::Signature)
     );
+}
+
+/// Inji Certify writes its status lists under the VCDM 2.0 context alone, which
+/// does not define `Ed25519Signature2020`, and signs the proof's options under
+/// the suite's own context. Read that way they are signed: another purpose or
+/// another date verifies nothing.
+#[test]
+fn a_status_list_mosip_signed_verifies_under_its_suites_context() {
+    let list = fixture("vc-verifier/mosipRevokedStatusList.json");
+    let key = multibase_key(STATUS_LIST_ISSUER_KEY);
+    let none_pinned = HashMap::new();
+    let under = |document: &Value| {
+        verify_proof(
+            &provider(),
+            document,
+            &HeldContexts::new(&none_pinned),
+            std::slice::from_ref(&key),
+            BOUNDS,
+        )
+    };
+    assert_eq!(
+        under(&list),
+        Ok(Proof {
+            suite: Suite::Ed25519Signature2020,
+            verification_method: "did:web:mosip.github.io:inji-config:qa-inji1:mock\
+                #kMVyZTvx8G0h1YZnUW4OJtr2LRVZUuGl8pQuJl3ymXI"
+                .to_owned(),
+            proof_purpose: Some("assertionMethod".to_owned()),
+            created: Some("2025-11-11T07:29:00Z".to_owned()),
+            challenge: None,
+            domain: None,
+        })
+    );
+    for (member, value) in [
+        ("proofPurpose", "authentication"),
+        ("created", "2025-11-11T07:29:01Z"),
+    ] {
+        let mut changed = list.clone();
+        changed["proof"][member] = json!(value);
+        assert_eq!(under(&changed), Err(Unproven::Signature), "{member}");
+    }
 }
 
 /// A proof holds under whichever of the keys given signed it, and under none

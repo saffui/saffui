@@ -3082,6 +3082,7 @@ name = "scheduler"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "commons",
  "config",
  "outbound",
  "serde_json",
@@ -3230,6 +3231,7 @@ dependencies = [
  "crypto",
  "data-encoding",
  "deadpool-postgres",
+ "flate2",
  "fluent-bundle",
  "futures-util",
  "include_dir",
@@ -3285,6 +3287,7 @@ dependencies = [
  "data-encoding",
  "deadpool-postgres",
  "email_address",
+ "flate2",
  "jsonld",
  "models",
  "pgcore",

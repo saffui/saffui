@@ -516,6 +516,11 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
         synced_sealing.clone(),
         config::jobs::federation_sync_every().map_err(|reason| reason.to_string())?,
     );
+    let reading_lists = scheduler::jobs::refresh_status_lists(
+        tenancy_for_outbox.clone(),
+        synced_sealing.clone(),
+        config::jobs::status_lists_every().map_err(|reason| reason.to_string())?,
+    );
     let delivering = scheduler::jobs::deliver_outbox_events(
         tenancy_for_outbox,
         synced_sealing,
@@ -568,6 +573,9 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
     }
     if let Some(delivering) = delivering {
         delivering.abort();
+    }
+    if let Some(reading_lists) = reading_lists {
+        reading_lists.abort();
     }
     if let Some(syncing) = syncing {
         syncing.abort();

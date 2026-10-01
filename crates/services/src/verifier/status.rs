@@ -25,7 +25,7 @@ use jsonld::proof::{Unproven, read_proof, verify_proof};
 use jsonld::rdf::{Literal, Node, Object, Quad, XSD_STRING};
 use jsonld::{Contexts, Unreadable, to_rdf};
 use serde_json::{Map, Value};
-use store::providers::realms::status_lists::{self, DueList, KeptReading};
+use store::providers::realms::status_lists::{self, DueList, KeptReading, ListSigners};
 use store::tenancy::UnitOfWork;
 
 use super::linked_data::{BOUNDS, asserting_keys};
@@ -777,13 +777,16 @@ pub fn read_due_list(
     now: DateTime<Utc>,
 ) -> Result<ReadList, &'static str> {
     let served = served.ok_or(LIST_UNFETCHED)?;
+    let ListSigners::Keys(keys) = &due.signers else {
+        return Err(LIST_SIGNATURE);
+    };
     match ListFormat::parse(&due.format) {
-        Some(ListFormat::Token) => read_token_list(&due.issuer, &due.keys, &due.uri, served, now),
+        Some(ListFormat::Token) => read_token_list(&due.issuer, keys, &due.uri, served, now),
         Some(ListFormat::Bitstring) => read_bitstring_list(
             provider,
             &HeldContexts::new(contexts),
             &due.issuer,
-            &due.keys,
+            keys,
             &due.uri,
             served,
             now,

@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use crypto::provider::CryptoProvider;
 use data_encoding::HEXLOWER;
-use models::entities::credential_issuers::CredentialIssuer;
+use models::entities::credential_issuers::{CredentialIssuer, IssuerTrust};
 use serde_json::Value;
 use store::error::StoreError;
 use store::providers::realms::credential_issuers;
@@ -91,9 +91,11 @@ pub async fn name(
         issuer_id: HEXLOWER.encode(&drawn),
         name: name.to_owned(),
         issuer: issuer.to_owned(),
-        keys: read.keys,
-        read_from: read.read_from,
-        read_at: now,
+        trust: IssuerTrust::Metadata {
+            keys: read.keys,
+            read_from: read.read_from,
+            read_at: now,
+        },
         created_by: by.to_owned(),
         created_at: now,
     };

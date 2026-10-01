@@ -2,11 +2,11 @@ mod support;
 
 use chrono::{DateTime, Duration, Utc};
 use models::auditable::AuditableModel;
-use models::entities::credential_issuers::CredentialIssuer;
+use models::entities::credential_issuers::{CredentialIssuer, IssuerTrust};
 use models::entities::realm::RealmCreateModel;
 use serde_json::json;
 use store::providers::realms::credential_issuers;
-use store::providers::realms::status_lists::{self, DueList, KeptReading};
+use store::providers::realms::status_lists::{self, DueList, KeptReading, ListSigners};
 use store::tenancy::{TenantContext, UnitOfWork};
 use support::Fixture;
 
@@ -23,9 +23,11 @@ async fn name_issuer(transaction: &UnitOfWork, issuer_id: &str) {
             issuer_id: issuer_id.into(),
             name: issuer_id.into(),
             issuer: format!("https://{issuer_id}.example"),
-            keys: vec![json!({ "kty": "OKP", "crv": "Ed25519", "x": "AAAA", "kid": "k1" })],
-            read_from: format!("https://{issuer_id}.example/.well-known/jwt-vc-issuer"),
-            read_at: now(),
+            trust: IssuerTrust::Metadata {
+                keys: vec![json!({ "kty": "OKP", "crv": "Ed25519", "x": "AAAA", "kid": "k1" })],
+                read_from: format!("https://{issuer_id}.example/.well-known/jwt-vc-issuer"),
+                read_at: now(),
+            },
             created_by: "admin".into(),
             created_at: now(),
         },
@@ -97,7 +99,9 @@ async fn a_list_is_written_down_once_claimed_once_and_read_a_byte_at_a_time() {
             uri: LIST.into(),
             format: "token".into(),
             issuer: "https://i1.example".into(),
-            keys: vec![json!({ "kty": "OKP", "crv": "Ed25519", "x": "AAAA", "kid": "k1" })],
+            signers: ListSigners::Keys(vec![
+                json!({ "kty": "OKP", "crv": "Ed25519", "x": "AAAA", "kid": "k1" })
+            ]),
             issued_at: None,
         }]
     );

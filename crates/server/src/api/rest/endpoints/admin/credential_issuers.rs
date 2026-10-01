@@ -2,7 +2,7 @@ use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use config::serving::Egress;
-use models::entities::credential_issuers::CredentialIssuer;
+use models::entities::credential_issuers::{CredentialIssuer, IssuerTrust};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use services::admin::credential_issuers::{ReadKeys, Unnamable};
@@ -20,22 +20,57 @@ pub struct IssuerBrief {
     pub id: String,
     pub name: String,
     pub issuer: String,
+    /// `metadata` or `certificate`: how the realm trusts the issuer.
+    pub trusted_by: &'static str,
+    /// What its metadata published, read when and where; none by certificate.
     pub keys: Vec<Value>,
-    pub read_from: String,
-    pub read_at: chrono::DateTime<chrono::Utc>,
+    pub read_from: Option<String>,
+    pub read_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// The trust anchors it is trusted through, and the types it issues, when
+    /// trusted by certificate.
+    pub anchors: Vec<String>,
+    pub credential_types: Vec<String>,
     pub created_by: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl From<CredentialIssuer> for IssuerBrief {
     fn from(named: CredentialIssuer) -> Self {
+        let (trusted_by, keys, read_from, read_at, anchors, credential_types) = match named.trust {
+            IssuerTrust::Metadata {
+                keys,
+                read_from,
+                read_at,
+            } => (
+                "metadata",
+                keys,
+                Some(read_from),
+                Some(read_at),
+                Vec::new(),
+                Vec::new(),
+            ),
+            IssuerTrust::Certificate {
+                anchors,
+                credential_types,
+            } => (
+                "certificate",
+                Vec::new(),
+                None,
+                None,
+                anchors,
+                credential_types,
+            ),
+        };
         Self {
             id: named.issuer_id,
             name: named.name,
             issuer: named.issuer,
-            keys: named.keys,
-            read_from: named.read_from,
-            read_at: named.read_at,
+            trusted_by,
+            keys,
+            read_from,
+            read_at,
+            anchors,
+            credential_types,
             created_by: named.created_by,
             created_at: named.created_at,
         }

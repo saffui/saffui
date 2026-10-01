@@ -721,6 +721,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V119__verifier_certificates.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 120,
+            name: "certificate_trust",
+            sql: include_str!("../migrations/V120__certificate_trust.sql"),
+            transactional: true,
+        }),
     ]
 }
 

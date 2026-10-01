@@ -1031,7 +1031,7 @@ async fn verify_credential(
     };
 
     // The key the header names, or every key of the issuer when it names none.
-    let candidates = candidate_keys(&named.keys, kid);
+    let candidates = candidate_keys(named.trust.keys(), kid);
     let mut outcome = Err("a credential's signature is not its issuer's");
     for jwk in candidates {
         let Some(verifier) = verifier_for(algorithm, &jwk) else {
@@ -1278,7 +1278,7 @@ fn encoded(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use models::entities::credential_issuers::CredentialIssuer;
+    use models::entities::credential_issuers::{CredentialIssuer, IssuerTrust};
 
     use super::*;
 
@@ -1767,18 +1767,21 @@ mod tests {
             issuer_id: "i".into(),
             name: "PID".into(),
             issuer: "https://issuer.test/pid".into(),
-            keys: vec![json!({ "kid": "a" }), json!({ "kid": "b" }), json!({})],
-            read_from: "https://issuer.test/.well-known/jwt-vc-issuer/pid".into(),
-            read_at: DateTime::from_timestamp(0, 0).expect("a time"),
+            trust: IssuerTrust::Metadata {
+                keys: vec![json!({ "kid": "a" }), json!({ "kid": "b" }), json!({})],
+                read_from: "https://issuer.test/.well-known/jwt-vc-issuer/pid".into(),
+                read_at: DateTime::from_timestamp(0, 0).expect("a time"),
+            },
             created_by: "admin".into(),
             created_at: DateTime::from_timestamp(0, 0).expect("a time"),
         };
-        assert_eq!(candidate_keys(&named.keys, None).len(), 3);
+        let keys = named.trust.keys();
+        assert_eq!(candidate_keys(keys, None).len(), 3);
         assert_eq!(
-            candidate_keys(&named.keys, Some("b")),
+            candidate_keys(keys, Some("b")),
             vec![json!({ "kid": "b" }).as_object().cloned().expect("a key")]
         );
-        assert!(candidate_keys(&named.keys, Some("c")).is_empty());
+        assert!(candidate_keys(keys, Some("c")).is_empty());
     }
 
     #[test]

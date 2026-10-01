@@ -8,6 +8,7 @@ pub mod mail;
 pub mod page_previews;
 pub mod realm_features;
 pub mod realm_keys;
+pub mod revocation_lists;
 pub mod sim_swap;
 pub mod sms;
 pub mod status_lists;

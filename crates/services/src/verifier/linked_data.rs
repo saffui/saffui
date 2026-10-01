@@ -190,7 +190,7 @@ fn verify_issued_credential(
     if proof.proof_purpose.as_deref() != Some("assertionMethod") {
         return Err("a credential's proof is not an assertion");
     }
-    let keys = asserting_keys(&named.keys, &proof.verification_method);
+    let keys = asserting_keys(named.trust.keys(), &proof.verification_method);
     if keys.is_empty() {
         return Err("a credential is signed by a key this verifier does not read");
     }

@@ -37,6 +37,7 @@ const EXCUSED: Record<string, string> = {
   "settings/SettingsPage.vue": "a form would discard what is being typed into it",
   "settings/PagesPage.vue": "a form would discard what is being typed into it",
   "settings/ThemePage.vue": "a form would discard what is being typed into it",
+  "settings/CredentialIssuersCard.vue": "its page owns and refreshes the issuers it lists",
   "settings/PresentationRequestCard.vue":
     "it follows the one request it asked for, read again every two seconds until it settles",
   "clients/ClientDrawer.vue": "a drawer re-reads after its own writes, keeping its tabs",

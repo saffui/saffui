@@ -1,17 +1,19 @@
 use std::cmp::Ordering;
 
-use foreign_types::ForeignType;
-use openssl::asn1::{Asn1Time, Asn1TimeRef};
+use foreign_types::{ForeignType, ForeignTypeRef};
+use openssl::asn1::{Asn1Object, Asn1OctetString, Asn1Time, Asn1TimeRef};
 use openssl::bn::BigNum;
 use openssl::hash::MessageDigest;
 use openssl::nid::Nid;
 use openssl::pkey::{Id, PKey};
 use openssl::stack::Stack;
-use openssl::x509::extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier};
+use openssl::x509::extension::{
+    AuthorityKeyIdentifier, BasicConstraints, KeyUsage, SubjectKeyIdentifier,
+};
 use openssl::x509::store::X509StoreBuilder;
 use openssl::x509::verify::{X509VerifyFlags, X509VerifyParam};
 use openssl::x509::{
-    X509, X509Builder, X509Name, X509NameBuilder, X509ReqBuilder, X509StoreContext,
+    X509, X509Builder, X509Extension, X509Name, X509NameBuilder, X509ReqBuilder, X509StoreContext,
 };
 
 use crate::provider::{PrivateKey, PublicKey};
@@ -242,6 +244,10 @@ pub fn read_certificate_facts(der: &[u8]) -> Option<CertificateFacts> {
 /// any real hierarchy needs, and a bound on the work a presented chain asks for.
 const CHAIN_DEPTH: i32 = 8;
 
+/// The security level OpenSSL holds a chain's keys and signatures to: 112
+/// bits, so no RSA key under 2048 bits, no curve under 224, no SHA-1.
+const CHAIN_STRENGTH: i32 = 2;
+
 /// A chain that ends at one of the anchors a caller trusts.
 #[derive(Debug, Clone)]
 pub struct AnchoredChain {
@@ -249,6 +255,9 @@ pub struct AnchoredChain {
     pub leaf_key: PublicKey,
     /// Which of the anchors handed in the chain ended at.
     pub anchor: usize,
+    /// The path verified, DER, leaf first and the anchor last: what each
+    /// certificate's revocation is read along.
+    pub path: Vec<Vec<u8>>,
 }
 
 /// Why a chain ends at no anchor.
@@ -262,6 +271,12 @@ pub enum Unanchored {
     NoAnchor,
     #[error("a certificate in the chain is not valid at the instant asked")]
     OutOfValidity,
+    #[error("the first certificate signs itself: an authority must issue it")]
+    SelfSigned,
+    #[error("the first certificate is not for digital signatures")]
+    NotForSigning,
+    #[error("a certificate in the chain holds a key or a signature too weak to trust")]
+    TooWeak,
     #[error("the chain does not verify: {0}")]
     Refused(String),
 }
@@ -269,10 +284,13 @@ pub enum Unanchored {
 /// Verify a chain, leaf first as `x5c` carries it, up to one of `anchors`, at
 /// the instant `at` in seconds since the epoch rather than at the clock's.
 ///
-/// Path validation is OpenSSL's, in strict mode. An anchor may be an
-/// intermediate authority: trusting it is what depositing it means, and the
-/// chain need not climb past it. Nothing is fetched, so revocation lists and
-/// OCSP are not consulted.
+/// Path validation is OpenSSL's, in strict mode, every key and every
+/// signature below the anchor held to 112 bits of security. An anchor may be
+/// an intermediate authority: trusting it is what depositing it means, and the
+/// chain need not climb past it. The leaf signs: it is issued by an authority
+/// rather than by itself, even one deposited as an anchor, and is for digital
+/// signatures when it says what its key is for. Nothing is fetched, so
+/// revocation lists and OCSP are not consulted here.
 pub fn verify_chain(
     chain: &[Vec<u8>],
     anchors: &[Vec<u8>],
@@ -280,6 +298,12 @@ pub fn verify_chain(
 ) -> Result<AnchoredChain, Unanchored> {
     let (leaf, intermediates) = chain.split_first().ok_or(Unanchored::Empty)?;
     let leaf = X509::from_der(leaf).map_err(|_| Unanchored::Unreadable)?;
+    if signs_itself(&leaf) {
+        return Err(Unanchored::SelfSigned);
+    }
+    if !is_for_signing(&leaf) {
+        return Err(Unanchored::NotForSigning);
+    }
     let mut presented = Stack::new().map_err(|_| unverifiable())?;
     for der in intermediates {
         let certificate = X509::from_der(der).map_err(|_| Unanchored::Unreadable)?;
@@ -299,19 +323,25 @@ pub fn verify_chain(
         .map_err(|_| unverifiable())?;
     judged.set_time(at);
     judged.set_depth(CHAIN_DEPTH);
+    judged.set_auth_level(CHAIN_STRENGTH);
     store.set_param(&judged).map_err(|_| unverifiable())?;
     let store = store.build();
 
     let mut context = X509StoreContext::new().map_err(|_| unverifiable())?;
-    let (verified, error, reached) = context
+    let (verified, error, path) = context
         .init(&store, &leaf, &presented, |context| {
             let verified = context.verify_cert()?;
-            let reached = context
+            let path = context
                 .chain()
-                .and_then(|chain| chain.iter().last())
-                .map(|anchor| anchor.to_der())
-                .transpose()?;
-            Ok((verified, context.error(), reached))
+                .map(|chain| {
+                    chain
+                        .iter()
+                        .map(|certificate| certificate.to_der())
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?
+                .unwrap_or_default();
+            Ok((verified, context.error(), path))
         })
         .map_err(|_| unverifiable())?;
     if !verified {
@@ -322,12 +352,16 @@ pub fn verify_chain(
             | openssl_sys::X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY
             | openssl_sys::X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT
             | openssl_sys::X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN => Unanchored::NoAnchor,
+            openssl_sys::X509_V_ERR_EE_KEY_TOO_SMALL
+            | openssl_sys::X509_V_ERR_CA_KEY_TOO_SMALL
+            | openssl_sys::X509_V_ERR_CA_MD_TOO_WEAK => Unanchored::TooWeak,
             _ => Unanchored::Refused(error.error_string().to_owned()),
         });
     }
 
-    let anchor = reached
-        .and_then(|reached| trusted.iter().position(|anchor| *anchor == reached))
+    let anchor = path
+        .last()
+        .and_then(|reached| trusted.iter().position(|anchor| anchor == reached))
         .ok_or(Unanchored::NoAnchor)?;
     let leaf_key = leaf
         .public_key()
@@ -336,6 +370,7 @@ pub fn verify_chain(
     Ok(AnchoredChain {
         leaf_key: PublicKey::from_der(leaf_key),
         anchor,
+        path,
     })
 }
 
@@ -481,17 +516,7 @@ pub fn take_certificate_chain(pem: &[u8], key: &PublicKey, at: i64) -> Result<Ta
     if signs_itself(leaf) {
         return Err(Untaken::SelfSigned);
     }
-    // SAFETY: the pointer is the live certificate held above; the calls read
-    // and cache its extensions and keep no reference to it.
-    let (flags, usage) = unsafe {
-        (
-            openssl_sys::X509_get_extension_flags(leaf.as_ptr()),
-            openssl_sys::X509_get_key_usage(leaf.as_ptr()),
-        )
-    };
-    if flags & openssl_sys::EXFLAG_KUSAGE != 0
-        && usage & openssl_sys::X509v3_KU_DIGITAL_SIGNATURE == 0
-    {
+    if !is_for_signing(leaf) {
         return Err(Untaken::NotForSigning);
     }
     let mut leaf_validity = None;
@@ -536,8 +561,204 @@ fn signs_itself(certificate: &X509) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether a certificate's key may sign, as its key usage says when it says.
+/// OpenSSL reads a certificate saying nothing of it as fit for every usage,
+/// and one whose extensions it cannot read as fit for none.
+fn is_for_signing(certificate: &X509) -> bool {
+    // SAFETY: the pointer is the live certificate passed in; the call reads
+    // and caches its extensions and keeps no reference to it.
+    let usage = unsafe { openssl_sys::X509_get_key_usage(certificate.as_ptr()) };
+    usage & openssl_sys::X509v3_KU_DIGITAL_SIGNATURE != 0
+}
+
+/// Where a certificate's revocation is published (RFC 5280 §4.2.1.13): the
+/// http(s) address of each distribution point this build reads, and whether
+/// one names its list otherwise, partitions it by reason or has another
+/// authority issue it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RevocationPoints {
+    pub addresses: Vec<String>,
+    pub unreadable: bool,
+}
+
+/// What the verifier of a chain reads of one of its certificates beyond the
+/// path: the serial its authority revokes it by, the identifier of that
+/// authority's key, and where its revocation is published.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainedCertificate {
+    /// The serial number's magnitude, big-endian, as a revocation list names it.
+    pub serial: Vec<u8>,
+    pub authority_key_identifier: Option<Vec<u8>>,
+    pub revocation: RevocationPoints,
+}
+
+/// Read what the verifier of a chain needs of a DER certificate; nothing when
+/// the bytes are no certificate.
+pub fn read_chained_certificate(der: &[u8]) -> Option<ChainedCertificate> {
+    let certificate = X509::from_der(der).ok()?;
+    let serial = certificate.serial_number().to_bn().ok()?.to_vec();
+    let points = certificate.crl_distribution_points();
+    // SAFETY: the pointer is the live certificate parsed above; the call reads
+    // its extensions and keeps no reference to it.
+    let stated = unsafe {
+        openssl_sys::X509_get_ext_by_NID(
+            certificate.as_ptr(),
+            openssl_sys::NID_crl_distribution_points,
+            -1,
+        ) >= 0
+    };
+    let mut revocation = RevocationPoints {
+        addresses: Vec::new(),
+        // An extension stated but unparsed publishes nothing this build reads.
+        unreadable: stated && points.is_none(),
+    };
+    for point in points.iter().flatten() {
+        // SAFETY: the point is a live entry of the stack read above; the
+        // fields are read, never kept past it.
+        let (partitioned, delegated) = unsafe {
+            let raw = point.as_ptr();
+            (!(*raw).reasons.is_null(), !(*raw).CRLissuer.is_null())
+        };
+        let address = point
+            .distpoint()
+            .and_then(|name| name.fullname())
+            .and_then(|names| {
+                names.iter().find_map(|name| {
+                    name.uri().filter(|uri| {
+                        let lowered = uri.to_ascii_lowercase();
+                        lowered.starts_with("https://") || lowered.starts_with("http://")
+                    })
+                })
+            })
+            .filter(|_| !partitioned && !delegated);
+        match address {
+            Some(address) => revocation.addresses.push(address.to_owned()),
+            None => revocation.unreadable = true,
+        }
+    }
+    Some(ChainedCertificate {
+        serial,
+        authority_key_identifier: certificate
+            .authority_key_id()
+            .map(|identifier| identifier.as_slice().to_vec()),
+        revocation,
+    })
+}
+
+/// A certificate issued as a real hierarchy issues one: its own key and its
+/// issuer's identified (RFC 5280 §4.2.1.1, §4.2.1.2), for issuing or for
+/// signatures, and naming where its revocation is published. For tests to
+/// build the chains wallets present.
+#[derive(Debug, Clone, Copy)]
+pub struct Certifying<'a> {
+    pub subject_key: &'a PublicKey,
+    pub subject_name: &'a str,
+    /// The issuer's certificate, DER; absent for a root, which issues itself
+    /// under `issuer_key`, the private half of `subject_key`.
+    pub issuer_certificate: Option<&'a [u8]>,
+    pub issuer_key: &'a PrivateKey,
+    pub serial: &'a [u8],
+    pub not_before: i64,
+    pub not_after: i64,
+    pub authority: bool,
+    /// The http(s) address its revocation list is published at.
+    pub revocation_list: Option<&'a str>,
+}
+
+/// Issue the certificate `certifying` describes, signed with SHA-256 under the
+/// issuer's key, of any kind. Nothing when a key or the issuer's certificate
+/// does not parse, the serial is out of bounds or a time does not fit.
+pub fn certify_key(certifying: &Certifying<'_>) -> Option<Vec<u8>> {
+    let issuer_key = PKey::private_key_from_der(certifying.issuer_key.der()).ok()?;
+    let subject = PKey::public_key_from_der(certifying.subject_key.der()).ok()?;
+    let issuer = certifying
+        .issuer_certificate
+        .map(X509::from_der)
+        .transpose()
+        .ok()?;
+    let number = BigNum::from_slice(certifying.serial).ok()?;
+    if !(1..=159).contains(&number.num_bits()) {
+        return None;
+    }
+    let subject_name = build_common_name(certifying.subject_name)?;
+    let serial = number.to_asn1_integer().ok()?;
+    let not_before = Asn1Time::from_unix(certifying.not_before).ok()?;
+    let not_after = Asn1Time::from_unix(certifying.not_after).ok()?;
+    let mut builder = X509Builder::new().ok()?;
+    builder.set_version(2).ok()?;
+    builder.set_serial_number(&serial).ok()?;
+    builder.set_subject_name(&subject_name).ok()?;
+    match &issuer {
+        Some(issuer) => builder.set_issuer_name(issuer.subject_name()).ok()?,
+        None => builder.set_issuer_name(&subject_name).ok()?,
+    }
+    builder.set_pubkey(&subject).ok()?;
+    builder.set_not_before(&not_before).ok()?;
+    builder.set_not_after(&not_after).ok()?;
+    let mut constraints = BasicConstraints::new();
+    constraints.critical();
+    if certifying.authority {
+        constraints.ca();
+    }
+    builder.append_extension(constraints.build().ok()?).ok()?;
+    let mut usage = KeyUsage::new();
+    usage.critical();
+    if certifying.authority {
+        usage.key_cert_sign().crl_sign();
+    } else {
+        usage.digital_signature();
+    }
+    builder.append_extension(usage.build().ok()?).ok()?;
+    let identifier = SubjectKeyIdentifier::new()
+        .build(&builder.x509v3_context(None, None))
+        .ok()?;
+    builder.append_extension(identifier).ok()?;
+    let authority_identifier = AuthorityKeyIdentifier::new()
+        .keyid(true)
+        .build(&builder.x509v3_context(issuer.as_deref(), None))
+        .ok()?;
+    builder.append_extension(authority_identifier).ok()?;
+    if let Some(address) = certifying.revocation_list {
+        builder
+            .append_extension(build_revocation_point(address)?)
+            .ok()?;
+    }
+    builder.sign(&issuer_key, MessageDigest::sha256()).ok()?;
+    builder.build().to_der().ok()
+}
+
+/// The CRL distribution points extension naming one address (RFC 5280
+/// §4.2.1.13), written out, since OpenSSL's Rust binding builds none: a point
+/// whose full name is that one URI.
+fn build_revocation_point(address: &str) -> Option<X509Extension> {
+    let uri = encode_der(0x86, address.as_bytes())?;
+    let full_name = encode_der(0xa0, &uri)?;
+    let point_name = encode_der(0xa0, &full_name)?;
+    let points = encode_der(0x30, &encode_der(0x30, &point_name)?)?;
+    let named = Asn1Object::from_str("2.5.29.31").ok()?;
+    let contents = Asn1OctetString::new_from_bytes(&points).ok()?;
+    X509Extension::new_from_der(&named, false, &contents).ok()
+}
+
+/// One DER element: its tag, its length in the shortest form, its contents.
+pub(crate) fn encode_der(tag: u8, contents: &[u8]) -> Option<Vec<u8>> {
+    let length = contents.len();
+    let mut written = vec![tag];
+    match length {
+        0..=0x7f => written.push(u8::try_from(length).ok()?),
+        0x80..=0xff => written.extend([0x81, u8::try_from(length).ok()?]),
+        _ => written.extend(
+            [0x82]
+                .iter()
+                .chain(&u16::try_from(length).ok()?.to_be_bytes()),
+        ),
+    }
+    written.extend_from_slice(contents);
+    Some(written)
+}
+
 /// A certificate time in seconds since the epoch.
-fn unix_seconds(time: &Asn1TimeRef) -> Option<i64> {
+pub(crate) fn unix_seconds(time: &Asn1TimeRef) -> Option<i64> {
     let lived = Asn1Time::from_unix(0).ok()?.diff(time).ok()?;
     Some(i64::from(lived.days) * 86_400 + i64::from(lived.secs))
 }
@@ -551,10 +772,11 @@ fn build_common_name(name: &str) -> Option<X509Name> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CertificateFacts, CertifiedKey, Issuance, RequestedSubject, TakenChain, Untaken,
-        is_authority, issue_authority_certificate, issue_certificate, public_key_of,
-        read_certificate_facts, request_certificate, subject_key_identifier,
-        take_certificate_chain,
+        CertificateFacts, CertifiedKey, Certifying, ChainedCertificate, Issuance, RequestedSubject,
+        RevocationPoints, TakenChain, Unanchored, Untaken, certify_key, encode_der, is_authority,
+        issue_authority_certificate, issue_certificate, public_key_of, read_certificate_facts,
+        read_chained_certificate, request_certificate, subject_key_identifier,
+        take_certificate_chain, verify_chain,
     };
     use crate::provider::{PrivateKey, PublicKey};
     use openssl::asn1::{Asn1Time, Asn1TimeRef};
@@ -1143,6 +1365,235 @@ mod tests {
         long.extend(std::iter::repeat_n(held.intermediate.as_slice(), 9));
         assert_eq!(take(&long, NOW), Err(Untaken::TooLong));
     }
+
+    fn certifying<'a>(
+        subject_key: &'a PublicKey,
+        subject_name: &'a str,
+        issuer: Option<&'a [u8]>,
+        issuer_key: &'a PrivateKey,
+    ) -> Certifying<'a> {
+        Certifying {
+            subject_key,
+            subject_name,
+            issuer_certificate: issuer,
+            issuer_key,
+            serial: &[1],
+            not_before: FROM,
+            not_after: UNTIL,
+            authority: true,
+            revocation_list: None,
+        }
+    }
+
+    /// A key certified as a hierarchy certifies one names its own key and its
+    /// issuer's and says where its revocation is published; its chain holds
+    /// under strict validation, a root closing it.
+    #[test]
+    fn a_key_certified_names_its_keys_and_its_revocation() {
+        let (root_key, leaf_key) = (ec_key(Nid::X9_62_PRIME256V1), ec_key(Nid::X9_62_PRIME256V1));
+        let (root_public, root_private) = (public_of(&root_key), private_of(&root_key));
+        let root =
+            certify_key(&certifying(&root_public, "Root", None, &root_private)).expect("a root");
+        let leaf_public = public_of(&leaf_key);
+        let leaf = certify_key(&Certifying {
+            serial: &[0x01, 0x02],
+            authority: false,
+            revocation_list: Some("https://ca.example/root.crl"),
+            ..certifying(&leaf_public, "Leaf", Some(&root), &root_private)
+        })
+        .expect("a leaf");
+        let anchored = verify_chain(
+            std::slice::from_ref(&leaf),
+            std::slice::from_ref(&root),
+            NOW,
+        )
+        .expect("anchored under strict validation");
+        assert_eq!(anchored.leaf_key.der(), leaf_public.der());
+        assert_eq!(
+            read_chained_certificate(&leaf),
+            Some(ChainedCertificate {
+                serial: vec![0x01, 0x02],
+                authority_key_identifier: subject_key_identifier(&root),
+                revocation: RevocationPoints {
+                    addresses: vec!["https://ca.example/root.crl".to_owned()],
+                    unreadable: false,
+                },
+            })
+        );
+        assert_eq!(
+            read_chained_certificate(&root).map(|read| read.revocation),
+            Some(RevocationPoints::default())
+        );
+        assert_eq!(read_chained_certificate(b"no certificate"), None);
+        assert_eq!(
+            certify_key(&Certifying {
+                serial: &[],
+                ..certifying(&leaf_public, "Leaf", Some(&root), &root_private)
+            }),
+            None,
+            "a serial of no bits"
+        );
+    }
+
+    /// A certificate naming its revocation by `extension`, a raw CRL
+    /// distribution points value, issued by itself.
+    fn published_at(points: &[u8]) -> Vec<u8> {
+        let key = ec_key(Nid::X9_62_PRIME256V1);
+        let mut builder = X509Builder::new().expect("a builder");
+        builder.set_version(2).expect("version 3");
+        let mut name = X509NameBuilder::new().expect("a name");
+        name.append_entry_by_text("CN", "Published")
+            .expect("a name");
+        let name = name.build();
+        builder.set_subject_name(&name).expect("a subject");
+        builder.set_issuer_name(&name).expect("an issuer");
+        builder.set_pubkey(&key).expect("a key");
+        builder
+            .set_not_before(&Asn1Time::from_unix(FROM).expect("a time"))
+            .expect("a start");
+        builder
+            .set_not_after(&Asn1Time::from_unix(UNTIL).expect("a time"))
+            .expect("an end");
+        let named = openssl::asn1::Asn1Object::from_str("2.5.29.31").expect("an OID");
+        let contents = openssl::asn1::Asn1OctetString::new_from_bytes(points).expect("bytes");
+        builder
+            .append_extension(
+                openssl::x509::X509Extension::new_from_der(&named, false, &contents)
+                    .expect("an extension"),
+            )
+            .expect("appended");
+        builder.sign(&key, MessageDigest::sha256()).expect("signed");
+        builder.build().to_der().expect("DER")
+    }
+
+    /// A distribution point is read when one http(s) URI names its full list;
+    /// one named otherwise, partitioned by reason or issued by another
+    /// authority is unreadable, and said so beside those that are read.
+    #[test]
+    fn a_revocation_point_is_read_when_an_http_address_names_its_whole_list() {
+        let point = |name: &[u8], rest: &[u8]| {
+            let named = encode_der(0xa0, &encode_der(0xa0, name).expect("DER")).expect("DER");
+            encode_der(0x30, &[named.as_slice(), rest].concat()).expect("DER")
+        };
+        let uri = |address: &str| encode_der(0x86, address.as_bytes()).expect("DER");
+        let read = |points: &[Vec<u8>]| {
+            read_chained_certificate(&published_at(
+                &encode_der(0x30, &points.concat()).expect("DER"),
+            ))
+            .expect("a certificate")
+            .revocation
+        };
+        let reasons = encode_der(0x81, &[0x07, 0x80]).expect("DER");
+        let other_issuer = encode_der(0xa2, &uri("https://other.example")).expect("DER");
+        let readable = point(&uri("HTTPS://ca.example/a.crl"), &[]);
+        for (points, addresses, unreadable) in [
+            (
+                vec![readable.clone()],
+                vec!["HTTPS://ca.example/a.crl"],
+                false,
+            ),
+            (
+                vec![
+                    point(&uri("ldap://ca.example/cn=a"), &[]),
+                    point(
+                        &[uri("ldap://x").as_slice(), &uri("http://ca.example/b.crl")].concat(),
+                        &[],
+                    ),
+                ],
+                vec!["http://ca.example/b.crl"],
+                true,
+            ),
+            (
+                vec![point(&uri("https://ca.example/c.crl"), &reasons)],
+                vec![],
+                true,
+            ),
+            (
+                vec![point(&uri("https://ca.example/d.crl"), &other_issuer)],
+                vec![],
+                true,
+            ),
+            (
+                vec![readable, point(&uri("ftp://ca.example/e.crl"), &[])],
+                vec!["HTTPS://ca.example/a.crl"],
+                true,
+            ),
+        ] {
+            assert_eq!(
+                read(&points),
+                RevocationPoints {
+                    addresses: addresses
+                        .iter()
+                        .map(|address| (*address).to_owned())
+                        .collect(),
+                    unreadable,
+                },
+                "{addresses:?}"
+            );
+        }
+        let common_name = encode_der(
+            0x30,
+            &[&[0x06, 0x03, 0x55, 0x04, 0x03][..], &[0x0c, 0x01, b'x']].concat(),
+        )
+        .expect("DER");
+        let relative = encode_der(
+            0x30,
+            &encode_der(0xa0, &encode_der(0xa1, &common_name).expect("DER")).expect("DER"),
+        )
+        .expect("DER");
+        assert_eq!(
+            read(&[relative]),
+            RevocationPoints {
+                addresses: Vec::new(),
+                unreadable: true,
+            },
+            "a name relative to the issuer"
+        );
+        assert_eq!(
+            read(&[b"\x04\x00".to_vec()]),
+            RevocationPoints {
+                addresses: Vec::new(),
+                unreadable: true,
+            },
+            "an extension stated but unparsed"
+        );
+        assert!(super::build_revocation_point("https://ca.example/f.crl").is_some());
+    }
+
+    /// The leaf of a chain signs: one issuing itself is refused even trusted
+    /// as an anchor, and so is one for issuing certificates alone.
+    #[test]
+    fn a_chain_leaf_signs_under_an_authority() {
+        let key = ec_key(Nid::X9_62_PRIME256V1);
+        let (public, private) = (public_of(&key), private_of(&key));
+        let alone = certify_key(&Certifying {
+            authority: false,
+            ..certifying(&public, "Alone", None, &private)
+        })
+        .expect("a self-signed leaf");
+        assert_eq!(
+            verify_chain(
+                std::slice::from_ref(&alone),
+                std::slice::from_ref(&alone),
+                NOW
+            )
+            .unwrap_err(),
+            Unanchored::SelfSigned
+        );
+        let root = certify_key(&certifying(&public, "Root", None, &private)).expect("a root");
+        let other = ec_key(Nid::X9_62_PRIME256V1);
+        let issuing = certify_key(&certifying(
+            &public_of(&other),
+            "Issuing",
+            Some(&root),
+            &private,
+        ))
+        .expect("an authority");
+        assert_eq!(
+            verify_chain(&[issuing], &[root], NOW).unwrap_err(),
+            Unanchored::NotForSigning
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1185,8 +1636,14 @@ mod chains {
         /// Days from `AT`.
         valid: (i64, i64),
         key_identifiers: bool,
+        /// Whether it says what its key is for.
+        usage_stated: bool,
         /// A key usage stated a second time, which OpenSSL reads as malformed.
         usage_twice: bool,
+        /// The size of its RSA key, when its key is not on P-256.
+        rsa_bits: Option<u32>,
+        /// Whether its issuer signs it over SHA-1.
+        over_sha1: bool,
     }
 
     impl<'a> Issuing<'a> {
@@ -1198,7 +1655,10 @@ mod chains {
                 path_length: None,
                 valid: (-10, 365),
                 key_identifiers: true,
+                usage_stated: true,
                 usage_twice: false,
+                rsa_bits: None,
+                over_sha1: false,
             }
         }
 
@@ -1212,8 +1672,15 @@ mod chains {
 
     fn issue(asked: Issuing<'_>) -> Held {
         static SERIAL: AtomicU32 = AtomicU32::new(1);
-        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).expect("P-256");
-        let key = PKey::from_ec_key(EcKey::generate(&group).expect("a key")).expect("a key");
+        let key = match asked.rsa_bits {
+            Some(bits) => {
+                PKey::from_rsa(openssl::rsa::Rsa::generate(bits).expect("a key")).expect("a key")
+            }
+            None => {
+                let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).expect("P-256");
+                PKey::from_ec_key(EcKey::generate(&group).expect("a key")).expect("a key")
+            }
+        };
         let named = |name: &str| {
             let mut built = X509NameBuilder::new().expect("a name");
             built
@@ -1264,9 +1731,11 @@ mod chains {
         } else {
             usage.digital_signature();
         }
-        builder
-            .append_extension(usage.build().expect("a usage"))
-            .expect("a usage");
+        if asked.usage_stated {
+            builder
+                .append_extension(usage.build().expect("a usage"))
+                .expect("a usage");
+        }
         if asked.usage_twice {
             builder
                 .append_extension(usage.build().expect("a usage"))
@@ -1291,9 +1760,12 @@ mod chains {
             }
         }
         let signer = asked.issuer.map_or(&key, |issuer| &issuer.key);
-        builder
-            .sign(signer, MessageDigest::sha256())
-            .expect("signed");
+        let digest = if asked.over_sha1 {
+            MessageDigest::sha1()
+        } else {
+            MessageDigest::sha256()
+        };
+        builder.sign(signer, digest).expect("signed");
         Held {
             certificate: builder.build(),
             key,
@@ -1325,6 +1797,22 @@ mod chains {
             anchored.leaf_key.der(),
             leaf.key.public_key_to_der().expect("SPKI").as_slice()
         );
+        assert_eq!(
+            anchored.path,
+            [leaf.der(), intermediate.der(), root.der()],
+            "the path verified is not the one issued"
+        );
+        let reordered = verify_chain(
+            &[leaf.der(), other.der(), intermediate.der(), root.der()],
+            &[root.der()],
+            AT,
+        )
+        .expect("anchored");
+        assert_eq!(
+            reordered.path,
+            [leaf.der(), intermediate.der(), root.der()],
+            "a certificate presented beside the path was taken into it"
+        );
     }
 
     /// Trusting an intermediate is what depositing it means: a chain ends
@@ -1334,6 +1822,7 @@ mod chains {
         let (_, intermediate, leaf) = hierarchy();
         let anchored = verify_chain(&[leaf.der()], &[intermediate.der()], AT).expect("anchored");
         assert_eq!(anchored.anchor, 0);
+        assert_eq!(anchored.path, [leaf.der(), intermediate.der()]);
     }
 
     /// A chain under an authority nobody deposited reaches no anchor, and
@@ -1442,6 +1931,82 @@ mod chains {
             verify_chain(&[leaf.der(), unnamed.der()], &[root.der()], AT),
             Err(Unanchored::Refused(_))
         ));
+    }
+
+    /// A leaf saying nothing of what its key is for may sign, as RFC 5280
+    /// reads a certificate with no key usage; one whose usage cannot be read
+    /// signs nothing.
+    #[test]
+    fn a_leaf_saying_nothing_of_its_key_usage_signs() {
+        let (root, intermediate, _) = hierarchy();
+        let silent = issue(Issuing {
+            usage_stated: false,
+            ..Issuing::leaf("Leaf", &intermediate)
+        });
+        assert!(verify_chain(&[silent.der(), intermediate.der()], &[root.der()], AT).is_ok());
+        let malformed = issue(Issuing {
+            usage_twice: true,
+            ..Issuing::leaf("Leaf", &intermediate)
+        });
+        assert_eq!(
+            verify_chain(&[malformed.der(), intermediate.der()], &[root.der()], AT).unwrap_err(),
+            Unanchored::NotForSigning
+        );
+    }
+
+    /// A chain is held to keys and signatures of 112 bits of security: an RSA
+    /// key under 2048 bits, the leaf's or an authority's, and a certificate
+    /// signed over SHA-1 anchor nothing. The anchor's own signature is not
+    /// judged: depositing it is what trusts it.
+    #[test]
+    fn a_chain_is_held_to_keys_and_signatures_strong_enough() {
+        let (root, intermediate, _) = hierarchy();
+        let strong = issue(Issuing {
+            rsa_bits: Some(2048),
+            ..Issuing::leaf("Leaf", &intermediate)
+        });
+        assert!(verify_chain(&[strong.der(), intermediate.der()], &[root.der()], AT).is_ok());
+
+        let weak_leaf = issue(Issuing {
+            rsa_bits: Some(1024),
+            ..Issuing::leaf("Leaf", &intermediate)
+        });
+        let weak_authority = issue(Issuing {
+            rsa_bits: Some(1024),
+            ..Issuing::authority("Weak authority", Some(&root))
+        });
+        let under_weak = issue(Issuing::leaf("Leaf", &weak_authority));
+        let over_sha1 = issue(Issuing {
+            over_sha1: true,
+            ..Issuing::leaf("Leaf", &intermediate)
+        });
+        for (chain, what) in [
+            (vec![weak_leaf.der(), intermediate.der()], "a leaf's key"),
+            (
+                vec![under_weak.der(), weak_authority.der()],
+                "an authority's key",
+            ),
+            (
+                vec![over_sha1.der(), intermediate.der()],
+                "a signature over SHA-1",
+            ),
+        ] {
+            assert_eq!(
+                verify_chain(&chain, &[root.der()], AT).unwrap_err(),
+                Unanchored::TooWeak,
+                "{what}"
+            );
+        }
+
+        let old_root = issue(Issuing {
+            over_sha1: true,
+            ..Issuing::authority("Old root", None)
+        });
+        let leaf = issue(Issuing::leaf("Leaf", &old_root));
+        assert!(
+            verify_chain(&[leaf.der()], &[old_root.der()], AT).is_ok(),
+            "the anchor's own signature was judged"
+        );
     }
 
     /// Nothing presented, or bytes that are no certificate, are said to be so.

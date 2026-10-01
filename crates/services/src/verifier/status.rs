@@ -434,7 +434,11 @@ async fn check_citation(
             .map_err(|_| Unanswerable::Unwritable)?;
     }
     let Some(reading) = cited.reading else {
-        return Ok(Err(LIST_NEVER_READ));
+        return Ok(Err(if cited.failed {
+            LIST_NEVER_READ
+        } else {
+            LIST_NOT_READ_YET
+        }));
     };
     if reading.usable_until <= now {
         return Ok(Err(LIST_STALE));

@@ -81,7 +81,10 @@ async fn a_list_is_written_down_once_claimed_once_and_read_a_byte_at_a_time() {
         .await
         .unwrap()
         .expect("the list written down");
-    assert_eq!((cited.reading, cited.cited_at), (None, now));
+    assert_eq!(
+        (cited.reading, cited.failed, cited.cited_at),
+        (None, false, now)
+    );
 
     let again_at = now + Duration::minutes(5);
     let claimed = status_lists::claim_due(&transaction, &now, &again_at, 20)
@@ -119,6 +122,17 @@ async fn a_list_is_written_down_once_claimed_once_and_read_a_byte_at_a_time() {
         "a list not read was not tried again"
     );
 
+    status_lists::note_unread(&transaction, "i1", LIST, "token", "nothing could be read")
+        .await
+        .unwrap();
+    let tried = || async {
+        status_lists::read_cited(&transaction, "i1", LIST, "token", 0)
+            .await
+            .unwrap()
+            .expect("the list written down")
+    };
+    let failed = tried().await;
+    assert_eq!((failed.reading, failed.failed), (None, true));
     assert!(
         status_lists::keep_reading(
             &transaction,
@@ -126,6 +140,10 @@ async fn a_list_is_written_down_once_claimed_once_and_read_a_byte_at_a_time() {
         )
         .await
         .unwrap()
+    );
+    assert!(
+        !tried().await.failed,
+        "a reading kept left the failure said"
     );
     let byte_at = |index| {
         let transaction = &transaction;

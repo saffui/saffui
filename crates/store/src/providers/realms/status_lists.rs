@@ -13,6 +13,8 @@ use crate::tenancy::UnitOfWork;
 pub struct CitedList {
     /// What was kept of the list, when a reading ever was.
     pub reading: Option<HeldReading>,
+    /// Whether the last reading tried was not kept.
+    pub failed: bool,
     pub cited_at: DateTime<Utc>,
 }
 
@@ -40,6 +42,7 @@ pub async fn read_cited(
     let row = transaction
         .query_opt(
             "SELECT usable_until, octet_length(statuses) AS octets, bits, purposes, cited_at, \
+                    failure IS NOT NULL AS failed, \
                     substring(statuses \
                               FROM (($4::bigint * coalesce(bits, 1)) / 8 + 1)::int FOR 1) AS held \
              FROM credential_status_lists \
@@ -59,6 +62,7 @@ pub async fn read_cited(
                 purposes: row.get("purposes"),
                 byte: held.and_then(|held| held.first().copied()),
             }),
+            failed: row.get("failed"),
             cited_at: row.get("cited_at"),
         }
     }))

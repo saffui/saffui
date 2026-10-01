@@ -38,6 +38,11 @@ pub enum Undepositable {
     TooMany,
     #[error("this realm trusts no such authority")]
     NotFound,
+    #[error(
+        "an issuer this realm names is trusted through this authority: trust it through \
+         another, or forget it, first"
+    )]
+    InUse,
     #[error("the authorities could not be read or written")]
     Unwritable,
 }
@@ -124,11 +129,15 @@ pub async fn deposit(
     }
 }
 
-/// Stop trusting one authority.
+/// Stop trusting one authority, unless an issuer the realm names is trusted
+/// through it: its credentials would then be refused with no word of why.
 pub async fn withdraw(transaction: &UnitOfWork, anchor_id: &str) -> Result<(), Undepositable> {
-    trust_anchors::withdraw(transaction, anchor_id)
-        .await
-        .map_err(|_| Undepositable::Unwritable)?
-        .then_some(())
-        .ok_or(Undepositable::NotFound)
+    match trust_anchors::withdraw(transaction, anchor_id).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(Undepositable::NotFound),
+        Err(StoreError::BrokenRule { rule }) if rule == "credential_issuer_anchors_anchor" => {
+            Err(Undepositable::InUse)
+        }
+        Err(_) => Err(Undepositable::Unwritable),
+    }
 }

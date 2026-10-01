@@ -266,6 +266,12 @@ pub fn routes() -> Vec<AdminRoute> {
             handler: Some(|| web::post().to(credential_issuers::read_again)),
         },
         AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/credential-issuers/{issuer}/trust",
+            action: AdminAction::RealmWrite,
+            handler: Some(|| web::put().to(credential_issuers::retrust)),
+        },
+        AdminRoute {
             method: Method::DELETE,
             pattern: "/admin/realms/{realm}/credential-issuers/{issuer}",
             action: AdminAction::RealmWrite,

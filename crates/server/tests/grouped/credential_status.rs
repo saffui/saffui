@@ -2,14 +2,14 @@
 use super::support;
 use super::support::Plane;
 use super::wallet::{
-    answered, ask_for, client_id_and_nonce, encrypted, identity_answer, identity_query, pid_query,
-    plane_that_verifies, realm_ready_for_identity, realm_ready_to_verify, standing_of,
+    answered, ask_for, asked, client_id_and_nonce, encrypted, identity_answer, identity_query,
+    pid_query, plane_that_verifies, realm_ready_for_identity, realm_ready_to_verify, standing_of,
 };
-use actix_web::http::StatusCode;
+use actix_web::http::{Method, StatusCode};
 use serde_json::{Value, json};
 use services::verifier::status::{
-    LIST_NEVER_READ, LIST_NOT_READ_YET, LIST_OTHER_PURPOSE, LIST_STALE, REVOKED, STATUS_DENIES,
-    STATUS_DISCLOSED, STATUS_OUT_OF_LIST, SUSPENDED,
+    LIST_NEVER_READ, LIST_NOT_READ_YET, LIST_OTHER_PURPOSE, LIST_STALE, LISTS_FULL, REVOKED,
+    STATUS_DENIES, STATUS_DISCLOSED, STATUS_OUT_OF_LIST, SUSPENDED,
 };
 use store::tenancy::TenantContext;
 
@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 type Published = Arc<Mutex<HashMap<String, (&'static str, String)>>>;
 
 /// A host serving whatever status lists the test publishes on it, and nothing
-/// else.
+/// else: a token only to whoever asks for one, as §8.1 has a verifier ask.
 fn serve_status_lists() -> (String, Published) {
     use actix_web::{App, HttpRequest, HttpResponse, HttpServer, web};
     let published: Published = Arc::default();
@@ -34,8 +34,19 @@ fn serve_status_lists() -> (String, Published) {
         let served = served.clone();
         App::new().default_service(web::get().to(move |asked: HttpRequest| {
             let found = served.lock().expect("the lists").get(asked.path()).cloned();
+            let accepted = asked
+                .headers()
+                .get("accept")
+                .and_then(|accepted| accepted.to_str().ok())
+                .map(str::to_owned);
             async move {
                 match found {
+                    Some((media_type, _))
+                        if media_type == "application/statuslist+jwt"
+                            && accepted.as_deref() != Some(media_type) =>
+                    {
+                        HttpResponse::NotAcceptable().finish()
+                    }
                     Some((media_type, body)) => {
                         HttpResponse::Ok().content_type(media_type).body(body)
                     }
@@ -253,6 +264,114 @@ async fn an_sd_jwt_credential_is_held_to_the_status_list_its_issuer_signs() {
         present_pid(&plane, &bearer, &missing).await,
         LIST_NEVER_READ
     );
+    let refreshed = read_lists(&plane).await;
+    assert_eq!(
+        (refreshed.kept, refreshed.unread),
+        (0, 0),
+        "a list that could not be read was tried again at once"
+    );
+
+    // A list of many statuses travels larger than a request object may.
+    let mut drawn = 0x2545_f491_4f6c_dd1d_u64;
+    let many: Vec<u8> = (0..96 * 1024)
+        .map(|_| {
+            drawn ^= drawn << 13;
+            drawn ^= drawn >> 7;
+            drawn ^= drawn << 17;
+            drawn as u8
+        })
+        .collect();
+    let big = format!("{lists}/statuslists/big");
+    let token = wallet.signed_status_list(&json!({
+        "sub": big,
+        "iat": now,
+        "status_list": { "bits": 1, "lst": compressed_statuses(&many) },
+    }));
+    assert!(token.len() > 64 * 1024, "{}", token.len());
+    publish(
+        &published,
+        "/statuslists/big",
+        "application/statuslist+jwt",
+        token,
+    );
+    let citing_big =
+        |index: u64| wallet.citing(json!({ "status_list": { "idx": index, "uri": big } }));
+    assert_eq!(
+        present_pid(&plane, &bearer, &citing_big(0)).await,
+        LIST_NOT_READ_YET
+    );
+    assert_eq!(read_lists(&plane).await.kept, 1);
+    for index in [0_u64, 1, 7, 786_431] {
+        let set = (many[(index / 8) as usize] >> (index % 8)) & 1 == 1;
+        assert_eq!(
+            present_pid(&plane, &bearer, &citing_big(index)).await,
+            if set { REVOKED } else { "verified" },
+            "{index}"
+        );
+    }
+
+    // A citation is noted, a day apart at most, so the sweep knows a list in use.
+    rewrite_lists(&plane, "cited_at = now() - interval '2 days'").await;
+    present_pid(&plane, &bearer, &citing_big(0)).await;
+    let transaction = plane
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
+        .await;
+    let uncited: Vec<String> = transaction
+        .query(
+            "SELECT uri FROM credential_status_lists \
+             WHERE cited_at < now() - interval '1 day' ORDER BY uri",
+            &[],
+        )
+        .await
+        .expect("a census")
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(
+        uri_paths(&uncited),
+        ["/statuslists/1", "/statuslists/missing"]
+    );
+
+    // A realm follows a thousand lists at most: a credential citing one more
+    // is refused.
+    transaction
+        .execute(
+            "INSERT INTO credential_status_lists \
+                 (tenant, realm_id, issuer_id, uri, format, due_at, cited_at) \
+             SELECT tenant, realm_id, issuer_id, 'https://filler.example/' || n, 'token', \
+                    now() + interval '1 day', now() \
+             FROM realm_credential_issuers, \
+                  generate_series(1, 1000 - (SELECT count(*) FROM credential_status_lists)::int) n",
+            &[],
+        )
+        .await
+        .expect("the realm filled");
+    transaction.commit().await.expect("committed");
+    let one_more = wallet.citing(json!({
+        "status_list": { "idx": 0, "uri": format!("{lists}/statuslists/one-more") }
+    }));
+    assert_eq!(present_pid(&plane, &bearer, &one_more).await, LISTS_FULL);
+
+    // A realm that closes the verifier has its lists read no more.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{}/features/wallet-verifier", support::REALM),
+        &bearer,
+        Some(json!({ "enabled": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+    rewrite_lists(&plane, "due_at = now() - interval '1 second'").await;
+    let refreshed = read_lists(&plane).await;
+    assert_eq!((refreshed.kept, refreshed.unread), (0, 0), "{refreshed:?}");
+}
+
+/// The paths of addresses on the status host.
+fn uri_paths(uris: &[String]) -> Vec<String> {
+    uris.iter()
+        .map(|uri| url::Url::parse(uri).expect("an address").path().to_owned())
+        .collect()
 }
 
 /// The identity credential under the VCDM 2.0 context, citing `status`, and

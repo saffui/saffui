@@ -789,10 +789,28 @@ pub fn read_due_list(
     }
 }
 
-/// Keep a reading, relied on until its issuer says or a day has passed, and
-/// due again when its issuer asks within the bounds this server sets, a tenth
-/// later at most so that lists read together are not read again together.
-/// False when the issuer wrote the reading kept later than this one.
+/// Until when a reading made `now` may be relied on, and when its list is due
+/// again: relied on until its issuer says or a day has passed; due when its
+/// issuer asks within the bounds this server sets, and before it expires, a
+/// tenth later at most by `drawn` so that lists read together are not read
+/// again together.
+fn plan_reading(read: &ReadList, now: DateTime<Utc>, drawn: u32) -> (DateTime<Utc>, DateTime<Utc>) {
+    let relied_on = now + RELIED_ON_AT_MOST;
+    let usable_until = read.expires_at.map_or(relied_on, |at| at.min(relied_on));
+    let refresh = read
+        .time_to_live
+        .unwrap_or(REFRESH_AT_MOST)
+        .clamp(REFRESH_AT_LEAST, REFRESH_AT_MOST);
+    let spread = i64::from(drawn) % (refresh.num_seconds() / 10 + 1);
+    let mut due_at = now + refresh + Duration::seconds(spread);
+    if let Some(expires_at) = read.expires_at {
+        due_at = due_at.min(expires_at.max(now + REFRESH_AT_LEAST));
+    }
+    (usable_until, due_at)
+}
+
+/// Keep a reading made `now`, planned as `plan_reading` says. False when the
+/// issuer wrote the reading kept later than this one.
 pub async fn keep_list(
     transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
@@ -800,19 +818,9 @@ pub async fn keep_list(
     read: &ReadList,
     now: DateTime<Utc>,
 ) -> Result<bool, ()> {
-    let relied_on = now + RELIED_ON_AT_MOST;
-    let usable_until = read.expires_at.map_or(relied_on, |at| at.min(relied_on));
-    let refresh = read
-        .time_to_live
-        .unwrap_or(REFRESH_AT_MOST)
-        .clamp(REFRESH_AT_LEAST, REFRESH_AT_MOST);
     let mut drawn = [0u8; 4];
     provider.rand().fill(&mut drawn).map_err(|_| ())?;
-    let spread = i64::from(u32::from_be_bytes(drawn)) % (refresh.num_seconds() / 10 + 1);
-    let mut due_at = now + refresh + Duration::seconds(spread);
-    if let Some(expires_at) = read.expires_at {
-        due_at = due_at.min(expires_at.max(now + REFRESH_AT_LEAST));
-    }
+    let (usable_until, due_at) = plan_reading(read, now, u32::from_be_bytes(drawn));
     let bits = read.bits.map(i16::from);
     let purposes = (!read.purposes.is_empty()).then_some(read.purposes.as_slice());
     status_lists::keep_reading(
@@ -1438,6 +1446,251 @@ mod tests {
         let mut number = entry("revocation", "4");
         number["statusListIndex"] = serde_json::json!(4);
         assert_eq!(citations_of(number), Err(STATUS_UNREAD));
+    }
+
+    fn planned(expires_in: Option<i64>, time_to_live: Option<i64>, drawn: u32) -> (i64, i64) {
+        let read = ReadList {
+            statuses: vec![0],
+            bits: Some(1),
+            purposes: Vec::new(),
+            issued_at: None,
+            expires_at: expires_in.map(|seconds| now() + Duration::seconds(seconds)),
+            time_to_live: time_to_live.map(Duration::seconds),
+        };
+        let (usable_until, due_at) = plan_reading(&read, now(), drawn);
+        (
+            (usable_until - now()).num_seconds(),
+            (due_at - now()).num_seconds(),
+        )
+    }
+
+    /// A list is read again when its issuer asks, between five minutes and an
+    /// hour, spread over a tenth more, and before it expires, five minutes on
+    /// at the soonest; it is relied on until it expires, a day at most.
+    #[test]
+    fn a_reading_is_relied_on_and_renewed_within_the_bounds() {
+        let day = 86_400;
+        assert_eq!(planned(None, None, 0), (day, 3_600));
+        assert_eq!(planned(None, None, 360), (day, 3_960));
+        assert_eq!(planned(None, None, 361), (day, 3_600));
+        assert_eq!(planned(None, Some(900), 7), (day, 907));
+        assert_eq!(planned(None, Some(1), 0), (day, 300));
+        assert_eq!(planned(None, Some(36_000), 0), (day, 3_600));
+        assert_eq!(planned(Some(600), Some(3_600), 0), (600, 600));
+        assert_eq!(planned(Some(120), None, 0), (120, 300));
+        assert_eq!(planned(Some(2 * day), None, 0), (day, 3_600));
+    }
+
+    /// A context aliasing `credentialStatus` lets two nodes, or a node in a
+    /// named graph, hold a status; which of them the credential's is no
+    /// reading can say, and the credential is refused.
+    #[test]
+    fn a_status_held_by_two_nodes_or_in_a_graph_refuses_the_credential() {
+        let aliasing = "https://issuer.example/contexts/aliasing";
+        let pinned = HashMap::from([(
+            aliasing.to_owned(),
+            serde_json::json!({ "@context": {
+                "statusOf": { "@id": "https://www.w3.org/2018/credentials#credentialStatus", "@type": "@id" },
+                "graphed": { "@id": "https://issuer.example/vocab#graphed", "@container": "@graph" },
+                "Entry": "https://www.w3.org/ns/credentials/status#BitstringStatusListEntry",
+                "purpose": "https://www.w3.org/ns/credentials/status#statusPurpose",
+                "position": "https://www.w3.org/ns/credentials/status#statusListIndex",
+                "list": { "@id": "https://www.w3.org/ns/credentials/status#statusListCredential", "@type": "@id" }
+            } }),
+        )]);
+        let entry = serde_json::json!({
+            "type": "Entry", "purpose": "revocation", "position": "4", "list": LIST
+        });
+        let credential = |subject: Value| {
+            serde_json::json!({
+                "@context": [jsonld::built_in::CREDENTIALS_V2, aliasing],
+                "type": ["VerifiableCredential"],
+                "issuer": "did:web:issuer.example",
+                "credentialSubject": subject,
+                "credentialStatus": entry,
+            })
+        };
+        let read = |document: &Value| {
+            let quads = to_rdf(document, &HeldContexts::new(&pinned), 1_000).expect("a dataset");
+            read_bitstring_citations(&quads)
+        };
+        assert_eq!(
+            read(&credential(
+                serde_json::json!({ "id": "did:example:holder" })
+            ))
+            .map(|cited| cited.len()),
+            Ok(1)
+        );
+        assert_eq!(
+            read(&credential(
+                serde_json::json!({ "id": "did:example:holder", "statusOf": entry })
+            )),
+            Err(STATUS_UNREAD)
+        );
+        assert_eq!(
+            read(&credential(serde_json::json!({
+                "id": "did:example:holder",
+                "graphed": { "id": "did:example:inner", "statusOf": entry }
+            }))),
+            Err(STATUS_UNREAD)
+        );
+        let mut signed_plus = credential(serde_json::json!({ "id": "did:example:holder" }));
+        signed_plus["credentialStatus"]["position"] = serde_json::json!("+4");
+        assert_eq!(read(&signed_plus), Err(STATUS_UNREAD));
+    }
+
+    /// A Bitstring Status List the issuer signs here as Inji Certify signs
+    /// one: its options under the suite's own context.
+    fn signed_bitstring_list(
+        pair: &crypto::jose::jwk::alg::ed::EdKeyPair,
+        list: Value,
+        purpose: &str,
+    ) -> Value {
+        use crypto::jose::jwk::KeyPair;
+        use crypto::provider::HashAlg;
+        let provider = provider();
+        let none_pinned = HashMap::new();
+        let hash = |document: &Value| {
+            let quads =
+                to_rdf(document, &HeldContexts::new(&none_pinned), 1_000).expect("a dataset");
+            let canonical = jsonld::canon::canonicalize(&provider, HashAlg::Sha256, &quads, 500)
+                .expect("canonical");
+            provider
+                .digest()
+                .hash(HashAlg::Sha256, canonical.nquads.as_bytes())
+                .expect("a digest")
+        };
+        let mut options = serde_json::json!({
+            "@context": jsonld::built_in::ED25519_2020_V1,
+            "type": "Ed25519Signature2020",
+            "created": "2026-09-21T10:00:00Z",
+            "verificationMethod": format!("{ISSUER}#k1"),
+            "proofPurpose": purpose,
+        });
+        let signed = [hash(&options), hash(&list)].concat();
+        let signer = crypto::jose::jws::EdDSA
+            .signer_from_pem(pair.to_pem_private_key())
+            .expect("a signer");
+        let signature = crypto::jose::jws::JwsSigner::sign(&signer, &signed).expect("a signature");
+        let proof = options.as_object_mut().expect("options");
+        proof.remove("@context");
+        proof.insert(
+            "proofValue".to_owned(),
+            serde_json::json!(format!("z{}", jsonld::base58::encode(&signature))),
+        );
+        let mut list = list;
+        list["proof"] = options;
+        list
+    }
+
+    fn bitstring_list(subject: Value) -> Value {
+        serde_json::json!({
+            "@context": [jsonld::built_in::CREDENTIALS_V2],
+            "id": LIST,
+            "type": ["VerifiableCredential", "BitstringStatusListCredential"],
+            "issuer": ISSUER,
+            "validFrom": "2026-09-21T09:00:00Z",
+            "credentialSubject": subject,
+        })
+    }
+
+    fn encoded(statuses: &[u8]) -> String {
+        use std::io::Write;
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        gzip.write_all(statuses).expect("compressed");
+        format!(
+            "u{}",
+            BASE64URL_NOPAD.encode(&gzip.finish().expect("compressed"))
+        )
+    }
+
+    #[test]
+    fn a_bitstring_list_says_its_purposes_its_lifetime_and_its_statuses() {
+        let (pair, keys) = issuer_key();
+        let none_pinned = HashMap::new();
+        let contexts = HeldContexts::new(&none_pinned);
+        let mut list = bitstring_list(serde_json::json!({
+            "id": format!("{LIST}#list"),
+            "type": "BitstringStatusList",
+            "statusPurpose": ["revocation", "suspension"],
+            "encodedList": encoded(&[0u8; 16_384]),
+            "ttl": 300_000,
+        }));
+        list["validUntil"] = serde_json::json!("2026-09-29T10:00:00Z");
+        let signed = signed_bitstring_list(&pair, list, "assertionMethod").to_string();
+        let read = read_bitstring_list(&provider(), &contexts, ISSUER, &keys, LIST, &signed, now())
+            .expect("a reading");
+        assert_eq!(read.purposes, ["revocation", "suspension"]);
+        assert_eq!(read.time_to_live, Some(Duration::minutes(5)));
+        assert_eq!(read.expires_at, DateTime::from_timestamp(1_790_676_000, 0));
+        assert_eq!(read.issued_at, DateTime::from_timestamp(1_789_984_800, 0));
+        assert_eq!(read.statuses.len(), 16_384);
+
+        let after = DateTime::from_timestamp(1_790_676_000 + LEEWAY_SECONDS, 0).expect("a time");
+        assert_eq!(
+            read_bitstring_list(&provider(), &contexts, ISSUER, &keys, LIST, &signed, after),
+            Err(LIST_EXPIRED)
+        );
+        let short = signed_bitstring_list(
+            &pair,
+            bitstring_list(serde_json::json!({
+                "id": format!("{LIST}#list"),
+                "type": "BitstringStatusList",
+                "statusPurpose": "revocation",
+                "encodedList": encoded(&[0u8; 16_383]),
+            })),
+            "assertionMethod",
+        )
+        .to_string();
+        assert_eq!(
+            read_bitstring_list(&provider(), &contexts, ISSUER, &keys, LIST, &short, now()),
+            Err(TOO_FEW_STATUSES)
+        );
+        let authenticating = signed_bitstring_list(
+            &pair,
+            bitstring_list(serde_json::json!({
+                "id": format!("{LIST}#list"),
+                "type": "BitstringStatusList",
+                "statusPurpose": "revocation",
+                "encodedList": encoded(&[0u8; 16_384]),
+            })),
+            "authentication",
+        )
+        .to_string();
+        assert_eq!(
+            read_bitstring_list(
+                &provider(),
+                &contexts,
+                ISSUER,
+                &keys,
+                LIST,
+                &authenticating,
+                now()
+            ),
+            Err(LIST_NOT_ASSERTED)
+        );
+        let unpurposed = signed_bitstring_list(
+            &pair,
+            bitstring_list(serde_json::json!({
+                "id": format!("{LIST}#list"),
+                "type": "BitstringStatusList",
+                "encodedList": encoded(&[0u8; 16_384]),
+            })),
+            "assertionMethod",
+        )
+        .to_string();
+        assert_eq!(
+            read_bitstring_list(
+                &provider(),
+                &contexts,
+                ISSUER,
+                &keys,
+                LIST,
+                &unpurposed,
+                now()
+            ),
+            Err(LIST_UNREAD)
+        );
     }
 
     #[test]

@@ -2,10 +2,10 @@ use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use config::serving::Egress;
-use models::entities::credential_issuers::CredentialIssuer;
+use models::entities::credential_issuers::{CredentialIssuer, IssuerTrust};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use services::admin::credential_issuers::{ReadKeys, Unnamable};
+use services::admin::credential_issuers::{CertificateTrust, ReadKeys, Unnamable};
 use services::verifier::issuers::{self, KeySource, Published, Unreadable};
 use store::tenancy::{Tenancy, TenantContext};
 
@@ -20,22 +20,57 @@ pub struct IssuerBrief {
     pub id: String,
     pub name: String,
     pub issuer: String,
+    /// `metadata` or `certificate`: how the realm trusts the issuer.
+    pub trusted_by: &'static str,
+    /// What its metadata published, read when and where; none by certificate.
     pub keys: Vec<Value>,
-    pub read_from: String,
-    pub read_at: chrono::DateTime<chrono::Utc>,
+    pub read_from: Option<String>,
+    pub read_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// The trust anchors it is trusted through, and the types it issues, when
+    /// trusted by certificate.
+    pub anchors: Vec<String>,
+    pub credential_types: Vec<String>,
     pub created_by: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl From<CredentialIssuer> for IssuerBrief {
     fn from(named: CredentialIssuer) -> Self {
+        let (trusted_by, keys, read_from, read_at, anchors, credential_types) = match named.trust {
+            IssuerTrust::Metadata {
+                keys,
+                read_from,
+                read_at,
+            } => (
+                "metadata",
+                keys,
+                Some(read_from),
+                Some(read_at),
+                Vec::new(),
+                Vec::new(),
+            ),
+            IssuerTrust::Certificate {
+                anchors,
+                credential_types,
+            } => (
+                "certificate",
+                Vec::new(),
+                None,
+                None,
+                anchors,
+                credential_types,
+            ),
+        };
         Self {
             id: named.issuer_id,
             name: named.name,
             issuer: named.issuer,
-            keys: named.keys,
-            read_from: named.read_from,
-            read_at: named.read_at,
+            trusted_by,
+            keys,
+            read_from,
+            read_at,
+            anchors,
+            credential_types,
             created_by: named.created_by,
             created_at: named.created_at,
         }
@@ -47,6 +82,29 @@ pub struct IssuerWrite {
     pub name: String,
     /// An https address or a `did:web`, as the issuer's credentials name it.
     pub issuer: String,
+    /// How the realm trusts it: by its metadata unless said otherwise.
+    #[serde(default)]
+    pub trusted_by: TrustedBy,
+    /// The trust anchors it is trusted through, and the types it issues, for
+    /// an issuer trusted by certificate.
+    #[serde(default)]
+    pub anchors: Vec<String>,
+    #[serde(default)]
+    pub credential_types: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TrustedBy {
+    #[default]
+    Metadata,
+    Certificate,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TrustWrite {
+    pub anchors: Vec<String>,
+    pub credential_types: Vec<String>,
 }
 
 /// The issuers the realm names, and whether the verifier that reads them runs:
@@ -75,8 +133,9 @@ pub async fn list(
     })))
 }
 
-/// Name an issuer, reading its keys first: before any transaction opens, so
-/// no database session waits on somebody else's server.
+/// Name an issuer. One trusted by its metadata has its keys read first:
+/// before any transaction opens, so no database session waits on somebody
+/// else's server. One trusted by certificate has nothing read from it.
 pub async fn name(
     admin: web::ReqData<Admin>,
     tenancy: web::Data<Tenancy>,
@@ -87,24 +146,78 @@ pub async fn name(
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
     let asked = asked.into_inner();
-    let read = read_issuer_keys(&asked.issuer, **egress).await?;
+    let read = match asked.trusted_by {
+        // Authorities and types passed over would read as taken.
+        TrustedBy::Metadata if !(asked.anchors.is_empty() && asked.credential_types.is_empty()) => {
+            return Err(refused(Unnamable::NotByCertificate));
+        }
+        TrustedBy::Metadata => Some(read_issuer_keys(&asked.issuer, **egress).await?),
+        TrustedBy::Certificate => None,
+    };
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let named = services::admin::credential_issuers::name(
+    let named = match read {
+        Some(read) => {
+            services::admin::credential_issuers::name(
+                &transaction,
+                sealing.provider.as_ref(),
+                &asked.name,
+                &asked.issuer,
+                read,
+                admin.context.principal.id(),
+                chrono::Utc::now(),
+            )
+            .await
+        }
+        None => {
+            services::admin::credential_issuers::name_by_certificate(
+                &transaction,
+                sealing.provider.as_ref(),
+                &asked.name,
+                &asked.issuer,
+                CertificateTrust {
+                    anchors: asked.anchors,
+                    credential_types: asked.credential_types,
+                },
+                admin.context.principal.id(),
+                chrono::Utc::now(),
+            )
+            .await
+        }
+    }
+    .map_err(refused)?;
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::Created().json(IssuerBrief::from(named)))
+}
+
+/// Trust an issuer the realm trusts by certificate through other authorities,
+/// or for other types.
+pub async fn retrust(
+    admin: web::ReqData<Admin>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+    asked: web::Json<TrustWrite>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, issuer_id) = path.into_inner();
+    let asked = asked.into_inner();
+    let transaction = tenancy
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
+        .await
+        .map_err(refuse_unopened_work)?;
+    let named = services::admin::credential_issuers::replace_certificate_trust(
         &transaction,
-        sealing.provider.as_ref(),
-        &asked.name,
-        &asked.issuer,
-        read,
-        admin.context.principal.id(),
-        chrono::Utc::now(),
+        &issuer_id,
+        CertificateTrust {
+            anchors: asked.anchors,
+            credential_types: asked.credential_types,
+        },
     )
     .await
     .map_err(refused)?;
     transaction.commit().await.map_err(|_| internal())?;
-    Ok(HttpResponse::Created().json(IssuerBrief::from(named)))
+    Ok(HttpResponse::Ok().json(IssuerBrief::from(named)))
 }
 
 /// Read an issuer's keys again, where they were first read from.
@@ -118,10 +231,13 @@ pub async fn read_again(
     let within = TenantContext::new(&admin.context.tenant.tenant, &realm_id);
     let issuer = {
         let transaction = tenancy.begin(&within).await.map_err(refuse_unopened_work)?;
-        services::admin::credential_issuers::named(&transaction, &issuer_id)
+        let held = services::admin::credential_issuers::named(&transaction, &issuer_id)
             .await
-            .map_err(refused)?
-            .issuer
+            .map_err(refused)?;
+        if matches!(held.trust, IssuerTrust::Certificate { .. }) {
+            return Err(refused(Unnamable::NotByMetadata));
+        }
+        held.issuer
     };
     let read = read_issuer_keys(&issuer, **egress).await?;
     let transaction = tenancy.begin(&within).await.map_err(refuse_unopened_work)?;

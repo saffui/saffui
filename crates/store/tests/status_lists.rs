@@ -2,11 +2,11 @@ mod support;
 
 use chrono::{DateTime, Duration, Utc};
 use models::auditable::AuditableModel;
-use models::entities::credential_issuers::CredentialIssuer;
+use models::entities::credential_issuers::{CredentialIssuer, IssuerTrust};
 use models::entities::realm::RealmCreateModel;
 use serde_json::json;
 use store::providers::realms::credential_issuers;
-use store::providers::realms::status_lists::{self, DueList, KeptReading};
+use store::providers::realms::status_lists::{self, DueList, KeptReading, ListSigners};
 use store::tenancy::{TenantContext, UnitOfWork};
 use support::Fixture;
 
@@ -23,9 +23,11 @@ async fn name_issuer(transaction: &UnitOfWork, issuer_id: &str) {
             issuer_id: issuer_id.into(),
             name: issuer_id.into(),
             issuer: format!("https://{issuer_id}.example"),
-            keys: vec![json!({ "kty": "OKP", "crv": "Ed25519", "x": "AAAA", "kid": "k1" })],
-            read_from: format!("https://{issuer_id}.example/.well-known/jwt-vc-issuer"),
-            read_at: now(),
+            trust: IssuerTrust::Metadata {
+                keys: vec![json!({ "kty": "OKP", "crv": "Ed25519", "x": "AAAA", "kid": "k1" })],
+                read_from: format!("https://{issuer_id}.example/.well-known/jwt-vc-issuer"),
+                read_at: now(),
+            },
             created_by: "admin".into(),
             created_at: now(),
         },
@@ -97,7 +99,9 @@ async fn a_list_is_written_down_once_claimed_once_and_read_a_byte_at_a_time() {
             uri: LIST.into(),
             format: "token".into(),
             issuer: "https://i1.example".into(),
-            keys: vec![json!({ "kty": "OKP", "crv": "Ed25519", "x": "AAAA", "kid": "k1" })],
+            signers: ListSigners::Keys(vec![
+                json!({ "kty": "OKP", "crv": "Ed25519", "x": "AAAA", "kid": "k1" })
+            ]),
             issued_at: None,
         }]
     );
@@ -244,6 +248,68 @@ async fn an_older_writing_never_replaces_the_one_kept() {
         .unwrap()
         .get(0);
     assert_eq!(failure, None, "a reading kept left the old failure");
+}
+
+/// A reading forgotten leaves its list as if never read, its address still
+/// followed: a credential citing it finds no reading, and a list written
+/// before the one forgotten is kept again.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_reading_forgotten_leaves_its_list_to_be_read_anew() {
+    let fixture = Fixture::with_user().await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
+    name_issuer(&transaction, "i1").await;
+    let now = now();
+    for (uri, format) in [
+        (LIST, "token"),
+        ("https://issuer.example/statuslists/2", "token"),
+    ] {
+        assert!(
+            status_lists::write_down(&transaction, "i1", uri, format, &now, 10)
+                .await
+                .unwrap()
+        );
+    }
+    let other = KeptReading {
+        uri: "https://issuer.example/statuslists/2",
+        ..reading("token", &[7], Some(now), now)
+    };
+    for kept in [reading("token", &[1], Some(now), now), other] {
+        assert!(
+            status_lists::keep_reading(&transaction, &kept)
+                .await
+                .unwrap()
+        );
+    }
+
+    status_lists::forget_reading(&transaction, "i1", LIST, "token")
+        .await
+        .unwrap();
+    let cited = status_lists::read_cited(&transaction, "i1", LIST, "token", 0)
+        .await
+        .unwrap()
+        .expect("the list still followed");
+    assert_eq!((cited.reading, cited.cited_at), (None, now));
+    assert!(
+        status_lists::read_cited(
+            &transaction,
+            "i1",
+            "https://issuer.example/statuslists/2",
+            "token",
+            0
+        )
+        .await
+        .unwrap()
+        .is_some_and(|cited| cited.reading.is_some()),
+        "another list's reading was forgotten"
+    );
+    let earlier = Some(now - Duration::seconds(1));
+    assert!(
+        status_lists::keep_reading(&transaction, &reading("token", &[0], earlier, now))
+            .await
+            .unwrap(),
+        "what a forgotten reading said of its writing was kept"
+    );
 }
 
 /// A realm writes down as many lists as it keeps and no more; the sweep

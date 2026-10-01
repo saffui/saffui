@@ -1549,11 +1549,15 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
   if (/\/credential-issuers\/[^/]+$/.test(path) && method === "DELETE") {
     return answer(undefined);
   }
-  if (path.endsWith("/credential-issuers") || /\/credential-issuers\/[^/]+\/keys$/.test(path)) {
+  if (
+    path.endsWith("/credential-issuers") ||
+    /\/credential-issuers\/[^/]+\/(keys|trust)$/.test(path)
+  ) {
     const named = {
       id: "4d2a7c9e1b3f5a6d8c0e2b4a6c8e0f1a",
       name: "Registre civil",
       issuer: "https://certify.registre.example/v1/certify",
+      trusted_by: "metadata",
       keys: [
         {
           kty: "OKP",
@@ -1564,10 +1568,26 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
       ],
       read_from: "https://certify.registre.example/.well-known/jwt-vc-issuer/v1/certify",
       read_at: "2026-09-28T09:30:00Z",
+      anchors: [],
+      credential_types: [],
       created_by: "ada",
       created_at: "2026-09-28T09:30:00Z",
     };
-    return answer(method === "POST" ? named : { running: false, items: [named] });
+    const certified = {
+      id: "9c1e3a5b7d2f4c6e8a0b1d3f5a7c9e2b",
+      name: "Fournisseur PID",
+      issuer: "https://pid.identite.example",
+      trusted_by: "certificate",
+      keys: [],
+      read_from: null,
+      read_at: null,
+      anchors: ["6f1c9e2a4b7d3058a1e2c4f6b8d0a2c4"],
+      credential_types: ["urn:eudi:pid:1"],
+      created_by: "ada",
+      created_at: "2026-10-01T08:45:00Z",
+    };
+    if (method === "PUT") return answer(certified);
+    return answer(method === "POST" ? named : { running: false, items: [named, certified] });
   }
   if (/\/trust-anchors\/[^/]+$/.test(path) && method === "DELETE") {
     return answer(undefined);

@@ -34,9 +34,10 @@ pub fn outbox_every() -> Result<Option<Duration>, ConfigError> {
     Ok((seconds > 0).then(|| Duration::from_secs(seconds)))
 }
 
-/// How often the status lists credentials cite are looked at for any that is
-/// due to be read again. On by default where the wallet verifier runs: a list
-/// nobody reads refuses every credential citing it. Zero means never.
+/// How often the status lists credentials cite, and the revocation lists
+/// their chains name, are looked at for any that is due to be read again. On
+/// by default where the wallet verifier runs: a list nobody reads refuses
+/// every credential citing it. Zero means never.
 const STATUS_LISTS: &str = "STATUS_LISTS_SECONDS";
 
 pub fn status_lists_every() -> Result<Option<Duration>, ConfigError> {

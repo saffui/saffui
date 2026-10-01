@@ -5,11 +5,12 @@
 //!
 //! No presentation sends this server out to ask. A scheduled pass reads each
 //! list a realm's credentials cite, under the keys the realm read from the
-//! issuer of those credentials, and keeps it expanded; a presentation reads the
-//! one byte holding the status it cites. A list nobody has read yet is written
-//! down by the first credential citing it, and that credential is refused, as
-//! is one citing a list that could not be read, may no longer be relied on, or
-//! holds no status at the index cited. Revoked and suspended are both refused.
+//! issuer of those credentials or under a certificate of the authorities it is
+//! trusted through, and keeps it expanded; a presentation reads the one byte
+//! holding the status it cites. A list nobody has read yet is written down by
+//! the first credential citing it, and that credential is refused, as is one
+//! citing a list that could not be read, may no longer be relied on, or holds
+//! no status at the index cited. Revoked and suspended are both refused.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -25,11 +26,13 @@ use jsonld::proof::{Unproven, read_proof, verify_proof};
 use jsonld::rdf::{Literal, Node, Object, Quad, XSD_STRING};
 use jsonld::{Contexts, Unreadable, to_rdf};
 use serde_json::{Map, Value};
-use store::providers::realms::status_lists::{self, DueList, KeptReading};
+use store::providers::realms::status_lists::{self, DueList, KeptReading, ListSigners};
 use store::tenancy::UnitOfWork;
 
+use super::certificates::{self, ChainLink, Untrusted};
 use super::linked_data::{BOUNDS, asserting_keys};
 use super::presentation::{LEEWAY_SECONDS, Unanswerable, candidate_keys, verifier_for};
+use super::revocation;
 
 /// The most a list's statuses may take once expanded: some thirty million
 /// statuses of one bit.
@@ -115,6 +118,7 @@ pub const UNREADABLE_STATUSES: &str = "the status list's statuses could not be e
 pub const TOO_MANY_STATUSES: &str = "the status list holds more statuses than this verifier keeps";
 pub const TOO_FEW_STATUSES: &str = "the status list holds fewer statuses than herd privacy asks";
 pub const LIST_OLDER: &str = "the status list served is older than the one kept";
+pub const LIST_UNDER_CERTIFICATE: &str = "the status list's issuer is trusted by certificate, which a Bitstring list's proof cannot carry";
 
 /// How a list is written, and so how a status is read from it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -486,6 +490,9 @@ pub struct ReadList {
     pub expires_at: Option<DateTime<Utc>>,
     /// How soon its issuer asks for it to be read again.
     pub time_to_live: Option<Duration>,
+    /// The certificates its chain runs through, when its issuer is trusted by
+    /// certificate: what their revocation is read for before it is kept.
+    pub signed_through: Vec<ChainLink>,
 }
 
 /// A JSON number of seconds since the epoch, as JWT writes times.
@@ -514,6 +521,47 @@ pub fn read_token_list(
     token: &str,
     now: DateTime<Utc>,
 ) -> Result<ReadList, &'static str> {
+    let (header, token) = read_token_header(token)?;
+    let algorithm = header
+        .get("alg")
+        .and_then(Value::as_str)
+        .ok_or(LIST_SIGNATURE)?;
+    let kid = header.get("kid").and_then(Value::as_str);
+    let payload = candidate_keys(keys, kid)
+        .iter()
+        .filter_map(|jwk| verifier_for(algorithm, jwk))
+        .find_map(|verifier| jws::deserialize_compact(token, verifier.as_ref()).ok())
+        .map(|(payload, _)| payload)
+        .ok_or(LIST_SIGNATURE)?;
+    read_token_claims(&payload, issuer, uri, now)
+}
+
+/// The same, for an issuer trusted by certificate: signed under the key of a
+/// certificate its `x5c` chains up to one of the issuer's authorities, as
+/// HAIP 1.0 §6.1 has a list signed.
+pub fn read_certified_token_list(
+    issuer: &str,
+    anchors: &[Vec<u8>],
+    uri: &str,
+    token: &str,
+    now: DateTime<Utc>,
+) -> Result<ReadList, &'static str> {
+    let (header, token) = read_token_header(token)?;
+    let chain = certificates::trust_chain(&header, anchors, now).map_err(Untrusted::of_list)?;
+    let verifier = header
+        .get("alg")
+        .and_then(Value::as_str)
+        .and_then(|algorithm| certificates::verifier_for_certified(algorithm, &chain.leaf_key))
+        .ok_or(LIST_SIGNATURE)?;
+    let (payload, _) =
+        jws::deserialize_compact(token, verifier.as_ref()).map_err(|_| LIST_SIGNATURE)?;
+    let mut read = read_token_claims(&payload, issuer, uri, now)?;
+    read.signed_through = chain.links;
+    Ok(read)
+}
+
+/// A token's header, typed `statuslist+jwt`, and the token trimmed.
+fn read_token_header(token: &str) -> Result<(Map<String, Value>, &str), &'static str> {
     let token = token.trim();
     let header = token
         .split('.')
@@ -531,18 +579,17 @@ pub fn read_token_list(
     {
         return Err(NOT_A_LIST_TOKEN);
     }
-    let algorithm = header
-        .get("alg")
-        .and_then(Value::as_str)
-        .ok_or(LIST_SIGNATURE)?;
-    let kid = header.get("kid").and_then(Value::as_str);
-    let payload = candidate_keys(keys, kid)
-        .iter()
-        .filter_map(|jwk| verifier_for(algorithm, jwk))
-        .find_map(|verifier| jws::deserialize_compact(token, verifier.as_ref()).ok())
-        .map(|(payload, _)| payload)
-        .ok_or(LIST_SIGNATURE)?;
-    let Ok(Value::Object(claims)) = serde_json::from_slice::<Value>(&payload) else {
+    Ok((header, token))
+}
+
+/// What a verified token's payload says of its list.
+fn read_token_claims(
+    payload: &[u8],
+    issuer: &str,
+    uri: &str,
+    now: DateTime<Utc>,
+) -> Result<ReadList, &'static str> {
+    let Ok(Value::Object(claims)) = serde_json::from_slice::<Value>(payload) else {
         return Err(LIST_UNREAD);
     };
     if claims.get("sub").and_then(Value::as_str) != Some(uri) {
@@ -591,6 +638,7 @@ pub fn read_token_list(
         issued_at: Some(issued_at),
         expires_at,
         time_to_live,
+        signed_through: Vec::new(),
     })
 }
 
@@ -725,6 +773,7 @@ pub fn read_bitstring_list(
         issued_at,
         expires_at,
         time_to_live,
+        signed_through: Vec::new(),
     })
 }
 
@@ -777,18 +826,24 @@ pub fn read_due_list(
     now: DateTime<Utc>,
 ) -> Result<ReadList, &'static str> {
     let served = served.ok_or(LIST_UNFETCHED)?;
-    match ListFormat::parse(&due.format) {
-        Some(ListFormat::Token) => read_token_list(&due.issuer, &due.keys, &due.uri, served, now),
-        Some(ListFormat::Bitstring) => read_bitstring_list(
+    match (ListFormat::parse(&due.format), &due.signers) {
+        (Some(ListFormat::Token), ListSigners::Keys(keys)) => {
+            read_token_list(&due.issuer, keys, &due.uri, served, now)
+        }
+        (Some(ListFormat::Token), ListSigners::Anchors(anchors)) => {
+            read_certified_token_list(&due.issuer, anchors, &due.uri, served, now)
+        }
+        (Some(ListFormat::Bitstring), ListSigners::Keys(keys)) => read_bitstring_list(
             provider,
             &HeldContexts::new(contexts),
             &due.issuer,
-            &due.keys,
+            keys,
             &due.uri,
             served,
             now,
         ),
-        None => Err(LIST_UNREAD),
+        (Some(ListFormat::Bitstring), ListSigners::Anchors(_)) => Err(LIST_UNDER_CERTIFICATE),
+        (None, _) => Err(LIST_UNREAD),
     }
 }
 
@@ -812,15 +867,30 @@ fn plan_reading(read: &ReadList, now: DateTime<Utc>, drawn: u32) -> (DateTime<Ut
     (usable_until, due_at)
 }
 
-/// Keep a reading made `now`, planned as `plan_reading` says. False when the
-/// issuer wrote the reading kept later than this one.
+/// Keep a reading made `now`, planned as `plan_reading` says, once the
+/// certificates its chain runs through hold under the revocation lists kept:
+/// nothing when kept, otherwise why not, the issuer having written the reading
+/// kept later than this one included. An address serving a list signed under
+/// a revoked certificate has what was kept from it forgotten.
 pub async fn keep_list(
     transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     due: &DueList,
     read: &ReadList,
     now: DateTime<Utc>,
-) -> Result<bool, ()> {
+) -> Result<Option<&'static str>, ()> {
+    let chains = [(due.issuer_id.clone(), read.signed_through.clone())];
+    if let Err(why) = revocation::check_chains(transaction, provider, &chains, now)
+        .await
+        .map_err(|_| ())?
+    {
+        if why == revocation::CERTIFICATE_REVOKED {
+            status_lists::forget_reading(transaction, &due.issuer_id, &due.uri, &due.format)
+                .await
+                .map_err(|_| ())?;
+        }
+        return Ok(Some(why));
+    }
     let mut drawn = [0u8; 4];
     provider.rand().fill(&mut drawn).map_err(|_| ())?;
     let (usable_until, due_at) = plan_reading(read, now, u32::from_be_bytes(drawn));
@@ -842,6 +912,7 @@ pub async fn keep_list(
         },
     )
     .await
+    .map(|kept| (!kept).then_some(LIST_OLDER))
     .map_err(|_| ())
 }
 
@@ -1116,6 +1187,7 @@ mod tests {
                 issued_at: Some(now() - Duration::seconds(600)),
                 expires_at: Some(now() + Duration::seconds(3_600)),
                 time_to_live: Some(Duration::seconds(900)),
+                signed_through: Vec::new(),
             })
         );
         let mut without_issuer = list_claims();
@@ -1234,6 +1306,248 @@ mod tests {
                 now()
             ),
             Err(LIST_SIGNATURE)
+        );
+    }
+
+    /// A status list token, `claims` signed under `key` with ES256 and
+    /// carrying `chain`.
+    fn certified_list(
+        key: &crypto::jose::jwk::alg::ec::EcKeyPair,
+        chain: &[&[u8]],
+        typ: &str,
+        claims: &Value,
+    ) -> String {
+        use crypto::jose::jwk::KeyPair;
+        let mut header = crypto::jose::jws::JwsHeader::new();
+        header.set_token_type(typ);
+        if !chain.is_empty() {
+            header.set_x509_certificate_chain(chain);
+        }
+        let signer = crypto::jose::jws::ES256
+            .signer_from_pem(key.to_pem_private_key())
+            .expect("a signer");
+        jws::serialize_compact(claims.to_string().as_bytes(), &header, &signer).expect("a token")
+    }
+
+    /// The list of an issuer trusted by certificate is read under the key of
+    /// a certificate its chain holds to one of the issuer's authorities, and
+    /// says which certificates it was signed through; a chain that does not
+    /// hold, or another key than the one it certifies, reads nothing.
+    #[test]
+    fn a_status_list_token_is_read_under_a_certificate_of_its_issuers_authorities() {
+        use certificates::testing::{Hierarchy, ISSUING_LIST, Issued, ROOT_LIST, YEAR, certify};
+        use crypto::x509::RevocationPoints;
+        let held = Hierarchy::new();
+        let stranger = Hierarchy::new();
+        let root = std::slice::from_ref(&held.root.certificate);
+        let chain = [
+            held.signer.certificate.as_slice(),
+            held.issuing.certificate.as_slice(),
+        ];
+        let read = |token: &str, anchors: &[Vec<u8>]| {
+            read_certified_token_list(ISSUER, anchors, LIST, token, now())
+        };
+        let published_at = |address: &str| RevocationPoints {
+            addresses: vec![address.to_owned()],
+            unreadable: false,
+        };
+
+        let token = certified_list(&held.signer.key, &chain, "statuslist+jwt", &list_claims());
+        assert_eq!(
+            read(&format!("{token}\n"), root),
+            Ok(ReadList {
+                statuses: vec![0xc9, 0x44, 0xf9],
+                bits: Some(2),
+                purposes: Vec::new(),
+                issued_at: Some(now() - Duration::seconds(600)),
+                expires_at: Some(now() + Duration::seconds(3_600)),
+                time_to_live: Some(Duration::seconds(900)),
+                signed_through: vec![
+                    ChainLink {
+                        serial: vec![0x21],
+                        revocation: published_at(ISSUING_LIST),
+                        authority: held.issuing.certificate.clone(),
+                    },
+                    ChainLink {
+                        serial: vec![0x11],
+                        revocation: published_at(ROOT_LIST),
+                        authority: held.root.certificate.clone(),
+                    },
+                ],
+            })
+        );
+
+        let alone = certify(Issued {
+            name: "Signer",
+            issuer: None,
+            authority: false,
+            serial: 0x31,
+            revocation_list: None,
+            valid: YEAR,
+        });
+        let lapsed = held.signer_issued(|asked| asked.valid = (-7_200, -3_600));
+        let elsewhere = |member: &str, value: &str| {
+            let mut claims = list_claims();
+            claims[member] = serde_json::json!(value);
+            certified_list(&held.signer.key, &chain, "statuslist+jwt", &claims)
+        };
+        for (token, anchors, why) in [
+            (
+                certified_list(&held.signer.key, &[], "statuslist+jwt", &list_claims()),
+                root,
+                certificates::LIST_UNCHAINED,
+            ),
+            (
+                token.clone(),
+                std::slice::from_ref(&stranger.root.certificate),
+                certificates::LIST_UNANCHORED,
+            ),
+            (
+                certified_list(
+                    &lapsed.key,
+                    &[&lapsed.certificate, &held.issuing.certificate],
+                    "statuslist+jwt",
+                    &list_claims(),
+                ),
+                root,
+                certificates::LIST_CHAIN_OUT_OF_VALIDITY,
+            ),
+            (
+                certified_list(
+                    &alone.key,
+                    &[&alone.certificate],
+                    "statuslist+jwt",
+                    &list_claims(),
+                ),
+                root,
+                certificates::LIST_NOT_SIGNED_BY_A_SIGNER,
+            ),
+            (
+                certified_list(
+                    &stranger.signer.key,
+                    &chain,
+                    "statuslist+jwt",
+                    &list_claims(),
+                ),
+                root,
+                LIST_SIGNATURE,
+            ),
+            (
+                certified_list(&held.signer.key, &chain, "jwt", &list_claims()),
+                root,
+                NOT_A_LIST_TOKEN,
+            ),
+            (
+                elsewhere("iss", "https://elsewhere.example"),
+                root,
+                LIST_OF_ANOTHER_ISSUER,
+            ),
+            (
+                elsewhere("sub", "https://issuer.example/statuslists/2"),
+                root,
+                LIST_ELSEWHERE,
+            ),
+        ] {
+            assert_eq!(read(&token, anchors), Err(why), "{why}");
+        }
+
+        // A header naming an algorithm of another family than the certified
+        // key's verifies nothing, whoever signed.
+        let (pair, _) = issuer_key();
+        let signed_by_edwards = |chain: &[&[u8]]| {
+            use crypto::jose::jwk::KeyPair;
+            let mut header = crypto::jose::jws::JwsHeader::new();
+            header.set_token_type("statuslist+jwt");
+            header.set_x509_certificate_chain(chain);
+            let signer = crypto::jose::jws::EdDSA
+                .signer_from_pem(pair.to_pem_private_key())
+                .expect("a signer");
+            jws::serialize_compact(list_claims().to_string().as_bytes(), &header, &signer)
+                .expect("a token")
+        };
+        assert_eq!(read(&signed_by_edwards(&chain), root), Err(LIST_SIGNATURE));
+
+        // The algorithm is the header's, held to the family of the key the
+        // chain certifies: an Ed25519 key an authority certified signs EdDSA.
+        let certified_edwards = {
+            use crypto::jose::jwk::KeyPair;
+            use crypto::provider::{PrivateKey, PublicKey};
+            use crypto::x509::{Certifying, certify_key};
+            certify_key(&Certifying {
+                subject_key: &PublicKey::from_der(pair.to_der_public_key()),
+                subject_name: "Status signer",
+                issuer_certificate: Some(&held.issuing.certificate),
+                issuer_key: &PrivateKey::from_der(held.issuing.key.to_der_private_key()),
+                serial: &[0x24],
+                not_before: now().timestamp() - 3_600,
+                not_after: now().timestamp() + 86_400,
+                authority: false,
+                revocation_list: None,
+            })
+            .expect("a certificate issued by the crypto crate")
+        };
+        let token = signed_by_edwards(&[&certified_edwards, &held.issuing.certificate]);
+        assert_eq!(
+            read(&token, root).map(|read| read.signed_through.len()),
+            Ok(2)
+        );
+    }
+
+    /// A due list is read as its format and what its issuer is trusted by
+    /// say: a token under keys or under a chain, a Bitstring list under keys
+    /// alone, which is all its proof can carry.
+    #[test]
+    fn a_due_list_is_read_as_its_issuer_is_trusted() {
+        use certificates::testing::Hierarchy;
+        let held = Hierarchy::new();
+        let chain = [
+            held.signer.certificate.as_slice(),
+            held.issuing.certificate.as_slice(),
+        ];
+        let certified = certified_list(&held.signer.key, &chain, "statuslist+jwt", &list_claims());
+        let (pair, keys) = issuer_key();
+        let keyed = signed_list(&pair, "statuslist+jwt", &list_claims());
+        let due = |format: &str, signers: ListSigners| DueList {
+            issuer_id: "i1".to_owned(),
+            uri: LIST.to_owned(),
+            format: format.to_owned(),
+            issuer: ISSUER.to_owned(),
+            signers,
+            issued_at: None,
+        };
+        let anchors = || ListSigners::Anchors(vec![held.root.certificate.clone()]);
+        let none_pinned = HashMap::new();
+        let read = |due: &DueList, served: Option<&str>| {
+            read_due_list(&provider(), &none_pinned, due, served, now())
+                .map(|read| read.signed_through.len())
+        };
+
+        assert_eq!(read(&due("token", anchors()), Some(&certified)), Ok(2));
+        assert_eq!(
+            read(&due("token", ListSigners::Keys(keys.clone())), Some(&keyed)),
+            Ok(0)
+        );
+        // One way per issuer: a chain is not read for an issuer trusted by
+        // its keys, nor a key for one trusted by certificate.
+        assert_eq!(
+            read(
+                &due("token", ListSigners::Keys(keys.clone())),
+                Some(&certified)
+            ),
+            Err(LIST_SIGNATURE)
+        );
+        assert_eq!(
+            read(&due("token", anchors()), Some(&keyed)),
+            Err(certificates::LIST_UNCHAINED)
+        );
+        assert_eq!(
+            read(&due("bitstring", anchors()), Some("{}")),
+            Err(LIST_UNDER_CERTIFICATE)
+        );
+        assert_eq!(read(&due("token", anchors()), None), Err(LIST_UNFETCHED));
+        assert_eq!(
+            read(&due("other", anchors()), Some(&certified)),
+            Err(LIST_UNREAD)
         );
     }
 
@@ -1459,6 +1773,7 @@ mod tests {
             issued_at: None,
             expires_at: expires_in.map(|seconds| now() + Duration::seconds(seconds)),
             time_to_live: time_to_live.map(Duration::seconds),
+            signed_through: Vec::new(),
         };
         let (usable_until, due_at) = plan_reading(&read, now(), drawn);
         (

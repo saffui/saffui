@@ -8,6 +8,7 @@ import type { TrustAnchorBrief, TrustAnchorList, TrustAnchorWrite } from "@/mode
 import type {
   CredentialIssuerBrief,
   CredentialIssuerList,
+  CredentialIssuerTrustWrite,
   CredentialIssuerWrite,
 } from "@/models/credentialIssuers";
 import type {
@@ -381,8 +382,9 @@ export async function listCredentialIssuers(realm: string): Promise<CredentialIs
   return api<CredentialIssuerList>(adminPath(realm, "credential-issuers"));
 }
 
-/// The server reads the issuer's keys before it keeps anything, so a refusal
-/// here is the issuer's answer, or its absence.
+/// The server reads the keys of an issuer trusted by its metadata before it
+/// keeps anything, so a refusal here is the issuer's answer, or its absence.
+/// Nothing is read from one trusted by certificate.
 export async function nameCredentialIssuer(
   realm: string,
   asked: CredentialIssuerWrite,
@@ -401,6 +403,19 @@ export async function readCredentialIssuerKeys(
   return api<CredentialIssuerBrief>(
     adminPath(realm, `credential-issuers/${encodeURIComponent(issuer)}/keys`),
     { method: "POST", subject: say("credential-issuers-title") },
+  );
+}
+
+/// Trust an issuer the realm trusts by certificate through other authorities,
+/// or for other types.
+export async function trustCredentialIssuer(
+  realm: string,
+  issuer: string,
+  asked: CredentialIssuerTrustWrite,
+): Promise<CredentialIssuerBrief> {
+  return api<CredentialIssuerBrief>(
+    adminPath(realm, `credential-issuers/${encodeURIComponent(issuer)}/trust`),
+    { method: "PUT", json: asked, subject: say("credential-issuers-title") },
   );
 }
 

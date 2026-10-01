@@ -79,7 +79,9 @@ pub async fn count(transaction: &UnitOfWork, role: TrustAnchorRole) -> StoreResu
         .get(0))
 }
 
-/// Withdraw one authority, and say whether there was one to withdraw.
+/// Withdraw one authority, and say whether there was one to withdraw. One an
+/// issuer the realm names is trusted through is refused by the schema, and
+/// said to be so.
 pub async fn withdraw(transaction: &UnitOfWork, anchor_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute(
@@ -87,7 +89,7 @@ pub async fn withdraw(transaction: &UnitOfWork, anchor_id: &str) -> StoreResult<
             &[&anchor_id],
         )
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(removed > 0)
 }
 

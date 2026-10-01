@@ -23,6 +23,7 @@ pub mod otp;
 pub mod password;
 pub mod provider;
 pub mod public_jwk;
+pub mod revocation;
 pub mod sd_jwt;
 pub mod secret;
 pub mod thumbprint;

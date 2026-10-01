@@ -258,6 +258,26 @@ Code meant for the whole crate goes into a module of its own rather than into
     issued by the next and every one valid at the instant asked, with a
     self-signed anchor closing the chain checked against and left out, as
     `x5c` leaves it out.
+13. `x509::verify_chain`, `x509::read_chained_certificate`, `x509::certify_key`
+    and the `revocation` module (2026-10-01, trust by certificate): a chain's
+    leaf now signs for others, issued by an authority rather than by itself,
+    even one deposited as an anchor, and for digital signatures when its key
+    usage says what its key is for, every key and every signature below the
+    anchor is held to OpenSSL's security level 2 (112 bits: no RSA under 2048
+    bits, no SHA-1), which plain path validation does not ask outside TLS, and
+    the path OpenSSL verified is handed back, leaf first and the anchor last;
+    the serial, the authority key identifier and the CRL distribution points of
+    a certificate, a point being read when one http(s) URI names its whole
+    list, and any other, or an extension stated but unparsed, said to be
+    unreadable; a certificate issued as real hierarchies issue them, its own
+    key and its issuer's identified and its revocation published at an address,
+    for tests to build chains that hold under strict validation, the existing
+    `issue_certificate`, whose bytes are published, being untouched; and the
+    revocation lists of RFC 5280 §5, read under the authority whose
+    certificates they cover (issued under its name, signed by its key, which is
+    for signing lists when its key usage says, with nothing critical in the
+    list or an entry) and issued as a conforming authority issues them, for
+    tests to revoke a certificate with.
 
 ## IBM Plex
 

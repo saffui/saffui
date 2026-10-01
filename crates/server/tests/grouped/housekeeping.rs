@@ -583,3 +583,69 @@ async fn a_status_list_no_credential_cites_is_forgotten() {
         .collect();
     assert_eq!(left, ["https://issuer.example/lists/cited"]);
 }
+
+/// A revocation list no certificate named for a month is no longer read, and
+/// goes with what it revoked; one named since stays.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_revocation_list_no_certificate_names_is_forgotten() {
+    let plane = Plane::with_actions(&[]).await;
+    let transaction = plane
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
+        .await;
+    transaction
+        .execute(
+            "INSERT INTO realm_credential_issuers \
+                 (tenant, realm_id, issuer_id, name, issuer, keys, read_from, read_at, created_by) \
+             VALUES ($1, $2, 'i1', 'Issuer', 'https://issuer.example', '[{\"kty\": \"OKP\"}]', \
+                     'https://issuer.example/.well-known/jwt-vc-issuer', now(), 'admin')",
+            &[&support::TENANT, &support::REALM],
+        )
+        .await
+        .expect("an issuer");
+    let digest = "ab".repeat(32);
+    for (uri, days) in [
+        ("http://ca.example/unnamed.crl", 31),
+        ("http://ca.example/named.crl", 29),
+    ] {
+        transaction
+            .execute(
+                "INSERT INTO certificate_revocation_lists \
+                     (tenant, realm_id, issuer_id, uri, authority_digest, authority, due_at, \
+                      cited_at) \
+                 VALUES ($1, $2, 'i1', $3, $4, '\\x30', now(), \
+                         now() - make_interval(days => $5::int))",
+                &[&support::TENANT, &support::REALM, &uri, &digest, &days],
+            )
+            .await
+            .expect("a list");
+        transaction
+            .execute(
+                "INSERT INTO certificate_revocations \
+                     (tenant, realm_id, issuer_id, uri, authority_digest, serial) \
+                 VALUES ($1, $2, 'i1', $3, $4, '\\x21')",
+                &[&support::TENANT, &support::REALM, &uri, &digest],
+            )
+            .await
+            .expect("a serial revoked");
+    }
+    transaction.commit().await.expect("the seed kept");
+
+    let swept = sweep_every_realm(&plane.tenancy())
+        .await
+        .expect("the realms were listed");
+    assert_eq!(swept.revocation_lists, 1, "{swept:?}");
+    let transaction = plane
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
+        .await;
+    for table in ["certificate_revocation_lists", "certificate_revocations"] {
+        let left: Vec<String> = transaction
+            .query(&format!("SELECT uri FROM {table}"), &[])
+            .await
+            .expect("a census")
+            .into_iter()
+            .map(|row| row.get(0))
+            .collect();
+        assert_eq!(left, ["http://ca.example/named.crl"], "{table}");
+    }
+}

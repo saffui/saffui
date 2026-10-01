@@ -91,7 +91,7 @@ async fn rewrite_lists(plane: &Plane, set: &str) {
 }
 
 /// A token list's statuses, compressed as §4.1 writes them.
-fn compressed_statuses(statuses: &[u8]) -> String {
+pub(super) fn compressed_statuses(statuses: &[u8]) -> String {
     use std::io::Write;
     let mut zlib = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
     zlib.write_all(statuses).expect("compressed");
@@ -120,7 +120,7 @@ async fn present_pid(plane: &Plane, bearer: &str, wallet: &super::wallet::Wallet
     settled(plane, bearer, &asked_for, &request, &answer).await
 }
 
-async fn settled(
+pub(super) async fn settled(
     plane: &Plane,
     bearer: &str,
     asked_for: &Value,

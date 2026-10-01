@@ -14,7 +14,7 @@ use jsonld::claims::{ReadCredential, Unclaimed, read_credential};
 use jsonld::json::parse_strict;
 use jsonld::proof::{Bounds, Unproven, read_proof, verify_proof};
 use jsonld::{Contexts, Unreadable, to_rdf};
-use models::entities::credential_issuers::CredentialIssuer;
+use models::entities::credential_issuers::{CredentialIssuer, IssuerTrust};
 use serde_json::{Map, Value};
 use store::providers::realms::credential_issuers;
 use store::tenancy::UnitOfWork;
@@ -185,12 +185,18 @@ fn verify_issued_credential(
     identifying: Option<&[String]>,
     now: DateTime<Utc>,
 ) -> Result<Verified, &'static str> {
+    if matches!(named.trust, IssuerTrust::Certificate { .. }) {
+        // A Data Integrity proof names a key, never the chain certifying it.
+        return Err(
+            "a JSON-LD credential's issuer is trusted by certificate, which its proof cannot carry",
+        );
+    }
     let proof = read_proof(presented.credential)
         .map_err(|_| "a credential's proof is missing or malformed")?;
     if proof.proof_purpose.as_deref() != Some("assertionMethod") {
         return Err("a credential's proof is not an assertion");
     }
-    let keys = asserting_keys(&named.keys, &proof.verification_method);
+    let keys = asserting_keys(named.trust.keys(), &proof.verification_method);
     if keys.is_empty() {
         return Err("a credential is signed by a key this verifier does not read");
     }
@@ -442,6 +448,51 @@ mod tests {
         let contexts = HeldContexts::new(&pinned);
         let read = read_credential(&credential, &contexts).expect("a readable credential");
         check_validity(&read, &credential, now)
+    }
+
+    /// A JSON-LD credential of an issuer the realm trusts by certificate is
+    /// refused before its proof is read: the proof names a key, never the
+    /// chain certifying it.
+    #[test]
+    fn a_json_ld_credential_of_an_issuer_trusted_by_certificate_is_refused() {
+        let now = DateTime::from_timestamp(1_790_000_000, 0).expect("a time");
+        let provider = crypto::provider::openssl::OpenSslProvider::new(
+            &crypto::provider::CryptoConfig::default(),
+        )
+        .expect("a provider");
+        let credential = json!({});
+        let presented = Presented {
+            credential: &credential,
+            issuer: "https://issuer.example".to_owned(),
+            holder: PublicKey::from_der(Vec::new()),
+        };
+        let named = CredentialIssuer {
+            issuer_id: "i1".to_owned(),
+            name: "PID provider".to_owned(),
+            issuer: "https://issuer.example".to_owned(),
+            trust: IssuerTrust::Certificate {
+                anchors: vec!["a1".to_owned()],
+                credential_types: vec!["urn:eudi:pid:1".to_owned()],
+            },
+            created_by: "admin".to_owned(),
+            created_at: now,
+        };
+        let pinned = HashMap::new();
+        let verified = verify_issued_credential(
+            &provider,
+            &HeldContexts::new(&pinned),
+            &json!({}),
+            &presented,
+            &named,
+            None,
+            now,
+        );
+        assert_eq!(
+            verified.err(),
+            Some(
+                "a JSON-LD credential's issuer is trusted by certificate, which its proof cannot carry"
+            )
+        );
     }
 
     /// A credential holds from when it was issued, and from when it is valid,

@@ -6,6 +6,7 @@ import AppHint from "@/components/AppHint.vue";
 import PageTabs from "@/components/PageTabs.vue";
 import AppIcon from "@/components/AppIcon.vue";
 import DangerDialog from "@/components/DangerDialog.vue";
+import CredentialIssuersCard from "./CredentialIssuersCard.vue";
 import PresentationRequestCard from "./PresentationRequestCard.vue";
 import VerifierIdentityCard from "./VerifierIdentityCard.vue";
 import WalletIdentityCard from "./WalletIdentityCard.vue";
@@ -18,7 +19,6 @@ import {
   forgetSimSwap,
   forgetWhatsApp,
   forgetRegistrationSecret,
-  forgetCredentialIssuer,
   forgetJsonLdContext,
   depositTrustAnchor,
   getMail,
@@ -36,9 +36,7 @@ import {
   listRealmFeatures,
   listTrustAnchors,
   lookAtRelay,
-  nameCredentialIssuer,
   pinJsonLdContext,
-  readCredentialIssuerKeys,
   readJsonLdContextAgain,
   readSmsToday,
   readRelayRefusals,
@@ -1071,39 +1069,6 @@ async function loadCredentialIssuers() {
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
-}
-
-/// What the administrator calls the issuer, and the address its credentials
-/// name it by.
-const issuerDraft = ref({ name: "", issuer: "" });
-
-async function nameIssuer() {
-  try {
-    await nameCredentialIssuer(realm.value, {
-      name: issuerDraft.value.name.trim(),
-      issuer: issuerDraft.value.issuer.trim(),
-    });
-  } catch {
-    // The toast carries the server's refusal, and the draft stays to be fixed.
-    return;
-  }
-  issuerDraft.value = { name: "", issuer: "" };
-  await loadCredentialIssuers();
-}
-
-async function readIssuerAgain(issuer: string) {
-  try {
-    await readCredentialIssuerKeys(realm.value, issuer);
-  } catch {
-    // The toast carries the server's refusal; the keys read before are kept.
-    return;
-  }
-  await loadCredentialIssuers();
-}
-
-async function forgetIssuer(issuer: string) {
-  await forgetCredentialIssuer(realm.value, issuer);
-  await loadCredentialIssuers();
 }
 
 async function loadJsonLdContexts() {
@@ -2986,74 +2951,12 @@ async function saveSmsTemplate() {
             </form>
           </div>
 
-          <div class="mt-4 flex w-full flex-col gap-3 rounded-lg border border-border bg-surface p-4 text-xs">
-            <div class="flex items-center gap-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
-              {{ say("credential-issuers-title") }} <AppHint name="credential-issuers-help" />
-              <span class="rounded border border-border px-1.5 py-0.5 text-[10px] tracking-normal normal-case">{{
-                say("settings-experimental")
-              }}</span>
-            </div>
-            <p v-if="credentialIssuers && !credentialIssuers.running" class="text-[11px] leading-5 text-muted">
-              {{ say("credential-issuers-not-running") }}
-            </p>
-            <p v-if="credentialIssuers && !credentialIssuers.items.length" class="text-[11px] text-faint">
-              {{ say("credential-issuers-empty") }}
-            </p>
-            <ul v-if="credentialIssuers?.items.length" class="grid gap-1.5">
-              <li
-                v-for="named in credentialIssuers.items"
-                :key="named.id"
-                class="flex items-start gap-3 rounded-md border border-border bg-surface-2 px-3 py-2"
-              >
-                <div class="min-w-0 flex-1">
-                  <div class="text-[12px] font-medium text-ink">{{ named.name }}</div>
-                  <div class="mt-0.5 font-mono text-[11px] break-all text-muted">{{ named.issuer }}</div>
-                  <div class="mt-0.5 text-[10.5px] text-muted">
-                    {{ say("credential-issuers-read", { count: named.keys.length, at: stamp(named.read_at) }) }}
-                  </div>
-                  <div class="font-mono text-[10px] break-all text-faint">{{ named.read_from }}</div>
-                </div>
-                <div class="flex shrink-0 flex-col gap-1.5">
-                  <button
-                    type="button"
-                    class="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-surface"
-                    @click="readIssuerAgain(named.id)"
-                  >
-                    {{ say("credential-issuers-read-again") }}
-                  </button>
-                  <button
-                    type="button"
-                    class="rounded-md border border-border px-3 py-1.5 text-xs text-danger hover:bg-surface"
-                    @click="forgetIssuer(named.id)"
-                  >
-                    {{ say("credential-issuers-forget") }}
-                  </button>
-                </div>
-              </li>
-            </ul>
-            <form class="grid gap-2 sm:grid-cols-2" @submit.prevent="nameIssuer">
-              <label class="block text-[11px] font-medium text-muted">
-                {{ say("credential-issuers-name") }}
-                <input v-model="issuerDraft.name" class="sf-field mt-1" maxlength="200" />
-              </label>
-              <label class="block text-[11px] font-medium text-muted">
-                {{ say("credential-issuers-issuer") }} <AppHint name="credential-issuers-issuer-help" />
-                <input
-                  v-model="issuerDraft.issuer"
-                  class="sf-field mt-1 font-mono"
-                  spellcheck="false"
-                  placeholder="https://issuer.example.org"
-                />
-              </label>
-              <button
-                type="submit"
-                :disabled="!issuerDraft.name.trim() || !issuerDraft.issuer.trim()"
-                class="w-fit sf-button sf-button-primary"
-              >
-                {{ say("credential-issuers-name-it") }}
-              </button>
-            </form>
-          </div>
+          <CredentialIssuersCard
+            :realm="realm"
+            :issuers="credentialIssuers"
+            :anchors="trustAnchors?.items ?? []"
+            @changed="loadCredentialIssuers"
+          />
 
           <div class="mt-4 flex w-full flex-col gap-3 rounded-lg border border-border bg-surface p-4 text-xs">
             <div class="flex items-center gap-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">

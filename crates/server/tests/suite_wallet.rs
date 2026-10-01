@@ -3,6 +3,8 @@
 //! once: its cases share a binary of their own, and each turns it on first.
 mod support;
 
+#[path = "grouped/certificate_trust.rs"]
+mod certificate_trust;
 #[path = "grouped/credential_status.rs"]
 mod credential_status;
 #[path = "grouped/verifier_certificate.rs"]

@@ -1,22 +1,18 @@
-//! The status lists the credentials a realm verifies cite, read again as they
-//! fall due: claimed on a transaction of their own, read with none open, so no
-//! pooled connection waits on an issuer, and kept on a third.
+//! The revocation lists the chains of a realm's credentials name, read again
+//! as they fall due: claimed on a transaction of their own, read with none
+//! open, so no pooled connection waits on an authority, and kept on a third.
 
 use chrono::Utc;
-use services::verifier::status::{
-    ListFormat, claim_due_lists, keep_list, note_unread_list, read_due_list,
+use services::verifier::revocation::{
+    REVOCATION_OLDER, claim_due_revocation_lists, keep_revocation_list,
+    note_unread_revocation_list, read_due_revocation_list,
 };
 use store::tenancy::{Tenancy, TenantContext};
 
 use outbound::Sealing;
-use outbound::egress::fetch_status_list;
+use outbound::egress::fetch_revocation_list;
 
-/// What a pass came to.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct Refreshed {
-    pub kept: u64,
-    pub unread: u64,
-}
+use crate::status_lists::Refreshed;
 
 /// Read the lists due in every realm that runs the verifier, or nothing when
 /// the realms could not be listed.
@@ -35,7 +31,9 @@ async fn refresh_realm(tenancy: &Tenancy, sealing: &Sealing, realm: &TenantConte
     let mut refreshed = Refreshed::default();
     let claimed = async {
         let transaction = tenancy.begin(realm).await.ok()?;
-        let due = claim_due_lists(&transaction, Utc::now()).await.ok()?;
+        let due = claim_due_revocation_lists(&transaction, Utc::now())
+            .await
+            .ok()?;
         transaction.commit().await.ok()?;
         Some(due)
     }
@@ -44,35 +42,39 @@ async fn refresh_realm(tenancy: &Tenancy, sealing: &Sealing, realm: &TenantConte
         tracing::warn!(
             tenant = realm.tenant,
             realm = realm.realm_id,
-            "the status lists due could not be claimed"
+            "the revocation lists due could not be claimed"
         );
         return refreshed;
     };
-    for list in &due.lists {
-        let asked_as = ListFormat::parse(&list.format).and_then(ListFormat::asked_as);
-        let served = fetch_status_list(list.uri.clone(), sealing.egress, asked_as).await;
+    for list in &due {
+        let served = fetch_revocation_list(list.uri.clone(), sealing.egress).await;
         let now = Utc::now();
-        let read = read_due_list(
-            sealing.provider.as_ref(),
-            &due.contexts,
-            list,
-            served.as_deref(),
-            now,
-        );
+        let read = read_due_revocation_list(list, served.as_deref(), now);
         let Ok(transaction) = tenancy.begin(realm).await else {
             continue;
         };
         let failure = match &read {
             Ok(reading) => {
-                match keep_list(&transaction, sealing.provider.as_ref(), list, reading, now).await {
-                    Ok(refused) => refused,
+                match keep_revocation_list(
+                    &transaction,
+                    sealing.provider.as_ref(),
+                    list,
+                    reading,
+                    now,
+                )
+                .await
+                {
+                    Ok(true) => None,
+                    Ok(false) => Some(REVOCATION_OLDER),
                     Err(()) => continue,
                 }
             }
             Err(why) => Some(*why),
         };
         if let Some(why) = failure
-            && note_unread_list(&transaction, list, why).await.is_err()
+            && note_unread_revocation_list(&transaction, list, why)
+                .await
+                .is_err()
         {
             continue;
         }
@@ -88,7 +90,7 @@ async fn refresh_realm(tenancy: &Tenancy, sealing: &Sealing, realm: &TenantConte
                     realm = realm.realm_id,
                     list = list.uri,
                     reason = why,
-                    "a status list was not kept"
+                    "a revocation list was not kept"
                 );
             }
         }

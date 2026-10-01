@@ -130,11 +130,20 @@ pub struct DueList {
     pub issuer_id: String,
     pub uri: String,
     pub format: String,
-    /// The issuer as its credentials name it, and its keys as the realm read them.
+    /// The issuer as its credentials name it.
     pub issuer: String,
-    pub keys: Vec<Value>,
+    pub signers: ListSigners,
     /// When the issuer wrote the reading kept, if it said.
     pub issued_at: Option<DateTime<Utc>>,
+}
+
+/// What a list must be signed under, as the realm trusts its issuer.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ListSigners {
+    /// The issuer's keys, as the realm read them.
+    Keys(Vec<Value>),
+    /// A certificate one of these authorities issued, DER.
+    Anchors(Vec<Vec<u8>>),
 }
 
 /// Claim at most `most` lists that are due, putting each off until `again_at`
@@ -155,22 +164,37 @@ pub async fn claim_due(
                    SELECT issuer_id, uri, format FROM credential_status_lists \
                    WHERE due_at <= $1 ORDER BY due_at LIMIT $3 FOR UPDATE SKIP LOCKED) \
              RETURNING list.issuer_id, list.uri, list.format, named.issuer, named.keys, \
-                       list.issued_at",
+                       named.trusted_by, list.issued_at, \
+                       ARRAY(SELECT anchor.certificate \
+                             FROM realm_credential_issuer_anchors AS linked \
+                             JOIN realm_trust_anchors AS anchor \
+                               ON anchor.tenant = linked.tenant \
+                              AND anchor.realm_id = linked.realm_id \
+                              AND anchor.anchor_id = linked.anchor_id \
+                             WHERE linked.issuer_id = list.issuer_id \
+                             ORDER BY anchor.anchor_id) AS anchors",
             &[now, again_at, &most],
         )
         .await
         .map_err(|_| StoreError::Backend)?;
     rows.into_iter()
         .map(|row| {
-            let Value::Array(keys) = row.get::<_, Value>("keys") else {
-                return Err(StoreError::Backend);
+            let signers = match row.get::<_, String>("trusted_by").as_str() {
+                "metadata" => {
+                    let Value::Array(keys) = row.get::<_, Value>("keys") else {
+                        return Err(StoreError::Backend);
+                    };
+                    ListSigners::Keys(keys)
+                }
+                "certificate" => ListSigners::Anchors(row.get("anchors")),
+                _ => return Err(StoreError::Backend),
             };
             Ok(DueList {
                 issuer_id: row.get("issuer_id"),
                 uri: row.get("uri"),
                 format: row.get("format"),
                 issuer: row.get("issuer"),
-                keys,
+                signers,
                 issued_at: row.get("issued_at"),
             })
         })
@@ -237,6 +261,27 @@ pub async fn note_unread(
             "UPDATE credential_status_lists SET failure = $4 \
              WHERE issuer_id = $1 AND uri = $2 AND format = $3",
             &[&issuer_id, &uri, &format, &failure],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(())
+}
+
+/// Forget what was kept of a list, its address still followed: as if never
+/// read, until a reading is kept.
+pub async fn forget_reading(
+    transaction: &UnitOfWork,
+    issuer_id: &str,
+    uri: &str,
+    format: &str,
+) -> StoreResult<()> {
+    transaction
+        .execute(
+            "UPDATE credential_status_lists \
+             SET statuses = NULL, bits = NULL, purposes = NULL, issued_at = NULL, \
+                 read_at = NULL, usable_until = NULL \
+             WHERE issuer_id = $1 AND uri = $2 AND format = $3",
+            &[&issuer_id, &uri, &format],
         )
         .await
         .map_err(|_| StoreError::Backend)?;

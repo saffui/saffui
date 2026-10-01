@@ -10,6 +10,7 @@ import {
   forgetSimSwap,
   forgetWhatsApp,
   depositTrustAnchor,
+  forgetCredentialIssuer,
   getMail,
   getRealmKeys,
   getRealmSettings,
@@ -27,12 +28,15 @@ import {
   listCredentialIssuers,
   listJsonLdContexts,
   listTrustAnchors,
+  nameCredentialIssuer,
   previewPartialImport,
+  readCredentialIssuerKeys,
   readRelayRefusals,
   readSmsToday,
   reshapeRealm,
   rotateKey,
   rotateRegistrationSecret,
+  trustCredentialIssuer,
   writeMail,
   writeRealmTheme,
   writeSms,
@@ -137,7 +141,10 @@ describe("realm settings", () => {
     await forgetSimSwap(REALM);
   });
 
-  test("trusts an authority, lists it, and withdraws it", async () => {
+  // Naming an issuer by its metadata reads its keys from the issuer, which
+  // this server may not dial here: one is named by certificate, which reads
+  // nothing, through the authority deposited.
+  test("trusts an authority, names an issuer through it, and withdraws both", async () => {
     const certificate = process.env.SAFFUI_CONTRACT_AUTHORITY_PEM;
     expect(certificate, "the server's contract test hands over an authority the crypto crate issued").toBeTruthy();
     const deposited = await keepAnswer(depositTrustAnchor, REALM, {
@@ -146,15 +153,41 @@ describe("realm settings", () => {
     });
     const held = await keepAnswer(listTrustAnchors, REALM);
     expect(held.items.map((anchor) => anchor.id)).toContain(deposited.id);
-    await withdrawTrustAnchor(REALM, deposited.id);
-  });
 
-  // Naming one reads its keys from the issuer, which this server may not dial
-  // here; the listing is what the console reads on every visit.
-  test("lists the credential issuers and whether the verifier runs", async () => {
-    const named = await keepAnswer(listCredentialIssuers, REALM);
-    expect(typeof named.running).toBe("boolean");
-    expect(Array.isArray(named.items)).toBe(true);
+    const named = await keepAnswer(nameCredentialIssuer, REALM, {
+      name: "PID provider under contract",
+      issuer: "https://pid.contract.example",
+      trusted_by: "certificate",
+      anchors: [deposited.id],
+      credential_types: ["urn:eudi:pid:1"],
+    });
+    expect(named).toMatchObject({
+      trusted_by: "certificate",
+      keys: [],
+      read_from: null,
+      read_at: null,
+      anchors: [deposited.id],
+      credential_types: ["urn:eudi:pid:1"],
+    });
+    const listed = await keepAnswer(listCredentialIssuers, REALM);
+    expect(typeof listed.running).toBe("boolean");
+    expect(listed.items.map((issuer) => issuer.id)).toContain(named.id);
+    const retrusted = await keepAnswer(trustCredentialIssuer, REALM, named.id, {
+      anchors: [deposited.id],
+      credential_types: ["urn:eudi:pid:1", "urn:eudi:mdl:1"],
+    });
+    expect(retrusted.credential_types).toEqual(["urn:eudi:mdl:1", "urn:eudi:pid:1"]);
+    await expect(readCredentialIssuerKeys(REALM, named.id)).rejects.toMatchObject({
+      status: 422,
+      message: "this issuer is trusted by certificate: it publishes no keys to read",
+    });
+    await expect(withdrawTrustAnchor(REALM, deposited.id)).rejects.toMatchObject({
+      status: 422,
+      message:
+        "an issuer this realm names is trusted through this authority: trust it through another, or forget it, first",
+    });
+    await forgetCredentialIssuer(REALM, named.id);
+    await withdrawTrustAnchor(REALM, deposited.id);
   });
 
   // A profile names an issuer the realm named, which this server cannot name

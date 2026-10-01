@@ -1486,7 +1486,8 @@ mod tests {
 
     /// A context aliasing `credentialStatus` lets two nodes, or a node in a
     /// named graph, hold a status; which of them the credential's is no
-    /// reading can say, and the credential is refused.
+    /// reading can say, and the credential is refused, even when the entry a
+    /// graph names is written out in the default graph.
     #[test]
     fn a_status_held_by_two_nodes_or_in_a_graph_refuses_the_credential() {
         let aliasing = "https://issuer.example/contexts/aliasing";
@@ -1495,6 +1496,7 @@ mod tests {
             serde_json::json!({ "@context": {
                 "statusOf": { "@id": "https://www.w3.org/2018/credentials#credentialStatus", "@type": "@id" },
                 "graphed": { "@id": "https://issuer.example/vocab#graphed", "@container": "@graph" },
+                "related": { "@id": "https://issuer.example/vocab#related", "@type": "@id" },
                 "Entry": "https://www.w3.org/ns/credentials/status#BitstringStatusListEntry",
                 "purpose": "https://www.w3.org/ns/credentials/status#statusPurpose",
                 "position": "https://www.w3.org/ns/credentials/status#statusListIndex",
@@ -1540,6 +1542,21 @@ mod tests {
         let mut signed_plus = credential(serde_json::json!({ "id": "did:example:holder" }));
         signed_plus["credentialStatus"]["position"] = serde_json::json!("+4");
         assert_eq!(read(&signed_plus), Err(STATUS_UNREAD));
+
+        let entry_written = "https://issuer.example/entries/4";
+        let mut written_out = entry.clone();
+        written_out["id"] = serde_json::json!(entry_written);
+        let named_in_a_graph = serde_json::json!({
+            "@context": [jsonld::built_in::CREDENTIALS_V2, aliasing],
+            "type": ["VerifiableCredential"],
+            "issuer": "did:web:issuer.example",
+            "credentialSubject": {
+                "id": "did:example:holder",
+                "graphed": { "id": "did:example:inner", "statusOf": entry_written }
+            },
+            "related": written_out,
+        });
+        assert_eq!(read(&named_in_a_graph), Err(STATUS_UNREAD));
     }
 
     /// A Bitstring Status List the issuer signs here as Inji Certify signs

@@ -7,6 +7,7 @@ import PageTabs from "@/components/PageTabs.vue";
 import AppIcon from "@/components/AppIcon.vue";
 import DangerDialog from "@/components/DangerDialog.vue";
 import PresentationRequestCard from "./PresentationRequestCard.vue";
+import VerifierIdentityCard from "./VerifierIdentityCard.vue";
 import WalletIdentityCard from "./WalletIdentityCard.vue";
 import AppToggle from "@/components/AppToggle.vue";
 import { useRouter } from "vue-router";
@@ -3124,6 +3125,8 @@ async function saveSmsTemplate() {
               </button>
             </form>
           </div>
+
+          <VerifierIdentityCard :realm="realm" />
 
           <WalletIdentityCard
             :realm="realm"

@@ -1609,7 +1609,6 @@ impl IdentityWallet {
     /// The credential the issuer signs, `change` made to it and to its proof's
     /// options first.
     pub(super) fn issued_as(&self, change: impl FnOnce(&mut Value, &mut Value)) -> Value {
-        use crypto::jose::jws::EdDSA;
         let now = chrono::Utc::now();
         let written = |at: chrono::DateTime<chrono::Utc>| {
             at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)

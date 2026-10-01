@@ -877,7 +877,7 @@ impl Wallet {
 }
 
 /// The path part of an address the realm wrote, for the server under test.
-fn path_of(address: &str) -> String {
+pub(super) fn path_of(address: &str) -> String {
     let parsed = url::Url::parse(address).expect("an address");
     match parsed.query() {
         Some(query) => format!("{}?{query}", parsed.path()),

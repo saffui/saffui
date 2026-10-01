@@ -8,7 +8,7 @@ use crate::api::rest::endpoints::admin::{
     credential_issuers, credentials, directory, events, features, federation, flows, idps, iga,
     journal, jsonld_contexts, keys, mail, metrics, negotiation, overview, page_drafts, portability,
     presentations, protocol_mappers, realm_keys, realms, rebac, recert, requests, sessions,
-    sim_swap, sms, trust_anchors, users, ussd, wallet_identity, whatsapp,
+    sim_swap, sms, trust_anchors, users, ussd, verifier, wallet_identity, whatsapp,
 };
 use crate::api::rest::endpoints::scim;
 
@@ -306,6 +306,36 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/presentations/{presentation}",
             action: AdminAction::RealmRead,
             handler: Some(|| web::get().to(presentations::read)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/verifier",
+            action: AdminAction::RealmRead,
+            handler: Some(|| web::get().to(verifier::read)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/verifier",
+            action: AdminAction::RealmWrite,
+            handler: Some(|| web::put().to(verifier::write_settings)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/verifier/keys",
+            action: AdminAction::RealmWrite,
+            handler: Some(|| web::post().to(verifier::request_certificate)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/verifier/certificate",
+            action: AdminAction::RealmWrite,
+            handler: Some(|| web::post().to(verifier::take_certificate)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/verifier/keys/{key}",
+            action: AdminAction::RealmWrite,
+            handler: Some(|| web::delete().to(verifier::withdraw_key)),
         },
         AdminRoute {
             method: Method::GET,

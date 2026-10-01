@@ -5,6 +5,8 @@ mod support;
 
 #[path = "grouped/credential_status.rs"]
 mod credential_status;
+#[path = "grouped/verifier_certificate.rs"]
+mod verifier_certificate;
 #[path = "grouped/wallet.rs"]
 mod wallet;
 #[path = "grouped/wallet_login.rs"]

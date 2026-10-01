@@ -390,6 +390,7 @@ async fn issue_request(
             response_key: &sealed,
             query,
             request_object: &request_object,
+            client_id: &client_id,
             expires_at,
             created_by: by,
             for_login,

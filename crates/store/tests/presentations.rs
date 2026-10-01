@@ -2,9 +2,12 @@ mod support;
 
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{Value, json};
+use store::error::StoreError;
 use store::providers::protocol::presentations::{self, KeptRequest};
 use store::tenancy::TenantContext;
 use support::Fixture;
+
+const CLIENT_ID: &str = "x509_hash:Uvo3HtuIxuhC92rShpgqcT3YXwrqRxWEviRiA0OZszk";
 
 fn kept<'a>(
     request_id: &'a str,
@@ -19,6 +22,7 @@ fn kept<'a>(
         response_key: b"sealed",
         query,
         request_object: "signed",
+        client_id: CLIENT_ID,
         expires_at,
         created_by: "admin",
         for_login: None,
@@ -145,6 +149,64 @@ async fn a_request_is_settled_once_inside_its_window() {
         presentations::keep(&transaction, &kept("r3", "k2", &query, closes))
             .await
             .is_err()
+    );
+}
+
+/// A request keeps the identifier the realm presented itself under, so its
+/// answer is held to that one whatever the realm presents itself as since; a
+/// request kept before it was has none, and an empty one is refused.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_request_keeps_the_identifier_it_was_asked_under() {
+    let fixture = Fixture::with_user_and_client().await;
+    let context = TenantContext::new("acme", "main");
+    let now = DateTime::from_timestamp(Utc::now().timestamp(), 0).expect("a time");
+    let closes = now + Duration::seconds(300);
+    let query = json!({ "credentials": [{ "id": "pid" }] });
+    let transaction = fixture.scoped(&context).await;
+    for (request_id, response_kid) in [("r1", "k1"), ("r2", "k2")] {
+        presentations::keep(
+            &transaction,
+            &kept(request_id, response_kid, &query, closes),
+        )
+        .await
+        .unwrap();
+    }
+    transaction
+        .execute(
+            "UPDATE presentation_requests SET client_id = NULL WHERE request_id = 'r2'",
+            &[],
+        )
+        .await
+        .unwrap();
+    let by_key = presentations::claim_by_response_kid(&transaction, "k1", &now)
+        .await
+        .unwrap()
+        .expect("a pending request");
+    let by_state = presentations::claim_by_request_id(&transaction, "r2", &now)
+        .await
+        .unwrap()
+        .expect("a pending request");
+    assert_eq!(
+        (by_key.client_id.as_deref(), by_state.client_id),
+        (Some(CLIENT_ID), None)
+    );
+
+    let transaction = fixture.scoped(&context).await;
+    let refused = presentations::keep(
+        &transaction,
+        &KeptRequest {
+            client_id: "",
+            ..kept("r3", "k3", &query, closes)
+        },
+    )
+    .await
+    .expect_err("an empty identifier was kept");
+    assert_eq!(
+        refused,
+        StoreError::BrokenRule {
+            rule: "presentation_client_id_bounded".to_owned()
+        }
     );
 }
 

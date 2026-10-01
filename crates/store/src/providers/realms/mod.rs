@@ -14,6 +14,7 @@ pub mod status_lists;
 pub mod tenants;
 pub mod trust_anchors;
 pub mod ussd;
+pub mod verifier;
 pub mod wallet_identity;
 pub mod whatsapp;
 

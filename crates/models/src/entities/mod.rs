@@ -21,4 +21,5 @@ pub mod sms;
 pub mod tenant;
 pub mod trust_anchors;
 pub mod user;
+pub mod verifier;
 pub mod whatsapp;

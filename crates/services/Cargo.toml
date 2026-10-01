@@ -37,6 +37,8 @@ secrecy = { workspace = true }
 # Hex for the code digest a redemption looks a row up by, base64url for the
 # PKCE challenge, both spelled by the specs that fixed them.
 data-encoding = { workspace = true }
+# The statuses a status list carries, ZLIB or GZIP as its specification fixes.
+flate2 = { workspace = true }
 webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"] }
 url.workspace = true
 uuid = { version = "1", features = ["v5"] }

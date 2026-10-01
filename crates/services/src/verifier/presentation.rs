@@ -21,7 +21,6 @@ use crypto::provider::{CryptoProvider, HashAlg, SignAlg};
 use crypto::sd_jwt::{self, KeyBinding, VerifyingPolicy};
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
 use jsonld::built_in::HeldContexts;
-use models::entities::credential_issuers::CredentialIssuer;
 use models::entities::keys::{KeyUse, RealmSigningKey};
 use serde_json::{Map, Value, json};
 use store::keyring::Signing;
@@ -31,6 +30,7 @@ use store::tenancy::UnitOfWork;
 
 use super::did::realm_did;
 use super::linked_data::{Binding, verify_ldp_presentation};
+use super::status::{self, Citation};
 
 /// How long a request waits for its answer, in seconds.
 pub const LIFETIME_SECONDS: i64 = 300;
@@ -755,6 +755,9 @@ async fn verify_answer(
 
     let mut verified = Vec::with_capacity(asked.len());
     let mut identifier = None;
+    // The statuses each credential cites, under its issuer, read once every
+    // credential has verified.
+    let mut cited = Vec::with_capacity(asked.len());
     for credential in &asked {
         let id = credential
             .get("id")
@@ -784,6 +787,7 @@ async fn verify_answer(
                             value,
                         });
                     }
+                    cited.push((outcome.issuer_id, outcome.citation.into_iter().collect()));
                     json!({
                         "id": id,
                         "issuer": outcome.issuer,
@@ -815,6 +819,7 @@ async fn verify_answer(
                             value,
                         });
                     }
+                    cited.push((outcome.issuer_id, outcome.citations));
                     json!({
                         "id": id,
                         "issuer": outcome.issuer,
@@ -832,6 +837,9 @@ async fn verify_answer(
         };
         verified.push(outcome);
     }
+    if let Err(why) = status::check_citations(transaction, &cited, now).await? {
+        return Ok(Err(why));
+    }
     Ok(Ok(VerifiedAnswer {
         credentials: verified,
         identifier,
@@ -839,19 +847,22 @@ async fn verify_answer(
 }
 
 /// What a verified SD-JWT VC says: its issuer, its type and the names of the
-/// claims asked for, and the identifier a login asked for.
+/// claims asked for, the identifier a login asked for, and the status it cites.
 struct VerifiedSdJwt {
+    issuer_id: String,
     issuer: String,
     vct: String,
     claims: Vec<String>,
     identifier: Option<String>,
+    citation: Option<Citation>,
 }
 
 /// One SD-JWT VC presentation, verified against the issuer the realm names by
 /// its `iss`: the issuer's signature, the disclosures, the holder's key
 /// binding to this request, the type and the claims asked for. What comes
 /// back is the issuer, the type and the names of the claims asked for, never
-/// their values, except the text at `identifying` when a login asked.
+/// their values, except the text at `identifying` when a login asked, and the
+/// status the issuer signed it as citing.
 #[allow(
     clippy::too_many_arguments,
     reason = "each is a distinct fact about one presentation"
@@ -877,7 +888,10 @@ async fn verify_credential(
     }) else {
         return Ok(Err("a credential is not an SD-JWT VC"));
     };
-    let Some(iss) = unverified_issuer(presented) else {
+    let Some((signed, iss)) = read_issuer_payload(presented).and_then(|signed| {
+        let iss = signed.get("iss")?.as_str()?.to_owned();
+        Some((signed, iss))
+    }) else {
         return Ok(Err("a credential names no issuer"));
     };
     let Some(named) = credential_issuers::by_issuer(transaction, &iss)
@@ -911,7 +925,7 @@ async fn verify_credential(
     };
 
     // The key the header names, or every key of the issuer when it names none.
-    let candidates = candidate_keys(&named, kid);
+    let candidates = candidate_keys(&named.keys, kid);
     let mut outcome = Err("a credential's signature is not its issuer's");
     for jwk in candidates {
         let Some(verifier) = verifier_for(algorithm, &jwk) else {
@@ -959,28 +973,38 @@ async fn verify_credential(
         let (first, rest) = path.split_first()?;
         read_text_claim(verified.claims.get(first)?, rest)
     });
+    // Read off the payload the issuer signed, which the signature just held.
+    let citation = match status::read_token_citation(&signed, &verified.claims) {
+        Ok(citation) => citation,
+        Err(why) => return Ok(Err(why)),
+    };
     Ok(Ok(VerifiedSdJwt {
+        issuer_id: named.issuer_id,
         issuer: named.issuer,
         vct: vct.to_owned(),
         claims: paths.iter().map(|path| path.join(".")).collect(),
         identifier,
+        citation,
     }))
 }
 
-/// The `iss` of an SD-JWT's issuer token, read before its signature is: only
-/// to find the issuer whose keys will then decide.
-fn unverified_issuer(presented: &str) -> Option<String> {
+/// The payload of an SD-JWT's issuer token. Read before its signature is,
+/// only to find by its `iss` the issuer whose keys will then decide; once they
+/// have, the payload that signature holds.
+fn read_issuer_payload(presented: &str) -> Option<Map<String, Value>> {
     let token = presented.split('~').next()?;
     let payload = token.split('.').nth(1)?;
     let payload = BASE64URL_NOPAD.decode(payload.as_bytes()).ok()?;
-    let payload: Value = serde_json::from_slice(&payload).ok()?;
-    payload.get("iss")?.as_str().map(str::to_owned)
+    match serde_json::from_slice(&payload).ok()? {
+        Value::Object(payload) => Some(payload),
+        _ => None,
+    }
 }
 
-fn candidate_keys(named: &CredentialIssuer, kid: Option<&str>) -> Vec<Map<String, Value>> {
-    named
-        .keys
-        .iter()
+/// The issuer keys a header naming `kid` may be signed under: that key alone,
+/// or every key when it names none.
+pub(super) fn candidate_keys(keys: &[Value], kid: Option<&str>) -> Vec<Map<String, Value>> {
+    keys.iter()
         .filter_map(Value::as_object)
         .filter(|jwk| kid.is_none() || jwk.get("kid").and_then(Value::as_str) == kid)
         .cloned()
@@ -989,7 +1013,10 @@ fn candidate_keys(named: &CredentialIssuer, kid: Option<&str>) -> Vec<Map<String
 
 /// A verifier for the algorithm the issuer's header names, over a key of the
 /// family that algorithm signs with. Any other pairing is no verifier.
-fn verifier_for(algorithm: &str, jwk: &Map<String, Value>) -> Option<Box<dyn JwsVerifier>> {
+pub(super) fn verifier_for(
+    algorithm: &str,
+    jwk: &Map<String, Value>,
+) -> Option<Box<dyn JwsVerifier>> {
     let key = Jwk::from_map(jwk.clone()).ok()?;
     let verifier: Box<dyn JwsVerifier> = match algorithm {
         "EdDSA" => Box::new(EdDSA.verifier_from_jwk(&key).ok()?),
@@ -1108,6 +1135,8 @@ fn encoded(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use models::entities::credential_issuers::CredentialIssuer;
+
     use super::*;
 
     /// An identity is digested as the realm's HMAC-SHA256 over the issuer and
@@ -1515,12 +1544,12 @@ mod tests {
             created_by: "admin".into(),
             created_at: DateTime::from_timestamp(0, 0).expect("a time"),
         };
-        assert_eq!(candidate_keys(&named, None).len(), 3);
+        assert_eq!(candidate_keys(&named.keys, None).len(), 3);
         assert_eq!(
-            candidate_keys(&named, Some("b")),
+            candidate_keys(&named.keys, Some("b")),
             vec![json!({ "kid": "b" }).as_object().cloned().expect("a key")]
         );
-        assert!(candidate_keys(&named, Some("c")).is_empty());
+        assert!(candidate_keys(&named.keys, Some("c")).is_empty());
     }
 
     #[test]

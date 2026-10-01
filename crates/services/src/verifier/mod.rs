@@ -6,3 +6,4 @@ pub mod identity;
 pub mod issuers;
 mod linked_data;
 pub mod presentation;
+pub mod status;

@@ -9,20 +9,22 @@ use chrono::{DateTime, Duration, Utc};
 use crypto::provider::{CryptoProvider, PublicKey};
 use crypto::public_jwk::public_key_from_jwk;
 use data_encoding::BASE64URL_NOPAD;
+use jsonld::built_in::CREDENTIALS_V2;
 use jsonld::claims::{ReadCredential, Unclaimed, read_credential};
 use jsonld::json::parse_strict;
 use jsonld::proof::{Bounds, Unproven, read_proof, verify_proof};
-use jsonld::{Contexts, Unreadable};
+use jsonld::{Contexts, Unreadable, to_rdf};
 use models::entities::credential_issuers::CredentialIssuer;
 use serde_json::{Map, Value};
 use store::providers::realms::credential_issuers;
 use store::tenancy::UnitOfWork;
 
 use super::presentation::{LEEWAY_SECONDS, Unanswerable, claim_path, read_text_claim};
+use super::status::{Citation, read_bitstring_citations};
 
 /// What reading one proof may cost: a credential and the presentation holding
 /// it run to a few dozen statements.
-const BOUNDS: Bounds = Bounds {
+pub(super) const BOUNDS: Bounds = Bounds {
     most_quads: 1_000,
     work: 500,
 };
@@ -46,6 +48,7 @@ pub(super) struct Binding<'a> {
 /// What a verified presentation says, without the value of any claim but the
 /// identifier a login asked for.
 pub(super) struct Verified {
+    pub issuer_id: String,
     pub issuer: String,
     /// The credential's types, expanded.
     pub types: Vec<String>,
@@ -53,6 +56,8 @@ pub(super) struct Verified {
     pub claims: Vec<String>,
     /// The text at the path a login identifies by, when one asked.
     pub identifier: Option<String>,
+    /// The statuses the credential cites.
+    pub citations: Vec<Citation>,
 }
 
 /// One presentation, verified: the holder's proof over it, for this request;
@@ -169,8 +174,8 @@ fn verify_holder_proof<'p>(
     })
 }
 
-/// The credential's own proof, by the issuer the realm names, and what the
-/// query asks of it.
+/// The credential's own proof, by the issuer the realm names, what the query
+/// asks of it, and the statuses it cites.
 fn verify_issued_credential(
     provider: &dyn CryptoProvider,
     contexts: &dyn Contexts,
@@ -185,23 +190,7 @@ fn verify_issued_credential(
     if proof.proof_purpose.as_deref() != Some("assertionMethod") {
         return Err("a credential's proof is not an assertion");
     }
-    // Only a key the issuer asserts with, as the realm read it from that
-    // issuer, makes the proof the issuer's. The one the proof names when the
-    // issuer holds it under that very identifier; otherwise each of them, the
-    // identifier being only a hint: MOSIP's issuers name their key under
-    // another DID that publishes it too.
-    let asserted: Vec<&Map<String, Value>> =
-        named.keys.iter().filter_map(Value::as_object).collect();
-    let named_key = asserted
-        .iter()
-        .find(|jwk| jwk.get("kid").and_then(Value::as_str) == Some(&proof.verification_method));
-    let keys: Vec<PublicKey> = match named_key {
-        Some(jwk) => public_key_from_jwk(jwk).into_iter().collect(),
-        None => asserted
-            .iter()
-            .filter_map(|jwk| public_key_from_jwk(jwk))
-            .collect(),
-    };
+    let keys = asserting_keys(&named.keys, &proof.verification_method);
     if keys.is_empty() {
         return Err("a credential is signed by a key this verifier does not read");
     }
@@ -213,6 +202,10 @@ fn verify_issued_credential(
         members.remove("proof");
     }
     let read = read_credential(&unsigned, contexts)
+        .map_err(|_| "a presentation holds what its proofs would not sign")?;
+    // Read off the dataset the proof signs, where no member can name a status
+    // apart from what was signed.
+    let quads = to_rdf(&unsigned, contexts, BOUNDS.most_quads)
         .map_err(|_| "a presentation holds what its proofs would not sign")?;
     check_holder_binding(&read, presented)?;
     check_validity(&read, presented.credential, now)?;
@@ -254,11 +247,32 @@ fn verify_issued_credential(
         None => None,
     };
     Ok(Verified {
+        issuer_id: named.issuer_id.clone(),
         issuer: named.issuer.clone(),
         types: types.into_iter().map(str::to_owned).collect(),
         claims: paths.iter().map(|path| path.join(".")).collect(),
         identifier,
+        citations: read_bitstring_citations(&quads)?,
     })
+}
+
+/// The keys of an issuer a proof's method may name: only a key the issuer
+/// asserts with, as the realm read it from that issuer, makes a proof the
+/// issuer's. The one the method names when the issuer holds it under that very
+/// identifier; otherwise each of them, the identifier being only a hint:
+/// MOSIP's issuers name their key under another DID that publishes it too.
+pub(super) fn asserting_keys(keys: &[Value], verification_method: &str) -> Vec<PublicKey> {
+    let asserted: Vec<&Map<String, Value>> = keys.iter().filter_map(Value::as_object).collect();
+    let named_key = asserted
+        .iter()
+        .find(|jwk| jwk.get("kid").and_then(Value::as_str) == Some(verification_method));
+    match named_key {
+        Some(jwk) => public_key_from_jwk(jwk).into_iter().collect(),
+        None => asserted
+            .iter()
+            .filter_map(|jwk| public_key_from_jwk(jwk))
+            .collect(),
+    }
 }
 
 /// The credential names the key that signed the presentation as its subject's,
@@ -286,7 +300,9 @@ fn check_holder_binding(
 
 /// Whether the credential holds now, by the dates VCDM 1.1 and 2.0 write:
 /// issued and valid from no later than now, expiring and valid until no
-/// sooner. Each an RFC 3339 date-time, in a member its proof tells apart.
+/// sooner. Each an RFC 3339 date-time, in a member its proof tells apart. VCDM
+/// 1.1 requires the date of issue; 2.0, whose context names the credential
+/// first, has none and requires no date.
 fn check_validity(
     read: &ReadCredential<'_>,
     credential: &Value,
@@ -308,7 +324,13 @@ fn check_validity(
         *date = Some(at.with_timezone(&Utc));
     }
     let [issued, from, expires, until] = dates;
-    if issued.is_none() {
+    let version_two = match credential.get("@context") {
+        Some(Value::Array(contexts)) => contexts.first(),
+        named => named,
+    }
+    .and_then(Value::as_str)
+        == Some(CREDENTIALS_V2);
+    if issued.is_none() && !version_two {
         return Err("a credential does not say when it was issued");
     }
     if issued.into_iter().chain(from).any(|at| at > now + leeway) {
@@ -398,8 +420,17 @@ mod tests {
 
     /// Whether a credential written with `dates` holds at `now`.
     fn check_dates(dates: Value, now: DateTime<Utc>) -> Result<(), &'static str> {
+        check_dates_under(CREDENTIALS_V1, dates, now)
+    }
+
+    /// The same, for a credential naming `context` first.
+    fn check_dates_under(
+        context: &str,
+        dates: Value,
+        now: DateTime<Utc>,
+    ) -> Result<(), &'static str> {
         let mut credential = json!({
-            "@context": [CREDENTIALS_V1],
+            "@context": [context],
             "type": ["VerifiableCredential"],
             "issuer": "did:example:issuer",
             "credentialSubject": { "id": "did:example:holder" },
@@ -460,6 +491,45 @@ mod tests {
         ] {
             assert_eq!(check_dates(dates.clone(), now), Err(refused), "{dates}");
         }
+    }
+
+    /// VCDM 2.0 writes no date of issue and requires no date at all; the
+    /// dates it writes hold as 1.1's do.
+    #[test]
+    fn a_vcdm_two_credential_needs_no_date_of_issue() {
+        let now = DateTime::from_timestamp(1_790_000_000, 0).expect("a time");
+        let at = |seconds: i64| {
+            json!((now + Duration::seconds(seconds)).to_rfc3339_opts(SecondsFormat::Secs, true))
+        };
+        assert_eq!(check_dates_under(CREDENTIALS_V2, json!({}), now), Ok(()));
+        assert_eq!(
+            check_dates_under(
+                CREDENTIALS_V2,
+                json!({ "validFrom": at(-3_600), "validUntil": at(3_600) }),
+                now
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            check_dates_under(
+                CREDENTIALS_V2,
+                json!({ "validUntil": at(-LEEWAY_SECONDS) }),
+                now
+            ),
+            Err("a credential has expired")
+        );
+        assert_eq!(
+            check_dates_under(
+                CREDENTIALS_V2,
+                json!({ "validFrom": at(LEEWAY_SECONDS + 1) }),
+                now
+            ),
+            Err("a credential is not yet valid")
+        );
+        assert_eq!(
+            check_dates(json!({ "validFrom": at(-3_600) }), now),
+            Err("a credential does not say when it was issued")
+        );
     }
 
     fn did_jwk(jwk: &Value) -> String {

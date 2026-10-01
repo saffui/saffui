@@ -10,6 +10,7 @@ pub mod realm_features;
 pub mod realm_keys;
 pub mod sim_swap;
 pub mod sms;
+pub mod status_lists;
 pub mod tenants;
 pub mod trust_anchors;
 pub mod ussd;

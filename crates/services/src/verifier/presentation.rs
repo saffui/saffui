@@ -1,8 +1,11 @@
 //! A realm asking a wallet for a presentation, OpenID4VP 1.0, and what it
 //! makes of the answer.
 //!
-//! The request is signed under the realm's `did:web` with its Ed25519 key and
-//! fetched by the wallet at its `request_uri`. The answer comes back to one
+//! The request is signed under the realm's `did:web` with its Ed25519 key, or
+//! under the certificate an authority issued for its verifier key, as the
+//! realm chose, and fetched by the wallet at its `request_uri`. The identifier
+//! it was asked under is kept with it, and its answer held to that one. The
+//! answer comes back to one
 //! address per realm, encrypted to a key drawn for that request alone; the
 //! encrypted answer names that key, which is how it finds its request. A
 //! request is answered once, and nothing a person disclosed is kept: the
@@ -15,17 +18,20 @@ use crypto::jose::jwe::{self, ECDH_ES};
 use crypto::jose::jwk::alg::ec::{EcCurve, EcKeyPair};
 use crypto::jose::jwk::{Jwk, KeyPair};
 use crypto::jose::jws::{
-    ES256, ES384, ES512, EdDSA, JwsVerifier, PS256, PS384, PS512, RS256, RS384, RS512,
+    ES256, ES384, ES512, EdDSA, JwsHeader, JwsVerifier, PS256, PS384, PS512, RS256, RS384, RS512,
 };
+use crypto::jose::jwt::{self, JwtPayload};
 use crypto::provider::{CryptoProvider, HashAlg, SignAlg};
 use crypto::sd_jwt::{self, KeyBinding, VerifyingPolicy};
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
 use jsonld::built_in::HeldContexts;
 use models::entities::keys::{KeyUse, RealmSigningKey};
+use models::entities::verifier::{ServingVerifierKey, VerifierIdentity, VerifierSettings};
+use secrecy::ExposeSecret;
 use serde_json::{Map, Value, json};
 use store::keyring::Signing;
 use store::providers::protocol::presentations::{self, Answering, ForLogin, KeptRequest, Standing};
-use store::providers::realms::{credential_issuers, realm_keys, wallet_identity};
+use store::providers::realms::{credential_issuers, realm_keys, verifier, wallet_identity};
 use store::tenancy::UnitOfWork;
 
 use super::did::realm_did;
@@ -83,6 +89,16 @@ pub enum Unaskable {
     NotAQuery(&'static str),
     #[error("the realm holds no Ed25519 key to sign a request with: mint one under its keys")]
     NoSigningKey,
+    #[error(
+        "the realm presents itself by a certificate it does not hold: take one for its verifier \
+         key, or present it by its did:web"
+    )]
+    NoCertificate,
+    #[error(
+        "the realm's verifier certificate is not valid now: take a renewed one, or present the \
+         realm by its did:web"
+    )]
+    CertificateOutOfValidity,
     #[error("the realm's issuer is not an address a DID is read from")]
     NoDid,
     #[error("the request could not be kept")]
@@ -105,6 +121,12 @@ pub enum Unanswerable {
 /// The identifier the realm presents itself under, as a verifier.
 pub fn realm_client_id(did: &str) -> String {
     format!("decentralized_identifier:{did}")
+}
+
+/// The identifier the realm presents itself under by a certificate: the
+/// base64url SHA-256 of its leaf, OpenID4VP 1.0 §5.9.3.
+pub fn certified_client_id(leaf_hash: &str) -> String {
+    format!("x509_hash:{leaf_hash}")
 }
 
 /// Where a wallet fetches one request.
@@ -312,6 +334,61 @@ pub async fn ask_for_login(
     .await
 }
 
+/// How the realm presents itself in a request, and the key it signs it with.
+pub(crate) enum Presenting {
+    /// Under its did:web, with its active Ed25519 key.
+    DidWeb(RealmSigningKey),
+    /// Under the certificate an authority issued for its verifier key, with
+    /// what the European profile adds to the request when the realm keeps it.
+    Certified {
+        key: ServingVerifierKey,
+        verifier_info: Option<Value>,
+    },
+}
+
+/// How the realm presents itself now, refused in words when it holds no key
+/// to sign under that identity: no Ed25519 key for its did:web, or no
+/// certificate valid at `now` for its verifier key.
+pub(crate) async fn find_presenting(
+    transaction: &UnitOfWork,
+    signing: &Signing<'_>,
+    now: DateTime<Utc>,
+) -> Result<Presenting, Unaskable> {
+    let settings = verifier::load_settings(transaction)
+        .await
+        .map_err(|_| Unaskable::Unwritable)?;
+    let Some(settings) = settings.filter(|kept| kept.identity == VerifierIdentity::X509Hash) else {
+        return Ok(Presenting::DidWeb(
+            find_request_key(transaction, signing).await?,
+        ));
+    };
+    let key = verifier::open_serving(transaction, signing.ring, signing.envelope)
+        .await
+        .map_err(|_| Unaskable::Unwritable)?
+        .ok_or(Unaskable::NoCertificate)?;
+    if !(key.certificate.not_before <= now && now < key.certificate.not_after) {
+        return Err(Unaskable::CertificateOutOfValidity);
+    }
+    Ok(Presenting::Certified {
+        key,
+        verifier_info: compose_verifier_info(&settings),
+    })
+}
+
+/// What the realm's registrar holds of it and its registration certificate,
+/// as OIDFVP-HAIP-COMMON-REQ-RO-03 to RO-16 enclose them. The certificate goes
+/// as the compact JWS it is, as the EUDI wallets read it, not encoded again.
+fn compose_verifier_info(settings: &VerifierSettings) -> Option<Value> {
+    let mut enclosed = Vec::new();
+    if let Some(dataset) = &settings.registrar_dataset {
+        enclosed.push(json!({ "format": "registrar_dataset", "data": dataset }));
+    }
+    if let Some(certificate) = &settings.registration_certificate {
+        enclosed.push(json!({ "format": "registration_cert", "data": certificate }));
+    }
+    (!enclosed.is_empty()).then_some(Value::Array(enclosed))
+}
+
 /// The key the realm signs its requests with: its active Ed25519 one.
 pub(crate) async fn find_request_key(
     transaction: &UnitOfWork,
@@ -339,8 +416,7 @@ async fn issue_request(
     now: DateTime<Utc>,
 ) -> Result<Asked, Unaskable> {
     check_query(query)?;
-    let did = realm_did(issuer).ok_or(Unaskable::NoDid)?;
-    let key = find_request_key(transaction, signing).await?;
+    let presenting = find_presenting(transaction, signing, now).await?;
 
     let request_id = HEXLOWER.encode(&draw::<16>(signing.provider)?);
     let nonce = BASE64URL_NOPAD.encode(&draw::<32>(signing.provider)?);
@@ -362,24 +438,48 @@ async fn issue_request(
         .map_err(|_| Unaskable::Unwritable)?;
 
     let expires_at = now + Duration::seconds(LIFETIME_SECONDS);
-    let client_id = realm_client_id(&did);
-    let claims = request_claims(&RequestParts {
-        client_id: &client_id,
-        issuer,
-        request_id: &request_id,
-        nonce: &nonce,
-        answer_key: Value::Object(answer_key.as_ref().clone()),
-        query,
-        now,
-        expires_at,
-    });
-    let request_object = crate::token::issuance::sign_claims_as(
-        &key,
-        &claims,
-        "oauth-authz-req+jwt",
-        &format!("{did}#{}", key.kid),
-    )
-    .map_err(|_| Unaskable::Unwritable)?;
+    let answer_key = Value::Object(answer_key.as_ref().clone());
+    let (client_id, request_object) = match &presenting {
+        Presenting::DidWeb(key) => {
+            let did = realm_did(issuer).ok_or(Unaskable::NoDid)?;
+            let client_id = realm_client_id(&did);
+            let claims = request_claims(&RequestParts {
+                client_id: &client_id,
+                issuer,
+                request_id: &request_id,
+                nonce: &nonce,
+                answer_key,
+                query,
+                verifier_info: None,
+                now,
+                expires_at,
+            });
+            let signed = crate::token::issuance::sign_claims_as(
+                key,
+                &claims,
+                REQUEST_TYPE,
+                &format!("{did}#{}", key.kid),
+            )
+            .map_err(|_| Unaskable::Unwritable)?;
+            (client_id, signed)
+        }
+        Presenting::Certified { key, verifier_info } => {
+            let client_id = certified_client_id(&key.certificate.leaf_hash);
+            let claims = request_claims(&RequestParts {
+                client_id: &client_id,
+                issuer,
+                request_id: &request_id,
+                nonce: &nonce,
+                answer_key,
+                query,
+                verifier_info: verifier_info.as_ref(),
+                now,
+                expires_at,
+            });
+            let signed = sign_under_certificate(key, &claims, now)?;
+            (client_id, signed)
+        }
+    };
 
     presentations::keep(
         transaction,
@@ -484,7 +584,12 @@ pub async fn settle_answer(
                 .await
                 .map_err(|_| Unanswerable::Unwritable)?
                 .ok_or(Unanswerable::Unknown)?;
-            let did = realm_did(issuer).ok_or(Unanswerable::Unwritable)?;
+            // Held to the identifier it was asked under; one asked before that
+            // was kept was asked under the realm's did:web.
+            let client_id = match held.client_id.clone() {
+                Some(kept) => kept,
+                None => realm_client_id(&realm_did(issuer).ok_or(Unanswerable::Unwritable)?),
+            };
             // A login's request is answered by who it identifies, read by the
             // claim the realm names today.
             let profile = match held.purpose {
@@ -496,7 +601,7 @@ pub async fn settle_answer(
             let verified = verify_answer(
                 transaction,
                 signing,
-                &realm_client_id(&did),
+                &client_id,
                 &held,
                 response,
                 profile
@@ -1042,8 +1147,40 @@ struct RequestParts<'a> {
     nonce: &'a str,
     answer_key: Value,
     query: &'a Value,
+    verifier_info: Option<&'a Value>,
     now: DateTime<Utc>,
     expires_at: DateTime<Utc>,
+}
+
+/// What a request object says it is, RFC 9101.
+const REQUEST_TYPE: &str = "oauth-authz-req+jwt";
+
+/// Sign a request under the certificate of the realm's verifier key, ES256:
+/// the chain in `x5c`, leaf first and the anchor left out, as HAIP 1.0 §5
+/// asks, and the instant it was signed in `iat`, as the European profile
+/// asks of the header (OIDFVP-HAIP-REDIRECTS_RO-01 to RO-03).
+fn sign_under_certificate(
+    key: &ServingVerifierKey,
+    claims: &Map<String, Value>,
+    now: DateTime<Utc>,
+) -> Result<String, Unaskable> {
+    let mut header = JwsHeader::new();
+    header.set_algorithm("ES256");
+    header.set_token_type(REQUEST_TYPE);
+    header.set_x509_certificate_chain(&key.certificate.chain);
+    header
+        .set_claim("iat", Some(json!(now.timestamp())))
+        .map_err(|_| Unaskable::Unwritable)?;
+    let mut payload = JwtPayload::new();
+    for (claim, value) in claims {
+        payload
+            .set_claim(claim, Some(value.clone()))
+            .map_err(|_| Unaskable::Unwritable)?;
+    }
+    let signer = ES256
+        .signer_from_pem(key.private_pem.expose_secret())
+        .map_err(|_| Unaskable::Unwritable)?;
+    jwt::encode_with_signer(&payload, &header, &signer).map_err(|_| Unaskable::Unwritable)
 }
 
 /// The request's claims, OpenID4VP 1.0.
@@ -1080,7 +1217,12 @@ fn request_claims(parts: &RequestParts<'_>) -> Map<String, Value> {
         "exp": parts.expires_at.timestamp(),
     });
     match claims {
-        Value::Object(claims) => claims,
+        Value::Object(mut claims) => {
+            if let Some(info) = parts.verifier_info {
+                claims.insert("verifier_info".to_owned(), info.clone());
+            }
+            claims
+        }
         _ => Map::new(),
     }
 }
@@ -1467,10 +1609,12 @@ mod tests {
             nonce: "n-0S6",
             answer_key: json!({ "kty": "EC", "kid": "k1", "alg": "ECDH-ES", "use": "enc" }),
             query: &query,
+            verifier_info: None,
             now,
             expires_at: now + Duration::seconds(LIFETIME_SECONDS),
         });
         assert_eq!(claims["iss"], claims["client_id"]);
+        assert!(!claims.contains_key("verifier_info"));
         assert_eq!(claims["aud"], "https://self-issued.me/v2");
         assert_eq!(claims["response_type"], "vp_token");
         assert_eq!(claims["response_mode"], "direct_post.jwt");
@@ -1500,6 +1644,90 @@ mod tests {
         assert_eq!(metadata["vp_formats"], metadata["vp_formats_supported"]);
         assert_eq!(metadata["authorization_encrypted_response_alg"], "ECDH-ES");
         assert_eq!(metadata["authorization_encrypted_response_enc"], "A256GCM");
+    }
+
+    /// Under a certificate, a request encloses what the realm's registrar
+    /// holds of it and its registration certificate, as it keeps them, and
+    /// nothing when it keeps neither.
+    #[test]
+    fn a_request_under_a_certificate_encloses_what_the_registrar_holds() {
+        let dataset = json!({ "intendedUseIdentifier": "use-1" });
+        let settings = |dataset: Option<Value>, certificate: Option<&str>| VerifierSettings {
+            identity: VerifierIdentity::X509Hash,
+            registrar_dataset: dataset,
+            registration_certificate: certificate.map(str::to_owned),
+            updated_by: "root".to_owned(),
+            updated_at: DateTime::from_timestamp(1_790_000_000, 0).expect("a time"),
+        };
+        assert_eq!(compose_verifier_info(&settings(None, None)), None);
+        assert_eq!(
+            compose_verifier_info(&settings(Some(dataset.clone()), Some("h.p.s"))),
+            Some(json!([
+                { "format": "registrar_dataset", "data": dataset },
+                { "format": "registration_cert", "data": "h.p.s" },
+            ]))
+        );
+        assert_eq!(
+            compose_verifier_info(&settings(None, Some("h.p.s"))),
+            Some(json!([{ "format": "registration_cert", "data": "h.p.s" }]))
+        );
+
+        let now = DateTime::from_timestamp(1_790_000_000, 0).expect("a time");
+        let query = pid_query();
+        let info = json!([{ "format": "registration_cert", "data": "h.p.s" }]);
+        let claims = request_claims(&RequestParts {
+            client_id: "x509_hash:Uvo3HtuIxuhC92rShpgqcT3YXwrqRxWEviRiA0OZszk",
+            issuer: "https://id.test/realms/acme",
+            request_id: "0f0e",
+            nonce: "n-0S6",
+            answer_key: json!({ "kty": "EC", "kid": "k1", "alg": "ECDH-ES", "use": "enc" }),
+            query: &query,
+            verifier_info: Some(&info),
+            now,
+            expires_at: now + Duration::seconds(LIFETIME_SECONDS),
+        });
+        assert_eq!(claims["verifier_info"], info);
+        assert_eq!(
+            claims["client_id"],
+            "x509_hash:Uvo3HtuIxuhC92rShpgqcT3YXwrqRxWEviRiA0OZszk"
+        );
+    }
+
+    /// A request signed under a certificate says so in its header: ES256, its
+    /// type, the chain leaf first in standard base64, and when it was signed;
+    /// it names no key otherwise, and verifies under the certified key.
+    #[test]
+    fn a_request_under_a_certificate_carries_its_chain_and_instant() {
+        let pair = EcKeyPair::generate(EcCurve::P256).expect("a key");
+        let now = DateTime::from_timestamp(1_790_000_000, 0).expect("a time");
+        let key = ServingVerifierKey {
+            kid: "k".to_owned(),
+            private_pem: secrecy::SecretBox::new(Box::new(pair.to_pem_private_key())),
+            certificate: models::entities::verifier::VerifierCertificate {
+                chain: vec![b"leaf".to_vec(), b"access ca".to_vec()],
+                leaf_hash: "h".to_owned(),
+                not_before: now,
+                not_after: now,
+                certified_at: now,
+            },
+        };
+        let mut claims = Map::new();
+        claims.insert("client_id".to_owned(), json!("x509_hash:h"));
+        let signed = sign_under_certificate(&key, &claims, now).expect("a request");
+        let verifier = ES256
+            .verifier_from_der(pair.to_der_public_key())
+            .expect("a verifier");
+        let (payload, header) = jwt::decode_with_verifier(&signed, &verifier).expect("verified");
+        assert_eq!(payload.claim("client_id"), Some(&json!("x509_hash:h")));
+        assert_eq!(
+            Value::Object(header.claims_set().clone()),
+            json!({
+                "alg": "ES256",
+                "typ": "oauth-authz-req+jwt",
+                "x5c": ["bGVhZg==", "YWNjZXNzIGNh"],
+                "iat": 1_790_000_000,
+            })
+        );
     }
 
     fn with_header(header: Value) -> String {

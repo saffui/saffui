@@ -11,7 +11,7 @@ use store::providers::realms::wallet_identity;
 pub use store::providers::realms::wallet_identity::WalletIdentity;
 use store::tenancy::UnitOfWork;
 
-use crate::verifier::presentation::{Unaskable, check_query, find_request_key};
+use crate::verifier::presentation::{Unaskable, check_query, find_presenting};
 
 /// How long the key an identity is digested under is, in bytes.
 const DIGEST_KEY_BYTES: usize = 32;
@@ -27,8 +27,10 @@ pub enum Unsettable {
     UnknownIssuer(String),
     #[error("the identifier is one of the claims the credential is asked for, by its path")]
     NotAClaimAsked,
-    #[error("{}", Unaskable::NoSigningKey)]
-    NoSigningKey,
+    /// The realm holds no key to sign a request with under the identity it
+    /// presents itself by.
+    #[error("{0}")]
+    NoRequestKey(Unaskable),
     #[error("the profile could not be read or written")]
     Unwritable,
 }
@@ -50,8 +52,9 @@ pub async fn read(transaction: &UnitOfWork) -> Result<WalletIdentity, Unsettable
 /// Keep how the realm knows people. The credential is one this verifier can
 /// check, the issuer one the realm names, and the identifier a claim the
 /// credential is asked for: a claim left out of the query is one a wallet
-/// never discloses. The realm holds the key its requests are signed with, or
-/// every login asking for an identity would be refused. The key identities are
+/// never discloses. The realm holds the key its requests are signed with under
+/// the identity it presents itself by, or every login asking for an identity
+/// would be refused. The key identities are
 /// digested under is drawn the first time and kept through every rewrite.
 pub async fn write(
     transaction: &UnitOfWork,
@@ -84,10 +87,12 @@ pub async fn write(
     if !asked_for {
         return Err(Unsettable::NotAClaimAsked);
     }
-    find_request_key(transaction, signing)
+    find_presenting(transaction, signing, now)
         .await
         .map_err(|why| match why {
-            Unaskable::NoSigningKey => Unsettable::NoSigningKey,
+            Unaskable::NoSigningKey
+            | Unaskable::NoCertificate
+            | Unaskable::CertificateOutOfValidity => Unsettable::NoRequestKey(why),
             _ => Unsettable::Unwritable,
         })?;
 

@@ -50,6 +50,57 @@ const CLAIM_SOURCES: {
 const COMPOSITE_ROLES = new Set(["r-2"]);
 const CLIENT_MAPPERS = new Set(["m-1", "m-2"]);
 const REMOVED_REALM_KEYS = new Set<string>();
+
+/// The preview realm presents itself by a certificate; a key drawn awaits its
+/// own until one is pasted.
+const PREVIEW_VERIFIER_KEY = {
+  kid: "Nf2KQ8wRz7bVt1yLc4pXa9sDe6gHj3mUo0iTq5vBn8k",
+  state: "serving",
+  subject: {
+    common_name: "Registre national, guichet en ligne",
+    organization: "Agence Nationale d'Identification",
+    organization_identifier: "NTRTG-2026-B-04517",
+    country: "TG",
+  },
+  request: "-----BEGIN CERTIFICATE REQUEST-----\nMIIBTjCB9QIBADBpMQswCQYDVQQGEwJURzEq\n-----END CERTIFICATE REQUEST-----\n",
+  public_jwk: {
+    kty: "EC",
+    crv: "P-256",
+    kid: "Nf2KQ8wRz7bVt1yLc4pXa9sDe6gHj3mUo0iTq5vBn8k",
+    alg: "ES256",
+    use: "sig",
+    x: "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU",
+    y: "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0",
+  },
+  certificate: {
+    client_id: "x509_hash:Uvo3HtuIxuhC92rShpgqcT3YXwrqRxWEviRiA0OZszk",
+    subjects: [
+      "CN=Registre national\\, guichet en ligne,organizationIdentifier=NTRTG-2026-B-04517,O=Agence Nationale d'Identification,C=TG",
+      "CN=Autorité de certification d'accès,O=Agence Nationale d'Identification,C=TG",
+    ],
+    chain: ["", ""],
+    not_before: "2026-09-28T00:00:00Z",
+    not_after: "2027-09-28T00:00:00Z",
+    certified_at: "2026-09-28T09:41:00Z",
+  },
+  created_by: "ada",
+  created_at: "2026-09-27T16:02:00Z",
+};
+let previewVerifierAwaiting: Record<string, unknown> | null = null;
+let previewVerifierSettings: Record<string, unknown> = {
+  identity: "x509-hash",
+  registrar_dataset: {
+    identifier: [{ type: "http://data.europa.eu/eudi/id/EUID", identifier: "TG-RCCM-2026-B-04517" }],
+    srvDescription: [{ lang: "fr", content: "Guichet en ligne du registre national" }],
+    registryURI: "https://registre.example.tg/api",
+    intendedUseIdentifier: "ouverture-de-dossier",
+    purpose: [{ lang: "fr", content: "Vérifier l'identité du demandeur" }],
+    policyURI: "https://registre.example.tg/confidentialite",
+  },
+  registration_certificate: null,
+  updated_by: "ada",
+  updated_at: "2026-09-28T09:45:00Z",
+};
 const REALM_SETTINGS_CHANGES: Record<string, unknown> = {};
 /// The protection the preview holds, so opening it, changing it and sharing show.
 const PROTECTED_SERVER = {
@@ -822,6 +873,34 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
       sections: ["realm", "users"],
       realm: { realm_id: "main" },
       users: PEOPLE,
+    });
+  }
+  if (/\/verifier\/keys\/[^/]+$/.test(path) && method === "DELETE") {
+    previewVerifierAwaiting = null;
+    return answer(undefined);
+  }
+  if (path.endsWith("/verifier/keys") && method === "POST") {
+    previewVerifierAwaiting = {
+      ...PREVIEW_VERIFIER_KEY,
+      kid: "q7Lm2Vx9Bc4Nf1Rt8Kz3Wp6Hs0Dj5Ya2Ue9Gi4Oo7Ql",
+      state: "awaiting",
+      subject: body,
+      certificate: null,
+      created_at: new Date().toISOString(),
+    };
+    return answer(previewVerifierAwaiting);
+  }
+  if (path.endsWith("/verifier/certificate") && method === "POST") {
+    const taken = { ...PREVIEW_VERIFIER_KEY, ...previewVerifierAwaiting, state: "serving", certificate: PREVIEW_VERIFIER_KEY.certificate };
+    previewVerifierAwaiting = null;
+    return answer(taken);
+  }
+  if (path.endsWith("/verifier")) {
+    if (method === "PUT") previewVerifierSettings = { ...previewVerifierSettings, ...(body as object), updated_at: new Date().toISOString() };
+    return answer({
+      ...previewVerifierSettings,
+      keys: previewVerifierAwaiting ? [PREVIEW_VERIFIER_KEY, previewVerifierAwaiting] : [PREVIEW_VERIFIER_KEY],
+      running: false,
     });
   }
   if (/\/keys\/[^/]+$/.test(path) && method === "DELETE") {

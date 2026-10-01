@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use tokio_postgres::Row;
 
-use crate::error::{StoreError, StoreResult};
+use crate::error::{StoreError, StoreResult, refuse_broken_rule};
 use crate::tenancy::UnitOfWork;
 
 /// A presentation request as the realm keeps it.
@@ -14,6 +14,8 @@ pub struct KeptRequest<'a> {
     pub response_key: &'a [u8],
     pub query: &'a Value,
     pub request_object: &'a str,
+    /// The identifier the realm presented itself under in the request.
+    pub client_id: &'a str,
     pub expires_at: DateTime<Utc>,
     pub created_by: &'a str,
     /// The login it was asked for, when a login asked rather than an
@@ -36,10 +38,11 @@ pub async fn keep(transaction: &UnitOfWork, request: &KeptRequest<'_>) -> StoreR
         .execute(
             "INSERT INTO presentation_requests \
                  (tenant, realm_id, request_id, nonce, response_kid, response_key, query, \
-                  request_object, expires_at, created_by, purpose, login_session, user_id) \
+                  request_object, client_id, expires_at, created_by, purpose, login_session, \
+                  user_id) \
              SELECT current_setting('saffui.current_tenant', true), \
                     current_setting('saffui.current_realm', true), \
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11",
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12",
             &[
                 &request.request_id,
                 &request.nonce,
@@ -47,6 +50,7 @@ pub async fn keep(transaction: &UnitOfWork, request: &KeptRequest<'_>) -> StoreR
                 &request.response_key,
                 request.query,
                 &request.request_object,
+                &request.client_id,
                 &request.expires_at,
                 &request.created_by,
                 &for_login.map(|bound| bound.purpose),
@@ -55,7 +59,7 @@ pub async fn keep(transaction: &UnitOfWork, request: &KeptRequest<'_>) -> StoreR
             ],
         )
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(())
 }
 
@@ -84,6 +88,9 @@ pub struct Answering {
     pub query: Value,
     /// What a login asked it for, when a login did.
     pub purpose: Option<String>,
+    /// The identifier the request was asked under; absent on requests asked
+    /// before it was kept, which were all asked under the realm's did:web.
+    pub client_id: Option<String>,
 }
 
 /// Hold the pending request whose answer is encrypted to this key.
@@ -97,7 +104,8 @@ pub async fn claim_by_response_kid(
 ) -> StoreResult<Option<Answering>> {
     Ok(transaction
         .query_opt(
-            "SELECT request_id, nonce, response_key, query, purpose FROM presentation_requests \
+            "SELECT request_id, nonce, response_key, query, purpose, client_id \
+             FROM presentation_requests \
              WHERE response_kid = $1 AND status = 'pending' AND expires_at > $2 \
              FOR UPDATE",
             &[&response_kid, now],
@@ -116,7 +124,8 @@ pub async fn claim_by_request_id(
 ) -> StoreResult<Option<Answering>> {
     Ok(transaction
         .query_opt(
-            "SELECT request_id, nonce, response_key, query, purpose FROM presentation_requests \
+            "SELECT request_id, nonce, response_key, query, purpose, client_id \
+             FROM presentation_requests \
              WHERE request_id = $1 AND status = 'pending' AND expires_at > $2 \
              FOR UPDATE",
             &[&request_id, now],
@@ -252,5 +261,6 @@ fn read_answering(row: Row) -> Answering {
         response_key: row.get("response_key"),
         query: row.get("query"),
         purpose: row.get("purpose"),
+        client_id: row.get("client_id"),
     }
 }

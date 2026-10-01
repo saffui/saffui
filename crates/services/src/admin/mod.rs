@@ -29,5 +29,6 @@ pub mod sms;
 pub mod trust_anchors;
 pub mod users;
 pub mod ussd;
+pub mod verifier;
 pub mod wallet_identity;
 pub mod whatsapp;

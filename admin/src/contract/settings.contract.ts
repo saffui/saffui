@@ -41,6 +41,13 @@ import {
   writeWhatsApp,
   withdrawTrustAnchor,
 } from "@/services/settings";
+import {
+  keepVerifierSettings,
+  readVerifier,
+  requestVerifierCertificate,
+  takeVerifierCertificate,
+  withdrawVerifierKey,
+} from "@/services/verifier";
 import { keepWalletIdentity, readWalletIdentity } from "@/services/walletIdentity";
 import { keepAnswer, REALM } from "./answers";
 
@@ -169,6 +176,43 @@ describe("realm settings", () => {
       status: 422,
       message: "no issuer this realm names answers to https://issuer.example/pid",
     });
+  });
+
+  // A certificate is issued by an authority outside the world this contract
+  // runs in: the refusal of a chain is the server's answer to the path and the
+  // body, and the key drawn for one is withdrawn.
+  test("reads how the realm presents itself to wallets, draws a key and is told why a chain is refused", async () => {
+    const held = await keepAnswer(readVerifier, REALM);
+    expect(held.identity).toBe("did-web");
+    const drawn = await keepAnswer(requestVerifierCertificate, REALM, {
+      common_name: "Contract verifier",
+      organization: "Contract SA",
+      organization_identifier: "VATFR-12345678901",
+      country: "FR",
+    });
+    expect(drawn.state).toBe("awaiting");
+    expect(drawn.request.startsWith("-----BEGIN CERTIFICATE REQUEST-----")).toBe(true);
+    await expect(takeVerifierCertificate(REALM, "not a certificate")).rejects.toMatchObject({
+      status: 422,
+      message: "the text carries no certificate, or one that does not parse",
+    });
+    await expect(
+      keepVerifierSettings(REALM, {
+        identity: "x509-hash",
+        registrar_dataset: null,
+        registration_certificate: null,
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      message:
+        "the realm holds no certificate valid now to present itself by: take one for its verifier key first",
+    });
+    await keepAnswer(keepVerifierSettings, REALM, {
+      identity: "did-web",
+      registrar_dataset: null,
+      registration_certificate: null,
+    });
+    await withdrawVerifierKey(REALM, drawn.kid);
   });
 
   // Pinning one reads it where it lives, which this server may not dial here

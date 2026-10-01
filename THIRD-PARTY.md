@@ -248,6 +248,16 @@ Code meant for the whole crate goes into a module of its own rather than into
     so that the key a `did:jwk` names, or one an issuer published, can be
     handed to the signer. The vendored verifiers build the same bytes for
     themselves and are untouched.
+12. `x509::request_certificate` and `x509::take_certificate_chain` (2026-10-01,
+    the verifier's certificate): a PKCS#10 request for a key, naming its
+    subject from the country down to the common name, the organization
+    identifier by its OID, signed with SHA-256 under the key it asks to have
+    certified; and the intake of the chain an authority issued for it, which
+    must certify exactly that key, under an authority rather than by itself,
+    for digital signatures when it says what the key is for, each certificate
+    issued by the next and every one valid at the instant asked, with a
+    self-signed anchor closing the chain checked against and left out, as
+    `x5c` leaves it out.
 
 ## IBM Plex
 

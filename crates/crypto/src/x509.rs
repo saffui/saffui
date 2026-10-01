@@ -1,5 +1,7 @@
+use std::cmp::Ordering;
+
 use foreign_types::ForeignType;
-use openssl::asn1::Asn1Time;
+use openssl::asn1::{Asn1Time, Asn1TimeRef};
 use openssl::bn::BigNum;
 use openssl::hash::MessageDigest;
 use openssl::nid::Nid;
@@ -8,7 +10,9 @@ use openssl::stack::Stack;
 use openssl::x509::extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier};
 use openssl::x509::store::X509StoreBuilder;
 use openssl::x509::verify::{X509VerifyFlags, X509VerifyParam};
-use openssl::x509::{X509, X509Builder, X509Name, X509NameBuilder, X509StoreContext};
+use openssl::x509::{
+    X509, X509Builder, X509Name, X509NameBuilder, X509ReqBuilder, X509StoreContext,
+};
 
 use crate::provider::{PrivateKey, PublicKey};
 
@@ -375,6 +379,169 @@ pub fn subject_key_identifier(der: &[u8]) -> Option<Vec<u8>> {
         .map(|identifier| identifier.as_slice().to_vec())
 }
 
+/// How an access certificate names a verifier (ETSI TS 119 411-8): what a
+/// certificate request asks an authority to certify a key under.
+#[derive(Debug, Clone, Copy)]
+pub struct RequestedSubject<'a> {
+    pub common_name: &'a str,
+    pub organization: Option<&'a str>,
+    /// The organization's registered identifier, as EN 319 412-1 writes it.
+    pub organization_identifier: Option<&'a str>,
+    /// ISO 3166-1 alpha-2.
+    pub country: Option<&'a str>,
+}
+
+/// The X.520 organizationIdentifier, for which OpenSSL's Rust binding names
+/// no constant.
+const ORGANIZATION_IDENTIFIER: &str = "2.5.4.97";
+
+/// A PKCS#10 request for the key `private` holds, naming `subject` from the
+/// country down to the common name, signed with SHA-256 under that very key:
+/// what shows an authority the requester holds it. PEM. Nothing when the key
+/// does not parse or a name does not fit.
+pub fn request_certificate(private: &PrivateKey, subject: &RequestedSubject<'_>) -> Option<String> {
+    let key = PKey::private_key_from_der(private.der()).ok()?;
+    let mut name = X509NameBuilder::new().ok()?;
+    if let Some(country) = subject.country {
+        name.append_entry_by_nid(Nid::COUNTRYNAME, country).ok()?;
+    }
+    if let Some(organization) = subject.organization {
+        name.append_entry_by_nid(Nid::ORGANIZATIONNAME, organization)
+            .ok()?;
+    }
+    if let Some(identifier) = subject.organization_identifier {
+        name.append_entry_by_text(ORGANIZATION_IDENTIFIER, identifier)
+            .ok()?;
+    }
+    name.append_entry_by_nid(Nid::COMMONNAME, subject.common_name)
+        .ok()?;
+    let mut request = X509ReqBuilder::new().ok()?;
+    request.set_version(0).ok()?;
+    request.set_subject_name(&name.build()).ok()?;
+    request.set_pubkey(&key).ok()?;
+    request.sign(&key, MessageDigest::sha256()).ok()?;
+    String::from_utf8(request.build().to_pem().ok()?).ok()
+}
+
+/// A certificate chain taken for a key: leaf first, its issuers after, the
+/// trust anchor left out, as a JWS `x5c` header carries it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TakenChain {
+    pub chain: Vec<Vec<u8>>,
+    /// The leaf's validity, in seconds since the epoch.
+    pub not_before: i64,
+    pub not_after: i64,
+}
+
+/// Why a chain was not taken as the certificate of a key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum Untaken {
+    #[error("the text carries no certificate, or one that does not parse")]
+    Unreadable,
+    #[error("the chain holds more certificates than an authority's hierarchy does")]
+    TooLong,
+    #[error("the first certificate certifies another key than this one")]
+    AnotherKey,
+    #[error("the first certificate signs itself: an authority must issue it")]
+    SelfSigned,
+    #[error("the first certificate is not for digital signatures")]
+    NotForSigning,
+    #[error("a certificate of the chain is not valid now")]
+    OutOfValidity,
+    #[error("a certificate of the chain is not issued by the one after it")]
+    Unlinked,
+}
+
+/// Take the chain `pem` carries as the certificate of `key`, at the instant
+/// `at` in seconds since the epoch: the first certificate certifies exactly
+/// this key, under an authority rather than by itself, and for digital
+/// signatures when it says what its key is for; each certificate is issued by
+/// the one after it, and every one is valid at `at`. A self-signed
+/// certificate closing the chain is its trust anchor: it is checked against
+/// and left out of what is kept. Whether the anchor is to be trusted is for
+/// whoever is shown the chain to say.
+pub fn take_certificate_chain(pem: &[u8], key: &PublicKey, at: i64) -> Result<TakenChain, Untaken> {
+    let mut chain = read_pem_certificates(pem).ok_or(Untaken::Unreadable)?;
+    if chain.len() > CHAIN_DEPTH as usize + 1 {
+        return Err(Untaken::TooLong);
+    }
+    let read = chain
+        .iter()
+        .map(|der| X509::from_der(der))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| Untaken::Unreadable)?;
+    let leaf = &read[0];
+    let certified = leaf
+        .public_key()
+        .and_then(|certified| certified.public_key_to_der())
+        .map_err(|_| Untaken::Unreadable)?;
+    if certified != key.der() {
+        return Err(Untaken::AnotherKey);
+    }
+    if signs_itself(leaf) {
+        return Err(Untaken::SelfSigned);
+    }
+    // SAFETY: the pointer is the live certificate held above; the calls read
+    // and cache its extensions and keep no reference to it.
+    let (flags, usage) = unsafe {
+        (
+            openssl_sys::X509_get_extension_flags(leaf.as_ptr()),
+            openssl_sys::X509_get_key_usage(leaf.as_ptr()),
+        )
+    };
+    if flags & openssl_sys::EXFLAG_KUSAGE != 0
+        && usage & openssl_sys::X509v3_KU_DIGITAL_SIGNATURE == 0
+    {
+        return Err(Untaken::NotForSigning);
+    }
+    let mut leaf_validity = None;
+    for certificate in &read {
+        let from = unix_seconds(certificate.not_before()).ok_or(Untaken::Unreadable)?;
+        let until = unix_seconds(certificate.not_after()).ok_or(Untaken::Unreadable)?;
+        if at < from || at >= until {
+            return Err(Untaken::OutOfValidity);
+        }
+        leaf_validity.get_or_insert((from, until));
+    }
+    for pair in read.windows(2) {
+        let named = pair[0]
+            .issuer_name()
+            .try_cmp(pair[1].subject_name())
+            .map_err(|_| Untaken::Unreadable)?
+            == Ordering::Equal;
+        let signed = pair[1]
+            .public_key()
+            .and_then(|issuer| pair[0].verify(&issuer))
+            .unwrap_or(false);
+        if !named || !signed {
+            return Err(Untaken::Unlinked);
+        }
+    }
+    if read.len() > 1 && read.last().is_some_and(signs_itself) {
+        chain.pop();
+    }
+    let (not_before, not_after) = leaf_validity.ok_or(Untaken::Unreadable)?;
+    Ok(TakenChain {
+        chain,
+        not_before,
+        not_after,
+    })
+}
+
+/// Whether a certificate's signature holds under its own key.
+fn signs_itself(certificate: &X509) -> bool {
+    certificate
+        .public_key()
+        .and_then(|own| certificate.verify(&own))
+        .unwrap_or(false)
+}
+
+/// A certificate time in seconds since the epoch.
+fn unix_seconds(time: &Asn1TimeRef) -> Option<i64> {
+    let lived = Asn1Time::from_unix(0).ok()?.diff(time).ok()?;
+    Some(i64::from(lived.days) * 86_400 + i64::from(lived.secs))
+}
+
 fn build_common_name(name: &str) -> Option<X509Name> {
     let mut builder = X509NameBuilder::new().ok()?;
     builder.append_entry_by_nid(Nid::COMMONNAME, name).ok()?;
@@ -384,8 +551,10 @@ fn build_common_name(name: &str) -> Option<X509Name> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CertificateFacts, CertifiedKey, Issuance, is_authority, issue_authority_certificate,
-        issue_certificate, public_key_of, read_certificate_facts, subject_key_identifier,
+        CertificateFacts, CertifiedKey, Issuance, RequestedSubject, TakenChain, Untaken,
+        is_authority, issue_authority_certificate, issue_certificate, public_key_of,
+        read_certificate_facts, request_certificate, subject_key_identifier,
+        take_certificate_chain,
     };
     use crate::provider::{PrivateKey, PublicKey};
     use openssl::asn1::{Asn1Time, Asn1TimeRef};
@@ -394,7 +563,7 @@ mod tests {
     use openssl::nid::Nid;
     use openssl::pkey::{PKey, Private};
     use openssl::rsa::Rsa;
-    use openssl::x509::{X509, X509Builder, X509NameBuilder};
+    use openssl::x509::{X509, X509Builder, X509NameBuilder, X509Req};
 
     /// A certificate hands back the key it certifies, in the form the signer
     /// verifies with, and bytes that are no certificate hand back nothing.
@@ -669,6 +838,310 @@ mod tests {
             );
         }
         assert_eq!(read_certificate_facts(b"not a certificate"), None);
+    }
+
+    fn private_of(key: &PKey<Private>) -> PrivateKey {
+        PrivateKey::from_der(key.private_key_to_der().expect("PKCS#8"))
+    }
+
+    fn public_of(key: &PKey<Private>) -> PublicKey {
+        PublicKey::from_der(key.public_key_to_der().expect("SPKI"))
+    }
+
+    /// A request names its subject from the country down to the common name,
+    /// and is signed by the key it asks to have certified.
+    #[test]
+    fn a_request_names_its_subject_and_proves_its_key() {
+        let key = ec_key(Nid::X9_62_PRIME256V1);
+        let pem = request_certificate(
+            &private_of(&key),
+            &RequestedSubject {
+                common_name: "Acme verifier",
+                organization: Some("Acme SA"),
+                organization_identifier: Some("VATFR-12345678901"),
+                country: Some("FR"),
+            },
+        )
+        .expect("a request");
+        let request = X509Req::from_pem(pem.as_bytes()).expect("PKCS#10");
+        assert!(request.verify(&key).expect("verifiable"));
+        assert_eq!(request.version(), 0, "a PKCS#10 request is version 1");
+        // ecdsa-with-SHA256, 1.2.840.10045.4.3.2, as the request's DER writes it.
+        let signed_with = [0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02];
+        assert!(
+            request
+                .to_der()
+                .expect("DER")
+                .windows(signed_with.len())
+                .any(|held| held == signed_with),
+            "the request is not signed ECDSA with SHA-256"
+        );
+        assert_eq!(
+            request
+                .public_key()
+                .and_then(|held| held.public_key_to_der())
+                .expect("SPKI"),
+            key.public_key_to_der().expect("SPKI")
+        );
+        let named: Vec<(String, String)> = request
+            .subject_name()
+            .entries()
+            .map(|entry| {
+                (
+                    entry
+                        .object()
+                        .nid()
+                        .short_name()
+                        .expect("a name")
+                        .to_owned(),
+                    entry.data().to_string().expect("text"),
+                )
+            })
+            .collect();
+        let expected = [
+            ("C", "FR"),
+            ("O", "Acme SA"),
+            ("organizationIdentifier", "VATFR-12345678901"),
+            ("CN", "Acme verifier"),
+        ];
+        assert_eq!(
+            named,
+            expected.map(|(name, value)| (name.to_owned(), value.to_owned()))
+        );
+
+        let bare = RequestedSubject {
+            common_name: "Acme verifier",
+            organization: None,
+            organization_identifier: None,
+            country: None,
+        };
+        let pem = request_certificate(&private_of(&key), &bare).expect("a request");
+        let request = X509Req::from_pem(pem.as_bytes()).expect("PKCS#10");
+        assert_eq!(request.subject_name().entries().count(), 1);
+        let three_letters = RequestedSubject {
+            country: Some("FRA"),
+            ..bare
+        };
+        assert!(request_certificate(&private_of(&key), &three_letters).is_none());
+    }
+
+    const NOW: i64 = 1_790_000_000;
+    const FROM: i64 = NOW - 3_600;
+    const UNTIL: i64 = NOW + 30 * 86_400;
+
+    /// `subject`'s certificate under `issuer`, an RSA key, valid between the
+    /// two instants given.
+    fn certified(
+        subject: &PKey<Private>,
+        subject_name: &str,
+        issuer: &PKey<Private>,
+        issuer_name: &str,
+        authority: bool,
+        (from, until): (i64, i64),
+    ) -> Vec<u8> {
+        let (subject_key, issuer_key) = (public_of(subject), private_of(issuer));
+        let issuance = Issuance {
+            subject_key: &subject_key,
+            subject_name,
+            issuer_key: &issuer_key,
+            issuer_name,
+            serial: &[7],
+            not_before: from,
+            not_after: until,
+        };
+        if authority {
+            issue_authority_certificate(&issuance)
+        } else {
+            issue_certificate(&issuance)
+        }
+        .expect("a certificate")
+    }
+
+    fn pem_of(chain: &[&[u8]]) -> Vec<u8> {
+        chain
+            .iter()
+            .flat_map(|der| {
+                X509::from_der(der)
+                    .and_then(|read| read.to_pem())
+                    .expect("PEM")
+            })
+            .collect()
+    }
+
+    /// A root, an intermediate it certifies, and a P-256 key the intermediate
+    /// certifies.
+    struct Hierarchy {
+        root_key: PKey<Private>,
+        root: Vec<u8>,
+        intermediate_key: PKey<Private>,
+        intermediate: Vec<u8>,
+        leaf_key: PKey<Private>,
+        leaf: Vec<u8>,
+    }
+
+    fn hierarchy() -> Hierarchy {
+        let (root_key, intermediate_key) = (rsa_key(2048), rsa_key(2048));
+        let leaf_key = ec_key(Nid::X9_62_PRIME256V1);
+        // The authorities outlive the leaf, so a chain's validity is read off
+        // the leaf alone.
+        let lasting = (FROM - 86_400, UNTIL + 86_400);
+        let root = certified(&root_key, "Root", &root_key, "Root", true, lasting);
+        let intermediate = certified(
+            &intermediate_key,
+            "Access CA",
+            &root_key,
+            "Root",
+            true,
+            lasting,
+        );
+        let leaf = certified(
+            &leaf_key,
+            "Acme verifier",
+            &intermediate_key,
+            "Access CA",
+            false,
+            (FROM, UNTIL),
+        );
+        Hierarchy {
+            root_key,
+            root,
+            intermediate_key,
+            intermediate,
+            leaf_key,
+            leaf,
+        }
+    }
+
+    /// A chain is kept leaf first, without the self-signed anchor closing it,
+    /// whether or not the anchor was pasted in.
+    #[test]
+    fn a_chain_is_taken_for_its_key_without_its_anchor() {
+        let held = hierarchy();
+        let key = public_of(&held.leaf_key);
+        let expected = TakenChain {
+            chain: vec![held.leaf.clone(), held.intermediate.clone()],
+            not_before: FROM,
+            not_after: UNTIL,
+        };
+        for pasted in [
+            pem_of(&[&held.leaf, &held.intermediate, &held.root]),
+            pem_of(&[&held.leaf, &held.intermediate]),
+        ] {
+            assert_eq!(
+                take_certificate_chain(&pasted, &key, NOW).as_ref(),
+                Ok(&expected)
+            );
+        }
+        let under_root = certified(
+            &held.leaf_key,
+            "Acme verifier",
+            &held.root_key,
+            "Root",
+            false,
+            (FROM, UNTIL),
+        );
+        assert_eq!(
+            take_certificate_chain(&pem_of(&[&under_root]), &key, NOW).map(|taken| taken.chain),
+            Ok(vec![under_root.clone()])
+        );
+        assert_eq!(
+            take_certificate_chain(&pem_of(&[&under_root, &held.root]), &key, NOW)
+                .map(|taken| taken.chain),
+            Ok(vec![under_root])
+        );
+    }
+
+    #[test]
+    fn a_chain_not_fit_for_the_key_is_refused_in_words() {
+        let held = hierarchy();
+        let key = public_of(&held.leaf_key);
+        let take = |chain: &[&[u8]], at: i64| take_certificate_chain(&pem_of(chain), &key, at);
+        assert_eq!(
+            take_certificate_chain(b"no certificate", &key, NOW),
+            Err(Untaken::Unreadable)
+        );
+        assert_eq!(
+            take_certificate_chain(
+                &pem_of(&[&held.leaf, &held.intermediate]),
+                &public_of(&ec_key(Nid::X9_62_PRIME256V1)),
+                NOW
+            ),
+            Err(Untaken::AnotherKey)
+        );
+        assert_eq!(
+            take(&[&held.intermediate, &held.leaf], NOW),
+            Err(Untaken::AnotherKey)
+        );
+        assert_eq!(
+            take_certificate_chain(&pem_of(&[&held.root]), &public_of(&held.root_key), NOW),
+            Err(Untaken::SelfSigned)
+        );
+        let for_authorities = certified(
+            &held.leaf_key,
+            "Acme verifier",
+            &held.intermediate_key,
+            "Access CA",
+            true,
+            (FROM, UNTIL),
+        );
+        assert_eq!(
+            take(&[&for_authorities, &held.intermediate], NOW),
+            Err(Untaken::NotForSigning)
+        );
+        for at in [FROM - 1, UNTIL] {
+            assert_eq!(
+                take(&[&held.leaf, &held.intermediate], at),
+                Err(Untaken::OutOfValidity),
+                "{at}"
+            );
+        }
+        let lapsed = certified(
+            &held.intermediate_key,
+            "Access CA",
+            &held.root_key,
+            "Root",
+            true,
+            (FROM, NOW),
+        );
+        assert_eq!(
+            take(&[&held.leaf, &lapsed], NOW),
+            Err(Untaken::OutOfValidity)
+        );
+        let stranger_key = rsa_key(2048);
+        let stranger = certified(
+            &stranger_key,
+            "Access CA",
+            &stranger_key,
+            "Access CA",
+            true,
+            (FROM, UNTIL),
+        );
+        assert_eq!(
+            take(&[&held.leaf, &stranger], NOW),
+            Err(Untaken::Unlinked),
+            "named alike, signed by another key"
+        );
+        assert_eq!(
+            take(&[&held.leaf, &held.root], NOW),
+            Err(Untaken::Unlinked),
+            "named otherwise and signed by another key"
+        );
+        let renamed = certified(
+            &held.intermediate_key,
+            "Other CA",
+            &held.root_key,
+            "Root",
+            true,
+            (FROM, UNTIL),
+        );
+        assert_eq!(
+            take(&[&held.leaf, &renamed], NOW),
+            Err(Untaken::Unlinked),
+            "signed by the issuer's key, under another name than the issuer the leaf names"
+        );
+        let mut long: Vec<&[u8]> = vec![&held.leaf];
+        long.extend(std::iter::repeat_n(held.intermediate.as_slice(), 9));
+        assert_eq!(take(&long, NOW), Err(Untaken::TooLong));
     }
 }
 

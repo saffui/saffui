@@ -589,7 +589,7 @@ async fn a_realm_pins_the_contexts_its_credentials_name() {
     assert_eq!(listed["running"], true);
     assert_eq!(
         listed["built_in"].as_array().map(Vec::len),
-        Some(3),
+        Some(4),
         "{listed}"
     );
     assert_eq!(

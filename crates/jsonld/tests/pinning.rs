@@ -16,9 +16,45 @@ fn check(document: &Value, pinned: &HashMap<String, Value>) -> Result<(), Unread
 #[test]
 fn every_built_in_context_is_read() {
     let built_in = built_in_contexts();
-    assert_eq!(built_in.len(), 3);
+    assert_eq!(built_in.len(), 4);
     for (url, document) in built_in {
         assert_eq!(check(document, &HashMap::new()), Ok(()), "{url}");
+    }
+}
+
+/// Each context built in is the file its upstream ships, byte for byte: an
+/// edit, a formatter's included, changes what every credential naming it says.
+#[test]
+fn every_built_in_context_is_the_file_its_upstream_ships() {
+    use crypto::provider::{CryptoConfig, CryptoProvider, HashAlg};
+    let provider = crypto::provider::openssl::OpenSslProvider::new(&CryptoConfig::default())
+        .expect("a provider");
+    for (file, digest) in [
+        (
+            "w3c/credentials-v1.jsonld",
+            "ab4ddd9a531758807a79a5b450510d61ae8d147eab966cc9a200c07095b0cdcc",
+        ),
+        (
+            "w3c/credentials-v2.jsonld",
+            "59955ced6697d61e03f2b2556febe5308ab16842846f5b586d7f1f7adec92734",
+        ),
+        (
+            "w3c/jws-2020-v1.jsonld",
+            "d648e05ddc6577827ca2bfd5e931f53e9ebc6e52a57a8da81df4ec8c46ffcd1e",
+        ),
+        (
+            "digitalbazaar/ed25519-signature-2020-v1.jsonld",
+            "b9e1ab971fd8bf2c7553e0c4a9438e0b9450afde1ea1ca5b2492368b9f549588",
+        ),
+    ] {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("contexts")
+            .join(file);
+        let held = provider
+            .digest()
+            .hash(HashAlg::Sha256, &std::fs::read(path).expect("a context"))
+            .expect("a digest");
+        assert_eq!(data_encoding::HEXLOWER.encode(&held), digest, "{file}");
     }
 }
 

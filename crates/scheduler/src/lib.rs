@@ -6,4 +6,5 @@ pub mod jobs;
 pub mod logout_notices;
 pub mod notices;
 pub mod outbox;
+pub mod revocation_lists;
 pub mod status_lists;

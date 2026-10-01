@@ -221,10 +221,10 @@ pub async fn deliver_every_realm_with_egress(
     }
 }
 
-/// Read again the status lists the credentials of every realm cite, as each
-/// falls due, for as long as this node runs. Nothing where the process does
-/// not run the wallet verifier, and says so. Every node may run it: a list is
-/// claimed by one reader at a time.
+/// Read again the status lists the credentials of every realm cite, and the
+/// revocation lists their chains name, as each falls due, for as long as this
+/// node runs. Nothing where the process does not run the wallet verifier, and
+/// says so. Every node may run it: a list is claimed by one reader at a time.
 pub fn refresh_status_lists(
     tenancy: Tenancy,
     sealing: std::sync::Arc<outbound::Sealing>,
@@ -244,6 +244,19 @@ pub fn refresh_status_lists(
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
+            // The revocation lists first: a status list signed under a
+            // certificate is kept once its signer's list is.
+            match crate::revocation_lists::refresh_every_realm(&tenancy, &sealing).await {
+                Some(refreshed) if refreshed.kept + refreshed.unread > 0 => tracing::info!(
+                    kept = refreshed.kept,
+                    unread = refreshed.unread,
+                    "read certificate revocation lists"
+                ),
+                Some(_) => {}
+                None => tracing::warn!(
+                    "the revocation list pass could not list this deployment's realms"
+                ),
+            }
             match crate::status_lists::refresh_every_realm(&tenancy, &sealing).await {
                 Some(refreshed) if refreshed.kept + refreshed.unread > 0 => tracing::info!(
                     kept = refreshed.kept,

@@ -20,6 +20,10 @@ const CEILING: u64 = 64 * 1024;
 /// compressed, a few kilobytes for most lists.
 const LIST_CEILING: u64 = 1024 * 1024;
 
+/// What a certificate revocation list must stay under to be read: some twenty
+/// octets a serial revoked, and room for the lists of a busy authority.
+const REVOCATION_CEILING: u64 = 4 * 1024 * 1024;
+
 /// A resolver that hands back only addresses outside this deployment.
 ///
 /// The check belongs here and not before the request: checked earlier, the
@@ -150,6 +154,45 @@ pub async fn fetch_status_list(
     fetch_within(uri, egress, asked_as, LIST_CEILING).await
 }
 
+/// Whether a revocation list may be read at this address, by its scheme.
+///
+/// Over plain http as readily as https, whatever the deployment dials: a
+/// revocation list is public, names nobody who presents, and is believed for
+/// its authority's signature alone, which is why authorities publish them in
+/// the clear (RFC 5280 §4.2.1.13).
+pub fn may_read_revocations_at(uri: &str) -> bool {
+    let scheme = uri.to_ascii_lowercase();
+    scheme.starts_with("https://") || scheme.starts_with("http://")
+}
+
+/// What an authority publishes at a revocation list's address, or nothing.
+/// The resolver still reaches nothing inside a deployment that dials outward.
+pub async fn fetch_revocation_list(uri: String, egress: Egress) -> Option<Vec<u8>> {
+    if !may_read_revocations_at(&uri) {
+        return None;
+    }
+    tokio::task::spawn_blocking(move || {
+        let agent = outward_agent(egress, PATIENCE);
+        let mut response = agent
+            .get(&uri)
+            .header("Accept", "application/pkix-crl")
+            .call()
+            .ok()?;
+        if response.status() != 200 {
+            return None;
+        }
+        response
+            .body_mut()
+            .with_config()
+            .limit(REVOCATION_CEILING)
+            .read_to_vec()
+            .ok()
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 async fn fetch_within(
     uri: String,
     egress: Egress,
@@ -277,6 +320,66 @@ mod tests {
                 anywhere,
                 "{named}, anywhere"
             );
+        }
+    }
+
+    /// A revocation list is read over plain http, and under the default
+    /// policy an address answering with this machine is never dialled at all.
+    #[tokio::test]
+    async fn a_revocation_list_inside_the_deployment_is_read_from_inside_alone() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a port");
+        let port = listener.local_addr().expect("an address").port();
+        for host in ["127.0.0.1", "localhost"] {
+            let uri = format!("http://{host}:{port}/issuing.crl");
+            assert_eq!(
+                fetch_revocation_list(uri, Egress::Outward).await,
+                None,
+                "{host}"
+            );
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), listener.accept())
+                .await
+                .is_err(),
+            "the list's host was dialled"
+        );
+
+        let served = tokio::spawn(async move {
+            let (mut asking, _) = listener.accept().await.expect("a caller");
+            let mut asked = [0u8; 1024];
+            let _ = asking.read(&mut asked).await;
+            asking
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 4\r\nconnection: close\r\n\r\nlist")
+                .await
+                .expect("answered");
+        });
+        let uri = format!("http://127.0.0.1:{port}/issuing.crl");
+        assert_eq!(
+            fetch_revocation_list(uri, Egress::Anywhere).await,
+            Some(b"list".to_vec())
+        );
+        served.await.expect("served");
+    }
+
+    #[test]
+    fn a_revocation_list_is_read_over_http_or_https_alone() {
+        for (named, read) in [
+            ("http://ca.example/issuing.crl", true),
+            ("https://ca.example/issuing.crl", true),
+            ("HTTP://ca.example/issuing.crl", true),
+            (
+                "ldap://ca.example/cn=issuing?certificateRevocationList",
+                false,
+            ),
+            ("ftp://ca.example/issuing.crl", false),
+            ("file:///etc/passwd", false),
+            ("/issuing.crl", false),
+            ("", false),
+        ] {
+            assert_eq!(may_read_revocations_at(named), read, "{named}");
         }
     }
 

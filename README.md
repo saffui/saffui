@@ -47,6 +47,15 @@ saying what it proves. They are driven deliberately, not by CI.
 gets tokens from a realm, grant by grant: what to set up first, what to send,
 what comes back, and where the server does less than a specification allows.
 
+## Changing one
+
+- `CONTRIBUTING.md` says how a change gets in: what a branch and a commit look
+  like, how the signatures are verified, and what a pull request answers.
+- `AI-ASSISTANCE.md` says which part of this the tooling writes, which
+  decisions are taken before any code is written for them, and what no amount
+  of tooling closes.
+- `CODE_OF_CONDUCT.md` says where conduct is reported, and who reads it.
+
 ## What is in the tree
 
 - `crates/saffui` the binary: `serve`, `migrate`, `provision`, and the

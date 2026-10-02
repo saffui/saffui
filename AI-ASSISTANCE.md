@@ -9,21 +9,50 @@ work it out and guess at the rest.
 It is here because a security product is taken on trust before it is taken on
 merit, and trust survives a disclosure better than a discovery.
 
-## What the maintainer decides
+## The design was written down before the code existed
 
-These are settled before any code is written for them, and none of them is
-delegated:
+The decisions this server implements were made in thirty planning documents,
+kept in the open at <https://github.com/zakariaffoh/darkshield> under
+`docs/plans/`. Twenty-seven of the thirty were written before this repository's
+first commit on 22 July 2026. They cover the backend and its crate split, the
+protocol surface, tenancy, data and encryption, the event fabric, the gRPC
+surface, observability, operations, offline and air-gapped deployment, the
+admin contract, the consoles, and certification.
 
-- which library a thing is built on;
+They are not notes. `PLAN-CERTIFICATION.md`, dated nine days before this
+repository began, decides that the three certification tracks are orthogonal
+and are never conflated: OpenID conformance certifies the protocol code, FIPS
+140-3 certifies an inherited crypto module for the United States federal
+market, and CSPN or a Common Criteria visa certifies the product for the
+sovereign one. It states that a win on one transfers to none of the others, and
+that nothing is claimed without the validation behind it.
+
+The implementation was written against those documents. Where this tree and a
+plan disagree, the tree is what runs, and the disagreement is a decision
+someone took and should be able to name.
+
+## Decisions that do not move
+
+The unit of work here is the slice, and what a slice does is settled before it
+is written. That is why a commit subject states a behaviour rather than a
+change: the sentence existed before the diff did.
+
+These are the decisions a later slice is not allowed to drift from:
+
+- which library a thing is built on, one per layer, and never a cryptographic
+  primitive written here;
 - the provider: the abstraction the implementations sit behind, and what it is
   allowed to expose;
 - which algorithms are used, and which are refused;
-- the database schema, and every migration that moves it;
+- the split into crates, and the feature gating that keeps it honest, so that
+  nothing which does not serve a request compiles a web framework;
+- the layering, with the server no longer naming the store's rows and a guard
+  holding it to an allow list;
+- the database schema, every migration that moves it, and the policy every
+  connection to Postgres follows;
 - the design of the wallet and of federation: what a realm presents, what it
-  accepts from an issuer or an upstream provider, and what it refuses.
-
-A slice that would change one of these is not a slice. It is a decision taken
-first, and then written down.
+  accepts from an issuer or an upstream provider, and what it refuses;
+- the certification strategy, and what may be claimed under it.
 
 ## What the tooling writes
 
@@ -36,9 +65,32 @@ sentences themselves as the evidence of a person's judgement. They are not. The
 decision each one records was made by the maintainer; the sentence recording it
 was drafted and then kept, cut or rewritten.
 
-## Where a decision is visible in the history
+## A decision, and what became of it
 
-Three slices, each one a refusal reached by reading rather than by generating:
+`PLAN-CERTIFICATION.md` holds this, among its guiding principles:
+
+> Never overclaim. No FIPS claim without a currently-CMVP-validated module
+> running in FIPS mode on a listed Operational Environment; no FIPS-validated
+> post-quantum until a module whose CMVP boundary actually contains
+> ML-KEM/ML-DSA is issued.
+
+In `crates/crypto/src/lib.rs` that principle is a build failure:
+
+```rust
+#[cfg(all(feature = "fips-strict", feature = "pq-hybrid"))]
+compile_error!(
+    "feature 'fips-strict' is incompatible with 'pq-hybrid': ML-DSA and ML-KEM are not FIPS-validated"
+);
+```
+
+And in `.github/workflows/rust.yml` a job builds the forbidden pair on purpose
+to check that the guard still fires, and that the build broke on the guard's
+own message rather than on anything else. A principle, a mechanism, and a test
+that the mechanism has not quietly been removed.
+
+## Other decisions visible in the history
+
+Three slices, each a refusal reached by reading rather than by generating:
 
 - [#324](https://github.com/saffui/saffui/pull/324), plain http reaches an
   upstream only when its host is loopback;
@@ -47,23 +99,20 @@ Three slices, each one a refusal reached by reading rather than by generating:
 - [#436](https://github.com/saffui/saffui/pull/436), a typed name is counted
   under a key the database does not hold.
 
-Each of them narrows what the server accepts, and each depends on a boundary
-`THREAT-MODEL.md` names. Nothing in the code as it stood asked for them.
-
 [#428](https://github.com/saffui/saffui/pull/428) is the same decision made
-about a shape rather than about a rule. Work reaches the database through a
-unit that owns its connection, because a connection borrowed from a binding
-goes back to the pool when the binding drops and not when the transaction ends:
-work done after a commit, or a second connection taken while holding the first,
-held a slot nobody could use, and a pool with every slot held that way stops
-without raising anything. The commit consumes the unit and the slot comes back
-with it. `UnitOfWork` is named in 195 files, and the version that borrows is the
-one that gets written when nobody has decided otherwise.
+about a shape. Work reaches the database through a unit that owns its
+connection, because a connection borrowed from a binding goes back to the pool
+when the binding drops and not when the transaction ends: work done after a
+commit, or a second connection taken while holding the first, held a slot
+nobody could use, and a pool with every slot held that way stops without
+raising anything. `UnitOfWork` is named in 195 files, and the version that
+borrows is the one that gets written when nobody has decided otherwise.
 
-The wallet and the federation arms are the clearest case of the division above.
-What a realm presents to a wallet, which issuers it trusts and through which
-authorities, and what a SAML or OpenID Connect upstream is believed about a
-person, were decided first and written second.
+Two habits are worth naming because they shape what gets accepted. A document
+is refused where the specification would let part of it be dropped in silence,
+rather than read for less than it says. And a test that did not run must not be
+able to pass for green, which is why the `pooler` job counts the lines saying a
+suite finished and fails when there are too few.
 
 ## What stands between a change and `develop`
 
@@ -94,7 +143,7 @@ above, and no amount of tooling closes it.
 
 What is planned against it, in order: the OpenID Foundation conformance suite
 run in CI, an external audit, and a second reviewer. Until those exist, read
-the threat model, run the rigs under `deploy/`, and judge the artifacts rather
-than this page.
+the plans, read the threat model, run the rigs under `deploy/`, and judge the
+artifacts rather than this page.
 
 `SECURITY.md` says where a finding goes.

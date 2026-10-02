@@ -557,3 +557,62 @@ jobs:
     steps:
       - uses: actions/checkout@v5.0.1
       - uses: EmbarkStudios/cargo-deny-action@v2
+
+  # A mutant is a change to the source that ought to turn a test red: a
+  # comparison flipped, a return replaced by its default, a branch removed. One
+  # that survives the suite is a line nothing is holding to anything, which a
+  # coverage figure counts as covered all the same.
+  #
+  # Mutating the whole workspace would run for a day, so this runs only the
+  # mutants falling inside the lines the pull request changed. A missing test is
+  # most worth knowing about where the code just moved.
+  #
+  # The job is not required to merge. It reports what the suite does not catch,
+  # and whoever reads it decides whether that matters for the slice.
+  mutants:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5.0.1
+        with:
+          # The diff is taken against the base branch, so the base branch's
+          # commits have to be in the clone.
+          fetch-depth: 0
+      - uses: Swatinem/rust-cache@v2
+      # As in the ci job: building the workspace's tests links the system
+      # GSSAPI, and the runner's vendor repositories break every apt call.
+      - name: gssapi headers
+        run: |
+          sudo find /etc/apt/sources.list.d -type f ! -name 'ubuntu.sources' -delete
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libkrb5-dev
+      - name: cargo-mutants
+        run: cargo install cargo-mutants --locked
+      # Rust files alone: cargo-mutants reads no others, and a pull request
+      # that moves a migration or a page has nothing here to answer for.
+      #
+      # The base branch's name is taken through the environment rather than
+      # pasted into the script. A ref may hold a backtick or a dollar, and a
+      # pull request from a fork chooses its own branch names: interpolated
+      # into the line, one of them would be run rather than read.
+      - name: the lines this pull request changed
+        id: diff
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          git diff "origin/$BASE...HEAD" -- '*.rs' > "$RUNNER_TEMP/pr.diff"
+          echo "lines=$(wc -l < "$RUNNER_TEMP/pr.diff")" >> "$GITHUB_OUTPUT"
+      - name: mutants
+        if: steps.diff.outputs.lines != '0'
+        run: |
+          cargo mutants --in-diff "$RUNNER_TEMP/pr.diff" --timeout 300 --no-shuffle
+      # The run writes which mutants lived and which died. Kept so that a
+      # survivor can be read after the job has gone red, rather than rerun.
+      - name: what lived
+        if: always() && steps.diff.outputs.lines != '0'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: mutants
+          path: mutants.out/
+          retention-days: 5

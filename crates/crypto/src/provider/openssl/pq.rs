@@ -1,3 +1,7 @@
+// ML-DSA and ML-KEM are reached through EVP_PKEY contexts, which the openssl
+// crate does not wrap.
+#![allow(unsafe_code)]
+
 use std::ffi::CString;
 use std::ptr;
 

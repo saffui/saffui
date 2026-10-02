@@ -1,6 +1,10 @@
 //! Certificate revocation lists (RFC 5280 §5): read under the authority whose
 //! certificates they cover, and issued, for tests to revoke a certificate.
 
+// X509_get_key_usage and the revocation list's entries are read through the C
+// API, which the openssl crate does not expose.
+#![allow(unsafe_code)]
+
 use std::cmp::Ordering;
 
 use foreign_types::ForeignTypeRef;

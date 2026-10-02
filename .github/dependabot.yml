@@ -1,0 +1,52 @@
+# cargo-deny refuses a dependency carrying a known advisory, and it refuses it
+# when someone opens a pull request. An advisory published in a week where
+# nothing is touched is answered whenever the next slice happens to land. These
+# updates arrive on their own schedule instead.
+#
+# Weekly rather than daily, so that a bump does not become the usual content of
+# the history.
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # The workspace pins its dependencies in one table, so a patch bump
+      # rarely stands alone: it arrives with the rest of its generation. One
+      # pull request per generation. The breaking ones come in on their own,
+      # where they can be read.
+      patch-and-minor:
+        update-types: [minor, patch]
+
+  # The console and the account pages are a pnpm workspace. Dependabot reads
+  # each package.json in it separately, so each one is named here.
+  - package-ecosystem: npm
+    directories:
+      - /admin
+      - /account
+      - /packages/saffui-js
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      patch-and-minor:
+        update-types: [minor, patch]
+
+  # The actions are the one supply chain the workspace does not pin through a
+  # lockfile: a tag moves and the build changes under us. They are pinned by
+  # version in the workflows, and this is what moves those pins.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # The image the product ships as.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

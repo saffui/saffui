@@ -33,7 +33,7 @@ serde_json = { workspace = true }
 # to fetch. The JOSE layer has no read that skips the signature check.
 data-encoding = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
-cross-krb5 = { version = "0.4", default-features = false, optional = true }
+cross-krb5 = { version = "0.5", default-features = false, optional = true }
 # The hosted pages in every tongue they speak, rendered once at startup from
 # the same strings a themed deployment would translate.
 fluent-bundle = "0.15"
@@ -97,7 +97,7 @@ opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tracing-opentelemetry = { workspace = true }
 # The client half of a SPNEGO exchange, so the bench can hold a real ticket.
-cross-krb5 = { version = "0.4", default-features = false }
+cross-krb5 = { version = "0.5", default-features = false }
 # The binary's operator commands, driven in tests against this very server.
 saffui = { path = "../saffui" }
 # The LDAP front, spawned on a loopback port and driven with an ldap3

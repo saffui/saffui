@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use auth::login::{lockout, throttle};
 use chrono::Utc;
 use crypto::password::migration::burn_verification_time;

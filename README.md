@@ -1,5 +1,8 @@
 # saffui
 
+[![rust](https://github.com/saffui/saffui/actions/workflows/rust.yml/badge.svg?branch=develop)](https://github.com/saffui/saffui/actions/workflows/rust.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/saffui/saffui/badge)](https://scorecard.dev/viewer/?uri=github.com/saffui/saffui)
+
 An identity provider: one binary, one Postgres, one image. It serves OpenID
 Connect, a SAML arm and an LDAP front door, an admin plane behind them, a
 hosted sign-in, and an account console people use for themselves.

@@ -20,7 +20,7 @@ jobs:
     # rather than as broken.
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v5.0.1
+      - uses: actions/checkout@v7
       # rustup auto-installs the toolchain pinned in rust-toolchain.toml
       # (components included) on the first cargo invocation - no setup step.
       - uses: Swatinem/rust-cache@v2
@@ -97,7 +97,7 @@ jobs:
       OPENSSL_VERSION: 3.5.0
       OPENSSL_PREFIX: /opt/openssl-pq
     steps:
-      - uses: actions/checkout@v5.0.1
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
       - name: gssapi headers
         run: |
@@ -165,7 +165,7 @@ jobs:
       SAFFUI_TEST_PKCS11_MODULE: /usr/lib/softhsm/libsofthsm2.so
       SAFFUI_TEST_PKCS11_PIN: "1234"
     steps:
-      - uses: actions/checkout@v5.0.1
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
 
       - name: install a PKCS#11 token
@@ -268,7 +268,7 @@ jobs:
         ports:
           - 1389:1389
     steps:
-      - uses: actions/checkout@v5.0.1
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
       - name: gssapi headers and a KDC
         run: |
@@ -473,7 +473,7 @@ jobs:
         options: >-
           --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
-      - uses: actions/checkout@v5.0.1
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
       - name: gssapi headers
         run: |
@@ -555,5 +555,5 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5.0.1
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2

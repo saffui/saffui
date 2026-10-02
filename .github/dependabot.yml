@@ -1,12 +1,10 @@
-# cargo-deny already refuses a dependency with a known advisory, but it refuses
-# it at the moment someone opens a pull request - which is to say, it tells us
-# the tree is unsafe only once we were going to touch it anyway. These updates
-# are the other half: they arrive on their own schedule, so an advisory
-# published on a quiet week is answered that week rather than whenever the next
-# slice happens to land.
+# cargo-deny refuses a dependency carrying a known advisory, and it refuses it
+# when someone opens a pull request. An advisory published in a week where
+# nothing is touched is answered whenever the next slice happens to land. These
+# updates arrive on their own schedule instead.
 #
-# Weekly, not daily. A security product whose history is mostly bumps is a
-# history nobody reads, and an unread history is where a real change hides.
+# Weekly rather than daily, so that a bump does not become the usual content of
+# the history.
 version: 2
 
 updates:
@@ -18,12 +16,12 @@ updates:
     groups:
       # The workspace pins its dependencies in one table, so a patch bump
       # rarely stands alone: it arrives with the rest of its generation. One
-      # pull request per generation, and the breaking ones left to come in on
-      # their own, where they can be read.
+      # pull request per generation. The breaking ones come in on their own,
+      # where they can be read.
       patch-and-minor:
         update-types: [minor, patch]
 
-  # The console and the account pages are a pnpm workspace; Dependabot reads
+  # The console and the account pages are a pnpm workspace. Dependabot reads
   # each package.json in it separately, so each one is named here.
   - package-ecosystem: npm
     directories:
@@ -46,7 +44,7 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
 
-  # The image the product actually ships as.
+  # The image the product ships as.
   - package-ecosystem: docker
     directory: /
     schedule:

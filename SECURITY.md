@@ -13,7 +13,7 @@ you in the advisory unless you prefer otherwise.
 ## Scope
 
 In scope: the OpenID Connect provider and the SAML arm, the credentials a
-realm issues and the ones it verifies, the admin plane, the hosted pages,
+realm verifies and what it presents to a wallet, the admin plane, the hosted pages,
 the account and admin consoles, the LDAP front door, the gRPC authorization
 door, and the Kerberos path. The cryptography is in scope whether a key is
 held in the process or in an HSM through PKCS#11, and whether a build links

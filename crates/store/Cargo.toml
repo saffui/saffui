@@ -38,6 +38,6 @@ deadpool-postgres = { workspace = true }
 secrecy = { workspace = true }
 # The drift check reads the store's own source for every statement it sends,
 # and names each one it cannot read at its line.
-syn = { version = "2", features = ["full", "visit"] }
+syn = { version = "3", features = ["full", "visit"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"

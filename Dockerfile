@@ -3,7 +3,7 @@
 # The consoles first, with a toolchain that never reaches the runtime: the
 # built pages are handed to the compiler below and embedded into the binary,
 # so the image ships one process and no node.
-FROM node:22-bookworm-slim AS front
+FROM node:26-bookworm-slim AS front
 RUN corepack enable && corepack prepare pnpm@10.29.2 --activate
 WORKDIR /src
 COPY pnpm-workspace.yaml pnpm-lock.yaml ./

@@ -112,7 +112,7 @@ jobs:
 
       - name: cache the built library
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ env.OPENSSL_PREFIX }}
           key: openssl-${{ env.OPENSSL_VERSION }}-rpath-${{ runner.os }}

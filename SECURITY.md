@@ -12,10 +12,18 @@ you in the advisory unless you prefer otherwise.
 
 ## Scope
 
-The OpenID Connect provider, its admin plane, the hosted pages, the LDAP
-front, and the console are all in scope. Findings that only reproduce
-with `SAFFUI_PROXY_*` misconfiguration are still welcome: deployment-shape
-traps deserve fixing or documenting.
+In scope: the OpenID Connect provider and the SAML arm, the credentials a
+realm issues and the ones it verifies, the admin plane, the hosted pages,
+the account and admin consoles, the LDAP front door, the gRPC authorization
+door, and the Kerberos path. The cryptography is in scope whether a key is
+held in the process or in an HSM through PKCS#11, and whether a build links
+the FIPS-validated algorithms alone or ML-DSA and ML-KEM beside them.
+
+Findings that only reproduce with `SAFFUI_PROXY_*` misconfiguration are
+still welcome: deployment-shape traps deserve fixing or documenting.
+
+Out of scope: the rigs under `deploy/`. Every value in them is a development
+value and each file says so.
 
 ## Supported versions
 

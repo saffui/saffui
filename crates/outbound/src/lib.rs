@@ -2,6 +2,8 @@
 //! directories it asks, the messages it sends and the tellings it pushes. None
 //! of it needs a request to run in, which is why it sits below the server.
 
+#![forbid(unsafe_code)]
+
 pub mod camara;
 pub mod delivery;
 pub mod directory;

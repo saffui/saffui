@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub mod api;
 pub mod error;
 /// The mesh door's protocol shell. Compiled only when a deployment asked

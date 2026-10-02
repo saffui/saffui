@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub mod consent;
 pub mod letter;
 pub mod login;

@@ -49,6 +49,8 @@ saying what it proves. They are driven deliberately, not by CI.
 - `deploy/ha/RUNBOOK.md` says how several instances are operated together.
 - `deploy/observability/README.md` says how to see what a request did.
 - `SECURITY.md` says how to report a vulnerability.
+- `docs/decisions/` says what was decided before the code was written, and what
+  in the tree holds each decision in place.
 
 ## Building against one
 

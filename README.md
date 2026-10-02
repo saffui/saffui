@@ -1,5 +1,8 @@
 # saffui
 
+[![rust](https://github.com/saffui/saffui/actions/workflows/rust.yml/badge.svg?branch=develop)](https://github.com/saffui/saffui/actions/workflows/rust.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/saffui/saffui/badge)](https://scorecard.dev/viewer/?uri=github.com/saffui/saffui)
+
 An identity provider: one binary, one Postgres, one image. It serves OpenID
 Connect, a SAML arm and an LDAP front door, an admin plane behind them, a
 hosted sign-in, and an account console people use for themselves.
@@ -54,6 +57,15 @@ saying what it proves. They are driven deliberately, not by CI.
 `INTEGRATING.md` says how an application, a device, a service or an agent
 gets tokens from a realm, grant by grant: what to set up first, what to send,
 what comes back, and where the server does less than a specification allows.
+
+## Changing one
+
+- `CONTRIBUTING.md` says how a change gets in: what a branch and a commit look
+  like, how the signatures are verified, and what a pull request answers.
+- `AI-ASSISTANCE.md` says which part of this the tooling writes, which
+  decisions are taken before any code is written for them, and what no amount
+  of tooling closes.
+- `CODE_OF_CONDUCT.md` says where conduct is reported, and who reads it.
 
 ## What is in the tree
 

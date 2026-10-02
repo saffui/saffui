@@ -12,24 +12,21 @@ merit, and trust survives a disclosure better than a discovery.
 ## The design was written down before the code existed
 
 The decisions this server implements were made in thirty planning documents,
-kept in the open at <https://github.com/zakariaffoh/darkshield> under
-`docs/plans/`. Twenty-seven of the thirty were written before this repository's
-first commit on 22 July 2026. They cover the backend and its crate split, the
-protocol surface, tenancy, data and encryption, the event fabric, the gRPC
-surface, observability, operations, offline and air-gapped deployment, the
-admin contract, the consoles, and certification.
+twenty-seven of them written before this repository's first commit on 22 July
+2026. They cover the backend and its crate split, the protocol surface,
+tenancy, data and encryption, the event fabric, the gRPC surface,
+observability, operations, offline and air-gapped deployment, the admin
+contract, the consoles, and certification. The one deciding the certification
+strategy is dated nine days before this repository began.
 
-They are not notes. `PLAN-CERTIFICATION.md`, dated nine days before this
-repository began, decides that the three certification tracks are orthogonal
-and are never conflated: OpenID conformance certifies the protocol code, FIPS
-140-3 certifies an inherited crypto module for the United States federal
-market, and CSPN or a Common Criteria visa certifies the product for the
-sovereign one. It states that a win on one transfers to none of the others, and
-that nothing is claimed without the validation behind it.
+Those documents are not published. This is the one claim on this page a reader
+cannot check, and it is marked as such rather than left to be assumed. What can
+be checked is what the decisions became, and the rest of this page is about
+that.
 
-The implementation was written against those documents. Where this tree and a
-plan disagree, the tree is what runs, and the disagreement is a decision
-someone took and should be able to name.
+The implementation was written against them. Where this tree and a plan
+disagree, the tree is what runs, and the disagreement is a decision someone
+took and should be able to name.
 
 ## Decisions that do not move
 
@@ -67,14 +64,13 @@ was drafted and then kept, cut or rewritten.
 
 ## A decision, and what became of it
 
-`PLAN-CERTIFICATION.md` holds this, among its guiding principles:
+One of those documents settles, before any of this was written, that nothing is
+claimed without the validation standing behind it: no FIPS claim without a
+module currently validated and running in that mode, and no post-quantum under
+such a claim until a validated module's boundary actually contains ML-KEM and
+ML-DSA.
 
-> Never overclaim. No FIPS claim without a currently-CMVP-validated module
-> running in FIPS mode on a listed Operational Environment; no FIPS-validated
-> post-quantum until a module whose CMVP boundary actually contains
-> ML-KEM/ML-DSA is issued.
-
-In `crates/crypto/src/lib.rs` that principle is a build failure:
+In `crates/crypto/src/lib.rs` that is a build failure:
 
 ```rust
 #[cfg(all(feature = "fips-strict", feature = "pq-hybrid"))]

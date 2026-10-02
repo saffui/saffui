@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub mod authn;
 pub mod c14n;
 pub mod dsig;

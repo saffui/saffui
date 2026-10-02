@@ -1,3 +1,7 @@
+// The store's futures never suspend, so they are polled under a waker built by
+// hand rather than a runtime's.
+#![allow(unsafe_code)]
+
 use std::collections::HashMap;
 use std::sync::Mutex;
 

@@ -1,3 +1,7 @@
+// X509_get_extension_flags and X509_get_key_usage have no binding in the
+// openssl crate, so the flags are read from the C struct.
+#![allow(unsafe_code)]
+
 use std::cmp::Ordering;
 
 use foreign_types::{ForeignType, ForeignTypeRef};

@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub mod auditable;
 pub mod broker;
 pub mod claims_request;

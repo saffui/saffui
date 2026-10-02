@@ -8,6 +8,8 @@
 //! document in silence, and so leave it out of what a proof signs, it refuses
 //! the document instead, as VC Data Integrity §2.4.3 requires.
 
+#![forbid(unsafe_code)]
+
 pub mod base58;
 pub mod built_in;
 pub mod canon;

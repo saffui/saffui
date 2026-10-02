@@ -1,3 +1,10 @@
+// OpenSSL is reached through its C API where the Rust binding exposes no
+// equivalent, and two futures that never suspend are driven by a waker built
+// by hand. The crate denies unsafe rather than forbidding it, and the five
+// modules that need it allow it back for themselves: unsafe written anywhere
+// else in the crate fails the build.
+#![deny(unsafe_code)]
+
 // A binary that claims FIPS while linking ChaCha20 is a contradiction, and the
 // place to catch it is the build rather than an audit reading the feature list.
 #[cfg(all(feature = "fips-strict", feature = "chacha20"))]

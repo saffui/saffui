@@ -137,9 +137,26 @@ No second person has read this code. For a product whose whole purpose is to be
 trusted with other people's identities, that is the honest limit of everything
 above, and no amount of tooling closes it.
 
-What is planned against it, in order: the OpenID Foundation conformance suite
-run in CI, an external audit, and a second reviewer. Until those exist, read
-the plans, read the threat model, run the rigs under `deploy/`, and judge the
-artifacts rather than this page.
+Three things answer it, and they are at three different stages rather than in a
+queue.
+
+The conformance suites are run. Fifteen of the OpenID Foundation's
+certification plans are configured under `deploy/conformance`, from the basic
+and dynamic profiles through the form post ones, session management and the
+three logout plans, to the FAPI 2.0 Security Profile Final, and their archives
+are kept in the tree. The runner is handed the skips and failures that are
+expected of it, so a result outside those lists fails the run rather than being
+read past. They are driven deliberately rather than by CI, as the other rigs
+are, because a suite needing a proxy and an external service does not belong on
+every pull request. What is left there is the submission, which is a form and a
+fee rather than engineering.
+
+An external audit waits on a release to audit and on someone to fund it.
+
+A second reader waits on a person, and asking for one waits on neither of the
+others. That is the limit above, and it is the one being worked on.
+
+Until then, read the threat model, read the decisions under `docs/decisions/`,
+run the rigs under `deploy/`, and judge the artifacts rather than this page.
 
 `SECURITY.md` says where a finding goes.

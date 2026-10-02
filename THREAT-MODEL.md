@@ -468,7 +468,7 @@ tree; none of them is written here as a recipe.
 | R-7 | A knock the admin guard refuses is not journalled | Repeated refusals are a log line and nothing an auditor reads |
 | R-9 | One capability authorizes both sides of the four eyes rule | Two holders satisfy it; one holder cannot self approve |
 | R-10 | Anchoring is an assertion the operator makes | The server publishes nothing itself, so the bound on a rewrite is only as good as where the operator published |
-| R-11 | No release pipeline: no SBOM, no signature, no provenance, no fuzzing, and no lint confining unsafe code | T-SUP-3, and unsafe is confined by convention rather than mechanically |
+| R-11 | No release pipeline: no SBOM, no signature over an artefact, no provenance, and no fuzzing | T-SUP-3. Unsafe is no longer among these: every crate but `crypto` forbids it, and `crypto` denies it outside the five modules reaching OpenSSL's C API, each naming the call that has no binding. Commits are signed and `develop` refuses an unsigned push, which holds the history rather than what is released |
 | R-12 | No caching tier of any kind | Every decision reaches the database, which is an availability property rather than a secrecy one |
 | R-14 | A number proven over WhatsApp names whoever holds the WhatsApp account on it, not whoever holds its SIM | A number handed on by its carrier can take codes to its former holder until their WhatsApp lapses (T-LOG-20) |
 | R-15 | The SIM swap guard is experimental and off unless the process runs it, and it needs a carrier that answers CAMARA | Where it is off, whoever had a number moved to a new SIM receives its codes (T-LOG-21) |

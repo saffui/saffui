@@ -8,10 +8,12 @@ Connect, a SAML arm and an LDAP front door, an admin plane behind them, a
 hosted sign-in, and an account console people use for themselves.
 
 A realm signs with keys held in the process or in an HSM through PKCS#11. It
-can issue the credentials a wallet carries and verify the ones it is shown,
-presenting itself by its `did:web` or by a certificate an authority issued for
-its verifier key. A build can be held to the FIPS-validated algorithms alone,
-and one that is not can link ML-DSA and ML-KEM beside them.
+verifies the credentials a wallet presents to it, and presents itself to one by
+its `did:web` or by a certificate an authority issued for its verifier key. It
+does not issue credentials: nothing in the tree answers for an issuer.
+
+A build can be held to the FIPS-validated algorithms alone, and one that is not
+can link ML-DSA and ML-KEM beside them.
 
 ## Running one locally
 

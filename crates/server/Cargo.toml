@@ -36,7 +36,7 @@ tokio = { workspace = true, features = ["time"] }
 cross-krb5 = { version = "0.4", default-features = false, optional = true }
 # The hosted pages in every tongue they speak, rendered once at startup from
 # the same strings a themed deployment would translate.
-fluent-bundle = "0.15"
+fluent-bundle = "0.16"
 unic-langid = "0.9"
 # The consoles, embedded at build time when a feature asks for them: one binary
 # carries the whole plane. Each feature requires its app to be built first

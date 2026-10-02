@@ -5,6 +5,17 @@
 #
 # Weekly rather than daily, so that a bump does not become the usual content of
 # the history.
+#
+# Paused. A limit of zero stops the updates without dropping the
+# configuration: the ecosystems, the directories and the grouping are kept, so
+# turning them back on is one number in four places rather than a file written
+# again from nothing.
+#
+# It was turned on and off in an afternoon. On the first run Dependabot has no
+# backlog to respect a limit against and opens what it finds, which here was
+# twenty-two pull requests, most of them major versions the grouping leaves on
+# their own on purpose. Raise the limits one ecosystem at a time, cargo first,
+# so the majors arrive in a line that can be read.
 version: 2
 
 updates:
@@ -12,7 +23,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
     groups:
       # The workspace pins its dependencies in one table, so a patch bump
       # rarely stands alone: it arrives with the rest of its generation. One
@@ -30,7 +41,7 @@ updates:
       - /packages/saffui-js
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
     groups:
       patch-and-minor:
         update-types: [minor, patch]
@@ -42,11 +53,11 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
 
   # The image the product ships as.
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0

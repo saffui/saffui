@@ -1,8 +1,17 @@
 # saffui
 
-An OpenID Connect identity provider: one binary, one Postgres, one image.
-It serves the protocol, an admin plane behind it, a hosted sign-in, and an
-account console people use for themselves.
+[![rust](https://github.com/saffui/saffui/actions/workflows/rust.yml/badge.svg?branch=develop)](https://github.com/saffui/saffui/actions/workflows/rust.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/saffui/saffui/badge)](https://scorecard.dev/viewer/?uri=github.com/saffui/saffui)
+
+An identity provider: one binary, one Postgres, one image. It serves OpenID
+Connect, a SAML arm and an LDAP front door, an admin plane behind them, a
+hosted sign-in, and an account console people use for themselves.
+
+A realm signs with keys held in the process or in an HSM through PKCS#11. It
+can issue the credentials a wallet carries and verify the ones it is shown,
+presenting itself by its `did:web` or by a certificate an authority issued for
+its verifier key. A build can be held to the FIPS-validated algorithms alone,
+and one that is not can link ML-DSA and ML-KEM beside them.
 
 ## Running one locally
 
@@ -67,6 +76,9 @@ what comes back, and where the server does less than a specification allows.
 - `crates/auth` the login engine, `crates/authz` the authorization engine,
   `crates/saml` the SAML arm, `crates/crypto` the keys, `crates/ldapfront`
   the LDAP front door.
+- `crates/jsonld` the linked data a verifier of W3C credentials needs,
+  `crates/outbound` what the deployment says to the outside, `crates/scheduler`
+  the passes that run on a timer.
 - `crates/commons` the errors, features and address rules everything shares,
   `crates/config` the settings read from the environment, `crates/pgcore`
   the migrations, advisory locks and TLS to Postgres.

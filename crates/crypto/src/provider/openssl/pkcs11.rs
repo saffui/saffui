@@ -1,3 +1,7 @@
+// As in the key store: a future that never suspends, polled under a waker
+// built by hand.
+#![allow(unsafe_code)]
+
 use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
 use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsPssParams};
 use cryptoki::mechanism::{Mechanism, MechanismType};

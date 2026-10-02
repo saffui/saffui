@@ -1,0 +1,56 @@
+# OpenSSF Scorecard reads the repository rather than the code: whether the
+# default branch is protected, whether releases are signed, whether a tool
+# raises dependencies, whether the workflows pin what they run, whether a
+# security policy exists and is answered. It is the view someone deciding
+# whether to deploy this takes before they read a line of Rust.
+#
+# The score is published, which is the point. A number kept privately says
+# nothing to the person who has to decide.
+name: scorecard
+
+on:
+  # The analysis runs against the default branch alone: a feature branch has no
+  # protection rules of its own to read, and publishing from one would say the
+  # repository is in a state it is not.
+  push:
+    branches: [develop]
+  # Protection rules are half of what is scored, so a change to them is read
+  # straight away rather than at the end of the week.
+  branch_protection_rule:
+  schedule:
+    - cron: "41 3 * * 1"
+
+permissions: read-all
+
+jobs:
+  analysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # Writing the findings into the repository's security tab.
+      security-events: write
+      # The token Scorecard publishes under. It proves the run came from this
+      # repository, so a score cannot be posted for it from anywhere else.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5.0.1
+        with:
+          # Nothing here pushes, and a checkout that keeps the token leaves it
+          # in the clone for every later step to reach.
+          persist-credentials: false
+      - name: analysis
+        uses: ossf/scorecard-action@v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+      - name: the findings
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: scorecard
+          path: results.sarif
+          retention-days: 5
+      - name: into the security tab
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: results.sarif

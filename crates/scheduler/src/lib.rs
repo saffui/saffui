@@ -2,6 +2,8 @@
 //! directories synced, security and logout notices sent, and the status lists
 //! credentials cite read again. None of it answers a request.
 
+#![forbid(unsafe_code)]
+
 pub mod jobs;
 pub mod logout_notices;
 pub mod notices;

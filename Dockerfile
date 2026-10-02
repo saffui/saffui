@@ -21,7 +21,7 @@ RUN pnpm install --frozen-lockfile \
 
 # The build toolchain, pinned to the workspace's rust-version. OpenSSL is linked
 # from the system, so the runtime below carries the same major.
-FROM rust:1.97-bookworm AS build
+FROM rust:1.98-bookworm AS build
 RUN apt-get update \
  && apt-get install -y --no-install-recommends pkg-config libssl-dev \
  && rm -rf /var/lib/apt/lists/*

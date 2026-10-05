@@ -11,7 +11,7 @@ repository = "https://github.com/saffui/saffui"
 publish = false
 
 [workspace.lints.rust]
-unsafe_code= "forbid"
+unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

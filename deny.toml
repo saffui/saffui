@@ -13,14 +13,21 @@ include-build = true
 include-dev = true
 allow = [
     "Apache-2.0",
+    "BSD-3-Clause",
     "MIT",
     "Unicode-3.0",
+    "Zlib",
 ]
 
 [bans]
 multiple-versions = "deny"
 multiple-versions-include-dev = true
 wildcards = "deny"
+# A crate of this workspace is named by its path, without a version.
+allow-wildcard-paths = true
+skip = [
+    { crate = "syn@2", reason = "derive_more, which actix-web builds on, and tracing-attributes still ask for syn 2. It only runs at compile time." },
+]
 
 [sources]
 unknown-registry = "deny"

@@ -1,0 +1,16 @@
+[package]
+name = "server"
+description = "The HTTP surface of saffui: endpoints, their mounting, and the listeners."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+actix-web.workspace = true
+futures-util.workspace = true
+
+[lints]
+workspace = true

@@ -1,7 +1,9 @@
-use std::process::{Command, Output};
+use std::process::Output;
+
+mod support;
 
 fn run_saffui(arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_saffui"))
+    support::saffui_command()
         .args(arguments)
         .output()
         .expect("the saffui binary starts")

@@ -5,6 +5,9 @@ on:
     branches: [develop, main]
   push:
     branches: [develop, main]
+  schedule:
+    # Daily, so that an advisory published after a merge is seen.
+    - cron: "23 5 * * *"
 
 permissions:
   contents: read
@@ -48,13 +51,48 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      # The checksum is the one published next to this archive: bump both together.
+      # A version bump waits seven days after the release, the cooldown dependabot.yml already sets.
       DENY_VERSION: "0.20.2"
+      # Pins the archive as it was first read, from the same origin: it does not prove that origin.
       DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Refuse dependency policy bypasses
+        env:
+          # A new internal crate adds its manifest here by hand, in the pull request that creates it.
+          INTERNAL_MANIFESTS: crates/saffui/Cargo.toml
+        run: |
+          # Checked before the first cargo command, so that none runs under a tracked configuration.
+          configs="$(git ls-files -- ':(glob)**/.cargo' ':(glob)**/.cargo/**')"
+          if [ -n "${configs}" ]; then
+            echo "::error::a tracked .cargo entry can alias a check away or replace a source: ${configs}"
+            exit 1
+          fi
+          legacy="$(git ls-files -- ':(glob)**/rust-toolchain')"
+          if [ -n "${legacy}" ] || grep --quiet --extended-regexp '^[[:space:]]*path[[:space:]]*=' rust-toolchain.toml; then
+            echo "::error::rust-toolchain.toml names the toolchain by its channel, never by a path or a legacy file"
+            exit 1
+          fi
+          exceptions="$(git ls-files -- ':(glob)**/deny.exceptions.toml' ':(glob)**/.deny.exceptions.toml')"
+          if [ -n "${exceptions}" ]; then
+            echo "::error::license exceptions belong in deny.toml, not in a tracked cargo-deny exceptions file: ${exceptions}"
+            exit 1
+          fi
+          # With all features, as in deny.toml: otherwise cargo leaves optional dependencies out.
+          cargo metadata --locked --all-features --format-version 1 > "${RUNNER_TEMP}/metadata.json"
+          outsiders="$(jq --raw-output --arg internal "${INTERNAL_MANIFESTS}" '
+            .workspace_root as $root
+            | .packages[]
+            | select(.source == null)
+            | select(.manifest_path | ltrimstr($root + "/") | IN($internal | split(" ")[]) | not)
+            | "\(.name) \(.version) (\(.manifest_path))"
+          ' "${RUNNER_TEMP}/metadata.json")"
+          if [ -n "${outsiders}" ]; then
+            echo "::error::cargo-deny cannot judge a crate taken by path, and INTERNAL_MANIFESTS does not list it: ${outsiders}"
+            exit 1
+          fi
       - name: Install cargo-deny
         run: |
           archive="cargo-deny-${DENY_VERSION}-x86_64-unknown-linux-musl"

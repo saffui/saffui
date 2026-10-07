@@ -70,15 +70,43 @@ jobs:
             echo "::error::a tracked .cargo entry can alias a check away or replace a source: ${configs}"
             exit 1
           fi
-          legacy="$(git ls-files -- ':(glob)**/rust-toolchain')"
-          # A form is accepted, not a spelling refused: TOML writes a path key in more ways than one.
-          pinned='^(\[toolchain]|channel = "[0-9]+\.[0-9]+\.[0-9]+"|(components|targets) = \[[^]]*]|profile = "[a-z]+"|#.*| *)$'
-          # Printable ASCII and line feeds only: grep does not read every other byte the way rustup does.
-          odd="$(LC_ALL=C tr -d '\n\040-\176' < rust-toolchain.toml | wc -c | tr -d ' ')"
-          strays="$(LC_ALL=C grep --count --invert-match --extended-regexp "${pinned}" rust-toolchain.toml || true)"
-          channels="$(LC_ALL=C grep --count '^channel = ' rust-toolchain.toml || true)"
-          if [ -n "${legacy}" ] || [ "${odd}" != "0" ] || [ "${strays}" != "0" ] || [ "${channels}" != "1" ]; then
-            echo "::error::rust-toolchain.toml pins one release by its channel, in plain ASCII, one key per line among channel, components, targets and profile: anything else is refused, and so is a legacy rust-toolchain file"
+          toolchains="$(git ls-files -- ':(glob)**/rust-toolchain' ':(glob)**/rust-toolchain.toml')"
+          if [ "${toolchains}" != "rust-toolchain.toml" ]; then
+            echo "::error::one rust-toolchain.toml, at the root, names the toolchain, and no other toolchain file is tracked: ${toolchains}"
+            exit 1
+          fi
+          if ! python3 -I -c 'import tomllib'; then
+            echo "::error::the toolchain check needs python3 3.11 or later on the runner"
+            exit 1
+          fi
+          # Parsed, not matched line by line: TOML can spell a path key, or keep the channel from
+          # rustup, in more ways than a pattern sees. Isolated (-I): no module is taken from the
+          # tree. Only the word printed at the end passes.
+          verdict="$(python3 -I -c '
+          import re, tomllib
+          text = open("rust-toolchain.toml", "rb").read()
+          plain = all(byte == 10 or 32 <= byte <= 126 for byte in text)
+          document = tomllib.loads(text.decode("ascii"))
+          toolchain = document["toolchain"]
+          def names(value):
+              return isinstance(value, list) and all(
+                  isinstance(name, str) and re.fullmatch("[a-z0-9]+([_.-][a-z0-9]+)*", name)
+                  for name in value
+              )
+          if (
+              plain
+              and set(document) == {"toolchain"}
+              and set(toolchain) <= {"channel", "components", "targets", "profile"}
+              and isinstance(toolchain["channel"], str)
+              and re.fullmatch("[0-9][.](0|[1-9][0-9]{0,2})[.](0|[1-9][0-9]?)", toolchain["channel"])
+              and names(toolchain.get("components", []))
+              and names(toolchain.get("targets", []))
+              and toolchain.get("profile", "default") in ("minimal", "default", "complete")
+          ):
+              print("pinned")
+          ' || true)"
+          if [ "${verdict}" != "pinned" ]; then
+            echo "::error::rust-toolchain.toml must be TOML 1.0 in printable ASCII with LF line ends, pinning one release by its channel, with at most components, targets and a profile: anything else is refused"
             exit 1
           fi
           exceptions="$(git ls-files -- ':(glob)**/deny.exceptions.toml' ':(glob)**/.deny.exceptions.toml')"

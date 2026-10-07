@@ -62,7 +62,7 @@ jobs:
       - name: Refuse dependency policy bypasses
         env:
           # A new internal crate adds its manifest here by hand, in the pull request that creates it.
-          INTERNAL_MANIFESTS: crates/saffui/Cargo.toml
+          INTERNAL_MANIFESTS: crates/saffui/Cargo.toml crates/server/Cargo.toml
         run: |
           # Checked before the first cargo command, so that none runs under a tracked configuration.
           configs="$(git ls-files -- ':(glob)**/.cargo' ':(glob)**/.cargo/**')"

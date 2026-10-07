@@ -1,0 +1,28 @@
+[graph]
+# Without this, a bare `cargo deny check` skips optional dependencies.
+all-features = true
+
+[advisories]
+# A vulnerability advisory is denied by default: this file has no level for it.
+yanked = "deny"
+unmaintained = "all"
+unsound = "all"
+
+[licenses]
+include-build = true
+include-dev = true
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "Unicode-3.0",
+]
+
+[bans]
+multiple-versions = "deny"
+multiple-versions-include-dev = true
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+unknown-git = "deny"

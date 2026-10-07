@@ -16,13 +16,15 @@ Do not open an issue for a vulnerability. Report it privately, as the
 ## Building and testing
 
 The toolchain is pinned in `rust-toolchain.toml`, and rustup uses that
-version inside the repository. CI runs three commands, and a pull request
-needs all three to pass:
+version inside the repository. CI runs four commands, and a pull request
+needs all four to pass. The last one needs cargo-deny, at the version
+pinned in `.github/workflows/ci.yml`.
 
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
+cargo deny check -D index-failure
 ```
 
 Run them before you push. `unsafe` code is forbidden across the workspace,
@@ -148,7 +150,7 @@ into your branch.
 Target `develop`. `main` only receives releases. Open the pull request as a
 draft while it is not ready.
 
-The maintainer reviews and merges. The three CI checks must pass on a
+The maintainer reviews and merges. The four CI checks must pass on a
 branch that is up to date with `develop`, and every review conversation
 must be resolved.
 

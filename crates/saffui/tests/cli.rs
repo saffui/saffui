@@ -26,6 +26,10 @@ fn help_flag_prints_the_help_on_stdout_and_exits_with_0() {
 
     assert_eq!(output.status.code(), Some(0));
     assert!(stdout.contains("Usage: saffui"), "stdout was: {stdout}");
+    assert!(
+        stdout.contains(env!("CARGO_PKG_DESCRIPTION")),
+        "stdout was: {stdout}"
+    );
     assert!(output.stderr.is_empty(), "stderr must stay empty");
 }
 

@@ -30,9 +30,5 @@ mod tests {
     fn usage_error_returns_code_2_without_ending_the_process() {
         let arguments = ["saffui", "--nope"].map(OsString::from);
         assert_eq!(run_command_line(arguments), ExitCode::from(2));
-        assert!(
-            stdout.contains(env!("CARGO_PKG_DESCRIPTION")),
-            "stdout was: {stdout}"
-        );
     }
 }

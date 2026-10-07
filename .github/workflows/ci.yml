@@ -71,8 +71,14 @@ jobs:
             exit 1
           fi
           legacy="$(git ls-files -- ':(glob)**/rust-toolchain')"
-          if [ -n "${legacy}" ] || grep --quiet --extended-regexp '^[[:space:]]*path[[:space:]]*=' rust-toolchain.toml; then
-            echo "::error::rust-toolchain.toml names the toolchain by its channel, never by a path or a legacy file"
+          # A form is accepted, not a spelling refused: TOML writes a path key in more ways than one.
+          pinned='^(\[toolchain]|channel = "[0-9]+\.[0-9]+\.[0-9]+"|(components|targets) = \[[^]]*]|profile = "[a-z]+"|#.*| *)$'
+          # Printable ASCII and line feeds only: grep does not read every other byte the way rustup does.
+          odd="$(LC_ALL=C tr -d '\n\040-\176' < rust-toolchain.toml | wc -c | tr -d ' ')"
+          strays="$(LC_ALL=C grep --count --invert-match --extended-regexp "${pinned}" rust-toolchain.toml || true)"
+          channels="$(LC_ALL=C grep --count '^channel = ' rust-toolchain.toml || true)"
+          if [ -n "${legacy}" ] || [ "${odd}" != "0" ] || [ "${strays}" != "0" ] || [ "${channels}" != "1" ]; then
+            echo "::error::rust-toolchain.toml pins one release by its channel, in plain ASCII, one key per line among channel, components, targets and profile: anything else is refused, and so is a legacy rust-toolchain file"
             exit 1
           fi
           exceptions="$(git ls-files -- ':(glob)**/deny.exceptions.toml' ':(glob)**/.deny.exceptions.toml')"

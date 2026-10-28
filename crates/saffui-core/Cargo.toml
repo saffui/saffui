@@ -1,0 +1,23 @@
+[package]
+name = "saffui-core"
+description = "The domain types, rules and use cases of saffui."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# In-memory doubles of the ports and the contract every adapter must pass.
+testkit = []
+
+[dependencies]
+async-trait.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+saffui-core = { path = ".", features = ["testkit"]}
+
+[lints]
+workspace = true

@@ -13,6 +13,7 @@ use actix_web::dev::Server;
 use actix_web::rt::time::sleep;
 use actix_web::{App, HttpServer, web};
 use futures_util::future::try_join3;
+use saffui_core::app::App as Product;
 
 use crate::api::config::{register_data_plane, register_ops_plane};
 use crate::api::rest::endpoints::health::DrainFlag;
@@ -83,8 +84,15 @@ pub struct BoundPlanes {
 pub fn bind_planes(
     asked: PlaneAddresses,
     options: ShutdownOptions,
+    product: Product,
 ) -> Result<BoundPlanes, BindError> {
-    bind_planes_with(asked, options, register_data_plane)
+    let product = web::Data::new(product);
+    bind_planes_with(
+        asked,
+        options,
+        product.clone(),
+        register_data_plane(product),
+    )
 }
 
 /// Binds one listener per plane, the data plane mounted by `mount_data_plane`:
@@ -96,6 +104,7 @@ pub fn bind_planes(
 pub fn bind_planes_with<F>(
     asked: PlaneAddresses,
     options: ShutdownOptions,
+    product: web::Data<Product>,
     mount_data_plane: F,
 ) -> Result<BoundPlanes, BindError>
 where
@@ -124,18 +133,20 @@ where
         })?;
     let ops_plane = {
         let drain_flag = drain_flag.clone();
-        HttpServer::new(move || App::new().configure(register_ops_plane(drain_flag.clone())))
-            .disable_signals()
-            .keep_alive(KEEP_ALIVE)
-            .client_request_timeout(FIRST_REQUEST_HEAD_TIMEOUT)
-            .workers(OPS_PLANE_WORKERS)
-            .worker_max_blocking_threads(OPS_PLANE_BLOCKING_THREADS)
-            .max_connections(OPS_PLANE_CONNECTIONS)
-            .bind(asked.ops)
-            .map_err(|source| BindError {
-                address: asked.ops,
-                source,
-            })?
+        HttpServer::new(move || {
+            App::new().configure(register_ops_plane(product.clone(), drain_flag.clone()))
+        })
+        .disable_signals()
+        .keep_alive(KEEP_ALIVE)
+        .client_request_timeout(FIRST_REQUEST_HEAD_TIMEOUT)
+        .workers(OPS_PLANE_WORKERS)
+        .worker_max_blocking_threads(OPS_PLANE_BLOCKING_THREADS)
+        .max_connections(OPS_PLANE_CONNECTIONS)
+        .bind(asked.ops)
+        .map_err(|source| BindError {
+            address: asked.ops,
+            source,
+        })?
     };
 
     Ok(BoundPlanes {

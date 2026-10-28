@@ -3,6 +3,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use actix_web::{HttpResponse, get, web};
+use saffui_core::app::App as Product;
+use saffui_core::readiness::{Readiness, check_readiness};
 
 /// Raised when shutdown is requested, and never lowered: from then on
 /// readiness fails, so that traffic is routed elsewhere.
@@ -29,12 +31,18 @@ pub async fn report_liveness() -> HttpResponse {
     HttpResponse::Ok().finish()
 }
 
-/// Readiness: 200 while serving, 503 from the moment shutdown is requested.
+/// Readiness: 200 while this instance can serve. A refusal says why in its
+/// body: this plane is the operator's, not the public's.
 #[get("/readyz")]
-pub async fn report_readiness(drain_flag: web::Data<DrainFlag>) -> HttpResponse {
-    if drain_flag.is_draining() {
-        HttpResponse::ServiceUnavailable().finish()
-    } else {
-        HttpResponse::Ok().finish()
+pub async fn report_readiness(
+    product: web::Data<Product>,
+    drain_flag: web::Data<DrainFlag>,
+) -> HttpResponse {
+    match check_readiness(&product, drain_flag.is_draining()).await {
+        Readiness::Ready => HttpResponse::Ok().finish(),
+        Readiness::Draining => HttpResponse::ServiceUnavailable().body("draining\n"),
+        Readiness::StorageUnavailable(reason) => {
+            HttpResponse::ServiceUnavailable().body(format!("{reason}\n"))
+        }
     }
 }

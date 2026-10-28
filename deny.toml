@@ -27,6 +27,8 @@ wildcards = "deny"
 allow-wildcard-paths = true
 skip = [
     { crate = "syn@2", reason = "derive_more, which actix-web builds on, and tracing-attributes still ask for syn 2. It only runs at compile time." },
+    { crate = "wasi@0.11", reason = "mio and whoami, which the PostgreSQL driver builds on, ask for two versions of the WASI bindings. Neither is built for a target this product ships on." },
+
 ]
 
 [sources]

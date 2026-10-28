@@ -41,10 +41,18 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # The cluster scripts/dev-postgres.sh starts. A database test without it fails.
+      SAFFUI_TEST_PG: host=127.0.0.1 port=55460 user=saffui_owner dbname=postgres
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Start a throwaway PostgreSQL cluster
+        run: |
+          # The server the runner image carries, the newest of them: nothing is downloaded.
+          bin="$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -n 1)"
+          SAFFUI_DEV_PG_BIN="${bin}" scripts/dev-postgres.sh start
       - run: cargo test --workspace --locked
 
   deny:
@@ -62,7 +70,7 @@ jobs:
       - name: Refuse dependency policy bypasses
         env:
           # A new internal crate adds its manifest here by hand, in the pull request that creates it.
-          INTERNAL_MANIFESTS: crates/saffui/Cargo.toml crates/server/Cargo.toml
+          INTERNAL_MANIFESTS: crates/saffui/Cargo.toml crates/server/Cargo.toml crates/saffui-core/Cargo.toml crates/pgcore/Cargo.toml crates/store/Cargo.toml
         run: |
           # Checked before the first cargo command, so that none runs under a tracked configuration.
           configs="$(git ls-files -- ':(glob)**/.cargo' ':(glob)**/.cargo/**')"

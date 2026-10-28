@@ -1,3 +1,5 @@
 /target
 .idea
 
+# The throwaway cluster of scripts/dev-postgres.sh.
+/.pg

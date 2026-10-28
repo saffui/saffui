@@ -11,9 +11,18 @@ publish.workspace = true
 [dependencies]
 actix-rt.workspace = true
 clap.workspace = true
+deadpool-postgres.workspace = true
+pgcore.workspace = true
+saffui-core.workspace = true
 server.workspace = true
+store.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+pgcore = { workspace = true, features = ["testkit"] }
+tokio = { workspace = true, features = ["rt"] }
 
 [lints]
 workspace = true

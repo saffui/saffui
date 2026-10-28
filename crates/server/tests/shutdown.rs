@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use actix_web::rt::System;
 use actix_web::rt::time::sleep;
 use actix_web::{HttpResponse, web};
+use saffui_core::testkit::memory::MemoryStorage;
 use server::serve::{PlaneAddresses, ShutdownOptions, bind_planes_with};
 
 /// Longer than anything here should take, so that a hang fails instead of lasting.
@@ -63,8 +64,10 @@ fn run_planes(options: ShutdownOptions) -> RunningPlanes {
                     data: any_port,
                     ops: any_port,
                 };
-                let planes = bind_planes_with(asked, options, mount_data_plane)
-                    .map_err(|refused| refused.source)?;
+                let (product, _storage) = MemoryStorage::wire();
+                let planes =
+                    bind_planes_with(asked, options, web::Data::new(product), mount_data_plane)
+                        .map_err(|refused| refused.source)?;
                 let _ = announce.send(planes.addresses);
                 planes
                     .run_until(watch_flag(&flags.shutdown_requested))
@@ -150,7 +153,7 @@ fn a_request_in_flight_finishes_after_readiness_has_failed_and_the_planes_stop_c
     let readiness = send_request(planes.addresses.ops, "/readyz").and_then(read_response);
     assert_eq!(
         readiness.ok(),
-        Some((503, String::new())),
+        Some((503, "draining\n".to_owned())),
         "the operations plane must answer, and say not ready, while a request is in flight"
     );
 

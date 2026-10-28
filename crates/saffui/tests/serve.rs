@@ -10,6 +10,12 @@ use std::sync::mpsc;
 use std::thread::{self, sleep};
 use std::time::{Duration, Instant};
 
+use pgcore::migrate::{EMBEDDED, Migration};
+use pgcore::testkit::TestDatabase;
+use pgcore::{APP_ROLE, MAINTENANCE_ROLE};
+
+#[path = "support/database.rs"]
+mod database;
 mod support;
 
 /// Longer than anything here should take, so that a hang fails instead of lasting.
@@ -27,6 +33,8 @@ struct Serve {
     journal: Option<BufReader<ChildStderr>>,
     /// What was already read from it.
     heard: String,
+    /// The database it serves from, dropped after the process.
+    database: Option<TestDatabase>,
 }
 
 impl Drop for Serve {
@@ -37,7 +45,19 @@ impl Drop for Serve {
 }
 
 impl Serve {
+    /// Starts `serve` on a migrated database of its own, as the serving role.
     fn spawn(configure: impl FnOnce(&mut Command)) -> Self {
+        let database = database::create_database(EMBEDDED);
+        let url = database.connection_string(APP_ROLE);
+        let mut serving = Self::spawn_without_database(|command| {
+            command.env("SAFFUI_DATABASE_URL", url);
+            configure(command);
+        });
+        serving.database = Some(database);
+        serving
+    }
+
+    fn spawn_without_database(configure: impl FnOnce(&mut Command)) -> Self {
         let mut command = support::saffui_command();
         command
             .arg("serve")
@@ -50,6 +70,7 @@ impl Serve {
             process,
             journal,
             heard: String::new(),
+            database: None,
         }
     }
 
@@ -392,4 +413,99 @@ fn a_journal_nobody_reads_does_not_end_the_process_before_its_shutdown() {
 
     let (code, _) = serving.wait_for_exit();
     assert_eq!(code, Some(0), "a failed journal write must not be fatal");
+}
+
+#[test]
+fn serve_without_a_database_connection_string_exits_with_2_and_names_the_variable() {
+    let refused = Serve::spawn_without_database(|command| {
+        command.args(["--listen", ANY_PORT, "--ops-listen", ANY_PORT]);
+    });
+
+    let (code, stderr) = refused.wait_for_exit();
+    assert_eq!(code, Some(2), "stderr was: {stderr}");
+    assert!(
+        stderr.contains("SAFFUI_DATABASE_URL is required"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn serve_refuses_to_start_when_nothing_answers_at_the_database_address() {
+    let refused = Serve::spawn_without_database(|command| {
+        command.args(["--listen", ANY_PORT, "--ops-listen", ANY_PORT]);
+        command.env(
+            "SAFFUI_DATABASE_URL",
+            "host=127.0.0.1 port=1 user=saffui_app dbname=saffui",
+        );
+    });
+
+    let (code, stderr) = refused.wait_for_exit();
+    assert_eq!(code, Some(1), "stderr was: {stderr}");
+    assert!(
+        stderr.contains("refusing to serve: the database cannot serve: nothing answers"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("listening"),
+        "nothing was announced: {stderr}"
+    );
+}
+
+#[test]
+fn serve_refuses_to_start_under_a_role_that_bypasses_row_security() {
+    let database = database::create_database(EMBEDDED);
+    let refused = Serve::spawn_without_database(|command| {
+        command.args(["--listen", ANY_PORT, "--ops-listen", ANY_PORT]);
+        command.env(
+            "SAFFUI_DATABASE_URL",
+            database.connection_string(MAINTENANCE_ROLE),
+        );
+    });
+
+    let (code, stderr) = refused.wait_for_exit();
+    assert_eq!(code, Some(1), "stderr was: {stderr}");
+    assert!(
+        stderr.contains("the role saffui_maintenance bypasses row security"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn serve_refuses_to_start_on_a_schema_ahead_of_what_it_knows() {
+    let beyond = Migration {
+        version: i32::try_from(EMBEDDED.len()).expect("a small count") + 1,
+        name: "a_migration_from_the_future",
+        sql: "CREATE TABLE from_the_future (id integer PRIMARY KEY);",
+    };
+    let migrations: Vec<Migration> = EMBEDDED.iter().copied().chain([beyond]).collect();
+    let database = database::create_database(&migrations);
+    let refused = Serve::spawn_without_database(|command| {
+        command.args(["--listen", ANY_PORT, "--ops-listen", ANY_PORT]);
+        command.env("SAFFUI_DATABASE_URL", database.connection_string(APP_ROLE));
+    });
+
+    let (code, stderr) = refused.wait_for_exit();
+    assert_eq!(code, Some(1), "stderr was: {stderr}");
+    assert!(
+        stderr.contains("the database schema is ahead of this binary"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn readiness_fails_once_the_database_is_gone_and_liveness_holds() {
+    let (mut serving, _data, ops) = start_serve(pass_as_options, "0");
+    assert_eq!(request_status(ops, "/readyz").ok(), Some(200));
+
+    // Dropping the database closes every session of the node and refuses the next.
+    drop(serving.database.take());
+
+    wait_until("readiness fails", || {
+        request_status(ops, "/readyz").ok() == Some(503)
+    });
+    assert_eq!(
+        request_status(ops, "/livez").ok(),
+        Some(200),
+        "a database that is gone must not get the process restarted"
+    );
 }

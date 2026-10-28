@@ -15,6 +15,6 @@ pub fn complete<F: Future>(future: F) -> F::Output {
         .poll(&mut Context::from_waker(Waker::noop()))
     {
         Poll::Ready(output) => output,
-        Poll::Pending => panic!("a future driven on databse waited"),
+        Poll::Pending => panic!("a future driven on doubles waited"),
     }
 }

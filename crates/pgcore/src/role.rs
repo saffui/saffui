@@ -70,7 +70,7 @@ mod tests {
     }
 
     #[test]
-    fn a_superuser_and_a_role_bypasses_row_security_are_both_refused() {
+    fn a_superuser_and_a_role_that_bypasses_row_security_are_both_refused() {
         let refused = Err(PrivilegedRole {
             name: "some_role".to_owned(),
         });

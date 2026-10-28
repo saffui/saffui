@@ -1,5 +1,5 @@
 //! The pool a serving node draws from: bounded in size and in wait, so that a
-//! database that failed behind answers 503 quickly instead of queueing.
+//! database that falls behind answers 503 quickly instead of queueing.
 
 use std::time::Duration;
 
@@ -11,7 +11,7 @@ use crate::connect::{ConnectionPlan, ConnectionPolicyError};
 #[derive(Clone, Copy, Debug)]
 pub struct PoolSettings {
     pub max_size: usize,
-    /// How long a request waits for a connection before it give up.
+    /// How long a request waits for a connection before it gives up.
     pub wait_timeout: Duration,
     /// After how long the server ends a transaction nobody is driving.
     pub idle_in_transaction_timeout: Duration,
@@ -47,8 +47,8 @@ pub fn build_pool(plan: &ConnectionPlan, settings: PoolSettings) -> Result<Pool,
         "idle_in_transaction_session_timeout",
         &settings.idle_in_transaction_timeout.as_millis().to_string(),
     );
-    // A unit of work rolls when it is abandoned. This the net under
-    // it: a session never reaches its borrower inside a transaction or
+    // A unit of work rolls back when it is abandoned. This is the net under
+    // it: a session never reaches its next borrower inside a transaction or
     // with a setting of the previous one.
     let manager_config = ManagerConfig {
         recycling_method: RecyclingMethod::Custom("ROLLBACK; RESET ALL".to_string()),

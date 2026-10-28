@@ -11,14 +11,14 @@ use postgres_openssl::MakeTlsConnector;
 use tokio_postgres::config::{Host, SslMode};
 use tokio_postgres::{Client, Config, NoTls};
 
-///  How the link to the database is protected
+/// How the link to the database is protected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TlsMode {
-    /// A clear link, wirtten on purpose
+    /// A clear link, written on purpose.
     Disable,
-    /// Encrypted, the server certificate not verified
+    /// Encrypted, the server certificate not verified.
     Require,
-    /// Encrypted, the certificate chain and the host name verified
+    /// Encrypted, the certificate chain and the host name verified.
     VerifyFull,
 }
 
@@ -53,7 +53,7 @@ pub enum ConnectionPolicyError {
     TlsSetup,
 }
 
-/// A Connection the policy has accepted: where to, and how the link is protected.
+/// A connection the policy has accepted: where to, and how the link is protected.
 #[derive(Clone, Debug)]
 pub struct ConnectionPlan {
     pub(crate) config: Config,

@@ -9,10 +9,10 @@ use crate::lock::{LockError, MIGRATION_LOCK, SessionLock};
 use crate::{APP_ROLE, MAINTENANCE_ROLE};
 use plan::{PlanError, plan_pending};
 
-/// The schema of the product, in order
+/// The schema of the product, in order.
 pub const EMBEDDED: &[Migration] = &[];
 
-/// One numbered step of the schema, as SQL text
+/// One numbered step of the schema, as SQL text.
 #[derive(Clone, Copy, Debug)]
 pub struct Migration {
     pub version: i32,
@@ -69,7 +69,7 @@ pub async fn apply_pending(
     let lock = SessionLock::try_acquire(client, MIGRATION_LOCK).await?;
     let outcome = apply_under_lock(lock.client(), migrations).await;
     // The connection closes either way, which releases the lock: an unlock
-    // that fails after run must not hide the first error.
+    // that fails after a failed run must not hide the first error.
     let _ = lock.release().await;
     outcome
 }

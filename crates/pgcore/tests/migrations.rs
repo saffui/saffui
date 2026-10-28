@@ -27,7 +27,7 @@ const NOTES_AUTHOR: Migration = Migration {
 const BROKEN: Migration = Migration {
     version: 2,
     name: "0002_broken",
-    sql: "ALTER TABLE notes ADD COLUMN author text; SELECT * FROM np_such_table;",
+    sql: "ALTER TABLE notes ADD COLUMN author text; SELECT * FROM no_such_table;",
 };
 
 async fn count_columns(plan: &ConnectionPlan, table: &str) -> i64 {

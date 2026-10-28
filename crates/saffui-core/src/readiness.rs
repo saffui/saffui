@@ -11,7 +11,7 @@ pub enum Readiness {
     StorageUnavailable(StorageUnavailable),
 }
 
-/// Decides readiness. A draining instane answers without touching the
+/// Decides readiness. A draining instance answers without touching the
 /// storage: it is leaving, whatever the database says.
 pub async fn check_readiness(app: &App, draining: bool) -> Readiness {
     if draining {

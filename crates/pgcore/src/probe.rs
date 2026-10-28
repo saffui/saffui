@@ -21,7 +21,7 @@ pub enum ProbeFailure {
     TlsFailed,
     #[error("the database refused the connection")]
     Refused,
-    #[error("nothing answers at the databse address")]
+    #[error("nothing answers at the database address")]
     Unreachable,
     #[error("the schema is at version {found}: this binary needs at least {oldest}")]
     SchemaBehind { found: i32, oldest: i32 },
@@ -29,7 +29,7 @@ pub enum ProbeFailure {
     SchemaAhead { found: i32, newest: i32 },
 }
 
-// Probes the database once.
+/// Probes the database once.
 ///
 /// # Errors
 ///
@@ -85,7 +85,7 @@ fn classify_driver_error(error: &tokio_postgres::Error) -> ProbeFailure {
         }
         source = cause.source();
     }
-    // The driver keeps its error linds private: its handshake error is told
+    // The driver keeps its error kinds private: its handshake error is told
     // apart by its text, pinned with the version of the driver.
     if error.to_string().contains("TLS") {
         ProbeFailure::TlsFailed

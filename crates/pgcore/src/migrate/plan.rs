@@ -10,9 +10,9 @@ pub struct Fingerprint {
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PlanError {
-    #[error("the embedded migrations are not numbered 1, 2, 3 and son on")]
+    #[error("the embedded migrations are not numbered 1, 2, 3 and so on")]
     EmbeddedOutOfOrder,
-    #[error("migration {version} was applied with anaother text than the one embedded here")]
+    #[error("migration {version} was applied with another text than the one embedded here")]
     Drift { version: i32 },
     #[error("migration {version} is applied but unknown to this binary: the schema is ahead")]
     Ahead { version: i32 },
@@ -70,7 +70,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_history_leaves_evrything_to_apply() {
+    fn an_empty_history_leaves_everything_to_apply() {
         let embedded = [print(1, "a"), print(2, "b")];
         assert_eq!(plan_pending(&embedded, &[]), Ok(vec![1, 2]));
     }

@@ -27,7 +27,16 @@ cargo test --workspace --locked
 cargo deny check -D index-failure
 ```
 
-Run them before you push. `unsafe` code is forbidden across the workspace,
+The tests need a PostgreSQL cluster. `scripts/dev-postgres.sh start`
+starts a throwaway one on the loopback interface, creates the roles the
+tests use, and prints the `SAFFUI_TEST_PG` line to export. It looks for
+PostgreSQL 15 from Homebrew; `SAFFUI_DEV_PG_BIN` names another.
+
+```sh
+eval "$(scripts/dev-postgres.sh start)"
+```
+
+Run the four commands before you push. `unsafe` code is forbidden across the workspace,
 clippy's pedantic lints are enabled, and CI treats every warning as an
 error.
 

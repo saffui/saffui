@@ -105,7 +105,7 @@ pub(crate) fn resolve_serving_settings(
     })
 }
 
-fn resolve_setting<T: FromStr + Copy>(
+pub(crate) fn resolve_setting<T: FromStr + Copy>(
     setting: &Setting<T>,
     option_value: Option<&str>,
     read_variable: impl Fn(&str) -> Option<String>,

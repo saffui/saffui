@@ -11,6 +11,10 @@ publish.workspace = true
 [dependencies]
 actix-web.workspace = true
 futures-util.workspace = true
+saffui-core.workspace = true
+
+[dev-dependencies]
+saffui-core = { workspace = true, features = ["testkit"] }
 
 [lints]
 workspace = true

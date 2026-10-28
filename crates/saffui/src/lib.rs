@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 mod cli;
 mod config;
 mod telemetry;
+mod wiring;
 
 #[derive(Parser)]
 #[command(version, about, arg_required_else_help = true)]
@@ -18,6 +19,8 @@ struct Cli {
 enum Command {
     /// Serve the data plane and the operations plane until a signal asks to stop.
     Serve(cli::serve::ServeOptions),
+    /// Apply the pending migrations, as the role that owns the schema.
+    Migrate(cli::migrate::MigrateOptions),
 }
 
 /// Parses the command line and returns the exit code of the process.
@@ -25,6 +28,7 @@ pub fn run_command_line(arguments: impl IntoIterator<Item = OsString>) -> ExitCo
     match Cli::try_parse_from(arguments) {
         Ok(parsed) => match parsed.command {
             Command::Serve(options) => cli::serve::run_command(&options),
+            Command::Migrate(options) => cli::migrate::run_command(&options),
         },
         Err(error) => {
             // Help and version arrive as errors: clap prints on stdout with code 0.

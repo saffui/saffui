@@ -92,7 +92,12 @@ pub fn plan_connection(
         Some(TlsMode::Disable) => LinkProtection::Clear,
         Some(TlsMode::Require) => LinkProtection::Encrypted,
         Some(TlsMode::VerifyFull) => LinkProtection::Verified { ca_file: None },
-        None if config.get_hosts().iter().all(is_this_machine) => LinkProtection::Clear,
+        // The driver dials a `hostaddr` in place of its host.
+        None if config.get_hosts().iter().all(is_this_machine)
+            && config.get_hostaddrs().iter().all(IpAddr::is_loopback) =>
+        {
+            LinkProtection::Clear
+        }
         None => return Err(ConnectionPolicyError::TlsModeRequired),
     };
     let tls = match (tls, ca_file) {
@@ -227,6 +232,26 @@ mod tests {
             refused,
             Err(ConnectionPolicyError::TlsModeRequired)
         ));
+    }
+
+    #[test]
+    fn a_remote_address_behind_a_loopback_host_without_a_mode_is_refused() {
+        let refused = plan_connection(
+            "host=localhost hostaddr=203.0.113.7 user=saffui_app",
+            None,
+            None,
+        );
+        assert!(matches!(
+            refused,
+            Err(ConnectionPolicyError::TlsModeRequired)
+        ));
+        let plan = plan_connection(
+            "host=localhost hostaddr=127.0.0.1 user=saffui_app",
+            None,
+            None,
+        )
+        .expect("a loopback plan");
+        assert_eq!(plan.tls, LinkProtection::Clear);
     }
 
     #[test]

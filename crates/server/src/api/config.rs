@@ -4,16 +4,19 @@
 //! `tests/mounted.rs` would say so.
 
 use crate::api::rest::endpoints::health::{self, DrainFlag};
+use crate::api::rest::endpoints::oidc;
 use actix_web::web;
 use saffui_core::app::App as Product;
 
-/// Mounts the data plane. It has no route yet, so every path answers 404, the
-/// probe paths included: a probe is never reachable from where traffic is.
+/// Mounts the data plane. The probe paths are not on it: a probe is never
+/// reachable from where traffic is.
 pub fn register_data_plane(
     product: web::Data<Product>,
 ) -> impl Fn(&mut web::ServiceConfig) + Clone + Send + 'static {
     move |config| {
-        config.app_data(product.clone());
+        config
+            .app_data(product.clone())
+            .service(oidc::discovery::serve_provider_metadata);
     }
 }
 

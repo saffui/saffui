@@ -2,4 +2,5 @@
 //! listeners that serve them.
 
 pub mod api;
+mod error;
 pub mod serve;

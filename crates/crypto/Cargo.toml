@@ -1,0 +1,77 @@
+[package]
+name = "crypto"
+description = "The cryptography of saffui, on OpenSSL. The only crate that links a cryptographic library."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# Ground rules for this crate:
+#   - never reinvent a primitive; write only the glue,
+#   - one library per layer,
+#   - OpenSSL 3.x is THE backend (signatures, AEAD, HMAC, PBKDF2, RNG, PEM/DER),
+#   - every FFI call stays behind the CryptoProvider trait, so the rest of the
+#     server depends on the trait object and never on OpenSSL directly.
+
+[features]
+default = []
+
+# ChaCha20-Poly1305: non-FIPS, worth having on mobile hardware without AES-NI.
+# Off by default so a FIPS build cannot select a non-validated cipher.
+chacha20 = []
+
+# ML-DSA signatures and ML-KEM encapsulation, through OpenSSL's default
+# provider. Off by default because it needs libcrypto 3.5 or newer at link and
+# at run time: an older library has no such algorithms, and the failure is a
+# provider that builds and then refuses every post-quantum operation.
+pq-hybrid = []
+
+# A key store backed by a PKCS#11 token, where the private key is created
+# inside the device and never leaves it. Off by default: it needs a module to
+# load and a token to talk to, and a build without either should not carry the
+# dependency.
+pkcs11 = ["dep:cryptoki"]
+
+# Pins the validated FIPS provider. Mutually exclusive with the non-FIPS
+# algorithms above, and a `compile_error!` in lib.rs enforces it rather than a
+# note in these docs: a binary that claims FIPS while linking ChaCha20 is a
+# contradiction an audit should catch at build time, not at runtime.
+fips-strict = []
+
+[dependencies]
+saffui-core.workspace = true
+openssl.workspace = true
+openssl-sys.workspace = true
+foreign-types.workspace = true
+cryptoki = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+subtle.workspace = true
+data-encoding.workspace = true
+secrecy.workspace = true
+async-trait.workspace = true
+argon2.workspace = true
+bcrypt.workspace = true
+
+# Pulled in by the JOSE layer.
+anyhow.workspace = true
+regex.workspace = true
+base64.workspace = true
+flate2.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+# The security invariants must hold for EVERY input, not just the curated cases:
+# parser totality, sign/verify round-trips, tamper rejection, constant-time
+# equality. Property tests are what catch the input nobody thought to write.
+proptest.workspace = true
+
+# No `[lints]` table: the crate does not take the lints of the workspace.
+# It reaches OpenSSL through its C API in five modules, so it denies unsafe in
+# `lib.rs` where the workspace forbids it, and its JOSE layer is kept
+# comparable to its source. The adapters, which are new code, take the
+# pedantic lints back for themselves.

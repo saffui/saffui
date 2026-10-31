@@ -69,6 +69,7 @@ fn migrate_brings_an_empty_database_to_the_schema_a_node_then_serves_from() {
             "127.0.0.1:0",
         ])
         .env("SAFFUI_DATABASE_URL", database.connection_string(APP_ROLE))
+        .env("SAFFUI_PUBLIC_ORIGIN", "http://localhost:8080")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()

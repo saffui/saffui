@@ -12,9 +12,12 @@ publish.workspace = true
 actix-web.workspace = true
 futures-util.workspace = true
 saffui-core.workspace = true
+serde.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 saffui-core = { workspace = true, features = ["testkit"] }
+serde_json.workspace = true
 
 [lints]
 workspace = true

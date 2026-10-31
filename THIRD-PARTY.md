@@ -1,0 +1,339 @@
+# Third-party code
+
+Register of source code **vendored into this repository**: copied, adapted, or
+otherwise derived from another project.
+
+It does not cover ordinary dependencies. Those are declared in `Cargo.toml`,
+resolved by Cargo and audited by `cargo deny` (see `deny.toml`); they are not
+part of this repository's source.
+
+## Current state
+
+The JOSE layer is vendored from josekit. See the entry below. Changes to the rest
+of the `crypto` crate, this repository's own code beside that layer, are listed
+under *Beside the vendored tree*. Nothing else in this tree was copied from
+another project.
+
+---
+
+## josekit
+
+- **Upstream:** https://github.com/hidekatsu-izuno/josekit-rs
+- **Author:** Hidekatsu Izuno <hidekatsu.izuno@gmail.com>
+- **Licence:** Apache-2.0 OR MIT; Apache-2.0 relied on here, matching this
+  repository. Upstream ships no `NOTICE` file and no per-file copyright headers,
+  so §4(c) and §4(d) have nothing to carry over; **§4(b) is the live obligation**,
+  discharged by the notice at the top of every derived file.
+- **Version taken:** **0.10.3**, tag `v0.10.3`, commit
+  `8fc5c143f258757c20c02841be9cfb088926d41d` (upstream commit date 2025-05-21)
+- **Date taken:** 2026-07-29
+- **Files derived:** the whole of upstream `src/` except `lib.rs`, placed under
+  `crates/crypto/src/jose/`, 58 files and ~21 500 lines: `jose_error.rs`,
+  `jose_header.rs`, `jwe*`, `jwk*`, `jws*`, `jwt*`, `util*`. Upstream `data/`
+  (222 test fixtures) copied to `crates/crypto/data/`.
+- **Modifications:**
+  1. Vendored as a module of the `crypto` crate rather than as its own crate.
+     Upstream `lib.rs` became `jose/mod.rs`, minus the doctest wiring.
+  2. Module paths rewritten `crate::` → `crate::jose::` (47 files).
+  3. Edition 2021 → 2024: removed three explicit `ref` bindings in
+     `jwt/jwt_payload.rs` tests, which edition 2024 rejects inside
+     implicitly-borrowing patterns.
+  4. A §4(b) modification notice added at the top of every derived file.
+  5. `PartialEq for Box<dyn T>` rewritten in five places. Upstream wrote
+     `self == other`, which resolves to the impl being defined: comparing two
+     boxed values recursed until the stack ran out. It affected
+     `JweAlgorithm`, `JwsAlgorithm`, `JweCompression`, `JweContentEncryption`
+     and `KeyPair`. The four algorithm traits now compare `name()`, the header
+     parameter that identifies them; `KeyPair` compares the DER *public* key,
+     which identifies the pair without a non-constant-time comparison of secret
+     material. Report upstream. See the defect table below.
+  6. Three `for … { …; break }` bodies guarded by `len() == 1` replaced with
+     `into_iter().next()` in `set_audience` (`jwt/jwt_payload.rs`,
+     `jwe/jwe_header.rs`, `jwe/jwe_header_set.rs`). Same behaviour; the loop
+     form is what `clippy::never_loop` rejects, and it is deny-by-default. The
+     dead `vec2` in the `jwt_payload.rs` copy went with it.
+  7. Formatted with this repository's `rustfmt`, and the machine-applicable
+     `clippy` suggestions applied across the vendored tree. This is the largest
+     source of divergence and the one that will cost the most at the next port:
+     it touches almost every file. Taken deliberately, so that the CI can hold
+     the whole tree to one standard rather than carve out an exemption.
+  8. The lints `clippy` cannot rewrite on its own, cleared by hand: 45 match
+     guards of the form `val if val == LIT` replaced by the literal pattern,
+     `&Vec<T>` narrowed to `&[T]` in the eight `set_critical` and
+     `set_x509_certificate_chain` signatures, `Default` derived on the five
+     types that had a bare `new()`, and `is_empty` added to `JoseHeader` with a
+     default body.
+  9. Three lints kept with a local `#[allow]` and a written reason instead of a
+     rewrite, because each would restructure upstream rather than improve it:
+     `module_inception` on `jwk::jwk`, `should_implement_trait` on
+     `DerReader::next` (it returns a `Result` and is not an iterator), and
+     `unbuffered_bytes` in `DerReader::from_reader` (every construction here
+     reads from an in-memory slice, so buffering would allocate for nothing).
+  10. The `crit` header claim read as `crit` on the JSON deserialization path,
+      where upstream reads `critical`. First of the three defects this file
+      already listed to patch after vendoring. A regression test covers both
+      answers: refused by default, accepted once the context declares the
+      extension acceptable.
+  11. `JwkSet::remove_key` now rebuilds `kid_map`. Second of the three listed
+      defects. Rebuilt rather than pruned entry by entry, because the map is
+      keyed by `(kid, position in keys)` and a removal shifts every later
+      position; the regression test keeps a key after the removed one for
+      exactly that reason.
+  12. A PBES2 iteration floor of 1000, named alongside the existing ceiling and
+      applied on both paths. `set_iter_count` already refused less; a `p2c`
+      taken from a header did not go through it. The encrypt side is the one
+      that mattered: it used a caller-supplied `p2c` unbounded in either
+      direction, so a JWE could be emitted whose password was a thousand times
+      cheaper to attack offline than the configuration allowed. Refused rather
+      than raised silently: a JWE that states one count while having been
+      built with another is worse than one that fails.
+  13. The upstream test vectors under `crates/crypto/data` removed, and with
+      them the 85 tests that read through `CARGO_MANIFEST_DIR/data`. 63 tests
+      remain, including every regression test written for modifications 5, 10,
+      11 and 12. The `crit` one was rewritten to generate its key rather than
+      load it, so the coverage survives the vectors.
+  14. Regression tests for the JWS, JWE and key-detection paths, written with
+      generated key material rather than the removed vectors.
+  15. `DerBuilder::append_integer_from_u64` fixed to write big-endian octets,
+      and to write zero as one `0x00` rather than none. Found by putting the
+      builder and the reader in the same test; see the defect table.
+  16. `b64` type-checked in `JwsHeader::check_claim`, which upstream leaves out
+      of the match entirely.
+  17. `RsaPssKeyPair::from_der` and `from_pem` now take the MGF1 digest from
+      the key's own MGF1 field when the caller does not state one, instead of
+      from its signing digest.
+  18. An explicit lifetime on the selector of `decode_with_verifier_in_jwk_set`
+      and `decode_with_decrypter_in_jwk_set`, matching their `*_selector`
+      siblings. Without it the bound resolves to `'static` and neither function
+      can be called with a verifier or decrypter built from the JWK it selects.
+  19. `DeflateJweCompression::decompress` stops at 256 KiB. Upstream read the
+      inflated stream to its end, so a JWE naming `zip: DEF` asked its recipient
+      for about a thousand times its own size once decrypted. The stream is read
+      one byte past the ceiling and no further: a payload that goes beyond is
+      refused before it costs more, and refused whole rather than handed back
+      cut short. Compressing on the encrypting side is untouched. See the defect
+      table.
+  20. The dashes of the comments written here for modifications 10, 11, 12,
+      14 and 15 replaced by ordinary punctuation, as the rest of this
+      repository writes. No code changes with them.
+- **Verification:** the 144 upstream tests passed unmodified at the point of
+  vendoring, which is what established that the port was faithful. That
+  evidence is no longer reproducible from the tree: modification 13 removed the
+  vectors those tests read, so 63 of them remain. Read the claim as a fact
+  about the moment of vendoring, not about this tree.
+
+  The consequence belongs here rather than in a commit message: the next port
+  from upstream cannot be checked the way this one was. Whoever takes josekit
+  0.10.4 will have to restore the vectors from upstream's `data/` at the tag
+  taken, or regenerate them from the openssl
+  invocations recorded in the `memo.md` that came with them, and run the
+  deleted tests against the merge before deleting them again.
+- **Upstream tracking:** watch https://github.com/hidekatsu-izuno/josekit-rs/releases.
+  Record every port in this entry, extending the Modifications list.
+
+### Why the version matters
+
+The next port from upstream starts from a diff against the release taken. Without
+the exact version and commit, nobody can tell which lines of `jose/` changed here
+and which changed upstream, and every upstream fix has to be found again by
+reading both trees side by side, at the cost of the whole tree each time. With
+them, a port is a merge of two known diffs, and the Modifications list says which
+of its conflicts are deliberate. That is what the tag, the commit and the date
+of the entry buy, and why each modification takes its number in the commit that
+makes it.
+
+### Known upstream defects to patch after vendoring
+
+Verified against josekit master on 2026-07-29. A fresh fork will contain these;
+they are not hypothetical.
+
+| Defect | Location | Effect |
+|---|---|---|
+| ~~The `crit` header claim is read as `"critical"` on the JSON deserialization path~~: **patched here**, modification 10 | `src/jws/jws_context.rs` (`deserialize_json_with_selector`) | The whole critical-extension validation is dead code. A JWS naming an extension the implementation does not understand is **accepted**, in violation of RFC 7515 §4.1.11. The compact path reads `"crit"` correctly, which is what hides it. Still present upstream; report it. |
+| ~~`JwkSet::remove_key` does not clear `kid_map`~~: **patched here**, modification 11 | `src/jwk/jwk_set.rs` | A key removed from the set still resolves through `get(kid)`. Revoking a key does not stop it being selected. The index is also keyed by position in `keys`, so a removal invalidates every entry after it. Still present upstream; report it. |
+| `PartialEq for Box<dyn T>` is written `self == other` | `src/jwe/jwe_algorithm.rs`, `src/jwe/jwe_compression.rs`, `src/jwe/jwe_content_encryption.rs`, `src/jws/jws_algorithm.rs`, `src/jwk/key_pair.rs` | The impl calls itself. Comparing two boxed algorithms, compressions, content encryptions or key pairs recurses until the stack is exhausted and the process dies. Patched here (modification 5); still present upstream. No upstream test covers it, and none could: the test process would go down with it. |
+| `DerBuilder::append_integer_from_u64` writes the octets least significant first | `src/util/der/der_builder.rs` | A DER INTEGER is big-endian and never zero octets long (X.690 8.3.2). The builder emitted the bytes reversed, and wrote zero as an INTEGER of no length. Its own reader decodes big-endian, so the two halves of the module disagreed. Nothing upstream or here calls it (the production paths use the single-byte variant, where order does not arise), so it is latent rather than exploitable. Patched here (modification 15); still present upstream. |
+| `check_claim` does not type-check the `b64` header claim | `src/jws/jws_header.rs` | RFC 7797 3 makes `b64` a boolean. Every other typed claim is checked; this one falls through, so `"b64": "false"` is stored and then read back as absent, because the getter only recognises a bool. The sender's instruction is dropped rather than obeyed. Both sides default to `true` the same way, so it fails closed rather than opening anything. Patched here (modification 16); still present upstream. |
+| `RsaPssKeyPair::from_der` and `from_pem` fall back to the signing digest for MGF1 | `src/jwk/alg/rsapss.rs` | When the caller passes `mgf1_hash: None`, both take the digest from the `hash` field of the key's algorithm identifier instead of its MGF1 field. A key whose two digests differ is silently rewritten on read, and re-encodes as a different algorithm identifier than it was given. Invisible in the common configuration, where the two digests are equal. Patched here (modification 17); still present upstream. |
+| `DeflateJweCompression::decompress` inflates without a bound | `src/jwe/zip/deflate.rs` | Whoever produces a JWE chooses its payload, and may name `zip: DEF`; the recipient inflates it after decryption to its end, and deflate reaches about a thousand to one. Anyone holding a recipient's public key can make a JWE of a few hundred kilobytes that costs it hundreds of megabytes. Patched here (modification 19); still present upstream, whose master was still the vendored commit when checked on 2026-09-28. |
+| `decode_with_verifier_in_jwk_set` and `decode_with_decrypter_in_jwk_set` elide the selector's lifetime | `src/jwt/jwt_context.rs` | Their selector is `Fn(&Jwk) -> Result<Option<&dyn JwsVerifier>>`, where the elided trait-object lifetime is `'static`. A caller can only return a verifier that lives forever, and the only way to obtain one is to build it from the JWK it was just handed, which does not. Both sibling `*_selector` functions carry an explicit `'a` and work. The pair is unusable as written. Patched here (modification 18); still present upstream. |
+
+Both are worth reporting upstream rather than only patching locally.
+
+Also missing upstream, and **added here** (modification 12): PBES2 had an
+iteration-count ceiling but no floor, so `p2c = 1` derived a key encryption key
+in a single PBKDF2 round (RFC 7518 §4.8.1.2 recommends at least 1000), and the
+encrypt path read `p2c` from the incoming header with no bound at all.
+
+### Not covered by the vendored tree
+
+**RFC 7638 JWK thumbprints, and the RFC 9278 thumbprint URI.** josekit reads
+and writes the `x5t` / `x5t#S256` header parameters, which are hashes of an
+X.509 *certificate*. That is a different value from a JWK thumbprint, which is
+a hash over the key's required members in the canonical JSON of RFC 7638 §3:
+members lexicographically ordered, no whitespace, optional and private members
+excluded, so a key pair's public and private halves share one thumbprint.
+
+Nothing here computes it. Anything that needs a stable identifier *for a key*
+needs it written: DPoP binds a token to `jkt`, mTLS certificate binding and
+several OIDC flows use the same value. Writing it means the canonical JSON as
+well as the hash, since a serialiser that emits members in insertion order
+produces a thumbprint that agrees with nobody.
+
+## Beside the vendored tree
+
+The rest of the `crypto` crate is this repository's own code: the provider seam
+and its OpenSSL and PKCS#11 backends, the envelope, password storage, one-time
+passwords, thumbprints and the certificate helpers. None of it is vendored or
+carries a notice. It shares a crate with the vendored layer all the same, so a
+change that adds to the crate's public surface or moves code between its modules
+is recorded here, numbered in the order it landed, in the commit that makes it.
+Code meant for the whole crate goes into a module of its own rather than into
+`jose/`, which keeps the vendored files diffable against upstream.
+
+1. `ecdsa::der_from_raw_signature` (2026-09-14, SAML signature verification):
+   moved out of the PKCS#11 store, where it was private, into a public module
+   that the store now calls. An XML signature carries ECDSA as `r‖s`, the way a
+   token returns it. The vendored `jose/jws/alg/ecdsa.rs` keeps its own
+   conversion, untouched.
+2. `x509::public_key_of` (2026-09-14, SAML signature verification): the
+   SubjectPublicKeyInfo of a DER certificate, so the key of a certificate an
+   administrator pinned can be handed to the signer.
+3. `CbcAlg`, `CbcProvider` and its OpenSSL backend (2026-09-14, SAML assertion
+   decryption): AES-CBC decryption with no padding taken off, reached through
+   the seam, so that XML Encryption's own padding can be read. Decryption only.
+4. `KeyTransportProvider` and its OpenSSL backend (2026-09-14, SAML assertion
+   decryption): RSAES-OAEP unwrapping with the OAEP and MGF1 digests named
+   apart, as XML Encryption names them. The vendored `jose/jwe/alg/rsaes.rs`
+   ties the two together and stays untouched.
+5. `x509::issue_certificate` and `x509::read_certificate_facts` (2026-09-14,
+   SAML metadata): a version 3 certificate for a public key under an RSA key
+   and SHA-256, the same bytes for the same issuance, so a realm publishes
+   certificates for its keys without storing any; and the kind, strength and
+   end of validity of a certified key, so an identity provider's weak key can
+   be refused where an administrator saves it.
+6. `envelope::MacPurpose` and `Envelope::derive_mac_key` (2026-09-24, the
+   failure counts per address): a MAC key expanded from the KEK under a label
+   per purpose, the labels kept beside the wrapping one so that a caller names
+   a purpose and is never handed the key that wraps. The first purpose keys the
+   digest the failure counts keep of each typed name.
+7. `sd_jwt` (2026-09-26, the wallet verifier): selective disclosure for JSON Web
+   Tokens, RFC 9901, written over the vendored JWS layer without touching it:
+   disclosures read and made, presentations verified and assembled, key binding
+   checked and signed. `thumbprint::hash_name` becomes visible to the crate so
+   `_sd_alg` is read against the same table the thumbprints use. The test
+   vectors under `crates/crypto/data/rfc9901/` are the RFC's own examples
+   (Section 5 and Appendix A), extracted from its text unchanged.
+8. `x509::verify_chain` and `x509::subject_key_identifier` (2026-09-26, the
+   wallet verifier): a chain presented leaf first, as `x5c` carries it, verified
+   up to anchors the caller holds, by OpenSSL's store in strict mode, at an
+   instant passed in rather than the clock's, with an intermediate allowed to
+   be the anchor and the depth bounded; and the key identifier a certificate
+   states, which is how a verifier names an authority to a wallet.
+9. `x509::issue_authority_certificate`, `x509::read_pem_certificates` and
+   `x509::is_authority` (2026-09-26, the realm's trusted authorities): an
+   authority's certificate, marked one by critical basic constraints and key
+   usage, for tests to build chains with; the certificates a PEM text carries;
+   and whether a certificate is an authority's by OpenSSL's reading of its
+   extensions, one it found malformed never being one.
+10. `x509::CertifiedKey::weakness` (2026-09-26, the realm's trusted
+    authorities): why this build would not trust a certificate's key, in words,
+    the judgement the SAML intake made for itself and now shares with the
+    deposit of an authority.
+11. `public_jwk::public_key_from_jwk` (2026-09-29, the wallet verifier): the
+    SubjectPublicKeyInfo of a public key a JWK writes, Ed25519 or ECDSA over
+    P-256, each coordinate at its curve's length and the point on the curve,
+    so that the key a `did:jwk` names, or one an issuer published, can be
+    handed to the signer. The vendored verifiers build the same bytes for
+    themselves and are untouched.
+12. `x509::request_certificate` and `x509::take_certificate_chain` (2026-10-01,
+    the verifier's certificate): a PKCS#10 request for a key, naming its
+    subject from the country down to the common name, the organization
+    identifier by its OID, signed with SHA-256 under the key it asks to have
+    certified; and the intake of the chain an authority issued for it, which
+    must certify exactly that key, under an authority rather than by itself,
+    for digital signatures when it says what the key is for, each certificate
+    issued by the next and every one valid at the instant asked, with a
+    self-signed anchor closing the chain checked against and left out, as
+    `x5c` leaves it out.
+13. `x509::verify_chain`, `x509::read_chained_certificate`, `x509::certify_key`
+    and the `revocation` module (2026-10-01, trust by certificate): a chain's
+    leaf now signs for others, issued by an authority rather than by itself,
+    even one deposited as an anchor, and for digital signatures when its key
+    usage says what its key is for, every key and every signature below the
+    anchor is held to OpenSSL's security level 2 (112 bits: no RSA under 2048
+    bits, no SHA-1), which plain path validation does not ask outside TLS, and
+    the path OpenSSL verified is handed back, leaf first and the anchor last;
+    the serial, the authority key identifier and the CRL distribution points of
+    a certificate, a point being read when one http(s) URI names its whole
+    list, and any other, or an extension stated but unparsed, said to be
+    unreadable; a certificate issued as real hierarchies issue them, its own
+    key and its issuer's identified and its revocation published at an address,
+    for tests to build chains that hold under strict validation, the existing
+    `issue_certificate`, whose bytes are published, being untouched; and the
+    revocation lists of RFC 5280 §5, read under the authority whose
+    certificates they cover (issued under its name, signed by its key, which is
+    for signing lists when its key usage says, with nothing critical in the
+    list or an entry) and issued as a conforming authority issues them, for
+    tests to revoke a certificate with.
+
+14. `x509::verify_chain` (2026-10-26, no work under a key the caller chose):
+    it verifies no signature under the key of the leaf. That key is the
+    caller's, and an RSA key of 3072 bits whose exponent is as long as its
+    modulus made that one verification a full exponentiation. A leaf issued by
+    itself is refused once the chain is judged, as a path of one certificate,
+    where it was refused before by a verification under its own key.
+
+15. `provider::PrivateKey` (2026-10-26, nothing left in freed memory): its
+    bytes are erased when it is dropped, as `secret::Secret` erases its own,
+    so that no copy of a private key outlives its use.
+
+16. `password::legacy` (2026-10-26, formats named for what they hold): the
+    PBKDF2 record that names its own pseudorandom function is
+    `Pbkdf2NamedPrf`, persisted as `pbkdf2_named_prf`, and the scrypt record
+    kept as one encoded string is `ScryptEncoded`, persisted as
+    `scrypt_encoded`. The earlier names did not say what the records hold.
+    No credential was persisted under them in this repository, and the test
+    of persisted names holds the new ones from here on.
+
+17. `adapters` (2026-10-26, the ports of the core): a module that serves the
+    cryptographic interfaces the core declares, and adds no cryptography of its
+    own. `adapters::random` binds the random port of the core to the provider.
+    `adapters::open_provider` opens the OpenSSL provider and refuses one that
+    does not answer a known digest. The crate now depends on `saffui-core`, for
+    those interfaces.
+
+## Before vendoring anything
+
+Record the entry **in the same commit that introduces the code**, never
+afterwards. The two fields that decide everything are the exact version and the
+date: without them no future diff against upstream is possible.
+
+Then add the notice required by the upstream licence to each derived file.
+Apache-2.0 §4(b) requires modified files to carry a *prominent* notice stating
+that you changed them: top of the file, not buried in it.
+
+### Entry template
+
+```markdown
+## <project name>
+
+- Upstream: <URL>
+- Version taken: <exact version or commit SHA> (<upstream release date>)
+- Date taken: <YYYY-MM-DD>
+- Licence: <SPDX identifier>
+- Files derived:
+  - <path>
+- Modifications: <what changed>
+- Upstream tracking: <who watches upstream, how ports are decided>
+```
+
+### Per-file notice template
+
+```rust
+// Portions of this file are derived from josekit
+// <https://github.com/hidekatsu-izuno/josekit-rs>, version <X.Y.Z>,
+// Copyright (c) hidekatsu-izuno, licensed under Apache-2.0 OR MIT.
+//
+// Modified by Kodjo Michel Touglo, <year>: <summary of the changes>.
+```

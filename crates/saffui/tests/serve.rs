@@ -25,6 +25,8 @@ const PAUSE: Duration = Duration::from_millis(20);
 /// Port 0 leaves the choice to the system, and the journal says what it chose:
 /// no test picks a port that another could be given.
 const ANY_PORT: &str = "127.0.0.1:0";
+/// The role the migrations run as, which owns every table.
+const OWNER: &str = "saffui_owner";
 
 /// A running `serve`. It is killed when the test ends, passed or failed.
 struct Serve {
@@ -61,6 +63,7 @@ impl Serve {
         let mut command = support::saffui_command();
         command
             .arg("serve")
+            .env("SAFFUI_PUBLIC_ORIGIN", "http://localhost:8080")
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
         configure(&mut command);
@@ -471,6 +474,22 @@ fn serve_refuses_to_start_under_a_role_that_bypasses_row_security() {
 }
 
 #[test]
+fn serve_refuses_to_start_under_the_owner_of_the_tables() {
+    let database = database::create_database(EMBEDDED);
+    let refused = Serve::spawn_without_database(|command| {
+        command.args(["--listen", ANY_PORT, "--ops-listen", ANY_PORT]);
+        command.env("SAFFUI_DATABASE_URL", database.connection_string(OWNER));
+    });
+
+    let (code, stderr) = refused.wait_for_exit();
+    assert_eq!(code, Some(1), "stderr was: {stderr}");
+    assert!(
+        stderr.contains("the role saffui_owner has the privileges of an owner"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn serve_refuses_to_start_on_a_schema_ahead_of_what_it_knows() {
     let beyond = Migration {
         version: i32::try_from(EMBEDDED.len()).expect("a small count") + 1,
@@ -507,5 +526,32 @@ fn readiness_fails_once_the_database_is_gone_and_liveness_holds() {
         request_status(ops, "/livez").ok(),
         Some(200),
         "a database that is gone must not get the process restarted"
+    );
+}
+
+#[test]
+fn serve_without_a_public_origin_exits_with_2_and_names_both_ways_to_give_it() {
+    let refused = Serve::spawn(|command| {
+        command.env_remove("SAFFUI_PUBLIC_ORIGIN");
+    });
+
+    let (code, stderr) = refused.wait_for_exit();
+    assert_eq!(code, Some(2), "stderr was: {stderr}");
+    for named in ["--public-origin", "SAFFUI_PUBLIC_ORIGIN"] {
+        assert!(stderr.contains(named), "{named} is not named: {stderr}");
+    }
+}
+
+#[test]
+fn a_public_origin_in_clear_to_a_remote_host_is_refused_with_code_2() {
+    let refused = Serve::spawn(|command| {
+        command.args(["--public-origin", "http://id.example.org"]);
+    });
+
+    let (code, stderr) = refused.wait_for_exit();
+    assert_eq!(code, Some(2), "stderr was: {stderr}");
+    assert!(
+        stderr.contains("http is accepted for this machine only"),
+        "{stderr}"
     );
 }

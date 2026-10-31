@@ -13,10 +13,17 @@ async-trait.workspace = true
 deadpool-postgres.workspace = true
 pgcore.workspace = true
 saffui-core.workspace = true
+tokio.workspace = true
+tokio-postgres.workspace = true
+tracing.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 pgcore = { workspace = true, features = ["testkit"] }
+saffui-core = { workspace = true, features = ["testkit"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio-postgres.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true

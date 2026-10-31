@@ -39,7 +39,7 @@ mod tests {
     #[test]
     fn the_reason_the_storage_gives_is_passed_on() {
         let (app, storage) = MemoryStorage::wire();
-        storage.fail_probes_with(StorageUnavailable::PoolExhausted);
+        storage.fail_with(StorageUnavailable::PoolExhausted);
 
         assert_eq!(
             complete(check_readiness(&app, false)),

@@ -54,6 +54,9 @@ jobs:
           bin="$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -n 1)"
           SAFFUI_DEV_PG_BIN="${bin}" scripts/dev-postgres.sh start
       - run: cargo test --workspace --locked
+      # The constants of the schema are the ones the migrations build.
+      - name: Check the generated schema
+        run: SAFFUI_DEV_PG_BIN="$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -n 1)" scripts/dev-postgres.sh gen-schema --check
 
   deny:
     runs-on: ubuntu-latest
@@ -70,7 +73,7 @@ jobs:
       - name: Refuse dependency policy bypasses
         env:
           # A new internal crate adds its manifest here by hand, in the pull request that creates it.
-          INTERNAL_MANIFESTS: crates/saffui/Cargo.toml crates/server/Cargo.toml crates/saffui-core/Cargo.toml crates/pgcore/Cargo.toml crates/store/Cargo.toml
+          INTERNAL_MANIFESTS: crates/saffui/Cargo.toml crates/server/Cargo.toml crates/saffui-core/Cargo.toml crates/pgcore/Cargo.toml crates/store/Cargo.toml crates/crypto/Cargo.toml crates/gen-schema/Cargo.toml
         run: |
           # Checked before the first cargo command, so that none runs under a tracked configuration.
           configs="$(git ls-files -- ':(glob)**/.cargo' ':(glob)**/.cargo/**')"

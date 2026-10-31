@@ -1,0 +1,20 @@
+[package]
+name = "gen-schema"
+description = "A development tool: writes the table and column constants of the store from a database the migrations built."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# Never `store`: this tool writes the file `store` compiles against. Were it
+# to depend on it, a change of shape would leave both waiting for the other.
+[dependencies]
+pgcore.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+tokio-postgres.workspace = true
+
+[lints]
+workspace = true

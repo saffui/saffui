@@ -65,7 +65,7 @@ async fn the_data_plane_answers_404_on_both_probe_paths() {
 #[actix_web::test]
 async fn readyz_answers_503_and_says_why_when_the_storage_cannot_serve() {
     let (product, storage) = MemoryStorage::wire();
-    storage.fail_probes_with(StorageUnavailable::SchemaAhead);
+    storage.fail_with(StorageUnavailable::SchemaAhead);
     let drain_flag = web::Data::new(DrainFlag::default());
     let app = test::init_service(
         App::new().configure(register_ops_plane(web::Data::new(product), drain_flag)),

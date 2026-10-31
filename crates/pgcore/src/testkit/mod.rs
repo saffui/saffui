@@ -1,7 +1,10 @@
 //! A database per test, cloned from a template that carries the migrations.
 //! The cluster is named by `SAFFUI_TEST_PG`, a connection string of a role
-//! that may create databases. A database test without it fails: it never
-//! passes by being skipped.
+//! that may create databases and runs the migrations: neither a superuser nor
+//! a role with BYPASSRLS, which `migrate` refuses. It holds `pg_signal_backend`
+//! to end the sessions other roles keep on a database it drops, but not those
+//! of a superuser: a test ends its own. A database test without it fails: it
+//! never passes by being skipped.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;

@@ -14,6 +14,8 @@ include-dev = true
 allow = [
     "Apache-2.0",
     "BSD-3-Clause",
+    # libloading, which the optional PKCS#11 key store loads its module with.
+    "ISC",
     "MIT",
     "Unicode-3.0",
     "Zlib",
@@ -28,7 +30,31 @@ allow-wildcard-paths = true
 skip = [
     { crate = "syn@2", reason = "derive_more, which actix-web builds on, and tracing-attributes still ask for syn 2. It only runs at compile time." },
     { crate = "wasi@0.11", reason = "mio and whoami, which the PostgreSQL driver builds on, ask for two versions of the WASI bindings. Neither is built for a target this product ships on." },
-
+    { crate = "base64@0.22", reason = "postgres-protocol still asks for base64 0.22 while bcrypt, which the crypto crate verifies imported passwords with, asks for 0.23." },
+]
+skip-tree = [
+    { crate = "proptest@1", reason = "The property tests of the crypto crate. It only runs in tests, and brings the previous generation of rand with it." },
+]
+# A cryptographic library is reached through the crate that owns it, so that
+# one place answers for how it is used.
+deny = [
+    { crate = "openssl", wrappers = ["crypto", "pgcore", "postgres-openssl", "tokio-openssl"], reason = "OpenSSL is used by the crypto crate, and by pgcore for the TLS of the database link." },
+    { crate = "openssl-sys", wrappers = ["crypto", "openssl", "tokio-openssl"], reason = "The C API of OpenSSL is reached by the crypto crate alone." },
+    { crate = "argon2", wrappers = ["crypto"], reason = "Passwords are hashed by the crypto crate alone." },
+    { crate = "bcrypt", wrappers = ["crypto"], reason = "Imported passwords are verified by the crypto crate alone." },
+    { crate = "cryptoki", wrappers = ["crypto"], reason = "A PKCS#11 module is loaded by the crypto crate alone." },
+    { crate = "postgres-openssl", wrappers = ["pgcore"], reason = "The TLS of the database link is set up by pgcore alone." },
+    { crate = "tokio-openssl", wrappers = ["postgres-openssl"], reason = "It only carries the TLS of the database link." },
+    { crate = "sha2", wrappers = ["postgres-protocol"], reason = "A digest of the product goes through the crypto crate; the driver hashes its own authentication." },
+    { crate = "hmac", wrappers = ["postgres-protocol"], reason = "A MAC of the product goes through the crypto crate; the driver hashes its own authentication." },
+    { crate = "md-5", wrappers = ["postgres-protocol"], reason = "A legacy digest the driver keeps for its own authentication." },
+    { crate = "blake2", wrappers = ["argon2"], reason = "Only argon2 builds on it." },
+    # The edges between the crates of the workspace, as the architecture draws them.
+    { crate = "saffui-core", wrappers = ["crypto", "saffui", "saffui-core", "server", "store"], reason = "The adapters, the server and the binary build on the core; pgcore and gen-schema never do." },
+    { crate = "crypto", wrappers = ["saffui"], reason = "Only the binary binds the crypto crate to the ports of the core." },
+    { crate = "store", wrappers = ["saffui"], reason = "Only the binary binds the store to the ports of the core." },
+    { crate = "server", wrappers = ["saffui"], reason = "Only the binary mounts the server." },
+    { crate = "pgcore", wrappers = ["gen-schema", "pgcore", "saffui", "store"], reason = "The database link is shared by the binary, the store and the schema tool." },
 ]
 
 [sources]

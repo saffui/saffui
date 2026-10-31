@@ -5,7 +5,8 @@ use std::error::Error;
 use std::io;
 use std::time::Duration;
 
-use deadpool_postgres::{Pool, PoolError, TimeoutType, Timeouts};
+use deadpool_postgres::{Object, Pool, PoolError, TimeoutType, Timeouts};
+use tokio_postgres::error::SqlState;
 
 use crate::migrate::history::read_schema_version;
 use crate::migrate::window::{SchemaStanding, SchemaWindow};
@@ -48,10 +49,26 @@ pub async fn probe_database(
         .timeout_get(&within_patience)
         .await
         .map_err(|error| classify_pool_error(&error))?;
-    let version = tokio::time::timeout(patience, read_schema_version(&**client))
-        .await
-        .map_err(|_| ProbeFailure::TimedOut)?
-        .map_err(|error| classify_driver_error(&error))?;
+    // The server gives up first, so that the statement ends there and the
+    // connection comes back clean. The recycling of the pool resets the bound.
+    let server_bound = patience.saturating_sub(patience / 4);
+    let read = tokio::time::timeout(patience, async {
+        client
+            .batch_execute(&format!(
+                "SET statement_timeout = {}",
+                server_bound.as_millis()
+            ))
+            .await?;
+        read_schema_version(&**client).await
+    })
+    .await;
+    let Ok(read) = read else {
+        // A link that stopped answering: given back, the connection would make
+        // the next borrower wait behind it.
+        drop(Object::take(client));
+        return Err(ProbeFailure::TimedOut);
+    };
+    let version = read.map_err(|error| classify_driver_error(&error))?;
     match window.judge(version) {
         SchemaStanding::Within => Ok(()),
         SchemaStanding::Behind => Err(ProbeFailure::SchemaBehind {
@@ -65,7 +82,9 @@ pub async fn probe_database(
     }
 }
 
-fn classify_pool_error(error: &PoolError) -> ProbeFailure {
+/// Tells why the pool gave no connection.
+#[must_use]
+pub fn classify_pool_error(error: &PoolError) -> ProbeFailure {
     match error {
         PoolError::Timeout(TimeoutType::Wait) => ProbeFailure::PoolExhausted,
         PoolError::Timeout(_) => ProbeFailure::TimedOut,
@@ -74,8 +93,34 @@ fn classify_pool_error(error: &PoolError) -> ProbeFailure {
     }
 }
 
-fn classify_driver_error(error: &tokio_postgres::Error) -> ProbeFailure {
-    if error.as_db_error().is_some() {
+/// Says what a journal needs of an error of the driver, which shows a refusal
+/// of the server as "db error" alone and never shows a cause. Not the detail
+/// of a refusal: it quotes the values of the row. The message may still quote
+/// a value of the statement: keep it for statements that bind no secret.
+#[must_use]
+pub fn describe_driver_error(error: &tokio_postgres::Error) -> String {
+    if let Some(refusal) = error.as_db_error() {
+        return format!("{} {}", refusal.code().code(), refusal.message());
+    }
+    let mut description = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        description.push_str(": ");
+        description.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    description
+}
+
+/// Tells why the driver could not reach or use the server.
+#[must_use]
+pub fn classify_driver_error(error: &tokio_postgres::Error) -> ProbeFailure {
+    if let Some(refusal) = error.as_db_error() {
+        // A lock or a statement waited for past its bound is a busy server,
+        // not a refusal.
+        if [SqlState::LOCK_NOT_AVAILABLE, SqlState::QUERY_CANCELED].contains(refusal.code()) {
+            return ProbeFailure::TimedOut;
+        }
         return ProbeFailure::Refused;
     }
     let mut source = error.source();

@@ -43,10 +43,21 @@ pub enum BuildPoolError {
 pub fn build_pool(plan: &ConnectionPlan, settings: PoolSettings) -> Result<Pool, BuildPoolError> {
     // Set on the pooled sessions only: a migration or a held lock legitimately
     // keeps a transaction open for longer.
-    let plan = plan.clone().with_session_setting(
-        "idle_in_transaction_session_timeout",
-        &settings.idle_in_transaction_timeout.as_millis().to_string(),
-    );
+    let plan = plan
+        .clone()
+        .with_session_setting(
+            "idle_in_transaction_session_timeout",
+            &settings.idle_in_transaction_timeout.as_millis().to_string(),
+        )
+        // Outside a unit of work, which sets a bound of its own, a lock waited
+        // for longer than the pool waits for a connection gives it back.
+        .with_session_setting(
+            "lock_timeout",
+            &settings.wait_timeout.as_millis().to_string(),
+        )
+        // The objects of the product live in public. A schema named after the
+        // role would come first by default, and a temporary table last here.
+        .with_session_setting("search_path", "public,pg_temp");
     // A unit of work rolls back when it is abandoned. This is the net under
     // it: a session never reaches its next borrower inside a transaction or
     // with a setting of the previous one.

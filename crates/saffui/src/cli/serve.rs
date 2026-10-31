@@ -10,7 +10,7 @@ use std::task::Poll;
 use actix_rt::System;
 use actix_rt::signal::unix::{SignalKind, signal};
 use clap::Args;
-use pgcore::pool::BuildPoolError;
+use saffui_core::settings::Settings;
 use server::serve::{
     BindError, DEFAULT_DRAIN_TIMEOUT_SECONDS, PlaneAddresses, ShutdownOptions, bind_planes,
 };
@@ -19,13 +19,14 @@ use crate::config::database::{
     DATABASE_POOL_SIZE, DATABASE_TLS, DATABASE_URL, DatabaseSettingsError, resolve_connection,
     resolve_pool_settings,
 };
+use crate::config::origin::{PUBLIC_ORIGIN, PublicOriginSettingError, resolve_public_origin};
 use tracing::info;
 
 use crate::config::serving::{
     DATA_PLANE, DRAIN_DELAY, OPS_PLANE, ServingSettingsError, Setting, resolve_serving_settings,
 };
 use crate::telemetry;
-use crate::wiring::{StartupRefusal, wire_product};
+use crate::wiring::{StartupRefusal, WiringError, wire_product};
 
 #[derive(Args)]
 pub(crate) struct ServeOptions {
@@ -47,6 +48,12 @@ pub(crate) struct ServeOptions {
         help = describe_setting("Delay between failing readiness and stopping", &DRAIN_DELAY)
     )]
     drain_delay: Option<String>,
+    #[arg(
+        long,
+        value_name = "ORIGIN",
+        help = format!("Where the public reaches this deployment, as https://host[:port]. Required [env: {PUBLIC_ORIGIN}]")
+    )]
+    public_origin: Option<String>,
     #[arg(
         long,
         value_name = "MODE",
@@ -82,8 +89,9 @@ pub(crate) fn run_command(options: &ServeOptions) -> ExitCode {
 
 enum ServeError {
     Settings(ServingSettingsError),
+    Origin(PublicOriginSettingError),
     Database(DatabaseSettingsError),
-    Wiring(BuildPoolError),
+    Wiring(WiringError),
     Refused(StartupRefusal),
     Bind(BindError),
     Serving(io::Error),
@@ -93,7 +101,7 @@ impl ServeError {
     fn exit_code(&self) -> ExitCode {
         match self {
             // A setting that cannot be used is a usage error, option or variable alike.
-            Self::Settings(_) | Self::Database(_) => ExitCode::from(2),
+            Self::Settings(_) | Self::Origin(_) | Self::Database(_) => ExitCode::from(2),
             Self::Wiring(_) | Self::Refused(_) | Self::Bind(_) | Self::Serving(_) => {
                 ExitCode::FAILURE
             }
@@ -105,8 +113,9 @@ impl fmt::Display for ServeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Settings(error) => error.fmt(formatter),
+            Self::Origin(error) => error.fmt(formatter),
             Self::Database(error) => error.fmt(formatter),
-            Self::Wiring(error) => write!(formatter, "cannot reach the database: {error}"),
+            Self::Wiring(error) => error.fmt(formatter),
             Self::Refused(error) => write!(formatter, "refusing to serve: {error}"),
             Self::Bind(BindError { address, source }) => {
                 write!(formatter, "cannot listen on {address}: {source}")
@@ -124,12 +133,15 @@ fn serve_until_signal(options: &ServeOptions) -> Result<(), ServeError> {
         read_variable,
     )
     .map_err(ServeError::Settings)?;
+    let public_origin = resolve_public_origin(options.public_origin.as_deref(), read_variable)
+        .map_err(ServeError::Origin)?;
     let database = resolve_connection(DATABASE_URL, options.database_tls.as_deref(), read_variable)
         .map_err(ServeError::Database)?;
     let pool = resolve_pool_settings(options.database_pool_size.as_deref(), read_variable)
         .map_err(ServeError::Database)?;
     telemetry::start_journal();
-    let wired = wire_product(&database, pool).map_err(ServeError::Wiring)?;
+    let wired =
+        wire_product(Settings { public_origin }, &database, pool).map_err(ServeError::Wiring)?;
 
     // Both are bound before anything is announced: an address already taken
     // fails here, not after the journal says the process listens.

@@ -11,12 +11,14 @@ publish.workspace = true
 [dependencies]
 actix-rt.workspace = true
 clap.workspace = true
+crypto.workspace = true
 deadpool-postgres.workspace = true
 pgcore.workspace = true
 saffui-core.workspace = true
 server.workspace = true
 store.workspace = true
 thiserror.workspace = true
+time.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

@@ -21,6 +21,8 @@ enum Command {
     Serve(cli::serve::ServeOptions),
     /// Apply the pending migrations, as the role that owns the schema.
     Migrate(cli::migrate::MigrateOptions),
+    /// Create a tenant and its first realm.
+    Bootstrap(cli::bootstrap::BootstrapOptions),
 }
 
 /// Parses the command line and returns the exit code of the process.
@@ -29,6 +31,7 @@ pub fn run_command_line(arguments: impl IntoIterator<Item = OsString>) -> ExitCo
         Ok(parsed) => match parsed.command {
             Command::Serve(options) => cli::serve::run_command(&options),
             Command::Migrate(options) => cli::migrate::run_command(&options),
+            Command::Bootstrap(options) => cli::bootstrap::run_command(&options),
         },
         Err(error) => {
             // Help and version arrive as errors: clap prints on stdout with code 0.

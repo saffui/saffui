@@ -21,7 +21,7 @@ tokio-postgres.workspace = true
 
 [dev-dependencies]
 pgcore = { path = ".", features = ["testkit"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread"] }
 
 [lints]
 workspace = true

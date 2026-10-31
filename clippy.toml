@@ -1,0 +1,3 @@
+# Names of standards and products, which are prose and not code: without this
+# the documentation lint asks for backticks around each of them.
+doc-valid-idents = ["OpenID", ".."]

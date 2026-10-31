@@ -16,14 +16,15 @@ Do not open an issue for a vulnerability. Report it privately, as the
 ## Building and testing
 
 The toolchain is pinned in `rust-toolchain.toml`, and rustup uses that
-version inside the repository. CI runs four commands, and a pull request
-needs all four to pass. The last one needs cargo-deny, at the version
+version inside the repository. CI runs five commands, and a pull request
+needs all five to pass. The last one needs cargo-deny, at the version
 pinned in `.github/workflows/ci.yml`.
 
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
+scripts/dev-postgres.sh gen-schema --check
 cargo deny check -D index-failure
 ```
 
@@ -36,9 +37,17 @@ PostgreSQL 15 from Homebrew; `SAFFUI_DEV_PG_BIN` names another.
 eval "$(scripts/dev-postgres.sh start)"
 ```
 
-Run the four commands before you push. `unsafe` code is forbidden across the workspace,
-clippy's pedantic lints are enabled, and CI treats every warning as an
-error.
+A migration changes the table and column constants the store compiles
+against. `scripts/dev-postgres.sh gen-schema` writes
+`crates/store/src/schema/generated.rs` from a database the migrations
+built, and `--check` fails when the committed file differs from it.
+
+Run the five commands before you push. `unsafe` code is forbidden and
+clippy's pedantic lints are enabled across the workspace, except in the
+crypto crate, a fork kept as it is: it reaches the C API of OpenSSL where
+its binding exposes nothing, allows `unsafe` back in the five modules
+that need it, and holds only its adapters to the pedantic lints. CI
+treats every warning as an error.
 
 ## What a change looks like
 
@@ -74,9 +83,9 @@ merged. If a tool helped, say so in a comment on the pull request. Do not
 list a tool as an author or in a commit trailer.
 
 The maintainer works the same way and writes the core of saffui by hand:
-the domain types, rules and use cases, the transaction layer, the SQL
-builder and the sealing of secrets at rest. Tools review changes and write
-some of the code around that core.
+the unit of work, the tenancy scope and its row security, the SQL
+builder, the audit chain and the sealing of secrets at rest. Tools review
+changes and write the code around that core.
 
 ## Commit messages and pull requests
 

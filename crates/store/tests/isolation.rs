@@ -92,11 +92,15 @@ async fn statements_written_by_hand_under_one_scope_reach_no_other_tenant() {
 
     assert_eq!(count_rows(&session, "tenants").await, 1);
     assert_eq!(count_rows(&session, "realms").await, 1);
+    // No store changes a realm yet: the serving role may not, in its scope or
+    // out of it.
     let disabled = session
         .execute("UPDATE realms SET enabled = false", &[])
         .await
-        .expect("an update with no predicate at all");
-    assert_eq!(disabled, 1, "only the realm of the scope was reached");
+        .expect_err("an update of a realm");
+    assert_eq!(disabled.code(), Some(&SqlState::INSUFFICIENT_PRIVILEGE));
+    session.batch_execute("ROLLBACK").await.expect("a rollback");
+    open_scope(&session, &acme).await;
 
     let planted = session
         .execute(
@@ -153,8 +157,14 @@ async fn a_session_writes_only_the_realm_of_its_scope_in_a_tenant_that_has_two()
     let disabled = session
         .execute("UPDATE realms SET enabled = false", &[])
         .await
-        .expect("an update with no predicate at all");
-    assert_eq!(disabled, 1, "only the realm of the scope was written");
+        .expect_err("an update of a realm");
+    assert_eq!(
+        disabled.code(),
+        Some(&SqlState::INSUFFICIENT_PRIVILEGE),
+        "no store changes a realm yet: the serving role may not"
+    );
+    session.batch_execute("ROLLBACK").await.expect("a rollback");
+    open_scope(&session, &acme).await;
     let planted = session
         .execute(
             "INSERT INTO realms (tenant_id, realm_id, name, enabled, created_at)

@@ -7,6 +7,49 @@
 
 use crate::query::ident::{Column, ScopeKeys, Table};
 
+pub(crate) mod audit_chain_heads {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "audit_chain_heads",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// bigint
+    pub(crate) const SEQ: Column = Column("seq");
+    /// bytea
+    pub(crate) const HASH: Column = Column("hash");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[SEQ, HASH];
+}
+
+pub(crate) mod audit_events {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "audit_events",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// bigint
+    pub(crate) const SEQ: Column = Column("seq");
+    /// bytea
+    pub(crate) const PREV_HASH: Column = Column("prev_hash");
+    /// bytea
+    pub(crate) const HASH: Column = Column("hash");
+    /// bytea
+    pub(crate) const ENVELOPE: Column = Column("envelope");
+    /// uuid
+    pub(crate) const EVENT_ID: Column = Column("event_id");
+    /// text
+    pub(crate) const KIND: Column = Column("kind");
+    /// timestamp with time zone
+    pub(crate) const OCCURRED_AT: Column = Column("occurred_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] =
+        &[SEQ, PREV_HASH, HASH, ENVELOPE, EVENT_ID, KIND, OCCURRED_AT];
+}
+
 pub(crate) mod realms {
     use super::{Column, ScopeKeys, Table};
 
@@ -42,7 +85,11 @@ pub(crate) mod tenants {
 }
 
 /// Every table a statement of the builder can reach.
-pub(crate) const TABLES: &[(Table, &[Column])] =
-    &[(realms::TABLE, realms::ALL), (tenants::TABLE, tenants::ALL)];
+pub(crate) const TABLES: &[(Table, &[Column])] = &[
+    (audit_chain_heads::TABLE, audit_chain_heads::ALL),
+    (audit_events::TABLE, audit_events::ALL),
+    (realms::TABLE, realms::ALL),
+    (tenants::TABLE, tenants::ALL),
+];
 
 // Without row security or a scope key, and so without a constant: realm_directory, schema_migrations.

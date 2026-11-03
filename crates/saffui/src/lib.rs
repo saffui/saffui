@@ -23,6 +23,8 @@ enum Command {
     Migrate(cli::migrate::MigrateOptions),
     /// Create a tenant and its first realm.
     Bootstrap(cli::bootstrap::BootstrapOptions),
+    /// Read a realm through the administration API of a running node.
+    Realm(cli::realm::RealmCommand),
 }
 
 /// Parses the command line and returns the exit code of the process.
@@ -32,6 +34,7 @@ pub fn run_command_line(arguments: impl IntoIterator<Item = OsString>) -> ExitCo
             Command::Serve(options) => cli::serve::run_command(&options),
             Command::Migrate(options) => cli::migrate::run_command(&options),
             Command::Bootstrap(options) => cli::bootstrap::run_command(&options),
+            Command::Realm(command) => cli::realm::run_command(&command),
         },
         Err(error) => {
             // Help and version arrive as errors: clap prints on stdout with code 0.

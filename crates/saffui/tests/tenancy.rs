@@ -212,10 +212,21 @@ fn a_bootstrapped_realm_is_published_by_a_node_on_its_data_plane_only() {
         published.body,
         concat!(
             r#"{"issuer":"http://localhost:8080/realms/acme","#,
+            r#""authorization_endpoint":"http://localhost:8080/realms/acme/oauth2/authorize","#,
             r#""token_endpoint":"http://localhost:8080/realms/acme/oauth2/token","#,
             r#""jwks_uri":"http://localhost:8080/realms/acme/oauth2/jwks","#,
-            r#""grant_types_supported":["client_credentials"],"#,
-            r#""token_endpoint_auth_methods_supported":["client_secret_basic","client_secret_post"]}"#
+            r#""response_types_supported":["code"],"#,
+            r#""grant_types_supported":["authorization_code","client_credentials"],"#,
+            r#""subject_types_supported":["public"],"#,
+            r#""id_token_signing_alg_values_supported":["ES256"],"#,
+            r#""token_endpoint_auth_methods_supported":["client_secret_basic","client_secret_post","none"],"#,
+            r#""code_challenge_methods_supported":["S256"],"#,
+            r#""scopes_supported":["openid","profile","email"],"#,
+            r#""authorization_response_iss_parameter_supported":true,"#,
+            r#""response_modes_supported":["query"],"#,
+            r#""request_parameter_supported":false,"#,
+            r#""request_uri_parameter_supported":false,"#,
+            r#""claims_parameter_supported":false}"#,
         )
     );
 

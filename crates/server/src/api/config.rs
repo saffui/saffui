@@ -4,7 +4,7 @@
 //! `tests/mounted.rs` would say so.
 
 use crate::api::rest::endpoints::health::{self, DrainFlag};
-use crate::api::rest::endpoints::{admin, oidc};
+use crate::api::rest::endpoints::{admin, login, oidc};
 use crate::error::{refuse_unreadable_json, refuse_unreadable_query};
 use crate::middleware::security_headers::protect_answers;
 use actix_web::web;
@@ -39,6 +39,9 @@ pub fn register_data_plane(
                     .service(oidc::discovery::serve_provider_metadata)
                     .service(oidc::certs::serve_key_set)
                     .service(oidc::token::grant)
+                    .service(oidc::authorize::begin)
+                    .service(login::page::show_sign_in)
+                    .service(login::page::submit_sign_in)
                     .service(admin::realm::read_realm)
                     .service(admin::client::list_clients)
                     .service(admin::client::create_client)

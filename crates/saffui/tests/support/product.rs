@@ -32,9 +32,9 @@ pub fn wire_app(database: &TestDatabase, root_key: &Secret) -> App {
     let pool = build_pool(&database.plan(APP_ROLE), PoolSettings::default()).expect("a pool");
     let provider = open_provider().expect("a provider");
     App {
-        settings: Settings {
-            public_origin: PublicOrigin::parse("https://id.example.test").expect("an origin"),
-        },
+        settings: Settings::reached_directly(
+            PublicOrigin::parse("https://id.example.test").expect("an origin"),
+        ),
         storage: Arc::new(PgStorage::new(pool, SchemaWindow::of_exactly(EMBEDDED))),
         clock: Arc::new(FixedClock::default()),
         random: Arc::new(CountingRandom::default()),

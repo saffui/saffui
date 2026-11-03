@@ -21,6 +21,7 @@ use crate::config::database::{
     resolve_pool_settings,
 };
 use crate::config::origin::{PUBLIC_ORIGIN, PublicOriginSettingError, resolve_public_origin};
+use crate::config::proxy::{TrustedProxiesError, resolve_trusted_proxies};
 use tracing::info;
 
 use crate::config::serving::{
@@ -91,6 +92,7 @@ pub(crate) fn run_command(options: &ServeOptions) -> ExitCode {
 enum ServeError {
     Settings(ServingSettingsError),
     Origin(PublicOriginSettingError),
+    Proxies(TrustedProxiesError),
     Database(DatabaseSettingsError),
     RootKey(RootKeyError),
     Wiring(WiringError),
@@ -103,9 +105,11 @@ impl ServeError {
     fn exit_code(&self) -> ExitCode {
         match self {
             // A setting that cannot be used is a usage error, option or variable alike.
-            Self::Settings(_) | Self::Origin(_) | Self::Database(_) | Self::RootKey(_) => {
-                ExitCode::from(2)
-            }
+            Self::Settings(_)
+            | Self::Origin(_)
+            | Self::Proxies(_)
+            | Self::Database(_)
+            | Self::RootKey(_) => ExitCode::from(2),
             Self::Wiring(_) | Self::Refused(_) | Self::Bind(_) | Self::Serving(_) => {
                 ExitCode::FAILURE
             }
@@ -118,6 +122,7 @@ impl fmt::Display for ServeError {
         match self {
             Self::Settings(error) => error.fmt(formatter),
             Self::Origin(error) => error.fmt(formatter),
+            Self::Proxies(error) => error.fmt(formatter),
             Self::Database(error) => error.fmt(formatter),
             Self::RootKey(error) => error.fmt(formatter),
             Self::Wiring(error) => error.fmt(formatter),
@@ -145,8 +150,13 @@ fn serve_until_signal(options: &ServeOptions) -> Result<(), ServeError> {
     let pool = resolve_pool_settings(options.database_pool_size.as_deref(), read_variable)
         .map_err(ServeError::Database)?;
     let root_key = resolve_root_key(read_variable).map_err(ServeError::RootKey)?;
+    let trusted_proxies = resolve_trusted_proxies(read_variable).map_err(ServeError::Proxies)?;
     telemetry::start_journal();
-    let wired = wire_product(Settings { public_origin }, &database, pool, &root_key)
+    let settings_of_the_product = Settings {
+        public_origin,
+        trusted_proxies,
+    };
+    let wired = wire_product(settings_of_the_product, &database, pool, &root_key)
         .map_err(ServeError::Wiring)?;
 
     // Both are bound before anything is announced: an address already taken

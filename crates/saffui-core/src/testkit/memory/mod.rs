@@ -120,10 +120,9 @@ impl MemoryStorage {
         let storage = Arc::new(Self::default());
         let clock = Arc::new(FixedClock::default());
         let app = App {
-            settings: Settings {
-                public_origin: PublicOrigin::parse("https://id.example.test")
-                    .expect("a well-formed origin"),
-            },
+            settings: Settings::reached_directly(
+                PublicOrigin::parse("https://id.example.test").expect("a well-formed origin"),
+            ),
             storage: storage.clone(),
             clock: clock.clone(),
             random: Arc::new(CountingRandom::default()),

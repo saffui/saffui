@@ -70,9 +70,9 @@ async fn every_answer_of_the_data_plane_says_what_a_browser_must_not_do_with_it(
 #[actix_web::test]
 async fn an_origin_of_this_machine_in_clear_asks_for_no_transport_security() {
     let (mut product, _storage) = MemoryStorage::wire();
-    product.settings = Settings {
-        public_origin: PublicOrigin::parse("http://localhost:8080").expect("an origin"),
-    };
+    product.settings = Settings::reached_directly(
+        PublicOrigin::parse("http://localhost:8080").expect("an origin"),
+    );
 
     let headers = read_headers(product, Method::GET, "/nowhere").await;
 

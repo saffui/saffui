@@ -464,4 +464,33 @@ pub async fn check_clients_contract(app: &App) {
         .await
         .expect("the same identifier in another realm");
     work.commit().await.expect("a commit");
+
+    // A list runs in the order of the identifiers, cut by its window, and
+    // its count is the size of the realm, not of the page.
+    let mut work = app.storage.begin(scopes[0]).await.expect("a unit of work");
+    for client_id in ["ledger", "audit-bot"] {
+        let other = Client {
+            id: mint_id(app).expect("an identifier"),
+            client_id: client_id.to_owned(),
+            ..client.clone()
+        };
+        work.insert_client(&other).await.expect("a client");
+    }
+    let window = |first, max| crate::clients::store::ListWindow { first, max };
+    let named = |clients: Vec<Client>| -> Vec<String> {
+        clients.into_iter().map(|client| client.client_id).collect()
+    };
+    assert_eq!(
+        work.list_clients(window(0, 10)).await.map(named),
+        Ok(vec![
+            "audit-bot".to_owned(),
+            "billing".to_owned(),
+            "ledger".to_owned()
+        ])
+    );
+    assert_eq!(
+        work.list_clients(window(1, 1)).await.map(named),
+        Ok(vec!["billing".to_owned()])
+    );
+    assert_eq!(work.count_clients().await, Ok(3));
 }

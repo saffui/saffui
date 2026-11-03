@@ -4,7 +4,7 @@ use actix_web::{App, test, web};
 use saffui_core::authz::capability::Capability;
 use saffui_core::testkit::fixtures::{create_administrator, create_realm};
 use saffui_core::testkit::memory::MemoryStorage;
-use serde_json::Value;
+use serde_json::{Value, json};
 use server::api::config::register_data_plane;
 
 pub(crate) struct Answer {
@@ -147,4 +147,205 @@ async fn an_administrator_asks_whether_the_audit_chain_of_its_realm_is_whole() {
     // The realm, its key, the administrator, and the token it was given.
     assert_eq!(answer.body["events"], 4);
     assert!(answer.warning.is_none());
+}
+
+#[actix_web::test]
+async fn a_missing_capability_is_refused_with_403_before_the_body_is_read() {
+    let (product, token) = start(&[Capability::ClientRead]).await;
+    let path = "/admin/v1/realms/acme/clients";
+
+    // Not JSON at all: a guard that ran after the body would answer 400.
+    let refused = call(
+        &product,
+        Method::POST,
+        path,
+        Some(&token),
+        Some("{not json"),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert_eq!(refused.body["code"], "auth.capability_missing");
+
+    let (product, token) = start(&[Capability::ClientWrite]).await;
+    let unreadable = call(
+        &product,
+        Method::POST,
+        path,
+        Some(&token),
+        Some("{not json"),
+    )
+    .await;
+    assert_eq!(
+        unreadable.status,
+        StatusCode::BAD_REQUEST,
+        "with the capability, the body is read and refused"
+    );
+    assert_eq!(unreadable.body["code"], "platform.request_invalid");
+}
+
+#[actix_web::test]
+async fn a_created_client_is_shown_its_secret_once_then_listed_without_it() {
+    let (product, token) = start(&[Capability::ClientRead, Capability::ClientWrite]).await;
+    let path = "/admin/v1/realms/acme/clients";
+    let wanted = json!({ "client_id": "billing", "scopes": ["invoices:read"] }).to_string();
+
+    let created = call(&product, Method::POST, path, Some(&token), Some(&wanted)).await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(created.body["client"]["client_id"], "billing");
+    assert!(
+        created.body["client_secret"]
+            .as_str()
+            .is_some_and(|secret| secret.len() >= 43),
+        "256 bits of secret, shown once"
+    );
+
+    let again = call(&product, Method::POST, path, Some(&token), Some(&wanted)).await;
+    assert_eq!(again.status, StatusCode::CONFLICT);
+    assert_eq!(again.body["code"], "client.identifier_taken");
+
+    let one = call(
+        &product,
+        Method::GET,
+        &format!("{path}/billing"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(one.status, StatusCode::OK);
+    assert_eq!(one.body["scopes"], json!(["invoices:read"]));
+    let listed = call(
+        &product,
+        Method::GET,
+        &format!("{path}?count=true"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(listed.body["total"], 2);
+    assert_eq!(listed.body["items"][0]["client_id"], "billing");
+    assert_eq!(listed.body["items"][1]["client_id"], "operator");
+    assert!(
+        !listed.body.to_string().contains("secret"),
+        "nothing about a secret is ever listed: {}",
+        listed.body
+    );
+
+    let missing = call(
+        &product,
+        Method::GET,
+        &format!("{path}/nobody"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    assert_eq!(missing.body["code"], "client.not_found");
+}
+
+#[actix_web::test]
+async fn nobody_grants_a_capability_they_do_not_hold_and_an_unknown_one_does_not_exist() {
+    let (product, token) = start(&[Capability::ClientWrite]).await;
+    let path = "/admin/v1/realms/acme/clients";
+    let ask = |capability: &str| {
+        json!({ "client_id": "helper", "capabilities": [capability] }).to_string()
+    };
+
+    let escalation = call(
+        &product,
+        Method::POST,
+        path,
+        Some(&token),
+        Some(&ask("audit:read")),
+    )
+    .await;
+    assert_eq!(escalation.status, StatusCode::FORBIDDEN);
+    assert_eq!(escalation.body["code"], "auth.capability_missing");
+
+    let unknown = call(
+        &product,
+        Method::POST,
+        path,
+        Some(&token),
+        Some(&ask("client:*")),
+    )
+    .await;
+    assert_eq!(unknown.status, StatusCode::BAD_REQUEST);
+    assert_eq!(unknown.body["code"], "client.capability_unknown");
+
+    let held = call(
+        &product,
+        Method::POST,
+        path,
+        Some(&token),
+        Some(&ask("client:write")),
+    )
+    .await;
+    assert_eq!(held.status, StatusCode::CREATED, "{}", held.body);
+
+    let extra_field = json!({ "client_id": "other", "is_admin": true }).to_string();
+    let refused = call(
+        &product,
+        Method::POST,
+        path,
+        Some(&token),
+        Some(&extra_field),
+    )
+    .await;
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_REQUEST,
+        "an unknown field is not ignored"
+    );
+}
+
+#[actix_web::test]
+async fn a_list_is_cut_to_500_with_a_warning_and_refused_past_an_offset_of_100000() {
+    let (product, token) = start(&[Capability::ClientRead]).await;
+    let path = "/admin/v1/realms/acme/clients";
+
+    let default = call(&product, Method::GET, path, Some(&token), None).await;
+    assert_eq!(
+        (default.body["first"].clone(), default.body["max"].clone()),
+        (json!(0), json!(100))
+    );
+    assert!(
+        default.body.get("total").is_none(),
+        "the count is computed only when asked"
+    );
+    assert_eq!(default.warning, None);
+
+    let cut = call(
+        &product,
+        Method::GET,
+        &format!("{path}?max=9000"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(cut.status, StatusCode::OK);
+    assert_eq!(cut.body["max"], 500);
+    assert!(cut.warning.is_some_and(|warning| warning.contains("500")));
+
+    let too_far = call(
+        &product,
+        Method::GET,
+        &format!("{path}?first=100001"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(too_far.status, StatusCode::BAD_REQUEST);
+    assert_eq!(too_far.body["code"], "platform.list_offset_too_large");
+
+    let unreadable = call(
+        &product,
+        Method::GET,
+        &format!("{path}?max=many"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(unreadable.status, StatusCode::BAD_REQUEST);
+    assert_eq!(unreadable.body["code"], "platform.request_invalid");
 }

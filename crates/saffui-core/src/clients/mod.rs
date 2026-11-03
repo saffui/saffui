@@ -2,6 +2,7 @@
 //! for tokens.
 
 pub mod authenticate;
+pub mod manage;
 pub mod register;
 pub mod store;
 

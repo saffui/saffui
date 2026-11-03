@@ -2,7 +2,19 @@
 //! answers with these types and the command line reads them: a field renamed
 //! on one side alone does not compile on the other.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
+
+/// A list, and the window it was cut by. `total` is present only when asked for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Page<T> {
+    pub items: Vec<T>,
+    pub first: u32,
+    pub max: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RealmView {
@@ -12,6 +24,48 @@ pub struct RealmView {
     pub issuer: String,
     pub enabled: bool,
     pub created_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientView {
+    pub client_id: String,
+    pub name: String,
+    pub scopes: Vec<String>,
+    pub capabilities: Vec<String>,
+    pub enabled: bool,
+    pub created_at: String,
+}
+
+/// A client to create. A field this version does not know is refused: a
+/// request that asks for more than it gets must not look accepted.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NewClient {
+    pub client_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+/// A client that was just created, with the one showing of its secret.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreatedClient {
+    pub client: ClientView,
+    pub client_secret: String,
+}
+
+// Written by hand: a derived `Debug` would print the secret.
+impl fmt::Debug for CreatedClient {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CreatedClient")
+            .field("client", &self.client)
+            .field("client_secret", &"..")
+            .finish()
+    }
 }
 
 /// The verdict on the audit chain of a realm.
@@ -24,4 +78,29 @@ pub struct ChainReport {
     pub broken_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ClientView, CreatedClient};
+
+    #[test]
+    fn a_created_client_does_not_print_its_secret() {
+        let created = CreatedClient {
+            client: ClientView {
+                client_id: "billing".to_owned(),
+                name: "Billing".to_owned(),
+                scopes: Vec::new(),
+                capabilities: Vec::new(),
+                enabled: true,
+                created_at: "2026-10-31T00:00:00Z".to_owned(),
+            },
+            client_secret: "hunter2".to_owned(),
+        };
+
+        let printed = format!("{created:?}");
+
+        assert!(printed.contains("billing"), "{printed}");
+        assert!(!printed.contains("hunter2"), "{printed}");
+    }
 }

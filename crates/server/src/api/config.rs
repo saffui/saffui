@@ -33,6 +33,9 @@ pub fn register_data_plane(
             .service(oidc::certs::serve_key_set)
             .service(oidc::token::grant)
             .service(admin::realm::read_realm)
+            .service(admin::client::list_clients)
+            .service(admin::client::create_client)
+            .service(admin::client::read_client)
             .service(admin::audit::verify_audit_chain);
     }
 }

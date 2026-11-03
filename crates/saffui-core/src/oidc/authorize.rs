@@ -520,6 +520,8 @@ mod tests {
 
     use base64::Engine as _;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use serde_json::Value;
+    use uuid::Uuid;
 
     use super::{
         Authorization, AuthorizationParameters, AuthorizationRefusal, begin_authorization,
@@ -529,6 +531,7 @@ mod tests {
     use crate::error::ErrorCode;
     use crate::login::session::SessionTicket;
     use crate::oidc::errors::OAuthError;
+    use crate::oidc::token::{TokenRequest, TokenResponse, grant_token};
     use crate::ports::crypto::Digester;
     use crate::secret::Secret;
     use crate::testkit::digest::WeakDigester;
@@ -612,6 +615,147 @@ mod tests {
         ))
         .expect("a signed-in person");
         (signed_in.location, signed_in.ticket)
+    }
+
+    fn exchange(
+        app: &App,
+        code: &str,
+        secret: Option<&Secret>,
+        verifier: &str,
+        redirect_uri: &str,
+    ) -> Result<TokenResponse, OAuthError> {
+        let request = TokenRequest {
+            grant_type: Some("authorization_code"),
+            client_id: Some("webapp"),
+            client_secret: secret.map(|secret| Secret::new(secret.expose().to_vec())),
+            code: Some(code),
+            redirect_uri: Some(redirect_uri),
+            code_verifier: Some(verifier),
+            ..TokenRequest::default()
+        };
+        complete(grant_token(app, "acme", request)).map_err(|failure| failure.error)
+    }
+
+    fn read_claims(token: &str) -> Value {
+        let payload = token.split('.').nth(1).expect("a compact token");
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).expect("base64url"))
+            .expect("claims")
+    }
+
+    #[test]
+    fn a_person_signs_in_and_the_client_gets_tokens_that_say_who_signed_in() {
+        let (app, _storage, _clock, secret) = start(false);
+
+        let (location, _ticket) = sign_in_through_the_flow(&app);
+
+        assert!(
+            location.starts_with(&format!("{CALLBACK}?code=")),
+            "{location}"
+        );
+        assert_eq!(
+            read_query(&location, "state").as_deref(),
+            Some("st&te"),
+            "the state comes back as it was sent"
+        );
+        assert_eq!(
+            read_query(&location, "iss").as_deref(),
+            Some("https://id.example.test/realms/acme")
+        );
+        let code = read_query(&location, "code").expect("a code");
+        let tokens = exchange(&app, &code, secret.as_ref(), VERIFIER, CALLBACK).expect("tokens");
+
+        assert_eq!(tokens.scope, "openid profile email");
+        let access = read_claims(&tokens.access_token);
+        let identity = read_claims(tokens.id_token.as_deref().expect("an identity token"));
+        assert_eq!(identity["aud"], "webapp");
+        assert_eq!(identity["nonce"], "n-0S6_WzA2Mj");
+        assert_eq!(identity["preferred_username"], "ada");
+        assert_eq!(identity["email"], "ada@example.org");
+        assert_eq!(
+            identity["sub"], access["sub"],
+            "both tokens name the same person"
+        );
+        assert_eq!(identity["sid"], access["sid"]);
+        assert!(Uuid::parse_str(identity["sub"].as_str().expect("a subject")).is_ok());
+        assert!(identity["auth_time"].is_i64());
+    }
+
+    #[test]
+    fn a_code_is_exchanged_once() {
+        let (app, _storage, _clock, secret) = start(false);
+        let (location, _ticket) = sign_in_through_the_flow(&app);
+        let code = read_query(&location, "code").expect("a code");
+
+        assert!(exchange(&app, &code, secret.as_ref(), VERIFIER, CALLBACK).is_ok());
+        assert_eq!(
+            exchange(&app, &code, secret.as_ref(), VERIFIER, CALLBACK).map(|_| ()),
+            Err(OAuthError::InvalidGrant)
+        );
+    }
+
+    #[test]
+    fn a_wrong_verifier_or_another_redirect_uri_is_refused_and_burns_the_code() {
+        for (verifier, redirect_uri) in [
+            ("another-verifier-of-the-right-length-0123456789", CALLBACK),
+            (VERIFIER, "https://app.example.org/other"),
+        ] {
+            let (app, _storage, _clock, secret) = start(false);
+            let (location, _ticket) = sign_in_through_the_flow(&app);
+            let code = read_query(&location, "code").expect("a code");
+
+            assert_eq!(
+                exchange(&app, &code, secret.as_ref(), verifier, redirect_uri).map(|_| ()),
+                Err(OAuthError::InvalidGrant)
+            );
+            assert_eq!(
+                exchange(&app, &code, secret.as_ref(), VERIFIER, CALLBACK).map(|_| ()),
+                Err(OAuthError::InvalidGrant),
+                "a code presented once is gone, even to whoever holds the right verifier"
+            );
+        }
+    }
+
+    #[test]
+    fn a_code_expires_after_a_minute_and_dies_with_the_session_that_made_it() {
+        let (app, _storage, clock, secret) = start(false);
+        let (location, _ticket) = sign_in_through_the_flow(&app);
+        let code = read_query(&location, "code").expect("a code");
+        clock.advance(Duration::from_mins(1));
+        assert_eq!(
+            exchange(&app, &code, secret.as_ref(), VERIFIER, CALLBACK).map(|_| ()),
+            Err(OAuthError::InvalidGrant)
+        );
+
+        let (app, storage, _clock, secret) = start(false);
+        let (location, _ticket) = sign_in_through_the_flow(&app);
+        let code = read_query(&location, "code").expect("a code");
+        storage.end_every_session();
+        assert_eq!(
+            exchange(&app, &code, secret.as_ref(), VERIFIER, CALLBACK).map(|_| ()),
+            Err(OAuthError::InvalidGrant)
+        );
+    }
+
+    #[test]
+    fn a_confidential_client_must_prove_itself_and_a_public_client_has_only_the_verifier() {
+        let (app, _storage, _clock, secret) = start(false);
+        let (location, _ticket) = sign_in_through_the_flow(&app);
+        let code = read_query(&location, "code").expect("a code");
+        assert_eq!(
+            exchange(&app, &code, None, VERIFIER, CALLBACK).map(|_| ()),
+            Err(OAuthError::InvalidClient),
+            "a confidential client without its secret"
+        );
+        assert!(
+            exchange(&app, &code, secret.as_ref(), VERIFIER, CALLBACK).is_ok(),
+            "the refusal came before the code was spent"
+        );
+
+        let (app, _storage, _clock, secret) = start(true);
+        assert!(secret.is_none(), "a public client is given no secret");
+        let (location, _ticket) = sign_in_through_the_flow(&app);
+        let code = read_query(&location, "code").expect("a code");
+        assert!(exchange(&app, &code, None, VERIFIER, CALLBACK).is_ok());
     }
 
     #[test]

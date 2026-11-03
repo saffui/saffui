@@ -61,6 +61,7 @@ pub enum ErrorCode {
     AuthorizationRequestExpired = 404,
     SignInRequestsTooFrequent = 405,
     TokenInvalid = 500,
+    GrantInvalid = 501,
     TenantNameInvalid = 600,
 }
 
@@ -106,7 +107,8 @@ impl ErrorCode {
             | Self::PasswordUnacceptable
             | Self::RedirectUriInvalid
             | Self::RedirectUriMismatch
-            | Self::AuthorizationRequestExpired => ErrorKind::Invalid,
+            | Self::AuthorizationRequestExpired
+            | Self::GrantInvalid => ErrorKind::Invalid,
         }
     }
 
@@ -143,6 +145,7 @@ impl ErrorCode {
             Self::RedirectUriInvalid => "client.redirect_uri_invalid",
             Self::RedirectUriMismatch => "client.redirect_uri_mismatch",
             Self::TokenInvalid => "token.invalid",
+            Self::GrantInvalid => "token.grant_invalid",
             Self::AdminAuthenticationFailed => "auth.admin_authentication_failed",
             Self::CapabilityMissing => "auth.capability_missing",
             Self::SignInFailed => "auth.sign_in_failed",
@@ -197,6 +200,7 @@ impl ErrorCode {
                 "A redirect URI is an https URL, or an http URL of this machine, without a fragment."
             }
             Self::TokenInvalid => "The token is not valid.",
+            Self::GrantInvalid => "The grant is invalid, expired, or was already used.",
             Self::AdminAuthenticationFailed => "Authentication is required.",
             Self::CapabilityMissing => "The caller is not allowed to do this.",
             Self::ClientIdentifierInvalid => {
@@ -274,7 +278,7 @@ mod tests {
 
     use super::ErrorCode;
 
-    const ALL: [ErrorCode; 36] = [
+    const ALL: [ErrorCode; 37] = [
         ErrorCode::Internal,
         ErrorCode::StorageUnavailable,
         ErrorCode::Conflict,
@@ -304,6 +308,7 @@ mod tests {
         ErrorCode::RedirectUriInvalid,
         ErrorCode::RedirectUriMismatch,
         ErrorCode::TokenInvalid,
+        ErrorCode::GrantInvalid,
         ErrorCode::AdminAuthenticationFailed,
         ErrorCode::CapabilityMissing,
         ErrorCode::SignInFailed,

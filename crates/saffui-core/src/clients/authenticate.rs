@@ -34,3 +34,27 @@ pub async fn authenticate_client(
         _ => Err(Failure::new(ErrorCode::ClientAuthenticationFailed)),
     }
 }
+
+/// Identifies the client behind a request made for a person. A confidential
+/// client proves itself with its secret. A public client has none to prove
+/// with: it is only named, and what it presents next, a code with its
+/// verifier, is what binds the request to it.
+///
+/// # Errors
+///
+/// As [`authenticate_client`]. A confidential client that presents no
+/// secret is refused like a wrong one.
+pub async fn identify_client(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    client_id: &str,
+    presented: Option<Secret>,
+) -> Result<Client, Failure> {
+    match presented {
+        Some(secret) => authenticate_client(app, work, client_id, &secret).await,
+        None => read_named_client(work, client_id)
+            .await?
+            .filter(|client| client.enabled && client.secret_digest.is_none())
+            .ok_or(Failure::new(ErrorCode::ClientAuthenticationFailed)),
+    }
+}

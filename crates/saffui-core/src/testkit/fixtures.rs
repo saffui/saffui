@@ -89,6 +89,7 @@ pub async fn create_administrator(
         scope: None,
         client_id: Some(client_id),
         client_secret: Some(secret),
+        ..TokenRequest::default()
     };
     grant_token(app, realm, request)
         .await

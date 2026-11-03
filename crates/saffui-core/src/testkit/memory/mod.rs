@@ -182,6 +182,15 @@ impl MemoryStorage {
         }
     }
 
+    /// Ends every session, as if each person had signed out.
+    pub fn end_every_session(&self) {
+        for sessions in lock(&self.state).sessions.values_mut() {
+            for session in sessions {
+                session.state = crate::login::session::SessionState::Ended;
+            }
+        }
+    }
+
     /// Disables the realm of that name, as an operator would.
     pub fn disable_realm(&self, name: &str) {
         for realm in lock(&self.state).realms.values_mut() {

@@ -12,6 +12,7 @@ use serde_json::json;
 use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
+use crate::directory::Person;
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
 use crate::ports::storage::UnitOfWork;
@@ -137,6 +138,33 @@ pub async fn find_live_session(
     Ok(session.filter(|known| {
         proven && known.state == SessionState::Active && known.expires_at > app.now()
     }))
+}
+
+/// Reads the session a code names and its person, when both still stand:
+/// the session active and not expired, the person enabled. A code whose
+/// session ended gives nothing.
+///
+/// # Errors
+///
+/// Returns the storage failure.
+pub async fn read_live_subject(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    session: Uuid,
+) -> Result<Option<(Session, Person)>, Failure> {
+    let now = app.now();
+    let Some(session) = work
+        .read_session(session)
+        .await?
+        .filter(|known| known.state == SessionState::Active && known.expires_at > now)
+    else {
+        return Ok(None);
+    };
+    let person = work
+        .read_person(session.person)
+        .await?
+        .filter(|person| person.enabled);
+    Ok(person.map(|person| (session, person)))
 }
 
 /// Ends a session.

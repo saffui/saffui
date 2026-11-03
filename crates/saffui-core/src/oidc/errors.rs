@@ -9,6 +9,7 @@ pub enum OAuthError {
     InvalidClient,
     UnauthorizedClient,
     UnsupportedGrantType,
+    InvalidGrant,
     InvalidScope,
     UnsupportedResponseType,
     LoginRequired,
@@ -25,6 +26,7 @@ impl OAuthError {
             Self::InvalidClient => "invalid_client",
             Self::UnauthorizedClient => "unauthorized_client",
             Self::UnsupportedGrantType => "unsupported_grant_type",
+            Self::InvalidGrant => "invalid_grant",
             Self::InvalidScope => "invalid_scope",
             Self::UnsupportedResponseType => "unsupported_response_type",
             Self::LoginRequired => "login_required",
@@ -46,6 +48,7 @@ impl OAuthError {
             Self::InvalidClient => "Client authentication failed.",
             Self::UnauthorizedClient => "The client is not allowed this grant.",
             Self::UnsupportedGrantType => "This grant type is not served.",
+            Self::InvalidGrant => "The grant is invalid, expired, or was already used.",
             Self::InvalidScope => "A scope that was asked for is unknown or not allowed.",
             Self::UnsupportedResponseType => "Only the code response type is served.",
             Self::LoginRequired => "The person must sign in.",
@@ -73,6 +76,7 @@ impl From<Failure> for OAuthFailure {
             }
             ErrorCode::ScopeInvalid | ErrorCode::ScopeNotAllowed => OAuthError::InvalidScope,
             ErrorCode::GrantNotAllowed => OAuthError::UnauthorizedClient,
+            ErrorCode::GrantInvalid => OAuthError::InvalidGrant,
             ErrorCode::GrantTypeUnsupported => OAuthError::UnsupportedGrantType,
             other => match other.kind() {
                 ErrorKind::Unavailable => OAuthError::TemporarilyUnavailable,

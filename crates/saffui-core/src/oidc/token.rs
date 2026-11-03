@@ -1,34 +1,63 @@
 //! The token endpoint.
 
+use std::fmt;
+
 use serde::Serialize;
 use serde_json::json;
 
 use super::discovery::name_issuer;
 use super::errors::OAuthFailure;
+use super::pkce::matches_challenge;
 use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
-use crate::clients::authenticate::authenticate_client;
+use crate::clients::authenticate::{authenticate_client, identify_client};
 use crate::clients::check_scope_token;
-use crate::error::ErrorCode;
+use crate::directory::Person;
+use crate::error::{ErrorCode, Failure};
+use crate::login::session::{Session, read_live_subject};
+use crate::ports::storage::UnitOfWork;
 use crate::secret::Secret;
 use crate::tenancy::resolve::resolve_realm;
-use crate::tokens::mint::{AccessTokenSubject, mint_access_token};
+use crate::tenancy::{RealmName, RealmScope};
+use crate::tokens::mint::{
+    AccessTokenSubject, IdentityTokenSubject, mint_access_token, mint_identity_token,
+};
 
 /// What a client sent to the token endpoint, already read from the request.
+#[derive(Default)]
 pub struct TokenRequest<'a> {
     pub grant_type: Option<&'a str>,
     pub scope: Option<&'a str>,
     pub client_id: Option<&'a str>,
     pub client_secret: Option<Secret>,
+    pub code: Option<&'a str>,
+    pub redirect_uri: Option<&'a str>,
+    pub code_verifier: Option<&'a str>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub struct TokenResponse {
     pub access_token: String,
     pub token_type: &'static str,
     pub expires_in: u64,
     pub scope: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id_token: Option<String>,
+}
+
+// Written by hand: a derived `Debug` would print the tokens.
+impl fmt::Debug for TokenResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TokenResponse")
+            .field("access_token", &"..")
+            .field("token_type", &self.token_type)
+            .field("expires_in", &self.expires_in)
+            .field("scope", &self.scope)
+            .field("id_token", &self.id_token.as_ref().map(|_| ".."))
+            .finish()
+    }
 }
 
 /// Grants a token, or says why not in the words of RFC 6749.
@@ -43,21 +72,43 @@ pub async fn grant_token(
 ) -> Result<TokenResponse, OAuthFailure> {
     // Judged before the realm is looked for: a grant that is not served is
     // refused alike in a realm that exists and in one that does not.
-    match request.grant_type {
-        Some("client_credentials") => {}
+    let grant = match request.grant_type {
+        Some(served @ ("client_credentials" | "authorization_code")) => served,
         Some(_) => return Err(ErrorCode::GrantTypeUnsupported.into()),
         None => return Err(ErrorCode::RequestInvalid.into()),
+    };
+    // The form too: a request the realm could not serve is refused alike
+    // whether the realm exists or not.
+    if grant == "authorization_code" {
+        request
+            .client_id
+            .ok_or(ErrorCode::ClientAuthenticationFailed)?;
+        if request.code.is_none()
+            || request.redirect_uri.is_none()
+            || request.code_verifier.is_none()
+        {
+            return Err(ErrorCode::RequestInvalid.into());
+        }
     }
     let (realm_name, scope) = resolve_realm(app, realm).await?;
+    if grant == "client_credentials" {
+        grant_to_service(app, &realm_name, scope, request).await
+    } else {
+        exchange_code(app, &realm_name, scope, request).await
+    }
+}
+
+async fn grant_to_service(
+    app: &App,
+    realm_name: &RealmName,
+    scope: RealmScope,
+    request: TokenRequest<'_>,
+) -> Result<TokenResponse, OAuthFailure> {
     let (Some(client_id), Some(client_secret)) = (request.client_id, request.client_secret) else {
         return Err(ErrorCode::ClientAuthenticationFailed.into());
     };
 
-    let mut work = app
-        .storage
-        .begin(scope)
-        .await
-        .map_err(crate::error::Failure::from)?;
+    let mut work = app.storage.begin(scope).await.map_err(Failure::from)?;
     let client = authenticate_client(app, work.as_mut(), client_id, &client_secret).await?;
     if !client.allows_client_credentials {
         return Err(ErrorCode::GrantNotAllowed.into());
@@ -81,7 +132,7 @@ pub async fn grant_token(
         }
     };
 
-    let issuer = name_issuer(&app.settings, &realm_name);
+    let issuer = name_issuer(&app.settings, realm_name);
     let minted = mint_access_token(
         app,
         work.as_mut(),
@@ -90,18 +141,139 @@ pub async fn grant_token(
             subject: &client.client_id,
             client_id: &client.client_id,
             scopes: &granted,
+            session: None,
         },
     )
     .await?;
     let told = json!({ "client_id": client.client_id, "grant": "client_credentials", "scope": minted.scope });
     record_event(app, work.as_mut(), EventKind::TokenIssued, told).await?;
-    work.commit().await.map_err(crate::error::Failure::from)?;
+    work.commit().await.map_err(Failure::from)?;
 
     Ok(TokenResponse {
         access_token: minted.token,
         token_type: "Bearer",
         expires_in: minted.expires_in,
         scope: minted.scope,
+        id_token: None,
+    })
+}
+
+async fn exchange_code(
+    app: &App,
+    realm_name: &RealmName,
+    scope: RealmScope,
+    request: TokenRequest<'_>,
+) -> Result<TokenResponse, OAuthFailure> {
+    let client_id = request
+        .client_id
+        .ok_or(ErrorCode::ClientAuthenticationFailed)?;
+    let (Some(code), Some(redirect_uri), Some(verifier)) =
+        (request.code, request.redirect_uri, request.code_verifier)
+    else {
+        return Err(ErrorCode::RequestInvalid.into());
+    };
+    let invalid = || OAuthFailure::from(ErrorCode::GrantInvalid);
+
+    // The code is spent first, in a unit of work of its own that commits
+    // whatever follows: a code presented once is gone, even when the rest of
+    // the exchange is refused.
+    let mut work = app.storage.begin(scope).await.map_err(Failure::from)?;
+    let client = identify_client(app, work.as_mut(), client_id, request.client_secret).await?;
+    if !client.allows_authorization_code {
+        return Err(ErrorCode::GrantNotAllowed.into());
+    }
+    let digest = app.digester.sha256(code.as_bytes());
+    let spent = work
+        .take_authorization_code(&digest, app.now())
+        .await
+        .map_err(Failure::from)?;
+    work.commit().await.map_err(Failure::from)?;
+    let code = spent.ok_or_else(invalid)?;
+
+    // Compared to what was bound to the code, not to what the client has registered.
+    if code.client_id != client.client_id
+        || code.redirect_uri != redirect_uri
+        || !matches_challenge(app.digester.as_ref(), verifier, &code.code_challenge)
+    {
+        return Err(invalid());
+    }
+
+    let mut work = app.storage.begin(scope).await.map_err(Failure::from)?;
+    let (session, person) = read_live_subject(app, work.as_mut(), code.session)
+        .await?
+        .filter(|(_, person)| person.id == code.person)
+        .ok_or_else(invalid)?;
+
+    let issuer = name_issuer(&app.settings, realm_name);
+    let granted = Granted {
+        issuer: &issuer,
+        client_id: &client.client_id,
+        session: &session,
+        person: &person,
+        scopes: &code.scopes,
+        nonce: code.nonce.as_deref(),
+    };
+    let response = answer_for_person(app, work.as_mut(), granted).await?;
+    work.commit().await.map_err(Failure::from)?;
+    Ok(response)
+}
+
+struct Granted<'a> {
+    issuer: &'a str,
+    client_id: &'a str,
+    session: &'a Session,
+    person: &'a Person,
+    scopes: &'a [String],
+    nonce: Option<&'a str>,
+}
+
+/// Mints everything a client gets for a person: an access token, and an
+/// identity token when `openid` was granted.
+async fn answer_for_person(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    granted: Granted<'_>,
+) -> Result<TokenResponse, Failure> {
+    let subject = granted.person.id.to_string();
+    let minted = mint_access_token(
+        app,
+        work,
+        AccessTokenSubject {
+            issuer: granted.issuer,
+            subject: &subject,
+            client_id: granted.client_id,
+            scopes: granted.scopes,
+            session: Some(granted.session.id),
+        },
+    )
+    .await?;
+    let id_token = if granted.scopes.iter().any(|scope| scope == "openid") {
+        let identity = IdentityTokenSubject {
+            issuer: granted.issuer,
+            person: granted.person,
+            client_id: granted.client_id,
+            scopes: granted.scopes,
+            nonce: granted.nonce,
+            session: granted.session.id,
+            authenticated_at: granted.session.authenticated_at,
+        };
+        Some(mint_identity_token(app, work, identity).await?)
+    } else {
+        None
+    };
+    let told = json!({
+        "client_id": granted.client_id,
+        "grant": "authorization_code",
+        "person_id": subject,
+        "scope": minted.scope,
+    });
+    record_event(app, work, EventKind::TokenIssued, told).await?;
+    Ok(TokenResponse {
+        access_token: minted.token,
+        token_type: "Bearer",
+        expires_in: minted.expires_in,
+        scope: minted.scope,
+        id_token,
     })
 }
 
@@ -131,6 +303,7 @@ mod tests {
             scope,
             client_id: Some(client_id),
             client_secret: Some(copy_secret(secret)),
+            ..TokenRequest::default()
         }
     }
 
@@ -231,6 +404,7 @@ mod tests {
             scope: None,
             client_id: Some("billing"),
             client_secret: None,
+            ..TokenRequest::default()
         };
         assert_eq!(refuse(&app, "acme", missing).0, OAuthError::InvalidClient);
 
@@ -335,5 +509,43 @@ mod tests {
             Err(ErrorCode::TokenInvalid),
             "expired"
         );
+    }
+
+    #[test]
+    fn an_exchange_missing_a_part_is_refused_alike_in_a_realm_that_exists_and_in_one_that_does_not()
+    {
+        let (app, _storage, _secret) = start();
+        let missing_code = || TokenRequest {
+            grant_type: Some("authorization_code"),
+            client_id: Some("portal"),
+            redirect_uri: Some("https://app.example.org/callback"),
+            code_verifier: Some("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            ..TokenRequest::default()
+        };
+
+        assert_eq!(
+            refuse(&app, "acme", missing_code()).0,
+            refuse(&app, "nowhere", missing_code()).0
+        );
+        assert_eq!(
+            refuse(&app, "nowhere", missing_code()).0,
+            OAuthError::InvalidRequest
+        );
+    }
+
+    #[test]
+    fn a_token_answer_does_not_print_its_tokens() {
+        let answer = super::TokenResponse {
+            access_token: "eyJ.access.token".to_owned(),
+            token_type: "Bearer",
+            expires_in: 300,
+            scope: "openid".to_owned(),
+            id_token: Some("eyJ.identity.token".to_owned()),
+        };
+
+        let printed = format!("{answer:?}");
+
+        assert!(!printed.contains("eyJ"), "{printed}");
+        assert!(printed.contains("Bearer"), "{printed}");
     }
 }

@@ -351,6 +351,31 @@ async fn a_person_signs_in_and_the_application_exchanges_the_code_for_tokens() {
         straight_back.location
     );
     assert!(straight_back.cookies.is_empty());
+
+    // Its identity token names the person: the session answers it without a
+    // page, and a hint that is no identity token is refused.
+    let identity = tokens["id_token"].as_str().expect("an identity token");
+    let hinted = get(
+        &product,
+        &write_authorize_path(&product, &format!("&prompt=none&id_token_hint={identity}")),
+        &[(COOKIE.as_str(), &session)],
+    )
+    .await;
+    assert!(
+        hinted.read_location_parameter("code").is_some(),
+        "{:?}",
+        hinted.location
+    );
+    let unreadable = get(
+        &product,
+        &write_authorize_path(&product, "&prompt=none&id_token_hint=not.a.token"),
+        &[(COOKIE.as_str(), &session)],
+    )
+    .await;
+    assert_eq!(
+        unreadable.read_location_parameter("error").as_deref(),
+        Some("invalid_request")
+    );
 }
 
 #[actix_web::test]

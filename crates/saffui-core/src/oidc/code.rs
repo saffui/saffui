@@ -20,6 +20,9 @@ pub struct PendingAuthorization {
     pub nonce: Option<String>,
     pub code_challenge: String,
     pub expires_at: OffsetDateTime,
+    /// The person an identity token hint named: anyone else who signs in
+    /// for this request gets no code.
+    pub expected_person: Option<Uuid>,
 }
 
 /// A code, as it is kept: by its digest, with everything the exchange must

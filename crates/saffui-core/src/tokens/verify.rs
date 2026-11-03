@@ -81,6 +81,8 @@ pub async fn verify_access_token(
 pub struct IdentityHint {
     pub client_id: String,
     pub session: Uuid,
+    /// The person the token was issued for.
+    pub subject: String,
 }
 
 /// Reads an identity token that a client presents back as a hint. Its expiry
@@ -109,11 +111,14 @@ pub async fn read_identity_hint(
     let session = claims["sid"]
         .as_str()
         .and_then(|text| Uuid::parse_str(text).ok());
-    Ok(claims["aud"]
-        .as_str()
-        .zip(session)
-        .map(|(client_id, session)| IdentityHint {
-            client_id: client_id.to_owned(),
-            session,
-        }))
+    let (Some(client_id), Some(session), Some(subject)) =
+        (claims["aud"].as_str(), session, claims["sub"].as_str())
+    else {
+        return Ok(None);
+    };
+    Ok(Some(IdentityHint {
+        client_id: client_id.to_owned(),
+        session,
+        subject: subject.to_owned(),
+    }))
 }

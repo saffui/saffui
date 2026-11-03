@@ -33,6 +33,7 @@ pub struct AuthorizeQuery {
     code_challenge_method: Option<String>,
     prompt: Option<String>,
     max_age: Option<String>,
+    id_token_hint: Option<String>,
 }
 
 fn redirect_to(location: &str) -> HttpResponse {
@@ -63,6 +64,7 @@ pub async fn begin(
         code_challenge_method: query.code_challenge_method.as_deref(),
         prompt: query.prompt.as_deref(),
         max_age: query.max_age.as_deref(),
+        id_token_hint: query.id_token_hint.as_deref(),
         caller: read_caller_address(&product, &http),
     };
     match begin_authorization(&product, &realm, parameters, ticket.as_ref()).await {

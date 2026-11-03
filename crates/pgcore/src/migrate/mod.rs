@@ -36,6 +36,7 @@ pub const EMBEDDED: &[Migration] = &[
     embed!(13, "0013_refresh_tokens"),
     embed!(14, "0014_code_replay"),
     embed!(15, "0015_post_logout"),
+    embed!(16, "0016_hinted_requests"),
 ];
 
 /// One numbered step of the schema, as SQL text.

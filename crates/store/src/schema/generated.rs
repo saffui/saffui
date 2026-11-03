@@ -127,6 +127,8 @@ pub(crate) mod authorization_requests {
     pub(crate) const CODE_CHALLENGE: Column = Column("code_challenge");
     /// timestamp with time zone
     pub(crate) const EXPIRES_AT: Column = Column("expires_at");
+    /// uuid, nullable
+    pub(crate) const EXPECTED_PERSON: Column = Column("expected_person");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -139,6 +141,7 @@ pub(crate) mod authorization_requests {
         NONCE,
         CODE_CHALLENGE,
         EXPIRES_AT,
+        EXPECTED_PERSON,
     ];
 }
 

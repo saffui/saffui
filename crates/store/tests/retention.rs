@@ -54,6 +54,7 @@ async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
             nonce: None,
             code_challenge: "c".repeat(43),
             expires_at,
+            expected_person: None,
         })
         .await
         .expect("a pending request");

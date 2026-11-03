@@ -21,6 +21,7 @@ const PENDING: &[Column] = &[
     authorization_requests::NONCE,
     authorization_requests::CODE_CHALLENGE,
     authorization_requests::EXPIRES_AT,
+    authorization_requests::EXPECTED_PERSON,
 ];
 
 #[async_trait]
@@ -47,6 +48,10 @@ impl CodeStore for PgUnitOfWork {
                     &pending.code_challenge,
                 ),
                 col(authorization_requests::EXPIRES_AT, &pending.expires_at),
+                col(
+                    authorization_requests::EXPECTED_PERSON,
+                    &pending.expected_person,
+                ),
             ],
         )
         .build();
@@ -78,6 +83,7 @@ impl CodeStore for PgUnitOfWork {
                 nonce: row.get(5),
                 code_challenge: row.get(6),
                 expires_at: row.get(7),
+                expected_person: row.get(8),
             }))
     }
 
@@ -94,7 +100,7 @@ impl CodeStore for PgUnitOfWork {
                 "DELETE FROM authorization_requests
                  WHERE tenant_id = $1 AND realm_id = $2 AND request_id = $3 AND expires_at > $4
                  RETURNING browser_digest, client_id, redirect_uri, scopes, state, nonce,
-                           code_challenge, expires_at",
+                           code_challenge, expires_at, expected_person",
                 &[&tenant, &realm, &id, &now],
             )
             .await?;
@@ -108,6 +114,7 @@ impl CodeStore for PgUnitOfWork {
             nonce: row.get(5),
             code_challenge: row.get(6),
             expires_at: row.get(7),
+            expected_person: row.get(8),
         }))
     }
 

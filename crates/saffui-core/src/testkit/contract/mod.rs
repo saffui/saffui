@@ -736,6 +736,7 @@ pub async fn check_codes_contract(app: &App) {
         nonce: None,
         code_challenge: "challenge".to_owned(),
         expires_at: now + Duration::minutes(10),
+        expected_person: Some(ada.id),
     };
     work.insert_pending_authorization(&pending)
         .await

@@ -53,6 +53,8 @@ zeroize.workspace = true
 subtle.workspace = true
 data-encoding.workspace = true
 secrecy.workspace = true
+# The places a value is sealed for are named by the identifiers of the core.
+uuid.workspace = true
 async-trait.workspace = true
 argon2.workspace = true
 bcrypt.workspace = true

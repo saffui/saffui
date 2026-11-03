@@ -516,6 +516,7 @@ dependencies = [
  "subtle",
  "thiserror",
  "time",
+ "uuid",
  "zeroize",
 ]
 

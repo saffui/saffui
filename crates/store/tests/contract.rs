@@ -3,8 +3,9 @@
 
 use pgcore::pool::PoolSettings;
 use saffui_core::testkit::contract::{
-    check_clients_contract, check_codes_contract, check_keys_contract,
-    check_known_browsers_contract, check_persons_contract, check_refresh_contract,
+    check_authenticators_contract, check_clients_contract, check_codes_contract,
+    check_ended_sessions_contract, check_keys_contract, check_known_browsers_contract,
+    check_persons_contract, check_refresh_contract, check_security_keys_contract,
     check_sign_in_contract, check_tenancy_contract,
 };
 
@@ -60,6 +61,27 @@ async fn postgres_passes_the_refresh_contract() {
 }
 
 #[tokio::test]
+async fn postgres_passes_the_authenticators_contract() {
+    let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
+
+    check_authenticators_contract(&app).await;
+}
+
+#[tokio::test]
+async fn postgres_passes_the_ended_sessions_contract() {
+    let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
+
+    check_ended_sessions_contract(&app).await;
+}
+
+#[tokio::test]
+async fn postgres_passes_the_security_keys_contract() {
+    let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
+
+    check_security_keys_contract(&app).await;
+}
+
+#[tokio::test]
 async fn postgres_passes_the_known_browsers_contract() {
     let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
 
@@ -74,7 +96,7 @@ async fn a_token_written_while_its_family_was_revoked_is_not_spent() {
     use std::time::Duration as Wait;
 
     use saffui_core::ids::mint_id;
-    use saffui_core::login::session::{Session, SessionState};
+    use saffui_core::login::session::{AuthenticationMethod, Session, SessionState};
     use saffui_core::testkit::fixtures::{create_person, create_realm};
     use saffui_core::tokens::store::RefreshToken;
     use time::Duration;
@@ -88,6 +110,7 @@ async fn a_token_written_while_its_family_was_revoked_is_not_spent() {
         person: ada.id,
         secret_digest: vec![7; 32],
         state: SessionState::Active,
+        methods: vec![AuthenticationMethod::Password],
         authenticated_at: now,
         expires_at: now + Duration::hours(1),
     };
@@ -163,7 +186,7 @@ async fn of_two_endings_of_one_session_at_once_one_ends_it() {
     use std::time::Duration as Wait;
 
     use saffui_core::ids::mint_id;
-    use saffui_core::login::session::{Session, SessionState};
+    use saffui_core::login::session::{AuthenticationMethod, Session, SessionState};
     use saffui_core::testkit::fixtures::{create_person, create_realm};
     use time::Duration;
 
@@ -176,6 +199,7 @@ async fn of_two_endings_of_one_session_at_once_one_ends_it() {
         person: ada.id,
         secret_digest: vec![7; 32],
         state: SessionState::Active,
+        methods: vec![AuthenticationMethod::Password],
         authenticated_at: now,
         expires_at: now + Duration::hours(1),
     };

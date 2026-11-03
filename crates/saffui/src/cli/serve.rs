@@ -235,6 +235,9 @@ fn serve_until_signal(options: &ServeOptions) -> Result<(), ServeError> {
             } else {
                 warn!("{RETENTION} is off: expired rows are not purged");
             }
+            if !wired.security_keys_served {
+                warn!("the public origin is named by an address: no security key can be enrolled");
+            }
             planes.run_until(shutdown_requested).await.map(Ok)
         })
         .map_err(ServeError::Serving)?

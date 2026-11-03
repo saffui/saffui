@@ -6,10 +6,14 @@ use std::sync::Arc;
 use super::errors::OAuthError;
 use super::token::{TokenRequest, TokenResponse, grant_token};
 use crate::app::App;
+use crate::login::enroll::{
+    begin_key_enrollment, begin_totp_enrollment, confirm_totp_enrollment, finish_key_enrollment,
+};
 use crate::login::session::{SessionTicket, close_session};
 use crate::secret::Secret;
 use crate::tenancy::RealmScope;
 use crate::testkit::clock::FixedClock;
+use crate::testkit::crypto::{PredictableCodes, TrustingKeys};
 use crate::testkit::drive::complete;
 use crate::testkit::fixtures::{
     Application, CodeFlow, SignedInApplication, create_person, create_realm, create_service_client,
@@ -106,6 +110,132 @@ impl Scenario {
 
     pub(crate) fn refresh(&self, refresh_token: &str) -> Result<TokenResponse, OAuthError> {
         self.refresh_as("webapp", refresh_token, None)
+    }
+
+    /// The code the application holding `typed_secret` shows now.
+    pub(crate) fn read_code_now(&self, typed_secret: &str) -> String {
+        let seconds = u64::try_from(self.app.now().unix_timestamp()).expect("after 1970");
+        PredictableCodes::compute_from_text(typed_secret, seconds)
+    }
+
+    /// Enrolls an authenticator for whoever holds `ticket`, and returns its
+    /// secret as the person's application keeps it. The clock then moves to
+    /// the next step: the code that confirmed is spent.
+    pub(crate) fn enroll_authenticator(&self, ticket: &SessionTicket) -> String {
+        let offered = complete(begin_totp_enrollment(&self.app, "acme", Some(ticket)))
+            .expect("a secret to enroll");
+        let code = self.read_code_now(&offered.typed_secret);
+        complete(confirm_totp_enrollment(
+            &self.app,
+            "acme",
+            Some(ticket),
+            Secret::new(PASSWORD.as_bytes().to_vec()),
+            &code,
+            None,
+            &[],
+        ))
+        .expect("a confirmed authenticator");
+        self.clock.advance(std::time::Duration::from_secs(30));
+        offered.typed_secret
+    }
+
+    /// Signs `ada` in again with her password, then the code of the
+    /// application holding `typed_secret`, and returns the new ticket.
+    pub(crate) fn sign_in_with_code(&self, typed_secret: &str) -> SessionTicket {
+        use crate::login::flow::{FirstStep, finish_sign_in_with_code, sign_in_with_password};
+
+        let step = complete(sign_in_with_password(
+            &self.app,
+            self.scope,
+            "ada",
+            Secret::new(PASSWORD.as_bytes().to_vec()),
+            None,
+            &[],
+        ))
+        .expect("a right password");
+        let FirstStep::SecondFactorRequired(owed) = step else {
+            panic!("ada set up an authenticator: she owes a code");
+        };
+        complete(finish_sign_in_with_code(
+            &self.app,
+            self.scope,
+            owed.person.id,
+            &self.read_code_now(typed_secret),
+            None,
+            &[],
+        ))
+        .expect("a right code")
+        .ticket
+    }
+
+    /// Enrolls the security key `credential_id` for whoever holds `ticket`.
+    pub(crate) fn enroll_security_key(&self, ticket: &SessionTicket, credential_id: &str) {
+        let options = complete(begin_key_enrollment(
+            &self.app,
+            "acme",
+            Some(ticket),
+            Secret::new(PASSWORD.as_bytes().to_vec()),
+            None,
+            &[],
+        ))
+        .expect("a started enrollment");
+        let answer = TrustingKeys::answer_enrollment(&options, credential_id);
+        complete(finish_key_enrollment(
+            &self.app,
+            "acme",
+            Some(ticket),
+            &answer,
+        ))
+        .expect("an enrolled key");
+    }
+
+    /// Signs `ada` in again with her password, then the key `credential_id`
+    /// whose counter is now `counter`, and returns the new ticket.
+    pub(crate) fn sign_in_with_key(&self, credential_id: &str, counter: u64) -> SessionTicket {
+        use crate::login::flow::{FirstStep, finish_sign_in_with_key, sign_in_with_password};
+
+        let step = complete(sign_in_with_password(
+            &self.app,
+            self.scope,
+            "ada",
+            Secret::new(PASSWORD.as_bytes().to_vec()),
+            None,
+            &[],
+        ))
+        .expect("a right password");
+        let FirstStep::SecondFactorRequired(owed) = step else {
+            panic!("ada holds a key: she owes its answer");
+        };
+        let asked = owed.key.expect("a started proof");
+        let answer = TrustingKeys::answer_proof(&asked.options, credential_id, counter);
+        complete(finish_sign_in_with_key(
+            &self.app,
+            self.scope,
+            owed.person.id,
+            &asked.state,
+            &answer,
+            None,
+            &[],
+        ))
+        .expect("a right answer")
+        .ticket
+    }
+
+    /// The identifier of `ada`.
+    pub(crate) fn find_ada(&self) -> uuid::Uuid {
+        complete(async {
+            let mut work = self
+                .app
+                .storage
+                .begin(self.scope)
+                .await
+                .expect("a unit of work");
+            work.read_person_by_username("ada")
+                .await
+                .expect("a read")
+                .expect("ada")
+                .id
+        })
     }
 
     /// The kinds of the events of the realm, in order.

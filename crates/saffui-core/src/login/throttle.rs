@@ -19,6 +19,7 @@ use crate::app::App;
 use crate::error::{ErrorCode, Failure};
 use crate::login::device::{DeviceMark, MOST_MARKS};
 use crate::ports::storage::UnitOfWork;
+use crate::tenancy::RealmScope;
 
 /// Failures are counted in buckets of this many seconds.
 const BUCKET_SECONDS: i64 = 300;
@@ -112,6 +113,204 @@ pub fn write_network_bucket(address: IpAddr) -> Option<String> {
             Some(format!("{a:x}:{b:x}:{c:x}::/48"))
         }
         IpAddr::V4(_) => None,
+    }
+}
+
+/// Digests what the brake counts under. Each kind starts with a byte of its
+/// own, and each part ends with a byte no text holds: no name anybody types
+/// is counted as an address, and no address as a name.
+fn digest_counter(
+    app: &App,
+    scope: RealmScope,
+    kind: u8,
+    parts: &[&[u8]],
+) -> Result<Vec<u8>, Failure> {
+    let mut written = vec![kind];
+    for part in parts {
+        written.extend_from_slice(part);
+        written.push(0);
+    }
+    app.sealer
+        .digest_typed_name(scope.tenant().as_uuid(), scope.realm().as_uuid(), &written)
+        .map_err(|_| Failure::new(ErrorCode::CryptoUnavailable))
+}
+
+/// The two counters that lock a name for everyone: the window, and the day.
+///
+/// # Errors
+///
+/// Returns [`ErrorCode::CryptoUnavailable`] when the sealer cannot digest.
+pub(crate) fn digest_name_locks(
+    app: &App,
+    scope: RealmScope,
+    typed: &str,
+) -> Result<[Vec<u8>; 2], Failure> {
+    let typed = typed.as_bytes();
+    Ok([
+        digest_counter(app, scope, 1, &[typed])?,
+        digest_counter(app, scope, 5, &[typed])?,
+    ])
+}
+
+/// The keys of a browser that signed in with this name before: its own
+/// count, apart from the guesses made on the name from elsewhere.
+struct BrowserCounters {
+    device: Uuid,
+    attempts: Vec<u8>,
+    recent: Vec<u8>,
+    today: Vec<u8>,
+}
+
+/// The counters one attempt on a name is counted under: the name, its
+/// address, and the browser of the person when the realm knows it.
+pub(crate) struct Brake {
+    name: Vec<u8>,
+    name_today: Vec<u8>,
+    address: Option<Vec<u8>>,
+    address_and_name: Option<Vec<u8>>,
+    browser: Option<BrowserCounters>,
+}
+
+impl Brake {
+    /// The counters of an attempt on what was typed, from `caller`. Kept
+    /// under a key the database does not hold: people type passwords into
+    /// the wrong field.
+    pub(crate) fn of(
+        app: &App,
+        scope: RealmScope,
+        typed: &str,
+        caller: Option<IpAddr>,
+    ) -> Result<Self, Failure> {
+        let address = caller.map(write_address_bucket);
+        let address = address.as_deref();
+        let [name, name_today] = digest_name_locks(app, scope, typed)?;
+        let typed = typed.as_bytes();
+        Ok(Self {
+            name,
+            name_today,
+            address: address
+                .map(|address| digest_counter(app, scope, 2, &[address.as_bytes()]))
+                .transpose()?,
+            address_and_name: address
+                .map(|address| digest_counter(app, scope, 3, &[address.as_bytes(), typed]))
+                .transpose()?,
+            browser: None,
+        })
+    }
+
+    /// Counts the attempt under a browser the realm keeps for this person,
+    /// apart from the name and from the address.
+    pub(crate) fn count_browser_apart(
+        &mut self,
+        app: &App,
+        scope: RealmScope,
+        typed: &str,
+        device: Uuid,
+    ) -> Result<(), Failure> {
+        let parts: [&[u8]; 2] = [device.as_bytes(), typed.as_bytes()];
+        self.browser = Some(BrowserCounters {
+            device,
+            attempts: digest_counter(app, scope, 10, &[device.as_bytes()])?,
+            recent: digest_counter(app, scope, 6, &parts)?,
+            today: digest_counter(app, scope, 7, &parts)?,
+        });
+        Ok(())
+    }
+
+    /// The device of the browser counted apart, if any.
+    pub(crate) fn browser(&self) -> Option<Uuid> {
+        self.browser.as_ref().map(|browser| browser.device)
+    }
+
+    /// Counts an attempt against its address, or refuses it once the address
+    /// tried too often in the window: a hash is ours to pay, whatever name is
+    /// typed. A browser the realm knows is counted under its mark instead: an
+    /// address it shares does not hold it.
+    pub(crate) async fn admit(
+        &self,
+        work: &mut dyn UnitOfWork,
+        now: OffsetDateTime,
+    ) -> Result<(), Failure> {
+        let (counter, most) = match &self.browser {
+            Some(browser) => (Some(&browser.attempts), MAX_RECENT_ATTEMPTS_PER_BROWSER),
+            None => (self.address.as_ref(), MAX_RECENT_ATTEMPTS_PER_ADDRESS),
+        };
+        let Some(counter) = counter else {
+            return Ok(());
+        };
+        if work
+            .count_login_failures(counter, start_window(now))
+            .await?
+            >= most
+        {
+            return Err(Failure::new(ErrorCode::HashingBusy));
+        }
+        work.record_login_failure(counter, start_bucket(now))
+            .await?;
+        Ok(())
+    }
+
+    /// Tells whether the name is locked for this attempt. A known browser
+    /// answers for its own failures, and only for them.
+    pub(crate) async fn is_name_locked(
+        &self,
+        work: &mut dyn UnitOfWork,
+        now: OffsetDateTime,
+    ) -> Result<bool, Failure> {
+        let (window, day) = (start_window(now), start_long_window(now));
+        if let Some(browser) = &self.browser {
+            return Ok(
+                is_locked(work.count_login_failures(&browser.recent, window).await?)
+                    || work.count_login_failures(&browser.today, day).await?
+                        >= MAX_DAILY_FAILURES_PER_BROWSER,
+            );
+        }
+        let failed_for_the_name = work.count_login_failures(&self.name, window).await?;
+        let failed_today = work.count_login_failures(&self.name_today, day).await?;
+        let recently = match &self.address_and_name {
+            // Known addresses are held to a few guesses each. The name alone is
+            // held to a bound that guesses spread over many addresses reach.
+            Some(by_both) => {
+                is_locked(work.count_login_failures(by_both, window).await?)
+                    || failed_for_the_name >= MAX_RECENT_FAILURES_PER_NAME
+            }
+            None => is_locked(failed_for_the_name),
+        };
+        Ok(recently || failed_today >= MAX_DAILY_FAILURES)
+    }
+
+    /// Counts a failed guess. Every failure counts in the day of the name: a
+    /// known browser is spared the lock, not the count.
+    pub(crate) async fn record_failure(
+        &self,
+        work: &mut dyn UnitOfWork,
+        now: OffsetDateTime,
+    ) -> Result<(), Failure> {
+        let (bucket, hour) = (start_bucket(now), start_long_bucket(now));
+        work.record_login_failure(&self.name_today, hour).await?;
+        if let Some(browser) = &self.browser {
+            work.record_login_failure(&browser.recent, bucket).await?;
+            work.record_login_failure(&browser.today, hour).await?;
+        } else {
+            work.record_login_failure(&self.name, bucket).await?;
+            if let Some(by_both) = &self.address_and_name {
+                work.record_login_failure(by_both, bucket).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Clears the browser that proved the person. The count of the day of
+    /// the name ages alone, so that a sign-in gives no guess back.
+    pub(crate) async fn forget_browser_failures(
+        &self,
+        work: &mut dyn UnitOfWork,
+    ) -> Result<(), Failure> {
+        if let Some(browser) = &self.browser {
+            work.forget_login_failures(&browser.recent).await?;
+            work.forget_login_failures(&browser.today).await?;
+        }
+        Ok(())
     }
 }
 

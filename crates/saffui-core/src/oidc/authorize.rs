@@ -13,7 +13,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use time::Duration;
 use uuid::Uuid;
 
-use super::code::{AuthorizationCode, PendingAuthorization};
+use super::code::{AuthorizationCode, PendingAuthorization, PendingKeyProof};
 use super::discovery::name_issuer;
 use super::errors::OAuthError;
 use super::pkce::is_well_formed_challenge;
@@ -22,13 +22,15 @@ use crate::clients::{Client, check_scope_token, read_named_client};
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
 use crate::login::device::DeviceMark;
-use crate::login::session::{Session, SessionTicket, close_session, find_live_session};
-use crate::login::steps::password::sign_in;
+use crate::login::flow::{
+    FirstStep, SignedIn, finish_sign_in_with_code, finish_sign_in_with_key, sign_in_with_password,
+};
+use crate::login::session::{Session, SessionTicket, close_session, find_answering_session};
 use crate::login::throttle::admit_pending_sign_in;
 use crate::ports::storage::UnitOfWork;
 use crate::secret::Secret;
-use crate::tenancy::RealmName;
 use crate::tenancy::resolve::resolve_realm;
+use crate::tenancy::{RealmName, RealmScope};
 use crate::tokens::verify::read_identity_hint;
 
 /// How long a code lives: the time of one redirect and one request.
@@ -389,6 +391,8 @@ async fn keep_pending_authorization(
         code_challenge: trusted.code_challenge,
         expires_at: app.now() + PENDING_LIFETIME,
         expected_person,
+        first_factor: None,
+        key_proof: None,
     };
     work.insert_pending_authorization(&pending)
         .await
@@ -416,7 +420,7 @@ pub async fn begin_authorization(
 
     let session = match ticket {
         Some(ticket) if !trusted.proof.fresh => {
-            find_live_session(app, work.as_mut(), ticket).await?
+            find_answering_session(app, work.as_mut(), ticket).await?
         }
         _ => None,
     };
@@ -506,10 +510,22 @@ pub struct SignedInForRequest {
     pub device_mark: DeviceMark,
 }
 
+/// What a person typed on one form of the sign-in page.
+pub enum SignInAnswer<'a> {
+    Password {
+        name: &'a str,
+        password: Secret,
+    },
+    /// The code of their authenticator application, after their password.
+    Code(&'a str),
+    /// What their browser handed back from their security key, after their
+    /// password.
+    Key(&'a serde_json::Value),
+}
+
 /// What a person typed on the sign-in page, and where it comes from.
 pub struct TypedSignIn<'a> {
-    pub name: &'a str,
-    pub password: Secret,
+    pub answer: SignInAnswer<'a>,
     /// The address of the browser, as a believed proxy said.
     pub caller: Option<IpAddr>,
     /// The marks of earlier sign-ins the browser brings, the latest first.
@@ -528,21 +544,110 @@ impl fmt::Debug for SignedInForRequest {
     }
 }
 
-/// Finishes a pending request with the name and the password a person typed.
+/// Where an answer leaves a pending request.
+#[derive(Debug)]
+pub enum SignInStep {
+    Finished(SignedInForRequest),
+    /// The password was right and the person owes a second factor: the page
+    /// asks for it, and the request waits.
+    SecondFactorRequired(OwedSecondFactor),
+}
+
+/// What the page of a pending request asks next. One of the two is enough.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OwedSecondFactor {
+    /// A code of the person's authenticator application.
+    pub code: bool,
+    /// What the page hands to the browser for a security key to answer.
+    pub key: Option<serde_json::Value>,
+}
+
+impl SignInStep {
+    /// The redirection and the ticket, when the request is finished.
+    #[must_use]
+    pub fn into_finished(self) -> Option<SignedInForRequest> {
+        match self {
+            Self::Finished(finished) => Some(finished),
+            Self::SecondFactorRequired(_) => None,
+        }
+    }
+}
+
+/// Proves one answer for a pending request. What the person owes, when they
+/// proved their password and owe a second factor: the request then waits.
+async fn prove_answer(
+    app: &App,
+    scope: RealmScope,
+    pending: &PendingAuthorization,
+    typed: TypedSignIn<'_>,
+) -> Result<Result<SignedIn, OwedSecondFactor>, Failure> {
+    let expired = || Failure::new(ErrorCode::AuthorizationRequestExpired);
+    let (caller, marks) = (typed.caller, typed.known_browsers);
+    match typed.answer {
+        SignInAnswer::Password { name, password } => {
+            match sign_in_with_password(app, scope, name, password, caller, marks).await? {
+                FirstStep::SignedIn(signed_in) => Ok(Ok(signed_in)),
+                FirstStep::SecondFactorRequired(owed) => {
+                    // Written on the request, which only this browser can
+                    // finish: what comes next is asked of this person and
+                    // no other.
+                    let key_proof = owed.key.map(|ceremony| PendingKeyProof {
+                        state: ceremony.state,
+                        options: ceremony.options,
+                    });
+                    let mut work = app.storage.begin(scope).await?;
+                    let waiting = work
+                        .mark_first_factor(
+                            pending.id,
+                            owed.person.id,
+                            key_proof.as_ref(),
+                            app.now(),
+                        )
+                        .await?;
+                    work.commit().await?;
+                    if !waiting {
+                        return Err(expired());
+                    }
+                    Ok(Err(OwedSecondFactor {
+                        code: owed.code,
+                        key: key_proof.map(|proof| proof.options),
+                    }))
+                }
+            }
+        }
+        SignInAnswer::Code(code) => {
+            let person = pending.first_factor.ok_or_else(expired)?;
+            finish_sign_in_with_code(app, scope, person, code, caller, marks)
+                .await
+                .map(Ok)
+        }
+        SignInAnswer::Key(answer) => {
+            let person = pending.first_factor.ok_or_else(expired)?;
+            let proof = pending.key_proof.as_ref().ok_or_else(expired)?;
+            finish_sign_in_with_key(app, scope, person, &proof.state, answer, caller, marks)
+                .await
+                .map(Ok)
+        }
+    }
+}
+
+/// Takes one answer of a person on the page of a pending request, and
+/// finishes the request when they owe nothing more.
 ///
 /// # Errors
 ///
 /// Returns [`ErrorCode::AuthorizationRequestExpired`] when the request is
-/// unknown, expired, or was started by another browser: the three answer
-/// alike. Returns [`ErrorCode::SignInFailed`] when the person is refused:
-/// the request then still waits. Returns the storage failure otherwise.
+/// unknown, expired, was started by another browser, or is given a code
+/// before any password: all answer alike. Returns [`ErrorCode::SignInFailed`]
+/// or [`ErrorCode::CodeRejected`] when the person is refused: the request
+/// then still waits. Returns the storage failure otherwise.
 pub async fn finish_sign_in(
     app: &App,
     realm: &str,
     request: Uuid,
     browser_secret: &Secret,
     typed: TypedSignIn<'_>,
-) -> Result<SignedInForRequest, Failure> {
+) -> Result<SignInStep, Failure> {
     let (realm, scope) = resolve_realm(app, realm).await?;
     let expired = || Failure::new(ErrorCode::AuthorizationRequestExpired);
 
@@ -554,19 +659,13 @@ pub async fn finish_sign_in(
         .as_ref()
         .map_or(&[0_u8; 32][..], |known| known.browser_digest.as_slice());
     let same_browser = app.digester.equal_in_constant_time(&presented, expected);
-    if pending.is_none() || !same_browser {
+    let Some(pending) = pending.filter(|_| same_browser) else {
         return Err(expired());
-    }
-
-    let signed_in = sign_in(
-        app,
-        scope,
-        typed.name,
-        typed.password,
-        typed.caller,
-        typed.known_browsers,
-    )
-    .await?;
+    };
+    let signed_in = match prove_answer(app, scope, &pending, typed).await? {
+        Ok(signed_in) => signed_in,
+        Err(owed) => return Ok(SignInStep::SecondFactorRequired(owed)),
+    };
 
     let mut work = app.storage.begin(scope).await?;
     // Taken, not read: of two submissions of one page, one finishes the
@@ -586,7 +685,7 @@ pub async fn finish_sign_in(
     {
         work.commit().await?;
         let issuer = name_issuer(&app.settings, &realm);
-        return Ok(SignedInForRequest {
+        return Ok(SignInStep::Finished(SignedInForRequest {
             location: write_return_location(
                 &pending.redirect_uri,
                 &issuer,
@@ -595,7 +694,7 @@ pub async fn finish_sign_in(
             ),
             ticket: signed_in.ticket,
             device_mark: signed_in.device_mark,
-        });
+        }));
     }
     let location = issue_code(
         app,
@@ -615,11 +714,49 @@ pub async fn finish_sign_in(
     )
     .await?;
     work.commit().await?;
-    Ok(SignedInForRequest {
+    Ok(SignInStep::Finished(SignedInForRequest {
         location,
         ticket: signed_in.ticket,
         device_mark: signed_in.device_mark,
-    })
+    }))
+}
+
+/// Tells what a pending request still asks of the browser that started it,
+/// to show its page again after a refused answer. Nothing, when no password
+/// was proven for it.
+///
+/// # Errors
+///
+/// Returns [`ErrorCode::AuthorizationRequestExpired`] as [`finish_sign_in`]
+/// does, or the storage failure.
+pub async fn describe_owed_second_factor(
+    app: &App,
+    realm: &str,
+    request: Uuid,
+    browser_secret: &Secret,
+) -> Result<Option<OwedSecondFactor>, Failure> {
+    let (_, scope) = resolve_realm(app, realm).await?;
+    let mut work = app.storage.begin(scope).await?;
+    let pending = work.read_pending_authorization(request, app.now()).await?;
+    let presented = app.digester.sha256(browser_secret.expose());
+    let expected = pending
+        .as_ref()
+        .map_or(&[0_u8; 32][..], |known| known.browser_digest.as_slice());
+    let same_browser = app.digester.equal_in_constant_time(&presented, expected);
+    let Some(pending) = pending.filter(|_| same_browser) else {
+        return Err(Failure::new(ErrorCode::AuthorizationRequestExpired));
+    };
+    let Some(person) = pending.first_factor else {
+        return Ok(None);
+    };
+    let code = work
+        .read_totp(person)
+        .await?
+        .is_some_and(|authenticator| authenticator.confirmed_at.is_some());
+    Ok(Some(OwedSecondFactor {
+        code,
+        key: pending.key_proof.map(|proof| proof.options),
+    }))
 }
 
 #[cfg(test)]
@@ -632,7 +769,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        Authorization, AuthorizationParameters, AuthorizationRefusal, TypedSignIn,
+        Authorization, AuthorizationParameters, AuthorizationRefusal, SignInAnswer, TypedSignIn,
         begin_authorization, finish_sign_in,
     };
     use crate::app::App;
@@ -725,13 +862,17 @@ mod tests {
             request,
             &browser_secret,
             TypedSignIn {
-                name,
-                password: Secret::new(PASSWORD.as_bytes().to_vec()),
+                answer: SignInAnswer::Password {
+                    name,
+                    password: Secret::new(PASSWORD.as_bytes().to_vec()),
+                },
                 caller: None,
                 known_browsers: &[],
             },
         ))
-        .expect("a signed-in person");
+        .expect("a signed-in person")
+        .into_finished()
+        .expect("a person who owes no code");
         (signed_in.location, signed_in.ticket)
     }
 
@@ -796,6 +937,11 @@ mod tests {
         assert_eq!(identity["sid"], access["sid"]);
         assert!(Uuid::parse_str(identity["sub"].as_str().expect("a subject")).is_ok());
         assert!(identity["auth_time"].is_i64());
+        assert_eq!(
+            identity["amr"],
+            serde_json::json!(["pwd"]),
+            "the password alone proved the person"
+        );
     }
 
     fn refresh(app: &App, secret: Option<&Secret>, refresh_token: &str) -> Result<(), OAuthError> {
@@ -1115,8 +1261,10 @@ mod tests {
                 request,
                 browser,
                 TypedSignIn {
-                    name: "ada",
-                    password: Secret::new(password.as_bytes().to_vec()),
+                    answer: SignInAnswer::Password {
+                        name: "ada",
+                        password: Secret::new(password.as_bytes().to_vec()),
+                    },
                     caller: None,
                     known_browsers: &[],
                 },
@@ -1159,8 +1307,10 @@ mod tests {
             request,
             &browser_secret,
             TypedSignIn {
-                name: "ada",
-                password: Secret::new(PASSWORD.as_bytes().to_vec()),
+                answer: SignInAnswer::Password {
+                    name: "ada",
+                    password: Secret::new(PASSWORD.as_bytes().to_vec()),
+                },
                 caller: None,
                 known_browsers: &[],
             },
@@ -1259,13 +1409,17 @@ mod tests {
             request,
             &browser_secret,
             TypedSignIn {
-                name: "ada",
-                password: Secret::new(PASSWORD.as_bytes().to_vec()),
+                answer: SignInAnswer::Password {
+                    name: "ada",
+                    password: Secret::new(PASSWORD.as_bytes().to_vec()),
+                },
                 caller: None,
                 known_browsers: &[],
             },
         ))
         .expect("a signed-in person")
+        .into_finished()
+        .expect("a person who owes no code")
         .device_mark;
         let written = known.write();
         let device = written.split('.').nth(1).expect("a device");
@@ -1329,13 +1483,17 @@ mod tests {
             request,
             &browser_secret,
             TypedSignIn {
-                name: "ada",
-                password: Secret::new(PASSWORD.as_bytes().to_vec()),
+                answer: SignInAnswer::Password {
+                    name: "ada",
+                    password: Secret::new(PASSWORD.as_bytes().to_vec()),
+                },
                 caller: None,
                 known_browsers: &[],
             },
         ))
         .expect("a signed-in person")
+        .into_finished()
+        .expect("a person who owes no code")
         .device_mark;
         // The realm still holds the row: nothing purged it yet.
         clock.advance(Duration::from_secs(
@@ -1494,13 +1652,17 @@ mod tests {
                 request,
                 &browser_secret,
                 TypedSignIn {
-                    name,
-                    password: Secret::new(PASSWORD.as_bytes().to_vec()),
+                    answer: SignInAnswer::Password {
+                        name,
+                        password: Secret::new(PASSWORD.as_bytes().to_vec()),
+                    },
                     caller: None,
                     known_browsers: &[],
                 },
             ))
             .expect("a signed-in person")
+            .into_finished()
+            .expect("a person who owes no code")
             .location
         };
 
@@ -1584,5 +1746,187 @@ mod tests {
                 "{prompt:?} {max_age:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_person_with_an_authenticator_finishes_the_request_with_a_code_and_the_token_says_so() {
+        use crate::oidc::scenario::Scenario;
+
+        let scenario = Scenario::start();
+        let first = scenario.sign_in("openid");
+        let secret = scenario.enroll_authenticator(&first.ticket);
+        let begun = complete(begin_authorization(
+            &scenario.app,
+            "acme",
+            ask(&challenge()),
+            None,
+        ))
+        .expect("a pending request");
+        let Authorization::SignInRequired {
+            request,
+            browser_secret,
+        } = begun
+        else {
+            panic!("a person without a session must sign in: {begun:?}");
+        };
+        let answer = |answer: SignInAnswer<'_>| {
+            complete(finish_sign_in(
+                &scenario.app,
+                "acme",
+                request,
+                &browser_secret,
+                TypedSignIn {
+                    answer,
+                    caller: None,
+                    known_browsers: &[],
+                },
+            ))
+        };
+
+        let too_early = answer(SignInAnswer::Code("000000"));
+        assert_eq!(
+            too_early.map(|_| ()).map_err(|failure| failure.code),
+            Err(ErrorCode::AuthorizationRequestExpired),
+            "a code before any password is the answer to nothing"
+        );
+        let opened_before = scenario
+            .read_event_kinds()
+            .iter()
+            .filter(|kind| *kind == "session.opened")
+            .count();
+        let after_the_password = answer(SignInAnswer::Password {
+            name: "ada",
+            password: Secret::new(PASSWORD.as_bytes().to_vec()),
+        })
+        .expect("a right password");
+        assert!(
+            after_the_password.into_finished().is_none(),
+            "the request waits for the code"
+        );
+        let refused = answer(SignInAnswer::Code("000000"));
+        assert_eq!(
+            refused.map(|_| ()).map_err(|failure| failure.code),
+            Err(ErrorCode::CodeRejected)
+        );
+        let opened = |scenario: &Scenario| {
+            scenario
+                .read_event_kinds()
+                .iter()
+                .filter(|kind| *kind == "session.opened")
+                .count()
+        };
+        assert_eq!(
+            opened(&scenario),
+            opened_before,
+            "the password alone opened no session"
+        );
+        let code = scenario.read_code_now(&secret);
+        let finished = answer(SignInAnswer::Code(&code))
+            .expect("a right code")
+            .into_finished()
+            .expect("a finished request");
+        assert_eq!(opened(&scenario), opened_before + 1);
+
+        let code = read_query(&finished.location, "code").expect("a code");
+        let request = TokenRequest {
+            grant_type: Some("authorization_code"),
+            client_id: Some("webapp"),
+            code: Some(&code),
+            redirect_uri: Some(CALLBACK),
+            code_verifier: Some(VERIFIER),
+            ..TokenRequest::default()
+        };
+        let tokens = complete(grant_token(&scenario.app, "acme", request)).expect("tokens");
+        let identity = read_claims(&tokens.id_token.expect("an identity token"));
+        assert_eq!(identity["amr"], serde_json::json!(["pwd", "otp", "mfa"]));
+    }
+
+    #[test]
+    fn a_person_with_a_key_finishes_the_request_with_its_answer_and_the_token_says_so() {
+        use crate::oidc::scenario::Scenario;
+        use crate::testkit::crypto::TrustingKeys;
+
+        let scenario = Scenario::start();
+        let first = scenario.sign_in("openid");
+        scenario.enroll_security_key(&first.ticket, "k1");
+        let begun = complete(begin_authorization(
+            &scenario.app,
+            "acme",
+            ask(&challenge()),
+            None,
+        ))
+        .expect("a pending request");
+        let Authorization::SignInRequired {
+            request,
+            browser_secret,
+        } = begun
+        else {
+            panic!("a person without a session must sign in: {begun:?}");
+        };
+        let answer = |answer: SignInAnswer<'_>| {
+            complete(finish_sign_in(
+                &scenario.app,
+                "acme",
+                request,
+                &browser_secret,
+                TypedSignIn {
+                    answer,
+                    caller: None,
+                    known_browsers: &[],
+                },
+            ))
+        };
+
+        let early = TrustingKeys::answer_proof(&serde_json::json!({}), "k1", 1);
+        assert_eq!(
+            answer(SignInAnswer::Key(&early))
+                .map(|_| ())
+                .map_err(|failure| failure.code),
+            Err(ErrorCode::AuthorizationRequestExpired),
+            "the answer of a key before any password is the answer to nothing"
+        );
+        let step = answer(SignInAnswer::Password {
+            name: "ada",
+            password: Secret::new(PASSWORD.as_bytes().to_vec()),
+        })
+        .expect("a right password");
+        let super::SignInStep::SecondFactorRequired(owed) = step else {
+            panic!("the request waits for the key");
+        };
+        assert!(!owed.code);
+        let options = owed.key.expect("what the page hands to the browser");
+        assert_eq!(
+            complete(super::describe_owed_second_factor(
+                &scenario.app,
+                "acme",
+                request,
+                &browser_secret
+            ))
+            .expect("what is owed"),
+            Some(super::OwedSecondFactor {
+                code: false,
+                key: Some(options.clone())
+            }),
+            "the page can be shown again"
+        );
+        let finished = answer(SignInAnswer::Key(&TrustingKeys::answer_proof(
+            &options, "k1", 1,
+        )))
+        .expect("a right answer")
+        .into_finished()
+        .expect("a finished request");
+
+        let code = read_query(&finished.location, "code").expect("a code");
+        let request = TokenRequest {
+            grant_type: Some("authorization_code"),
+            client_id: Some("webapp"),
+            code: Some(&code),
+            redirect_uri: Some(CALLBACK),
+            code_verifier: Some(VERIFIER),
+            ..TokenRequest::default()
+        };
+        let tokens = complete(grant_token(&scenario.app, "acme", request)).expect("tokens");
+        let identity = read_claims(&tokens.id_token.expect("an identity token"));
+        assert_eq!(identity["amr"], serde_json::json!(["pwd", "pop", "mfa"]));
     }
 }

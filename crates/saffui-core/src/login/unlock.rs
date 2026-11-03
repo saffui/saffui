@@ -9,7 +9,7 @@ use crate::audit::EventKind;
 use crate::audit::append::record_event;
 use crate::directory::normalize_username;
 use crate::error::{ErrorCode, Failure};
-use crate::login::steps::password::digest_name_locks;
+use crate::login::throttle::digest_name_locks;
 use crate::tenancy::RealmScope;
 
 /// Forgets what the name of a person failed, in the window and in the day.
@@ -54,7 +54,7 @@ mod tests {
     use super::unlock_person;
     use crate::app::App;
     use crate::error::ErrorCode;
-    use crate::login::steps::password::sign_in;
+    use crate::login::flow::sign_in_with_password;
     use crate::secret::Secret;
     use crate::tenancy::RealmScope;
     use crate::testkit::drive::complete;
@@ -69,7 +69,7 @@ mod tests {
         address: &str,
         password: &str,
     ) -> Result<(), ErrorCode> {
-        complete(sign_in(
+        complete(sign_in_with_password(
             app,
             scope,
             "ada",

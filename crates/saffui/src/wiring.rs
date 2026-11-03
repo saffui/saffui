@@ -5,10 +5,12 @@ use std::sync::{Arc, OnceLock};
 
 use crypto::adapters::digest::ProviderDigester;
 use crypto::adapters::open_provider;
+use crypto::adapters::otp::ProviderOneTimeCodes;
 use crypto::adapters::password::BoundedPasswordHasher;
 use crypto::adapters::random::ProviderRandom;
 use crypto::adapters::seal::EnvelopeSealer;
 use crypto::adapters::sign::JoseSigner;
+use crypto::adapters::webauthn::WebauthnSecurityKeys;
 use deadpool_postgres::Pool;
 use pgcore::connect::ConnectionPlan;
 use pgcore::migrate::EMBEDDED;
@@ -35,6 +37,8 @@ impl Clock for SystemClock {
 
 pub(crate) struct Wired {
     pub(crate) app: App,
+    /// Whether a security key can be enrolled on the public origin.
+    pub(crate) security_keys_served: bool,
     pool: Pool,
 }
 
@@ -83,7 +87,9 @@ pub(crate) fn wire_product(
         .map_err(|_| WiringError::Hasher)?;
     let pool = build_pool(database, pool)?;
     let storage = PgStorage::new(pool.clone(), SchemaWindow::of_exactly(EMBEDDED));
+    let security_keys = WebauthnSecurityKeys::for_origin(settings.public_origin.as_str());
     Ok(Wired {
+        security_keys_served: security_keys.is_available(),
         app: App {
             settings,
             storage: Arc::new(storage),
@@ -92,6 +98,8 @@ pub(crate) fn wire_product(
             digester: Arc::new(ProviderDigester::new(Arc::clone(&provider))),
             sealer: Arc::new(sealer),
             hasher: Arc::new(hasher),
+            one_time_codes: Arc::new(ProviderOneTimeCodes::new(Arc::clone(&provider))),
+            security_keys: Arc::new(security_keys),
             hashing_shares: Arc::new(HashingShares::new(password_hashers)),
             decoy_hash: Arc::new(OnceLock::new()),
             signer: Arc::new(JoseSigner::new(provider)),

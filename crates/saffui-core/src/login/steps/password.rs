@@ -1,210 +1,29 @@
+//! The first step of signing in: a name and a password.
+
 use std::net::IpAddr;
 
-use serde_json::json;
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::app::App;
-use crate::audit::EventKind;
-use crate::audit::append::record_event;
 use crate::directory::create::translate_hashing_failure;
 use crate::directory::{PASSWORD_MAX_BYTES, Person, normalize_username};
 use crate::error::{ErrorCode, Failure};
-use crate::login::device::{
-    DeviceMark, MOST_BROWSERS_PER_PERSON, MOST_MARKS, issue_device_mark, recognize_device_mark,
-};
-use crate::login::session::{SessionTicket, open_session};
-use crate::login::store::KnownBrowser;
-use crate::login::throttle::{
-    MAX_DAILY_FAILURES, MAX_DAILY_FAILURES_PER_BROWSER, MAX_RECENT_ATTEMPTS_PER_ADDRESS,
-    MAX_RECENT_ATTEMPTS_PER_BROWSER, MAX_RECENT_FAILURES_PER_NAME, is_locked, start_bucket,
-    start_long_bucket, start_long_window, start_window, write_address_bucket, write_network_bucket,
-};
-use crate::ports::storage::UnitOfWork;
+use crate::login::device::{DeviceMark, find_known_browser, prove_device_marks};
+use crate::login::throttle::{Brake, write_network_bucket};
 use crate::secret::Secret;
 use crate::tenancy::RealmScope;
 
-/// A person who just signed in, the ticket of their new session, and the
-/// mark their browser keeps from now on.
-#[derive(Debug)]
-pub struct SignedIn {
+/// A password proven: the person, what they typed, and the brake the
+/// attempt was counted under, which the flow clears.
+pub(crate) struct ProvenPassword {
     pub person: Person,
-    pub session: Uuid,
-    pub ticket: SessionTicket,
-    pub device_mark: DeviceMark,
+    /// What was typed, trimmed and in lower case: what a mark is made for.
+    pub typed: String,
+    pub brake: Brake,
 }
 
-/// The keys the brake counts under, for one attempt.
-struct Counters {
-    name: Vec<u8>,
-    name_today: Vec<u8>,
-    address: Option<Vec<u8>>,
-    address_and_name: Option<Vec<u8>>,
-}
-
-/// The keys of a browser that signed in with this name before: its own
-/// count, apart from the guesses made on the name from elsewhere.
-struct DeviceCounters {
-    device: Uuid,
-    attempts: Vec<u8>,
-    recent: Vec<u8>,
-    today: Vec<u8>,
-}
-
-/// Digests what the brake counts under. Each kind starts with a byte of its
-/// own, and each part ends with a byte no text holds: no name anybody types
-/// is counted as an address, and no address as a name.
-fn digest_counter(
-    app: &App,
-    scope: RealmScope,
-    kind: u8,
-    parts: &[&[u8]],
-) -> Result<Vec<u8>, Failure> {
-    let mut written = vec![kind];
-    for part in parts {
-        written.extend_from_slice(part);
-        written.push(0);
-    }
-    app.sealer
-        .digest_typed_name(scope.tenant().as_uuid(), scope.realm().as_uuid(), &written)
-        .map_err(|_| Failure::new(ErrorCode::CryptoUnavailable))
-}
-
-/// The two counters that lock a name for everyone: the window, and the day.
-///
-/// # Errors
-///
-/// Returns [`ErrorCode::CryptoUnavailable`] when the sealer cannot digest.
-pub(crate) fn digest_name_locks(
-    app: &App,
-    scope: RealmScope,
-    typed: &str,
-) -> Result<[Vec<u8>; 2], Failure> {
-    let typed = typed.as_bytes();
-    Ok([
-        digest_counter(app, scope, 1, &[typed])?,
-        digest_counter(app, scope, 5, &[typed])?,
-    ])
-}
-
-fn name_counters(
-    app: &App,
-    scope: RealmScope,
-    typed: &str,
-    caller: Option<IpAddr>,
-) -> Result<Counters, Failure> {
-    let address = caller.map(write_address_bucket);
-    let address = address.as_deref();
-    let [name, name_today] = digest_name_locks(app, scope, typed)?;
-    let typed = typed.as_bytes();
-    Ok(Counters {
-        name,
-        name_today,
-        address: address
-            .map(|address| digest_counter(app, scope, 2, &[address.as_bytes()]))
-            .transpose()?,
-        address_and_name: address
-            .map(|address| digest_counter(app, scope, 3, &[address.as_bytes(), typed]))
-            .transpose()?,
-    })
-}
-
-fn device_counters(
-    app: &App,
-    scope: RealmScope,
-    typed: &str,
-    device: Uuid,
-) -> Result<DeviceCounters, Failure> {
-    let parts: [&[u8]; 2] = [device.as_bytes(), typed.as_bytes()];
-    Ok(DeviceCounters {
-        device,
-        attempts: digest_counter(app, scope, 10, &[device.as_bytes()])?,
-        recent: digest_counter(app, scope, 6, &parts)?,
-        today: digest_counter(app, scope, 7, &parts)?,
-    })
-}
-
-/// Counts an attempt against its address, or refuses it once the address
-/// tried too often in the window: a hash is ours to pay, whatever name is
-/// typed. A browser the realm knows is counted under its mark instead: an
-/// address it shares does not hold it.
-async fn admit_attempt(
-    work: &mut dyn UnitOfWork,
-    counters: &Counters,
-    device: Option<&DeviceCounters>,
-    now: OffsetDateTime,
-) -> Result<(), Failure> {
-    let (counter, most) = match device {
-        Some(device) => (Some(&device.attempts), MAX_RECENT_ATTEMPTS_PER_BROWSER),
-        None => (counters.address.as_ref(), MAX_RECENT_ATTEMPTS_PER_ADDRESS),
-    };
-    let Some(counter) = counter else {
-        return Ok(());
-    };
-    if work
-        .count_login_failures(counter, start_window(now))
-        .await?
-        >= most
-    {
-        return Err(Failure::new(ErrorCode::HashingBusy));
-    }
-    work.record_login_failure(counter, start_bucket(now))
-        .await?;
-    Ok(())
-}
-
-/// Tells whether the name is locked for this attempt. A known browser
-/// answers for its own failures, and only for them.
-async fn is_name_locked(
-    work: &mut dyn UnitOfWork,
-    counters: &Counters,
-    device: Option<&DeviceCounters>,
-    now: OffsetDateTime,
-) -> Result<bool, Failure> {
-    let (window, day) = (start_window(now), start_long_window(now));
-    if let Some(device) = device {
-        return Ok(
-            is_locked(work.count_login_failures(&device.recent, window).await?)
-                || work.count_login_failures(&device.today, day).await?
-                    >= MAX_DAILY_FAILURES_PER_BROWSER,
-        );
-    }
-    let failed_for_the_name = work.count_login_failures(&counters.name, window).await?;
-    let failed_today = work.count_login_failures(&counters.name_today, day).await?;
-    let recently = match &counters.address_and_name {
-        // Known addresses are held to a few guesses each. The name alone is
-        // held to a bound that guesses spread over many addresses reach.
-        Some(by_both) => {
-            is_locked(work.count_login_failures(by_both, window).await?)
-                || failed_for_the_name >= MAX_RECENT_FAILURES_PER_NAME
-        }
-        None => is_locked(failed_for_the_name),
-    };
-    Ok(recently || failed_today >= MAX_DAILY_FAILURES)
-}
-
-/// The browser among `proven` that the realm keeps for this very person,
-/// and has not let expire.
-async fn find_known_browser(
-    work: &mut dyn UnitOfWork,
-    proven: &[Uuid],
-    person: Option<&Person>,
-    now: OffsetDateTime,
-) -> Result<Option<Uuid>, Failure> {
-    let Some(person) = person else {
-        return Ok(None);
-    };
-    if proven.is_empty() {
-        return Ok(None);
-    }
-    let live = work.read_live_browsers(proven, now).await?;
-    Ok(proven.iter().copied().find(|device| {
-        live.iter()
-            .any(|kept| kept.device == *device && kept.person == person.id)
-    }))
-}
-
-/// Signs a person in with a username and a password.
+/// Proves who a person is by their name and their password. It opens no
+/// session: what the proof is worth is for the flow to say.
 ///
 /// An unknown name, a wrong password, a disabled person and a locked name
 /// are one refusal, after the same work: the unknown name is verified too,
@@ -224,14 +43,14 @@ async fn find_known_browser(
 /// [`ErrorCode::HashingBusy`] when the address spent its attempts, or the
 /// realm or the /48 of an IPv6 caller runs its share of hashes already, or
 /// the storage failure.
-pub async fn sign_in(
+pub(crate) async fn verify_password(
     app: &App,
     scope: RealmScope,
     typed_name: &str,
     password: Secret,
     caller: Option<IpAddr>,
     known_browsers: &[DeviceMark],
-) -> Result<SignedIn, Failure> {
+) -> Result<ProvenPassword, Failure> {
     let refused = || Failure::new(ErrorCode::SignInFailed);
     let username = normalize_username(typed_name).ok();
     // A password past the bound is no guess: it cannot be right. Nothing is
@@ -240,10 +59,8 @@ pub async fn sign_in(
         return Err(refused());
     }
     // What was typed, not who it is: the brake holds for names nobody has.
-    // Kept under a key the database does not hold: people type passwords
-    // into the wrong field.
     let typed = typed_name.trim().to_lowercase();
-    let counters = name_counters(app, scope, &typed, caller)?;
+    let mut brake = Brake::of(app, scope, &typed, caller)?;
     let network = caller.and_then(write_network_bucket);
     // No hasher free now: refused before the attempt is counted, so that a
     // busy node costs the address nothing. The share is taken further down.
@@ -254,14 +71,7 @@ pub async fn sign_in(
         return Err(Failure::new(ErrorCode::HashingBusy));
     }
     let now = app.now();
-    // The marks made for the name typed: their MAC proves them before
-    // anything is read.
-    let mut proven = Vec::new();
-    for mark in known_browsers.iter().take(MOST_MARKS) {
-        if recognize_device_mark(app, scope, mark, &typed, now)? {
-            proven.push(mark.device);
-        }
-    }
+    let proven = prove_device_marks(app, scope, known_browsers, &typed, now)?;
 
     // One unit of work reads the counters and counts this attempt against
     // its address. It commits before anything is hashed: attempts made
@@ -272,12 +82,11 @@ pub async fn sign_in(
         Some(username) => work.read_person_by_username(username).await?,
         None => None,
     };
-    let device = find_known_browser(work.as_mut(), &proven, person.as_ref(), now)
-        .await?
-        .map(|device| device_counters(app, scope, &typed, device))
-        .transpose()?;
-    admit_attempt(work.as_mut(), &counters, device.as_ref(), now).await?;
-    let locked = is_name_locked(work.as_mut(), &counters, device.as_ref(), now).await?;
+    if let Some(device) = find_known_browser(work.as_mut(), &proven, person.as_ref(), now).await? {
+        brake.count_browser_apart(app, scope, &typed, device)?;
+    }
+    brake.admit(work.as_mut(), now).await?;
+    let locked = brake.is_name_locked(work.as_mut(), now).await?;
     let person = person.filter(|_| !locked);
     // Read for an unknown name too, under an identifier no person has: the
     // two paths make as many trips to the storage, and take as long.
@@ -305,61 +114,27 @@ pub async fn sign_in(
             .map_err(translate_hashing_failure)?
     };
 
-    let mut work = app.storage.begin(scope).await?;
-    let Some(person) = person.filter(|person| verified && person.enabled) else {
-        let (bucket, hour) = (start_bucket(now), start_long_bucket(now));
-        // Every failure counts in the day of the name: a known browser is
-        // spared the lock, not the count.
-        work.record_login_failure(&counters.name_today, hour)
-            .await?;
-        if let Some(device) = &device {
-            work.record_login_failure(&device.recent, bucket).await?;
-            work.record_login_failure(&device.today, hour).await?;
-        } else {
-            work.record_login_failure(&counters.name, bucket).await?;
-            if let Some(by_both) = &counters.address_and_name {
-                work.record_login_failure(by_both, bucket).await?;
-            }
-        }
-        work.commit().await?;
-        return Err(refused());
-    };
-    // The browser that proved the password is cleared; the count of the day
-    // of the name ages alone, so that a sign-in gives no guess back.
-    if let Some(device) = &device {
-        work.forget_login_failures(&device.recent).await?;
-        work.forget_login_failures(&device.today).await?;
+    if let Some(person) = person.filter(|person| verified && person.enabled) {
+        return Ok(ProvenPassword {
+            person,
+            typed,
+            brake,
+        });
     }
-    let device_mark = issue_device_mark(app, scope, &typed, device.map(|device| device.device))?;
-    let browser = KnownBrowser {
-        device: device_mark.device,
-        person: person.id,
-        expires_at: OffsetDateTime::from_unix_timestamp(device_mark.expires_at)
-            .map_err(|_| Failure::new(ErrorCode::Internal))?,
-    };
-    work.remember_browser(&browser, MOST_BROWSERS_PER_PERSON)
-        .await?;
-    let (session, ticket) = open_session(app, work.as_mut(), person.id).await?;
-    let opened =
-        json!({ "person_id": person.id.to_string(), "session_id": session.id.to_string() });
-    record_event(app, work.as_mut(), EventKind::SessionOpened, opened).await?;
+    let mut work = app.storage.begin(scope).await?;
+    brake.record_failure(work.as_mut(), now).await?;
     work.commit().await?;
-    Ok(SignedIn {
-        person,
-        session: session.id,
-        ticket,
-        device_mark,
-    })
+    Err(refused())
 }
 
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
-    use super::sign_in;
     use crate::app::App;
     use crate::error::ErrorCode;
     use crate::login::device::DeviceMark;
+    use crate::login::flow::{FirstStep, SignedIn, sign_in_with_password};
     use crate::secret::Secret;
     use crate::tenancy::RealmScope;
     use crate::testkit::clock::FixedClock;
@@ -369,13 +144,19 @@ mod tests {
 
     const PASSWORD: &str = "correct horse battery";
 
+    /// Nobody in these tests set up a second factor: the password opens.
+    fn read_who_signed_in(step: FirstStep) -> SignedIn {
+        step.into_signed_in()
+            .expect("a person without a second factor owes nothing more")
+    }
+
     fn attempt(
         app: &App,
         scope: RealmScope,
         name: &str,
         password: &str,
     ) -> Result<String, ErrorCode> {
-        complete(sign_in(
+        complete(sign_in_with_password(
             app,
             scope,
             name,
@@ -383,7 +164,7 @@ mod tests {
             None,
             &[],
         ))
-        .map(|signed_in| signed_in.person.username)
+        .map(|step| read_who_signed_in(step).person.username)
         .map_err(|failure| failure.code)
     }
 
@@ -494,7 +275,7 @@ mod tests {
         password: &str,
     ) -> Result<String, ErrorCode> {
         let caller = Some(address.parse().expect("an address"));
-        complete(sign_in(
+        complete(sign_in_with_password(
             app,
             scope,
             name,
@@ -502,7 +283,7 @@ mod tests {
             caller,
             &[],
         ))
-        .map(|signed_in| signed_in.person.username)
+        .map(|step| read_who_signed_in(step).person.username)
         .map_err(|failure| failure.code)
     }
 
@@ -763,9 +544,9 @@ mod tests {
         name: &str,
         password: &str,
         mark: Option<&DeviceMark>,
-    ) -> Result<super::SignedIn, ErrorCode> {
+    ) -> Result<SignedIn, ErrorCode> {
         let caller = Some(address.parse().expect("an address"));
-        complete(sign_in(
+        complete(sign_in_with_password(
             app,
             scope,
             name,
@@ -773,6 +554,7 @@ mod tests {
             caller,
             mark.map_or(&[][..], std::slice::from_ref),
         ))
+        .map(read_who_signed_in)
         .map_err(|failure| failure.code)
     }
 

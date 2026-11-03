@@ -129,4 +129,16 @@ impl RefreshStore for MemoryUnitOfWork {
         let revoked = self.revoke_refresh_tokens_where(now, |token| token.session == session);
         Ok(u64::try_from(revoked.len()).unwrap_or(u64::MAX))
     }
+
+    async fn revoke_refresh_tokens_of_sessions(
+        &mut self,
+        sessions: &[Uuid],
+        now: OffsetDateTime,
+    ) -> Result<u64, StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        let revoked =
+            self.revoke_refresh_tokens_where(now, |token| sessions.contains(&token.session));
+        Ok(u64::try_from(revoked.len()).unwrap_or(u64::MAX))
+    }
 }

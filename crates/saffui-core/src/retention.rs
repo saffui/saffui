@@ -75,12 +75,13 @@ pub struct PurgeReport {
     pub sessions: TablePurge,
     pub known_browsers: TablePurge,
     pub failure_counters: TablePurge,
+    pub key_enrollments: TablePurge,
 }
 
 impl PurgeReport {
     /// Each table under the name the journal gives it, in the order of a pass.
     #[must_use]
-    pub fn list_tables(&self) -> [(&'static str, TablePurge); 6] {
+    pub fn list_tables(&self) -> [(&'static str, TablePurge); 7] {
         [
             ("pending_requests", self.pending_requests),
             ("codes", self.codes),
@@ -88,6 +89,7 @@ impl PurgeReport {
             ("sessions", self.sessions),
             ("known_browsers", self.known_browsers),
             ("failure_counters", self.failure_counters),
+            ("key_enrollments", self.key_enrollments),
         ]
     }
 }

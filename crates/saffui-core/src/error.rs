@@ -43,6 +43,8 @@ pub enum ErrorCode {
     DisplayNameInvalid = 204,
     PasswordUnacceptable = 205,
     PersonNotFound = 206,
+    AuthenticatorNotFound = 207,
+    SecurityKeyNotFound = 208,
     ClientAuthenticationFailed = 300,
     ClientIdentifierInvalid = 301,
     ClientIdentifierTaken = 302,
@@ -61,6 +63,11 @@ pub enum ErrorCode {
     HashingBusy = 403,
     AuthorizationRequestExpired = 404,
     SignInRequestsTooFrequent = 405,
+    SessionRequired = 406,
+    AuthenticatorAlreadyEnrolled = 407,
+    CodeRejected = 408,
+    SecondFactorProofRequired = 409,
+    KeyRejected = 410,
     TokenInvalid = 500,
     GrantInvalid = 501,
     TokenScopeInsufficient = 502,
@@ -87,17 +94,24 @@ impl ErrorCode {
             | Self::RealmNameTaken
             | Self::ClientIdentifierTaken
             | Self::UsernameTaken
-            | Self::EmailTaken => ErrorKind::Conflict,
-            Self::RealmNotFound | Self::ClientNotFound | Self::PersonNotFound => {
-                ErrorKind::NotFound
-            }
+            | Self::EmailTaken
+            | Self::AuthenticatorAlreadyEnrolled => ErrorKind::Conflict,
+            Self::RealmNotFound
+            | Self::ClientNotFound
+            | Self::PersonNotFound
+            | Self::AuthenticatorNotFound
+            | Self::SecurityKeyNotFound => ErrorKind::NotFound,
             Self::ClientAuthenticationFailed
             | Self::TokenInvalid
             | Self::AdminAuthenticationFailed
-            | Self::SignInFailed => ErrorKind::Unauthenticated,
-            Self::GrantNotAllowed | Self::CapabilityMissing | Self::TokenScopeInsufficient => {
-                ErrorKind::Forbidden
-            }
+            | Self::SignInFailed
+            | Self::SessionRequired
+            | Self::CodeRejected
+            | Self::KeyRejected => ErrorKind::Unauthenticated,
+            Self::GrantNotAllowed
+            | Self::CapabilityMissing
+            | Self::TokenScopeInsufficient
+            | Self::SecondFactorProofRequired => ErrorKind::Forbidden,
             Self::RealmNameInvalid
             | Self::TenantNameInvalid
             | Self::ClientIdentifierInvalid
@@ -163,6 +177,13 @@ impl ErrorCode {
             Self::HashingBusy => "auth.hashing_busy",
             Self::AuthorizationRequestExpired => "auth.request_expired",
             Self::SignInRequestsTooFrequent => "auth.sign_in_requests_too_frequent",
+            Self::SessionRequired => "auth.session_required",
+            Self::AuthenticatorAlreadyEnrolled => "auth.authenticator_already_enrolled",
+            Self::CodeRejected => "auth.code_rejected",
+            Self::SecondFactorProofRequired => "auth.second_factor_proof_required",
+            Self::AuthenticatorNotFound => "user.authenticator_not_found",
+            Self::KeyRejected => "auth.key_rejected",
+            Self::SecurityKeyNotFound => "user.security_key_not_found",
             Self::TenantNameInvalid => "tenant.name_invalid",
         }
     }
@@ -198,6 +219,17 @@ impl ErrorCode {
             Self::SignInRequestsTooFrequent => {
                 "Too many sign-ins were started from here. Try again in a few minutes."
             }
+            Self::SessionRequired => "Sign in from an application first.",
+            Self::AuthenticatorAlreadyEnrolled => {
+                "An authenticator application is already set up for this account."
+            }
+            Self::CodeRejected => "The code is wrong, or was already used.",
+            Self::SecondFactorProofRequired => {
+                "Sign in again with your second factor before you change it."
+            }
+            Self::AuthenticatorNotFound => "This person has no authenticator application.",
+            Self::KeyRejected => "The security key was not accepted.",
+            Self::SecurityKeyNotFound => "This person has no security key.",
             Self::RedirectUriMismatch => "The redirect URI is not one the client registered.",
             Self::RequestInvalid => "The request is missing a parameter or carries one it cannot.",
             Self::ClientAuthenticationFailed => "Client authentication failed.",
@@ -292,7 +324,7 @@ mod tests {
 
     use super::ErrorCode;
 
-    const ALL: [ErrorCode; 40] = [
+    const ALL: [ErrorCode; 47] = [
         ErrorCode::Internal,
         ErrorCode::StorageUnavailable,
         ErrorCode::Conflict,
@@ -332,6 +364,13 @@ mod tests {
         ErrorCode::HashingBusy,
         ErrorCode::AuthorizationRequestExpired,
         ErrorCode::SignInRequestsTooFrequent,
+        ErrorCode::SessionRequired,
+        ErrorCode::AuthenticatorAlreadyEnrolled,
+        ErrorCode::CodeRejected,
+        ErrorCode::SecondFactorProofRequired,
+        ErrorCode::AuthenticatorNotFound,
+        ErrorCode::KeyRejected,
+        ErrorCode::SecurityKeyNotFound,
         ErrorCode::TenantNameInvalid,
     ];
 

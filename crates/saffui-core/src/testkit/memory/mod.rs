@@ -21,7 +21,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::clock::FixedClock;
-use super::crypto::{InstantHasher, TransparentSealer, WeakSigner};
+use super::crypto::{InstantHasher, PredictableCodes, TransparentSealer, TrustingKeys, WeakSigner};
 use super::digest::WeakDigester;
 use super::random::CountingRandom;
 use crate::app::App;
@@ -65,6 +65,14 @@ pub(crate) struct State {
     pub(crate) known_browsers: HashMap<Uuid, Vec<crate::login::store::KnownBrowser>>,
     /// The refresh tokens of each realm, with what became of them.
     pub(crate) refresh_tokens: HashMap<Uuid, Vec<StoredRefreshToken>>,
+    /// The authenticator of each person, by realm then person.
+    pub(crate) totp: HashMap<(Uuid, Uuid), crate::login::store::TotpAuthenticator>,
+    /// The codes a person typed since their last right one, by realm then person.
+    pub(crate) code_attempts: HashMap<(Uuid, Uuid), u32>,
+    /// The security keys of each realm, by realm.
+    pub(crate) security_keys: HashMap<Uuid, Vec<crate::login::store::SecurityKey>>,
+    /// What finishes an enrollment, and when it expires, by realm then person.
+    pub(crate) key_enrollments: HashMap<(Uuid, Uuid), (Vec<u8>, OffsetDateTime)>,
 }
 
 /// A code as the double keeps it: spent codes stay, so that a replay is told.
@@ -145,6 +153,8 @@ impl MemoryStorage {
             sealer: Arc::new(TransparentSealer),
             signer: Arc::new(WeakSigner::default()),
             hasher: Arc::new(InstantHasher),
+            one_time_codes: Arc::new(PredictableCodes::default()),
+            security_keys: Arc::new(TrustingKeys::default()),
             hashing_shares: Arc::new(crate::login::fairness::HashingShares::new(4)),
             decoy_hash: Arc::new(OnceLock::new()),
         };
@@ -323,9 +333,10 @@ impl UnitOfWork for MemoryUnitOfWork {
 mod tests {
     use super::MemoryStorage;
     use crate::testkit::contract::{
-        check_audit_contract, check_clients_contract, check_codes_contract, check_keys_contract,
+        check_audit_contract, check_authenticators_contract, check_clients_contract,
+        check_codes_contract, check_ended_sessions_contract, check_keys_contract,
         check_known_browsers_contract, check_persons_contract, check_refresh_contract,
-        check_sign_in_contract, check_tenancy_contract,
+        check_security_keys_contract, check_sign_in_contract, check_tenancy_contract,
     };
     use crate::testkit::drive::complete;
 
@@ -375,6 +386,24 @@ mod tests {
     fn the_double_passes_the_known_browsers_contract() {
         let (app, _storage) = MemoryStorage::wire();
         complete(check_known_browsers_contract(&app));
+    }
+
+    #[test]
+    fn the_double_passes_the_authenticators_contract() {
+        let (app, _storage) = MemoryStorage::wire();
+        complete(check_authenticators_contract(&app));
+    }
+
+    #[test]
+    fn the_double_passes_the_ended_sessions_contract() {
+        let (app, _storage) = MemoryStorage::wire();
+        complete(check_ended_sessions_contract(&app));
+    }
+
+    #[test]
+    fn the_double_passes_the_security_keys_contract() {
+        let (app, _storage) = MemoryStorage::wire();
+        complete(check_security_keys_contract(&app));
     }
 
     #[test]

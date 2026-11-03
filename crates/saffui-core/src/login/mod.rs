@@ -2,7 +2,9 @@
 //! that remembers the answer.
 
 pub mod device;
+pub mod enroll;
 pub mod fairness;
+pub mod flow;
 pub mod session;
 pub mod steps;
 pub mod store;

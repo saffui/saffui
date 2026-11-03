@@ -1,10 +1,11 @@
-use actix_web::{HttpResponse, get, post, web};
+use actix_web::{HttpResponse, delete, get, post, web};
 use api::NewUser;
 use saffui_core::app::App as Product;
 use saffui_core::authz::capability::Capability;
 use saffui_core::directory::create::{NewPerson, create_person};
 use saffui_core::directory::list::list_persons;
-use saffui_core::error::Failure;
+use saffui_core::error::{ErrorCode, Failure};
+use saffui_core::login::enroll::{remove_security_keys, remove_totp, resume_codes};
 use saffui_core::login::unlock::unlock_person;
 use saffui_core::secret::Secret;
 
@@ -76,6 +77,70 @@ pub async fn unlock_user(
 ) -> HttpResponse {
     let (_realm, username) = path.into_inner();
     match unlock_person(&product, caller.scope, &username, &caller.client.client_id).await {
+        Ok(()) => HttpResponse::NoContent().finish(),
+        Err(failure) => render_failure(&failure),
+    }
+}
+
+/// Takes the authenticator application of a person away: what a person who
+/// lost their device asks an administrator for.
+#[delete(
+    "/admin/v1/realms/{realm}/users/{person}/authenticator",
+    wrap = "RequireCapability(Capability::UserWrite)"
+)]
+pub async fn remove_authenticator(
+    caller: Caller,
+    product: web::Data<Product>,
+    path: web::Path<(String, String)>,
+) -> HttpResponse {
+    let (_realm, person) = path.into_inner();
+    // What is not written as an identifier names nobody.
+    let Ok(person) = uuid::Uuid::parse_str(&person) else {
+        return render_failure(&Failure::new(ErrorCode::AuthenticatorNotFound));
+    };
+    match remove_totp(&product, &caller, person).await {
+        Ok(()) => HttpResponse::NoContent().finish(),
+        Err(failure) => render_failure(&failure),
+    }
+}
+
+/// Lets a person whose codes were suspended type them again.
+#[delete(
+    "/admin/v1/realms/{realm}/users/{person}/code-attempts",
+    wrap = "RequireCapability(Capability::UserWrite)"
+)]
+pub async fn resume_person_codes(
+    caller: Caller,
+    product: web::Data<Product>,
+    path: web::Path<(String, String)>,
+) -> HttpResponse {
+    let (_realm, person) = path.into_inner();
+    let Ok(person) = uuid::Uuid::parse_str(&person) else {
+        return render_failure(&Failure::new(ErrorCode::PersonNotFound));
+    };
+    match resume_codes(&product, &caller, person).await {
+        Ok(()) => HttpResponse::NoContent().finish(),
+        Err(failure) => render_failure(&failure),
+    }
+}
+
+/// Takes every security key of a person away: what a person who lost a key
+/// asks an administrator for.
+#[delete(
+    "/admin/v1/realms/{realm}/users/{person}/security-keys",
+    wrap = "RequireCapability(Capability::UserWrite)"
+)]
+pub async fn remove_keys(
+    caller: Caller,
+    product: web::Data<Product>,
+    path: web::Path<(String, String)>,
+) -> HttpResponse {
+    let (_realm, person) = path.into_inner();
+    // What is not written as an identifier names nobody.
+    let Ok(person) = uuid::Uuid::parse_str(&person) else {
+        return render_failure(&Failure::new(ErrorCode::SecurityKeyNotFound));
+    };
+    match remove_security_keys(&product, &caller, person).await {
         Ok(()) => HttpResponse::NoContent().finish(),
         Err(failure) => render_failure(&failure),
     }

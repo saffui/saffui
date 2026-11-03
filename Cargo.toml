@@ -43,6 +43,7 @@ saffui-core = { path = "crates/saffui-core" }
 secrecy = "0.10.3"
 serde = { version = "1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "1.0.152", default-features = false, features = ["std"] }
+serde_cbor_2 = "0.13.0"
 server = { path = "crates/server" }
 store = { path = "crates/store" }
 subtle = "2.6.1"
@@ -55,4 +56,7 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
 # The command line talks to a node: plain HTTP to a loopback address, no TLS yet.
 ureq = { version = "3.4.2", default-features = false }
 uuid = { version = "1.28.0", default-features = false, features = ["std"] }
+# The state of a ceremony is kept in our database between its two requests,
+# and the counter of a key is read to compare it to a proof: the two features.
+webauthn-rs = { version = "0.5.5", default-features = false, features = ["danger-allow-state-serialisation", "danger-credential-internals"] }
 zeroize = { version = "1.9.1", default-features = false, features = ["alloc", "derive"] }

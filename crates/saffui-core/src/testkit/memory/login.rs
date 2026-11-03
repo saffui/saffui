@@ -6,9 +6,14 @@ use super::{KeptCode, MemoryUnitOfWork};
 use crate::clients::store::ListWindow;
 use crate::directory::Person;
 use crate::directory::store::PersonStore;
-use crate::login::session::{Session, SessionState};
-use crate::login::store::{KnownBrowser, KnownBrowserStore, SessionStore, ThrottleStore};
-use crate::oidc::code::{AuthorizationCode, CodeStore, PendingAuthorization, ReplayedCode};
+use crate::login::session::{AuthenticationMethod, Session, SessionState};
+use crate::login::store::{
+    AuthenticatorStore, KnownBrowser, KnownBrowserStore, SecurityKey, SecurityKeyStore,
+    SessionStore, ThrottleStore, TotpAuthenticator, TotpUse,
+};
+use crate::oidc::code::{
+    AuthorizationCode, CodeStore, PendingAuthorization, PendingKeyProof, ReplayedCode,
+};
 use crate::ports::storage::StorageError;
 
 impl MemoryUnitOfWork {
@@ -153,6 +158,29 @@ impl SessionStore for MemoryUnitOfWork {
         active.state = SessionState::Ended;
         Ok(true)
     }
+
+    async fn end_sessions_proven_only_by(
+        &mut self,
+        person: Uuid,
+        methods: &[AuthenticationMethod],
+        kept: Option<Uuid>,
+    ) -> Result<Vec<Uuid>, StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        let mut ended = Vec::new();
+        if let Some(sessions) = self.working.sessions.get_mut(&self.scope.realm().as_uuid()) {
+            for session in sessions.iter_mut().filter(|session| {
+                session.person == person
+                    && session.state == SessionState::Active
+                    && session.methods == methods
+                    && Some(session.id) != kept
+            }) {
+                session.state = SessionState::Ended;
+                ended.push(session.id);
+            }
+        }
+        Ok(ended)
+    }
 }
 
 #[async_trait]
@@ -235,6 +263,31 @@ impl CodeStore for MemoryUnitOfWork {
                     .find(|request| request.id == id && request.expires_at > now)
             })
             .cloned())
+    }
+
+    async fn mark_first_factor(
+        &mut self,
+        id: Uuid,
+        person: Uuid,
+        key_proof: Option<&PendingKeyProof>,
+        now: OffsetDateTime,
+    ) -> Result<bool, StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        let waiting = self
+            .working
+            .pending_authorizations
+            .get_mut(&self.scope.realm().as_uuid())
+            .and_then(|pending| {
+                pending
+                    .iter_mut()
+                    .find(|request| request.id == id && request.expires_at > now)
+            });
+        Ok(waiting.is_some_and(|request| {
+            request.first_factor = Some(person);
+            request.key_proof = key_proof.cloned();
+            true
+        }))
     }
 
     async fn take_pending_authorization(
@@ -400,5 +453,218 @@ impl KnownBrowserStore for MemoryUnitOfWork {
                     .collect()
             })
             .unwrap_or_default())
+    }
+}
+
+#[async_trait]
+impl AuthenticatorStore for MemoryUnitOfWork {
+    async fn write_pending_totp(
+        &mut self,
+        authenticator: &TotpAuthenticator,
+    ) -> Result<bool, StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        let key = (self.scope.realm().as_uuid(), authenticator.person);
+        if self
+            .working
+            .totp
+            .get(&key)
+            .is_some_and(|known| known.confirmed_at.is_some())
+        {
+            return Ok(false);
+        }
+        self.working.totp.insert(key, authenticator.clone());
+        Ok(true)
+    }
+
+    async fn read_totp(&mut self, person: Uuid) -> Result<Option<TotpAuthenticator>, StorageError> {
+        Ok(self
+            .working
+            .totp
+            .get(&(self.scope.realm().as_uuid(), person))
+            .cloned())
+    }
+
+    async fn accept_totp_step(
+        &mut self,
+        person: Uuid,
+        judged: &[u8],
+        step: i64,
+        used_for: TotpUse,
+        now: OffsetDateTime,
+    ) -> Result<bool, StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        let Some(known) = self
+            .working
+            .totp
+            .get_mut(&(self.scope.realm().as_uuid(), person))
+        else {
+            return Ok(false);
+        };
+        let confirming = used_for == TotpUse::Confirmation;
+        if known.sealed_secret != judged
+            || known.confirmed_at.is_none() != confirming
+            || known.last_step.is_some_and(|last| last >= step)
+        {
+            return Ok(false);
+        }
+        known.last_step = Some(step);
+        known.confirmed_at.get_or_insert(now);
+        Ok(true)
+    }
+
+    async fn delete_totp(&mut self, person: Uuid) -> Result<bool, StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        Ok(self
+            .working
+            .totp
+            .remove(&(self.scope.realm().as_uuid(), person))
+            .is_some())
+    }
+
+    async fn count_code_attempt(
+        &mut self,
+        person: Uuid,
+        _now: OffsetDateTime,
+    ) -> Result<u32, StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        let attempts = self
+            .working
+            .code_attempts
+            .entry((self.scope.realm().as_uuid(), person))
+            .or_insert(0);
+        *attempts = attempts.saturating_add(1);
+        Ok(*attempts)
+    }
+
+    async fn clear_code_attempts(&mut self, person: Uuid) -> Result<(), StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        self.working
+            .code_attempts
+            .remove(&(self.scope.realm().as_uuid(), person));
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl SecurityKeyStore for MemoryUnitOfWork {
+    async fn insert_security_key(&mut self, key: &SecurityKey) -> Result<bool, StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        let keys = self
+            .working
+            .security_keys
+            .entry(self.scope.realm().as_uuid())
+            .or_default();
+        if keys
+            .iter()
+            .any(|known| known.credential_id == key.credential_id)
+        {
+            return Ok(false);
+        }
+        keys.push(key.clone());
+        Ok(true)
+    }
+
+    async fn list_security_keys(&mut self, person: Uuid) -> Result<Vec<SecurityKey>, StorageError> {
+        let mut held: Vec<SecurityKey> = self
+            .working
+            .security_keys
+            .get(&self.scope.realm().as_uuid())
+            .into_iter()
+            .flatten()
+            .filter(|key| key.person == person)
+            .cloned()
+            .collect();
+        held.sort_by(|left, right| {
+            (left.created_at, &left.credential_id).cmp(&(right.created_at, &right.credential_id))
+        });
+        Ok(held)
+    }
+
+    async fn record_key_use(
+        &mut self,
+        judged: &SecurityKey,
+        record: Option<&[u8]>,
+        now: OffsetDateTime,
+    ) -> Result<bool, StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        let Some(key) = self
+            .working
+            .security_keys
+            .get_mut(&self.scope.realm().as_uuid())
+            .and_then(|keys| {
+                keys.iter_mut().find(|key| {
+                    key.person == judged.person
+                        && key.credential_id == judged.credential_id
+                        && key.record == judged.record
+                        && key.last_used_at == judged.last_used_at
+                })
+            })
+        else {
+            return Ok(false);
+        };
+        key.record = record.unwrap_or(&judged.record).to_vec();
+        key.last_used_at = Some(now);
+        Ok(true)
+    }
+
+    async fn delete_security_keys(&mut self, person: Uuid) -> Result<u64, StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        let Some(keys) = self
+            .working
+            .security_keys
+            .get_mut(&self.scope.realm().as_uuid())
+        else {
+            return Ok(0);
+        };
+        let before = keys.len();
+        keys.retain(|key| key.person != person);
+        Ok(u64::try_from(before - keys.len()).unwrap_or(u64::MAX))
+    }
+
+    async fn write_key_enrollment(
+        &mut self,
+        person: Uuid,
+        state: &[u8],
+        expires_at: OffsetDateTime,
+    ) -> Result<(), StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        self.working.key_enrollments.insert(
+            (self.scope.realm().as_uuid(), person),
+            (state.to_vec(), expires_at),
+        );
+        Ok(())
+    }
+
+    async fn take_key_enrollment(
+        &mut self,
+        person: Uuid,
+        now: OffsetDateTime,
+    ) -> Result<Option<Vec<u8>>, StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        let key = (self.scope.realm().as_uuid(), person);
+        // As the statement does: an expired enrollment is neither returned nor removed.
+        if self
+            .working
+            .key_enrollments
+            .get(&key)
+            .is_none_or(|(_, expires_at)| *expires_at <= now)
+        {
+            return Ok(None);
+        }
+        Ok(self
+            .working
+            .key_enrollments
+            .remove(&key)
+            .map(|(state, _)| state))
     }
 }

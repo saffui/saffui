@@ -309,6 +309,30 @@ Code meant for the whole crate goes into a module of its own rather than into
     does not answer a known digest. The crate now depends on `saffui-core`,
     for those interfaces.
 
+18. `adapters::otp` (the second factor): the one-time codes of an
+    authenticator application, served to the core from `otp::totp`, which is
+    not modified: `totp_verify_step_at` with thirty second steps, six digits,
+    SHA-1 and one step of tolerance, and `totp_provisioning_uri`. The adapter
+    adds the secret, twenty bytes from the provider, and refuses anything
+    that is not six digits before it reaches the comparison.
+
+19. `adapters::webauthn` and `adapters::soft_key` (the security key as a
+    second factor): the ceremonies of a security key, served to the core by
+    `webauthn-rs` 0.5.5 (MPL-2.0), a dependency that is neither copied nor
+    modified. The adapter names the relying party after the host of the
+    public origin, carries the state of a ceremony and the record of a key as
+    that library writes them (its feature `danger-allow-state-serialisation`),
+    and compares the counter of a proof to the one that is kept now, which the
+    library compares only to the one the challenge was made with (its feature
+    `danger-credential-internals`, to read that counter and nothing else).
+    `adapters::soft_key`, behind the feature `testkit`, is a security key in
+    software, for tests: an ES256 pair from `EcKeyPair`, signatures from the
+    provider, and an attestation of format `none` written with
+    `serde_cbor_2`. The crate now depends on `webauthn-rs`, and on
+    `serde_cbor_2` under that feature. That library draws its challenges
+    from `rand`, not from the provider: under `fips-strict`, a deployment
+    serves no security key.
+
 ## Before vendoring anything
 
 Record the entry **in the same commit that introduces the code**, never

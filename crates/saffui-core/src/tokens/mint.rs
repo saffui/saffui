@@ -15,7 +15,7 @@ use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
 use crate::keys::SigningKey;
 use crate::keys::jwks::open_signing_key;
-use crate::login::session::Session;
+use crate::login::session::{AuthenticationMethod, Session};
 use crate::ports::crypto::SignatureAlgorithm;
 use crate::ports::storage::UnitOfWork;
 use crate::secret::Secret;
@@ -42,6 +42,8 @@ pub struct IdentityTokenSubject<'a> {
     pub nonce: Option<&'a str>,
     pub session: Uuid,
     pub authenticated_at: OffsetDateTime,
+    /// What the person proved themselves with.
+    pub methods: &'a [AuthenticationMethod],
 }
 
 /// The key of the realm, opened once for every token of one answer.
@@ -137,8 +139,19 @@ pub fn mint_identity_token(
     if let Some(nonce) = subject.nonce {
         claims["nonce"] = Value::String(nonce.to_owned());
     }
+    claims["amr"] = write_methods(subject.methods);
     write_person_claims(&mut claims, person, subject.scopes);
     sign_claims(app, key, IDENTITY_TOKEN_TYPE, &claims)
+}
+
+/// Names what proved the person (RFC 8176), and says so when it took more
+/// than one factor.
+fn write_methods(methods: &[AuthenticationMethod]) -> Value {
+    let mut names: Vec<&str> = methods.iter().map(|method| method.name()).collect();
+    if names.len() > 1 {
+        names.push("mfa");
+    }
+    json!(names)
 }
 
 /// Writes what the granted scopes allow to be said of a person, and nothing more.

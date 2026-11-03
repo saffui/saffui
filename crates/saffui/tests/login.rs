@@ -7,6 +7,7 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use crypto::adapters::digest::ProviderDigester;
 use crypto::adapters::open_provider;
 use crypto::adapters::sign::JoseSigner;
+use crypto::adapters::soft_key::SoftKey;
 use pgcore::migrate::EMBEDDED;
 use pgcore::testkit::TestDatabase;
 use pgcore::{APP_ROLE, MAINTENANCE_ROLE};
@@ -66,6 +67,14 @@ fn read_parameter(location: &str, name: &str) -> Option<String> {
 /// The realm `acme`, an operator, the person `ada` and the public application
 /// `portal`, the last two created through the administration plane.
 fn prepare_realm(database: &TestDatabase, node_command: std::process::Command) -> node::Node {
+    prepare_realm_with_operator(database, node_command).0
+}
+
+/// As [`prepare_realm`], and the `Authorization` header of the operator.
+fn prepare_realm_with_operator(
+    database: &TestDatabase,
+    node_command: std::process::Command,
+) -> (node::Node, String) {
     let created = support::saffui_command()
         .args(["bootstrap", "--tenant", "Acme", "--realm", "acme"])
         .args(["--client", "operator", "--admin"])
@@ -138,7 +147,7 @@ fn prepare_realm(database: &TestDatabase, node_command: std::process::Command) -
         created.get("client_secret").is_none(),
         "a public client is given no secret: {created}"
     );
-    node
+    (node, basic)
 }
 
 fn write_authorize_path() -> String {
@@ -577,4 +586,419 @@ fn a_session_is_kept_by_its_refresh_tokens_given_back_and_ended_on_the_real_bina
         "the replay and the giving back: {kinds:?}"
     );
     assert_eq!(counted("session.ended"), 1, "{kinds:?}");
+}
+
+/// The code an authenticator application shows for a secret at an instant:
+/// the real one, of the real clock.
+fn compute_code(typed_secret: &str, unix_seconds: u64) -> String {
+    use crypto::otp::totp::{TotpParams, format_code, totp_at};
+    use crypto::provider::HashAlg;
+    use crypto::secrecy::SecretBox;
+
+    let secret = data_encoding::BASE32_NOPAD
+        .decode(typed_secret.as_bytes())
+        .expect("a secret in base32");
+    let provider = open_provider().expect("a provider");
+    let code = totp_at(
+        provider.hmac(),
+        &SecretBox::new(Box::new(secret)),
+        unix_seconds,
+        TotpParams::new(HashAlg::Sha1),
+    )
+    .expect("a code");
+    format_code(code, 6)
+}
+
+fn read_unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("a clock after 1970")
+        .as_secs()
+}
+
+/// Starts a sign-in in a browser that has no session and gives the password.
+/// Returns the pending request and its cookie: a code is owed next.
+fn give_password_then_owe_a_code(node: &node::Node) -> (String, String) {
+    let sent_to_login = http::get(node.data, &write_authorize_path()).expect("an answer");
+    let login = read_header(&sent_to_login, "location")
+        .expect("a location")
+        .to_owned();
+    let request = read_parameter(&login, "request").expect("a pending request");
+    let flow = read_cookie(&sent_to_login, "saffui_flow_").expect("a flow cookie");
+    let asked = http::send_request(
+        node.data,
+        "POST",
+        "/realms/acme/login",
+        &[FORM, ("Cookie", &flow), ("Origin", node::PUBLIC_ORIGIN)],
+        &format!("request={request}&username=ada&password=correct+horse+battery"),
+    )
+    .expect("an answer");
+    assert_eq!(asked.status, 200, "{}", asked.body);
+    assert!(asked.body.contains("name=\"code\""), "{}", asked.body);
+    assert!(
+        read_cookie(&asked, "saffui_session_acme=").is_none(),
+        "no session before the code"
+    );
+    (request, flow)
+}
+
+fn give_code(node: &node::Node, request: &str, flow: &str, code: &str) -> http::Answer {
+    http::send_request(
+        node.data,
+        "POST",
+        "/realms/acme/login",
+        &[FORM, ("Cookie", flow), ("Origin", node::PUBLIC_ORIGIN)],
+        &format!("request={request}&code={code}"),
+    )
+    .expect("an answer")
+}
+
+#[test]
+fn a_person_sets_up_an_authenticator_owes_its_codes_and_an_administrator_takes_it_away() {
+    let database = database::create_database(EMBEDDED);
+    let (node, operator) = prepare_realm_with_operator(&database, support::saffui_command());
+    let (_, session) = sign_in(&node, PASSWORD);
+    let session = session.expect("a session cookie");
+    let browser = [
+        FORM,
+        ("Cookie", session.as_str()),
+        ("Origin", node::PUBLIC_ORIGIN),
+    ];
+
+    // A secret shown once, then the password and a first code.
+    let authenticator = "/realms/acme/account/authenticator";
+    let offered =
+        http::send_request(node.data, "POST", authenticator, &browser, "").expect("an answer");
+    assert_eq!(offered.status, 200, "{}", offered.body);
+    let secret = offered
+        .body
+        .split_once("<code id=\"secret\">")
+        .and_then(|(_, rest)| rest.split_once("</code>"))
+        .map(|(secret, _)| secret.to_owned())
+        .expect("the secret is shown");
+    let enrolled_at = read_unix_seconds();
+    let first_code = compute_code(&secret, enrolled_at);
+    let confirmed = http::send_request(
+        node.data,
+        "POST",
+        "/realms/acme/account/authenticator/confirm",
+        &browser,
+        &format!("password=correct+horse+battery&code={first_code}"),
+    )
+    .expect("an answer");
+    assert_eq!(confirmed.status, 200, "{}", confirmed.body);
+
+    // Signing in now takes the password, then a code. The code that
+    // confirmed is spent: whoever read it over a shoulder gets nothing.
+    let (request, flow) = give_password_then_owe_a_code(&node);
+    let replayed = give_code(&node, &request, &flow, &first_code);
+    assert_eq!(replayed.status, 401, "{}", replayed.body);
+    assert!(read_header(&replayed, "location").is_none());
+
+    // The code of the next half minute is one the window allows already.
+    let next_code = compute_code(&secret, enrolled_at + 30);
+    let signed_in = give_code(&node, &request, &flow, &next_code);
+    assert_eq!(signed_in.status, 303, "{}", signed_in.body);
+    let location = read_header(&signed_in, "location").expect("a location");
+    let code = read_parameter(location, "code").expect("a code");
+    let tokens = read_json(&exchange_code(&node, &code, VERIFIER).body);
+    let (_, identity) =
+        verify_with_published_keys(&node, tokens["id_token"].as_str().expect("an ID token"));
+    assert_eq!(identity["amr"], json!(["pwd", "otp", "mfa"]));
+
+    // The person lost the device: an administrator takes it away.
+    let granted = http::send_request(
+        node.data,
+        "POST",
+        TOKEN,
+        &[("Authorization", &operator), FORM],
+        "grant_type=client_credentials",
+    )
+    .expect("an answer");
+    let bearer = format!(
+        "Bearer {}",
+        read_json(&granted.body)["access_token"]
+            .as_str()
+            .expect("a token")
+    );
+    let head = [JSON, ("Authorization", bearer.as_str())];
+    let listed = http::send_request(node.data, "GET", "/admin/v1/realms/acme/users", &head, "")
+        .expect("an answer");
+    let person = read_json(&listed.body)["items"][0]["id"]
+        .as_str()
+        .expect("the identifier of ada")
+        .to_owned();
+    let removed = http::send_request(
+        node.data,
+        "DELETE",
+        &format!("/admin/v1/realms/acme/users/{person}/authenticator"),
+        &head,
+        "",
+    )
+    .expect("an answer");
+    assert_eq!(removed.status, 204, "{}", removed.body);
+
+    let (back, _) = sign_in(&node, PASSWORD);
+    assert_eq!(
+        back.status, 303,
+        "the password is enough again: {}",
+        back.body
+    );
+    let location = read_header(&back, "location").expect("a location");
+    let code = read_parameter(location, "code").expect("a code");
+    let tokens = read_json(&exchange_code(&node, &code, VERIFIER).body);
+    let (_, identity) =
+        verify_with_published_keys(&node, tokens["id_token"].as_str().expect("an ID token"));
+    assert_eq!(identity["amr"], json!(["pwd"]));
+}
+
+const SECURITY_KEY: &str = "/realms/acme/account/security-key";
+const CONFIRM_KEY: &str = "/realms/acme/account/security-key/confirm";
+const LOGIN_PAGE: &str = "/realms/acme/login";
+/// Where a page that imitates ours stands.
+const LOOKALIKE: &str = "http://localhost.evil.example:8080";
+
+/// Reads what a page hands to the browser for a key, out of its attribute.
+fn read_key_options(page: &str) -> Value {
+    let written = page
+        .split_once("data-options=\"")
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(found, _)| found)
+        .expect("the options of a key");
+    let text = written
+        .replace("&quot;", "\"")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&");
+    serde_json::from_str(&text).expect("options written as JSON")
+}
+
+/// The `Authorization` header of a token the operator asked for itself.
+fn ask_operator_token(node: &node::Node, operator: &str) -> String {
+    let granted = http::send_request(
+        node.data,
+        "POST",
+        TOKEN,
+        &[("Authorization", operator), FORM],
+        "grant_type=client_credentials",
+    )
+    .expect("an answer");
+    format!(
+        "Bearer {}",
+        read_json(&granted.body)["access_token"]
+            .as_str()
+            .expect("a token")
+    )
+}
+
+/// The identifier of the one person of the realm, as the administration lists it.
+fn find_only_person(node: &node::Node, bearer: &str) -> String {
+    let listed = http::send_request(
+        node.data,
+        "GET",
+        "/admin/v1/realms/acme/users",
+        &[JSON, ("Authorization", bearer)],
+        "",
+    )
+    .expect("an answer");
+    read_json(&listed.body)["items"][0]["id"]
+        .as_str()
+        .expect("the identifier of ada")
+        .to_owned()
+}
+
+/// Writes the answer of a key as its form carries it.
+fn write_key_field(answer: &Value) -> String {
+    let written: String = answer
+        .to_string()
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() {
+                char::from(byte).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect();
+    format!("key={written}")
+}
+
+/// Gives the password on the page that adds a key, and returns what the
+/// key is asked.
+fn ask_to_add_a_key(node: &node::Node, browser: &[(&str, &str)]) -> Value {
+    let asked = http::send_request(
+        node.data,
+        "POST",
+        SECURITY_KEY,
+        browser,
+        "password=correct+horse+battery",
+    )
+    .expect("an answer");
+    assert_eq!(asked.status, 200, "{}", asked.body);
+    assert!(asked.body.contains("data-ceremony=\"create\""));
+    read_key_options(&asked.body)
+}
+
+/// Starts a sign-in in a browser that has no session, gives the password,
+/// and returns the pending request, its cookie and what the key is asked.
+fn give_password_then_owe_a_key(node: &node::Node) -> (String, String, Value) {
+    let sent_to_login = http::get(node.data, &write_authorize_path()).expect("an answer");
+    let login = read_header(&sent_to_login, "location")
+        .expect("a location")
+        .to_owned();
+    let request = read_parameter(&login, "request").expect("a pending request");
+    let flow = read_cookie(&sent_to_login, "saffui_flow_").expect("a flow cookie");
+    let asked = http::send_request(
+        node.data,
+        "POST",
+        LOGIN_PAGE,
+        &[FORM, ("Cookie", &flow), ("Origin", node::PUBLIC_ORIGIN)],
+        &format!("request={request}&username=ada&password=correct+horse+battery"),
+    )
+    .expect("an answer");
+    assert_eq!(asked.status, 200, "{}", asked.body);
+    assert!(
+        asked.body.contains("data-ceremony=\"get\""),
+        "{}",
+        asked.body
+    );
+    assert!(
+        read_cookie(&asked, "saffui_session_acme=").is_none(),
+        "no session before the key"
+    );
+    let options = read_key_options(&asked.body);
+    (request, flow, options)
+}
+
+fn give_key_answer(node: &node::Node, request: &str, flow: &str, answer: &Value) -> http::Answer {
+    http::send_request(
+        node.data,
+        "POST",
+        LOGIN_PAGE,
+        &[FORM, ("Cookie", flow), ("Origin", node::PUBLIC_ORIGIN)],
+        &format!("request={request}&{}", write_key_field(answer)),
+    )
+    .expect("an answer")
+}
+
+/// Reads how the person of an ID token signed in, once its code is exchanged.
+fn read_methods(node: &node::Node, signed_in: &http::Answer) -> Value {
+    let location = read_header(signed_in, "location").expect("a location");
+    let code = read_parameter(location, "code").expect("a code");
+    let tokens = read_json(&exchange_code(node, &code, VERIFIER).body);
+    let (_, identity) =
+        verify_with_published_keys(node, tokens["id_token"].as_str().expect("an ID token"));
+    identity["amr"].clone()
+}
+
+#[test]
+fn a_person_adds_a_security_key_owes_its_answer_and_an_administrator_takes_it_away() {
+    let database = database::create_database(EMBEDDED);
+    let (node, operator) = prepare_realm_with_operator(&database, support::saffui_command());
+    let (_, session) = sign_in(&node, PASSWORD);
+    let session = session.expect("a session cookie");
+    let browser = [
+        FORM,
+        ("Cookie", session.as_str()),
+        ("Origin", node::PUBLIC_ORIGIN),
+    ];
+    let mut key = SoftKey::make();
+
+    // The person adds the key: their password, then the key answers. An
+    // answer made for a page that imitates ours adds nothing, and spends
+    // what was started.
+    let options = ask_to_add_a_key(&node, &browser);
+    assert_eq!(options["publicKey"]["rp"]["id"], "localhost");
+    let imitated = http::send_request(
+        node.data,
+        "POST",
+        CONFIRM_KEY,
+        &browser,
+        &write_key_field(&key.attest(&options, LOOKALIKE)),
+    )
+    .expect("an answer");
+    assert_eq!(imitated.status, 400, "{}", imitated.body);
+    let spent = http::send_request(
+        node.data,
+        "POST",
+        CONFIRM_KEY,
+        &browser,
+        &write_key_field(&key.attest(&options, node::PUBLIC_ORIGIN)),
+    )
+    .expect("an answer");
+    assert_eq!(spent.status, 400, "{}", spent.body);
+    let options = ask_to_add_a_key(&node, &browser);
+    let added = http::send_request(
+        node.data,
+        "POST",
+        CONFIRM_KEY,
+        &browser,
+        &write_key_field(&key.attest(&options, node::PUBLIC_ORIGIN)),
+    )
+    .expect("an answer");
+    assert_eq!(added.status, 200, "{}", added.body);
+
+    // Signing in now takes the password, then the key. What the key signs
+    // for a page that imitates ours serves nowhere.
+    let (request, flow, options) = give_password_then_owe_a_key(&node);
+    assert_eq!(
+        options["publicKey"]["allowCredentials"][0]["id"],
+        key.name_credential()
+    );
+    let imitated = give_key_answer(&node, &request, &flow, &key.answer(&options, LOOKALIKE));
+    assert_eq!(imitated.status, 401, "{}", imitated.body);
+    assert!(read_header(&imitated, "location").is_none());
+    let signed_in = give_key_answer(
+        &node,
+        &request,
+        &flow,
+        &key.answer(&options, node::PUBLIC_ORIGIN),
+    );
+    assert_eq!(signed_in.status, 303, "{}", signed_in.body);
+    assert_eq!(
+        read_methods(&node, &signed_in),
+        json!(["pwd", "pop", "mfa"])
+    );
+
+    // A copy of the key that was used less than the key is told by its counter.
+    let (request, flow, options) = give_password_then_owe_a_key(&node);
+    let used = key.counter;
+    key.counter = 0;
+    let copied = give_key_answer(
+        &node,
+        &request,
+        &flow,
+        &key.answer(&options, node::PUBLIC_ORIGIN),
+    );
+    assert_eq!(copied.status, 401, "{}", copied.body);
+    key.counter = used;
+    let signed_in = give_key_answer(
+        &node,
+        &request,
+        &flow,
+        &key.answer(&options, node::PUBLIC_ORIGIN),
+    );
+    assert_eq!(signed_in.status, 303, "{}", signed_in.body);
+
+    // The person lost the key: an administrator takes it away.
+    let bearer = ask_operator_token(&node, &operator);
+    let person = find_only_person(&node, &bearer);
+    let removed = http::send_request(
+        node.data,
+        "DELETE",
+        &format!("/admin/v1/realms/acme/users/{person}/security-keys"),
+        &[JSON, ("Authorization", bearer.as_str())],
+        "",
+    )
+    .expect("an answer");
+    assert_eq!(removed.status, 204, "{}", removed.body);
+
+    let (back, _) = sign_in(&node, PASSWORD);
+    assert_eq!(
+        back.status, 303,
+        "the password is enough again: {}",
+        back.body
+    );
+    assert_eq!(read_methods(&node, &back), json!(["pwd"]));
 }

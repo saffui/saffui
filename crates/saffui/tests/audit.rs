@@ -233,7 +233,8 @@ async fn an_exchange_binds_its_code_before_it_waits_on_the_head_of_the_chain() {
     use base64::Engine as _;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use saffui_core::oidc::authorize::{
-        Authorization, AuthorizationParameters, TypedSignIn, begin_authorization, finish_sign_in,
+        Authorization, AuthorizationParameters, SignInAnswer, TypedSignIn, begin_authorization,
+        finish_sign_in,
     };
     use saffui_core::oidc::token::{TokenRequest, grant_token};
     use saffui_core::secret::Secret;
@@ -265,14 +266,18 @@ async fn an_exchange_binds_its_code_before_it_waits_on_the_head_of_the_chain() {
         panic!("a person without a session must sign in");
     };
     let typed = TypedSignIn {
-        name: "ada",
-        password: Secret::new(b"correct horse battery".to_vec()),
+        answer: SignInAnswer::Password {
+            name: "ada",
+            password: Secret::new(b"correct horse battery".to_vec()),
+        },
         caller: None,
         known_browsers: &[],
     };
     let signed_in = finish_sign_in(&app, "exchange", request, &browser_secret, typed)
         .await
-        .expect("a signed-in person");
+        .expect("a signed-in person")
+        .into_finished()
+        .expect("a person who owes no code");
     let code = signed_in
         .location
         .split_once("code=")

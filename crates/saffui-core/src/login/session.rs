@@ -44,12 +44,43 @@ impl SessionState {
     }
 }
 
+/// What proved who a person is, named as a token names it (RFC 8176 and
+/// the IANA registry of these names).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthenticationMethod {
+    Password,
+    OneTimeCode,
+    /// Named `pop`, the holding of a key: no attestation is asked, so nothing
+    /// says the key is hardware (`hwk`) rather than synced from an account.
+    SecurityKey,
+}
+
+impl AuthenticationMethod {
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Password => "pwd",
+            Self::OneTimeCode => "otp",
+            Self::SecurityKey => "pop",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        [Self::Password, Self::OneTimeCode, Self::SecurityKey]
+            .into_iter()
+            .find(|method| method.name() == name)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Session {
     pub id: Uuid,
     pub person: Uuid,
     pub secret_digest: Vec<u8>,
     pub state: SessionState,
+    /// What the person proved themselves with, in the order they did.
+    pub methods: Vec<AuthenticationMethod>,
     /// When the person proved who they are. Never moved by later requests.
     pub authenticated_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
@@ -96,6 +127,7 @@ pub async fn open_session(
     app: &App,
     work: &mut dyn UnitOfWork,
     person: Uuid,
+    methods: &[AuthenticationMethod],
 ) -> Result<(Session, SessionTicket), Failure> {
     let mut secret = vec![0_u8; 32];
     app.random
@@ -107,6 +139,7 @@ pub async fn open_session(
         person,
         secret_digest: app.digester.sha256(&secret).to_vec(),
         state: SessionState::Active,
+        methods: methods.to_vec(),
         authenticated_at: now,
         expires_at: now + SESSION_LIFETIME,
     };
@@ -140,9 +173,66 @@ pub async fn find_live_session(
     }))
 }
 
+/// Whether a session was opened with a second factor.
+pub(crate) fn proves_second_factor(session: &Session) -> bool {
+    session
+        .methods
+        .iter()
+        .any(|method| *method != AuthenticationMethod::Password)
+}
+
+/// Whether a person set up a second factor: a confirmed authenticator
+/// application, or a security key.
+///
+/// # Errors
+///
+/// Returns the storage failure.
+pub(crate) async fn has_second_factor(
+    work: &mut dyn UnitOfWork,
+    person: Uuid,
+) -> Result<bool, Failure> {
+    let code = work
+        .read_totp(person)
+        .await?
+        .is_some_and(|known| known.confirmed_at.is_some());
+    Ok(code || !work.list_security_keys(person).await?.is_empty())
+}
+
+/// Whether a session still answers for its person. One the password alone
+/// opened stops answering once the person holds a second factor, whenever
+/// it was opened and whoever kept it: the password alone would not open it
+/// any more.
+///
+/// # Errors
+///
+/// Returns the storage failure.
+pub(crate) async fn answers_for_its_person(
+    work: &mut dyn UnitOfWork,
+    session: &Session,
+) -> Result<bool, Failure> {
+    Ok(proves_second_factor(session) || !has_second_factor(work, session.person).await?)
+}
+
+/// Finds the live session a ticket proves, when it still answers for its
+/// person: what a client may be given a code from.
+///
+/// # Errors
+///
+/// Returns the storage failure.
+pub async fn find_answering_session(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    ticket: &SessionTicket,
+) -> Result<Option<Session>, Failure> {
+    match find_live_session(app, work, ticket).await? {
+        Some(session) if answers_for_its_person(work, &session).await? => Ok(Some(session)),
+        _ => Ok(None),
+    }
+}
+
 /// Reads the session a code names and its person, when both still stand:
-/// the session active and not expired, the person enabled. A code whose
-/// session ended gives nothing.
+/// the session active, not expired and answering for its person, the person
+/// enabled. A code whose session ended gives nothing.
 ///
 /// # Errors
 ///
@@ -160,6 +250,9 @@ pub async fn read_live_subject(
     else {
         return Ok(None);
     };
+    if !answers_for_its_person(work, &session).await? {
+        return Ok(None);
+    }
     let person = work
         .read_person(session.person)
         .await?

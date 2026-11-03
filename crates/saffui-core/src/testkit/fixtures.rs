@@ -222,7 +222,8 @@ pub async fn run_code_flow(app: &App, flow: CodeFlow<'_>) -> SignedInApplication
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
     use crate::oidc::authorize::{
-        Authorization, AuthorizationParameters, TypedSignIn, begin_authorization, finish_sign_in,
+        Authorization, AuthorizationParameters, SignInAnswer, TypedSignIn, begin_authorization,
+        finish_sign_in,
     };
     use crate::oidc::token::{TokenRequest, grant_token};
 
@@ -250,14 +251,18 @@ pub async fn run_code_flow(app: &App, flow: CodeFlow<'_>) -> SignedInApplication
         panic!("a person without a session must sign in: {begun:?}");
     };
     let typed = TypedSignIn {
-        name: flow.username,
-        password: Secret::new(flow.password.as_bytes().to_vec()),
+        answer: SignInAnswer::Password {
+            name: flow.username,
+            password: Secret::new(flow.password.as_bytes().to_vec()),
+        },
         caller: None,
         known_browsers: &[],
     };
     let signed_in = finish_sign_in(app, flow.realm, request, &browser_secret, typed)
         .await
-        .expect("a signed-in person");
+        .expect("a signed-in person")
+        .into_finished()
+        .expect("a person who owes no code");
     let code = signed_in
         .location
         .split_once("code=")

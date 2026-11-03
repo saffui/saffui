@@ -38,7 +38,14 @@ pkcs11 = ["dep:cryptoki"]
 # algorithms above, and a `compile_error!` in lib.rs enforces it rather than a
 # note in these docs: a binary that claims FIPS while linking ChaCha20 is a
 # contradiction an audit should catch at build time, not at runtime.
+# The ceremonies of a security key draw their challenges from `rand`, inside
+# webauthn-rs, and not from the provider: a deployment that must draw from
+# the validated module alone serves no security key.
 fips-strict = []
+
+# A security key in software, for the tests of whoever wires this crate: it
+# answers the ceremonies of `adapters::webauthn` as a browser and its key do.
+testkit = ["dep:serde_cbor_2"]
 
 [dependencies]
 saffui-core.workspace = true
@@ -60,6 +67,8 @@ async-trait.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 argon2.workspace = true
 bcrypt.workspace = true
+webauthn-rs.workspace = true
+serde_cbor_2 = { workspace = true, optional = true }
 
 # Pulled in by the JOSE layer.
 anyhow.workspace = true
@@ -73,6 +82,7 @@ time.workspace = true
 # parser totality, sign/verify round-trips, tamper rejection, constant-time
 # equality. Property tests are what catch the input nobody thought to write.
 proptest.workspace = true
+crypto = { path = ".", features = ["testkit"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 # No `[lints]` table: the crate does not take the lints of the workspace.

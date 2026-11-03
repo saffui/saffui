@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use saffui_core::oidc::code::{AuthorizationCode, CodeStore, PendingAuthorization, ReplayedCode};
+use saffui_core::oidc::code::{
+    AuthorizationCode, CodeStore, PendingAuthorization, PendingKeyProof, ReplayedCode,
+};
 use saffui_core::ports::storage::StorageError;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -22,7 +24,21 @@ const PENDING: &[Column] = &[
     authorization_requests::CODE_CHALLENGE,
     authorization_requests::EXPIRES_AT,
     authorization_requests::EXPECTED_PERSON,
+    authorization_requests::FIRST_FACTOR_PERSON_ID,
+    authorization_requests::KEY_PROOF_STATE,
+    authorization_requests::KEY_PROOF_OPTIONS,
 ];
+
+/// The proof by a key a row keeps, when the two columns hold one.
+fn read_key_proof(
+    state: Option<Vec<u8>>,
+    options: Option<serde_json::Value>,
+) -> Option<PendingKeyProof> {
+    Some(PendingKeyProof {
+        state: state?,
+        options: options?,
+    })
+}
 
 #[async_trait]
 impl CodeStore for PgUnitOfWork {
@@ -30,6 +46,11 @@ impl CodeStore for PgUnitOfWork {
         &mut self,
         pending: &PendingAuthorization,
     ) -> Result<(), StorageError> {
+        let key_state = pending.key_proof.as_ref().map(|proof| proof.state.clone());
+        let key_options = pending
+            .key_proof
+            .as_ref()
+            .map(|proof| proof.options.clone());
         let insert = Insert::into(
             authorization_requests::TABLE,
             vec![
@@ -52,6 +73,12 @@ impl CodeStore for PgUnitOfWork {
                     authorization_requests::EXPECTED_PERSON,
                     &pending.expected_person,
                 ),
+                col(
+                    authorization_requests::FIRST_FACTOR_PERSON_ID,
+                    &pending.first_factor,
+                ),
+                col(authorization_requests::KEY_PROOF_STATE, &key_state),
+                col(authorization_requests::KEY_PROOF_OPTIONS, &key_options),
             ],
         )
         .build();
@@ -84,7 +111,38 @@ impl CodeStore for PgUnitOfWork {
                 code_challenge: row.get(6),
                 expires_at: row.get(7),
                 expected_person: row.get(8),
+                first_factor: row.get(9),
+                key_proof: read_key_proof(row.get(10), row.get(11)),
             }))
+    }
+
+    async fn mark_first_factor(
+        &mut self,
+        id: Uuid,
+        person: Uuid,
+        key_proof: Option<&PendingKeyProof>,
+        now: OffsetDateTime,
+    ) -> Result<bool, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        let key_state = key_proof.map(|proof| proof.state.clone());
+        let key_options = key_proof.map(|proof| proof.options.clone());
+        let marked = self
+            .execute_raw(
+                "UPDATE authorization_requests
+                 SET first_factor_person_id = $4, key_proof_state = $6, key_proof_options = $7
+                 WHERE tenant_id = $1 AND realm_id = $2 AND request_id = $3 AND expires_at > $5",
+                &[
+                    &tenant,
+                    &realm,
+                    &id,
+                    &person,
+                    &now,
+                    &key_state,
+                    &key_options,
+                ],
+            )
+            .await?;
+        Ok(marked == 1)
     }
 
     async fn take_pending_authorization(
@@ -100,7 +158,8 @@ impl CodeStore for PgUnitOfWork {
                 "DELETE FROM authorization_requests
                  WHERE tenant_id = $1 AND realm_id = $2 AND request_id = $3 AND expires_at > $4
                  RETURNING browser_digest, client_id, redirect_uri, scopes, state, nonce,
-                           code_challenge, expires_at, expected_person",
+                           code_challenge, expires_at, expected_person, first_factor_person_id,
+                           key_proof_state, key_proof_options",
                 &[&tenant, &realm, &id, &now],
             )
             .await?;
@@ -115,6 +174,8 @@ impl CodeStore for PgUnitOfWork {
             code_challenge: row.get(6),
             expires_at: row.get(7),
             expected_person: row.get(8),
+            first_factor: row.get(9),
+            key_proof: read_key_proof(row.get(10), row.get(11)),
         }))
     }
 

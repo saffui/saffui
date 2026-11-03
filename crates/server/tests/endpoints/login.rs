@@ -50,14 +50,14 @@ impl Answer {
     }
 }
 
-struct Sent<'a> {
-    method: Method,
-    path: &'a str,
-    head: &'a [(&'a str, &'a str)],
-    form: Option<&'a str>,
+pub(crate) struct Sent<'a> {
+    pub(crate) method: Method,
+    pub(crate) path: &'a str,
+    pub(crate) head: &'a [(&'a str, &'a str)],
+    pub(crate) form: Option<&'a str>,
 }
 
-async fn send(product: &saffui_core::app::App, sent: Sent<'_>) -> Answer {
+pub(crate) async fn send(product: &saffui_core::app::App, sent: Sent<'_>) -> Answer {
     let app = test::init_service(
         App::new().configure(register_data_plane(web::Data::new(product.clone()))),
     )
@@ -475,6 +475,32 @@ async fn a_wrong_password_shows_the_form_again_and_the_same_request_then_succeed
     let right = format!("request={request}&username=ada&password=correct+horse+battery");
     let signed_in = post(&product, "/realms/acme/login", &cookie, &right).await;
     assert_eq!(signed_in.status, StatusCode::SEE_OTHER);
+}
+
+#[actix_web::test]
+async fn a_sign_in_form_is_read_after_its_guard_and_within_the_limit_of_the_plane() {
+    let product = start().await;
+    let (request, flow) = start_sign_in(&product).await;
+    // Well formed, and larger than the forms the plane reads.
+    let large = format!(
+        "request={request}&username=ada&password={}",
+        "a".repeat(9 * 1024)
+    );
+    let from_another_site = [
+        (COOKIE.as_str(), flow.as_str()),
+        (ORIGIN.as_str(), "https://evil.example.test"),
+    ];
+    let from_here = [(COOKIE.as_str(), flow.as_str())];
+
+    for head in [&from_another_site[..], &from_here[..]] {
+        let refused = post(&product, "/realms/acme/login", head, &large).await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+        assert!(
+            refused.body.contains("This sign-in has expired."),
+            "the page answers, not the token endpoint: {}",
+            refused.body
+        );
+    }
 }
 
 #[actix_web::test]

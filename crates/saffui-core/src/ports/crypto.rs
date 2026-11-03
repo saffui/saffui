@@ -171,6 +171,147 @@ pub trait Signer: Send + Sync {
     ) -> Result<bool, CryptoFailure>;
 }
 
+/// What a person's authenticator application needs to enroll a secret: a
+/// URI to scan, and the same secret as text to type. Both carry the secret:
+/// it is shown once, and never copied or printed.
+pub struct TotpEnrollmentText {
+    pub uri: String,
+    pub typed_secret: String,
+}
+
+// Written by hand: both fields are the secret.
+impl std::fmt::Debug for TotpEnrollmentText {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TotpEnrollmentText")
+            .field("uri", &"..")
+            .field("typed_secret", &"..")
+            .finish()
+    }
+}
+
+/// The one-time codes of an authenticator application (RFC 6238).
+pub trait OneTimeCodes: Send + Sync {
+    /// Makes the secret a person's application and the realm will share.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the random source does.
+    fn make_totp_secret(&self) -> Result<Secret, CryptoFailure>;
+
+    /// Tells which time step `code` is the code of, among the step of
+    /// `unix_seconds` and the one on each side of it. A code that is the
+    /// code of none of them, or that is not six digits, is `None`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the secret cannot be used.
+    fn find_totp_step(
+        &self,
+        secret: &Secret,
+        code: &str,
+        unix_seconds: u64,
+    ) -> Result<Option<u64>, CryptoFailure>;
+
+    /// Writes what the application of `account` enrolls the secret from.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the secret cannot be written.
+    fn write_totp_enrollment(
+        &self,
+        issuer: &str,
+        account: &str,
+        secret: &Secret,
+    ) -> Result<TotpEnrollmentText, CryptoFailure>;
+}
+
+/// A ceremony with a security key, between its two requests.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyCeremony {
+    /// What the page hands to the browser, as the browser's interface takes it.
+    pub options: serde_json::Value,
+    /// What the realm keeps to finish the ceremony. Only the adapter reads it.
+    pub state: Vec<u8>,
+}
+
+/// A key that finished its enrollment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnrolledKey {
+    pub credential_id: Vec<u8>,
+    /// What the realm keeps of the key. Only the adapter reads it.
+    pub record: Vec<u8>,
+}
+
+/// A key that proved itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyProof {
+    pub credential_id: Vec<u8>,
+    /// The record to keep in place of the one that was held, when the key
+    /// moved its counter: a copy of the key is told by a counter that goes back.
+    pub record: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum KeyRefusal {
+    /// The answer does not prove the key: wrong challenge, wrong origin,
+    /// wrong signature, a key that is not held, a counter that went back.
+    #[error("the answer of the security key is refused")]
+    Refused,
+    /// The counter of the key did not move forward: a copy of the key
+    /// answered, or the key with a counter older than the one kept.
+    #[error("the counter of the security key did not move forward")]
+    CopySuspected,
+    #[error("the ceremony cannot be carried out")]
+    Failed,
+}
+
+/// Security keys (WebAuthn): a key proves itself by signing a challenge of
+/// the realm, for the origin the browser stands on.
+pub trait SecurityKeys: Send + Sync {
+    /// Starts the enrollment of a key for a person who holds `held` already.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the ceremony cannot be started.
+    fn start_enrollment(
+        &self,
+        person: Uuid,
+        username: &str,
+        held: &[Vec<u8>],
+    ) -> Result<KeyCeremony, CryptoFailure>;
+
+    /// Finishes an enrollment with what the browser handed back.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the key is not enrolled.
+    fn finish_enrollment(
+        &self,
+        state: &[u8],
+        answer: &serde_json::Value,
+    ) -> Result<EnrolledKey, KeyRefusal>;
+
+    /// Starts a proof by one of the keys a person holds.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the ceremony cannot be started.
+    fn start_proof(&self, held: &[Vec<u8>]) -> Result<KeyCeremony, CryptoFailure>;
+
+    /// Finishes a proof with what the browser handed back.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the key proved nothing.
+    fn finish_proof(
+        &self,
+        state: &[u8],
+        answer: &serde_json::Value,
+        held: &[Vec<u8>],
+    ) -> Result<KeyProof, KeyRefusal>;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PasswordHashingFailure {
     /// Too many hashes are already running: the request is refused quickly

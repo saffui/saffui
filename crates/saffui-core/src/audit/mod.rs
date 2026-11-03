@@ -16,6 +16,7 @@ use crate::ports::crypto::Digester;
 pub enum EventKind {
     RealmCreated,
     SigningKeyCreated,
+    ClientCreated,
 }
 
 impl EventKind {
@@ -24,6 +25,7 @@ impl EventKind {
         match self {
             Self::RealmCreated => "realm.created",
             Self::SigningKeyCreated => "key.created",
+            Self::ClientCreated => "client.created",
         }
     }
 }

@@ -204,6 +204,7 @@ impl PgUnitOfWork {
 fn name_what_is_taken(constraint: &str) -> Option<&'static str> {
     match constraint {
         "realms_name_taken" => Some("realm name"),
+        "clients_client_id_taken" => Some("client identifier"),
         _ => None,
     }
 }

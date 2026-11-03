@@ -3,6 +3,7 @@
 
 pub mod app;
 pub mod audit;
+pub mod clients;
 pub mod error;
 pub mod ids;
 pub mod keys;

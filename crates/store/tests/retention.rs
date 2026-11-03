@@ -1,8 +1,9 @@
 //! Retention on Postgres: what expired is removed in every realm, what is
-//! still of use stays, and the work is done by one node, under one role.
+//! still of use stays, and the work is done by one node, under a role that
+//! may do nothing else.
 
 use pgcore::pool::PoolSettings;
-use pgcore::{APP_ROLE, MAINTENANCE_ROLE};
+use pgcore::{APP_ROLE, MAINTENANCE_ROLE, RETENTION_ROLE};
 use saffui_core::app::App;
 use saffui_core::directory::Person;
 use saffui_core::ids::mint_id;
@@ -136,7 +137,7 @@ async fn a_pass_removes_what_expired_in_every_realm_and_leaves_what_is_still_of_
         .await
         .expect("a connection");
     assert_eq!(count_rows(&maintenance).await, [4; 5]);
-    let retention = PgRetention::new(database.plan(MAINTENANCE_ROLE));
+    let retention = PgRetention::new(database.plan(RETENTION_ROLE));
 
     let first = run_retention_pass(&retention, now).await;
 
@@ -180,6 +181,99 @@ async fn a_pass_under_the_role_that_serves_is_refused_and_removes_nothing() {
 }
 
 #[tokio::test]
+async fn a_pass_under_a_role_that_may_do_more_than_purge_is_refused_and_removes_nothing() {
+    let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let now = app.now();
+    let scope = create_realm(&app, "retention-too-much").await;
+    fill_realm(&app, scope, now).await;
+    // It bypasses row security as retention does, and writes tenants.
+    let under_maintenance = PgRetention::new(database.plan(MAINTENANCE_ROLE));
+
+    assert_eq!(
+        run_retention_pass(&under_maintenance, now).await,
+        Err(StorageError::Failed)
+    );
+    assert_eq!(
+        under_maintenance.verify_role().await,
+        Err(StorageError::Failed)
+    );
+    let maintenance = database
+        .plan(MAINTENANCE_ROLE)
+        .connect_directly()
+        .await
+        .expect("a connection");
+    assert_eq!(count_rows(&maintenance).await, [2; 5]);
+    let under_retention = PgRetention::new(database.plan(RETENTION_ROLE));
+    assert_eq!(under_retention.verify_role().await, Ok(()));
+}
+
+#[tokio::test]
+async fn a_retention_role_with_any_right_beyond_purging_is_refused() {
+    let (_app, database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let owner = database
+        .plan("saffui_owner")
+        .connect_directly()
+        .await
+        .expect("a connection");
+    let purged = "authorization_requests, authorization_codes, refresh_tokens, sessions, \
+                  login_failures";
+    // Each bypasses row security as retention does, and holds one thing more.
+    for role in [
+        "saffui_test_retention_reads_all",
+        "saffui_test_retention_creates_roles",
+        "saffui_test_retention_replicates",
+        "saffui_test_retention_runs_programs",
+        "saffui_test_retention_noinherit_owner",
+    ] {
+        owner
+            .batch_execute(&format!("GRANT SELECT, DELETE ON {purged} TO {role}"))
+            .await
+            .expect("the rights of retention");
+        assert_eq!(
+            PgRetention::new(database.plan(role)).verify_role().await,
+            Err(StorageError::Failed),
+            "{role}"
+        );
+    }
+    // The retention role itself, given one right more, then none.
+    let retention = PgRetention::new(database.plan(RETENTION_ROLE));
+    for (given, taken) in [
+        (
+            "GRANT SELECT ON persons TO saffui_retention",
+            "REVOKE SELECT ON persons FROM saffui_retention",
+        ),
+        (
+            "GRANT SELECT (username) ON persons TO saffui_retention",
+            "REVOKE SELECT (username) ON persons FROM saffui_retention",
+        ),
+        (
+            "GRANT UPDATE (used_at) ON refresh_tokens TO saffui_retention",
+            "REVOKE UPDATE (used_at) ON refresh_tokens FROM saffui_retention",
+        ),
+        (
+            "GRANT CREATE ON SCHEMA public TO saffui_retention",
+            "REVOKE CREATE ON SCHEMA public FROM saffui_retention",
+        ),
+        (
+            "GRANT EXECUTE ON FUNCTION saffui_locate_realm(text) TO saffui_retention",
+            "REVOKE EXECUTE ON FUNCTION saffui_locate_realm(text) FROM saffui_retention",
+        ),
+    ] {
+        owner.batch_execute(given).await.expect("a right more");
+        assert_eq!(
+            retention.verify_role().await,
+            Err(StorageError::Failed),
+            "{given}"
+        );
+        owner
+            .batch_execute(taken)
+            .await
+            .expect("the right taken back");
+        assert_eq!(retention.verify_role().await, Ok(()), "{taken}");
+    }
+}
+
+#[tokio::test]
 async fn a_node_that_finds_the_pass_taken_leaves_it_to_the_other() {
     let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
     let now = app.now();
@@ -195,7 +289,7 @@ async fn a_node_that_finds_the_pass_taken_leaves_it_to_the_other() {
         .execute("SELECT pg_advisory_xact_lock($1)", &[&RETENTION_LOCK])
         .await
         .expect("the lock");
-    let retention = PgRetention::new(database.plan(MAINTENANCE_ROLE));
+    let retention = PgRetention::new(database.plan(RETENTION_ROLE));
 
     let left_alone = run_retention_pass(&retention, now).await;
 
@@ -223,7 +317,7 @@ async fn a_pass_removes_more_than_one_batch_and_still_leaves_what_is_of_use() {
         .await
         .expect("a recent counter");
     work.commit().await.expect("a commit");
-    let retention = PgRetention::new(database.plan(MAINTENANCE_ROLE));
+    let retention = PgRetention::new(database.plan(RETENTION_ROLE));
 
     let report = run_retention_pass(&retention, now).await;
 

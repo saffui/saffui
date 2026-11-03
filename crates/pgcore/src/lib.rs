@@ -17,3 +17,7 @@ pub const APP_ROLE: &str = "saffui_app";
 
 /// The role of the jobs that cross tenants. It bypasses row security.
 pub const MAINTENANCE_ROLE: &str = "saffui_maintenance";
+
+/// The role of retention. It bypasses row security too, and may only read
+/// and remove what expired.
+pub const RETENTION_ROLE: &str = "saffui_retention";

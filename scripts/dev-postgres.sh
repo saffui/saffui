@@ -44,6 +44,9 @@ BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'saffui_maintenance') THEN
     CREATE ROLE saffui_maintenance LOGIN BYPASSRLS;
   END IF;
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'saffui_retention') THEN
+    CREATE ROLE saffui_retention LOGIN BYPASSRLS;
+  END IF;
   -- Roles the check of the serving role must refuse, each for what it may
   -- reach. Only the tests connect as them.
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'saffui_test_member_of_maintenance') THEN
@@ -82,6 +85,23 @@ BEGIN
   END IF;
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'saffui_test_replicates') THEN
     CREATE ROLE saffui_test_replicates LOGIN REPLICATION;
+  END IF;
+  -- Roles the check of the retention role must refuse: each bypasses row
+  -- security as retention does, and holds one thing more.
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'saffui_test_retention_reads_all') THEN
+    CREATE ROLE saffui_test_retention_reads_all LOGIN BYPASSRLS IN ROLE pg_read_all_data;
+  END IF;
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'saffui_test_retention_creates_roles') THEN
+    CREATE ROLE saffui_test_retention_creates_roles LOGIN BYPASSRLS CREATEROLE;
+  END IF;
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'saffui_test_retention_replicates') THEN
+    CREATE ROLE saffui_test_retention_replicates LOGIN BYPASSRLS REPLICATION;
+  END IF;
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'saffui_test_retention_runs_programs') THEN
+    CREATE ROLE saffui_test_retention_runs_programs LOGIN BYPASSRLS IN ROLE pg_execute_server_program;
+  END IF;
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'saffui_test_retention_noinherit_owner') THEN
+    CREATE ROLE saffui_test_retention_noinherit_owner LOGIN BYPASSRLS NOINHERIT IN ROLE saffui_owner;
   END IF;
 END
 $$;

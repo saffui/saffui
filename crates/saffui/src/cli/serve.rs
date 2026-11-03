@@ -202,7 +202,7 @@ fn serve_until_signal(options: &ServeOptions) -> Result<(), ServeError> {
             if let Some(retention) = &retention
                 && retention.verify_role().await.is_err()
             {
-                return Ok(Err(StartupRefusal::MaintenanceRole));
+                return Ok(Err(StartupRefusal::RetentionRole));
             }
             let shutdown_requested = listen_for_shutdown_signals()?;
             info!(

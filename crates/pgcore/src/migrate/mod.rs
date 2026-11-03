@@ -6,7 +6,7 @@ use tokio_postgres::Client;
 
 use crate::connect::{ConnectionPlan, DirectConnectionError};
 use crate::lock::{LockError, MIGRATION_LOCK, SessionLock};
-use crate::{APP_ROLE, MAINTENANCE_ROLE};
+use crate::{APP_ROLE, MAINTENANCE_ROLE, RETENTION_ROLE};
 use plan::{PlanError, plan_pending};
 
 macro_rules! embed {
@@ -38,6 +38,7 @@ pub const EMBEDDED: &[Migration] = &[
     embed!(15, "0015_post_logout"),
     embed!(16, "0016_hinted_requests"),
     embed!(17, "0017_bounded_retention"),
+    embed!(18, "0018_retention_role"),
 ];
 
 /// One numbered step of the schema, as SQL text.
@@ -118,7 +119,7 @@ async fn apply_under_lock(
     client
         .batch_execute("SET lock_timeout = '5s'; SET search_path = public")
         .await?;
-    for role in [APP_ROLE, MAINTENANCE_ROLE] {
+    for role in [APP_ROLE, MAINTENANCE_ROLE, RETENTION_ROLE] {
         let known = client
             .query_opt(
                 "SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = $1",

@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crypto::adapters::digest::ProviderDigester;
 use crypto::adapters::open_provider;
+use crypto::adapters::password::BoundedPasswordHasher;
 use crypto::adapters::random::ProviderRandom;
 use crypto::adapters::seal::EnvelopeSealer;
 use crypto::adapters::sign::JoseSigner;
@@ -44,7 +45,13 @@ pub(crate) enum WiringError {
     Library,
     #[error("the root key cannot be used")]
     RootKey,
+    #[error("the password hasher cannot be set up")]
+    Hasher,
 }
+
+/// How many passwords are hashed at once. Each takes the memory of one
+/// Argon2id run: the bound is what keeps a burst of sign-ins from taking the node.
+const CONCURRENT_PASSWORD_HASHES: usize = 4;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum StartupRefusal {
@@ -68,6 +75,8 @@ pub(crate) fn wire_product(
     let provider = open_provider().map_err(|_| WiringError::Library)?;
     let sealer =
         EnvelopeSealer::new(Arc::clone(&provider), root_key).map_err(|_| WiringError::RootKey)?;
+    let hasher = BoundedPasswordHasher::new(Arc::clone(&provider), CONCURRENT_PASSWORD_HASHES)
+        .map_err(|_| WiringError::Hasher)?;
     let pool = build_pool(database, pool)?;
     let storage = PgStorage::new(pool.clone(), SchemaWindow::of_exactly(EMBEDDED));
     Ok(Wired {
@@ -78,6 +87,7 @@ pub(crate) fn wire_product(
             random: Arc::new(ProviderRandom::new(Arc::clone(&provider))),
             digester: Arc::new(ProviderDigester::new(Arc::clone(&provider))),
             sealer: Arc::new(sealer),
+            hasher: Arc::new(hasher),
             signer: Arc::new(JoseSigner::new(provider)),
         },
         pool,

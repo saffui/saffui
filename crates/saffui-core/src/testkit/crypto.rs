@@ -5,13 +5,14 @@
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use async_trait::async_trait;
 use serde_json::json;
 use uuid::Uuid;
 
 use super::digest::WeakDigester;
 use crate::ports::crypto::{
-    CryptoFailure, Digester, GeneratedSigningKey, SealPlace, Sealer, SignatureAlgorithm, Signer,
-    WrappedDataKey,
+    CryptoFailure, Digester, GeneratedSigningKey, PasswordHasher, PasswordHashingFailure,
+    SealPlace, Sealer, SignatureAlgorithm, Signer, WrappedDataKey,
 };
 use crate::secret::Secret;
 
@@ -137,5 +138,25 @@ impl Signer for WeakSigner {
     ) -> Result<bool, CryptoFailure> {
         let public = public_jwk["x"].as_str().ok_or(CryptoFailure)?;
         Ok(sign_weakly(public, message) == signature)
+    }
+}
+
+/// A hasher that answers at once. What it stores is the password itself
+/// behind a prefix: it exists so that a test of the login does not wait.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct InstantHasher;
+
+#[async_trait]
+impl PasswordHasher for InstantHasher {
+    async fn hash_password(&self, password: Secret) -> Result<String, PasswordHashingFailure> {
+        Ok(format!("$instant${}", to_hex(password.expose())))
+    }
+
+    async fn verify_password(
+        &self,
+        password: Secret,
+        stored: String,
+    ) -> Result<bool, PasswordHashingFailure> {
+        Ok(stored == format!("$instant${}", to_hex(password.expose())))
     }
 }

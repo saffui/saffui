@@ -3,6 +3,7 @@
 //! no cryptography of its own.
 
 pub mod digest;
+pub mod password;
 pub mod random;
 pub mod seal;
 pub mod sign;

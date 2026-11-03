@@ -1,6 +1,7 @@
 //! The cryptographic ports. The heart links no cryptographic library: it
 //! says what must be done, and an adapter does it.
 
+use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::secret::Secret;
@@ -154,4 +155,30 @@ pub trait Signer: Send + Sync {
         message: &[u8],
         signature: &[u8],
     ) -> Result<bool, CryptoFailure>;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum PasswordHashingFailure {
+    /// Too many hashes are already running: the request is refused quickly
+    /// instead of queueing memory-hard work without bound.
+    #[error("too many passwords are being hashed")]
+    Busy,
+    #[error("the password could not be hashed")]
+    Failed,
+}
+
+/// Hashing is slow on purpose. An adapter runs it away from the threads that
+/// serve requests, on a bounded number of workers.
+#[async_trait]
+pub trait PasswordHasher: Send + Sync {
+    /// Returns the hash as a PHC string, which names its own parameters.
+    async fn hash_password(&self, password: Secret) -> Result<String, PasswordHashingFailure>;
+
+    /// Tells whether `password` is the one `stored` was made from. A stored
+    /// value that is not a PHC string of a known algorithm is `Ok(false)`.
+    async fn verify_password(
+        &self,
+        password: Secret,
+        stored: String,
+    ) -> Result<bool, PasswordHashingFailure>;
 }

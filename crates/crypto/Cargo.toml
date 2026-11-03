@@ -56,6 +56,8 @@ secrecy.workspace = true
 # The places a value is sealed for are named by the identifiers of the core.
 uuid.workspace = true
 async-trait.workspace = true
+# Hashes run on blocking threads, a semaphore bounding how many at once.
+tokio = { workspace = true, features = ["sync"] }
 argon2.workspace = true
 bcrypt.workspace = true
 
@@ -71,6 +73,7 @@ time.workspace = true
 # parser totality, sign/verify round-trips, tamper rejection, constant-time
 # equality. Property tests are what catch the input nobody thought to write.
 proptest.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 # No `[lints]` table: the crate does not take the lints of the workspace.
 # It reaches OpenSSL through its C API in five modules, so it denies unsafe in

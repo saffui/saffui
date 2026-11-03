@@ -2,12 +2,14 @@
 //! for tokens.
 
 pub mod authenticate;
+pub mod manage;
 pub mod register;
 pub mod store;
 
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::authz::capability::Capability;
 use crate::error::{ErrorCode, Failure};
 use crate::ports::storage::{StorageError, UnitOfWork};
 
@@ -24,6 +26,8 @@ pub struct Client {
     pub allows_client_credentials: bool,
     /// The scopes the client may be given.
     pub scopes: Vec<String>,
+    /// What the client may do on the administration plane of its realm.
+    pub capabilities: Vec<Capability>,
     pub enabled: bool,
     pub created_at: OffsetDateTime,
 }

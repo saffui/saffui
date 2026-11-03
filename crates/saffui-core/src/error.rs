@@ -32,6 +32,7 @@ pub enum ErrorCode {
     RandomUnavailable = 4,
     CryptoUnavailable = 5,
     RequestInvalid = 6,
+    ListOffsetTooLarge = 7,
     RealmNotFound = 100,
     RealmNameInvalid = 101,
     RealmNameTaken = 102,
@@ -43,6 +44,10 @@ pub enum ErrorCode {
     ScopeNotAllowed = 305,
     GrantNotAllowed = 306,
     GrantTypeUnsupported = 307,
+    ClientNotFound = 308,
+    CapabilityUnknown = 309,
+    AdminAuthenticationFailed = 400,
+    CapabilityMissing = 401,
     TokenInvalid = 500,
     TenantNameInvalid = 600,
 }
@@ -63,9 +68,11 @@ impl ErrorCode {
             Self::Conflict | Self::RealmNameTaken | Self::ClientIdentifierTaken => {
                 ErrorKind::Conflict
             }
-            Self::RealmNotFound => ErrorKind::NotFound,
-            Self::ClientAuthenticationFailed | Self::TokenInvalid => ErrorKind::Unauthenticated,
-            Self::GrantNotAllowed => ErrorKind::Forbidden,
+            Self::RealmNotFound | Self::ClientNotFound => ErrorKind::NotFound,
+            Self::ClientAuthenticationFailed
+            | Self::TokenInvalid
+            | Self::AdminAuthenticationFailed => ErrorKind::Unauthenticated,
+            Self::GrantNotAllowed | Self::CapabilityMissing => ErrorKind::Forbidden,
             Self::RealmNameInvalid
             | Self::TenantNameInvalid
             | Self::ClientIdentifierInvalid
@@ -73,7 +80,9 @@ impl ErrorCode {
             | Self::ScopeInvalid
             | Self::RequestInvalid
             | Self::ScopeNotAllowed
-            | Self::GrantTypeUnsupported => ErrorKind::Invalid,
+            | Self::GrantTypeUnsupported
+            | Self::ListOffsetTooLarge
+            | Self::CapabilityUnknown => ErrorKind::Invalid,
         }
     }
 
@@ -87,6 +96,7 @@ impl ErrorCode {
             Self::RandomUnavailable => "platform.random_unavailable",
             Self::CryptoUnavailable => "platform.crypto_unavailable",
             Self::RequestInvalid => "platform.request_invalid",
+            Self::ListOffsetTooLarge => "platform.list_offset_too_large",
             Self::RealmNotFound => "realm.not_found",
             Self::RealmNameInvalid => "realm.name_invalid",
             Self::RealmNameTaken => "realm.name_taken",
@@ -98,7 +108,11 @@ impl ErrorCode {
             Self::ScopeNotAllowed => "client.scope_not_allowed",
             Self::GrantNotAllowed => "client.grant_not_allowed",
             Self::GrantTypeUnsupported => "client.grant_type_unsupported",
+            Self::ClientNotFound => "client.not_found",
+            Self::CapabilityUnknown => "client.capability_unknown",
             Self::TokenInvalid => "token.invalid",
+            Self::AdminAuthenticationFailed => "auth.admin_authentication_failed",
+            Self::CapabilityMissing => "auth.capability_missing",
             Self::TenantNameInvalid => "tenant.name_invalid",
         }
     }
@@ -121,7 +135,12 @@ impl ErrorCode {
             Self::ScopeNotAllowed => "The client is not allowed a scope it asked for.",
             Self::GrantNotAllowed => "The client is not allowed this grant.",
             Self::GrantTypeUnsupported => "This grant type is not supported.",
+            Self::ListOffsetTooLarge => "A list starts at 100000 at the latest: narrow it instead.",
+            Self::ClientNotFound => "No such client.",
+            Self::CapabilityUnknown => "A capability that was asked for does not exist.",
             Self::TokenInvalid => "The token is not valid.",
+            Self::AdminAuthenticationFailed => "Authentication is required.",
+            Self::CapabilityMissing => "The caller is not allowed to do this.",
             Self::ClientIdentifierInvalid => {
                 "A client identifier is 1 to 64 letters, digits, hyphens, dots or underscores."
             }
@@ -197,13 +216,14 @@ mod tests {
 
     use super::ErrorCode;
 
-    const ALL: [ErrorCode; 19] = [
+    const ALL: [ErrorCode; 24] = [
         ErrorCode::Internal,
         ErrorCode::StorageUnavailable,
         ErrorCode::Conflict,
         ErrorCode::RandomUnavailable,
         ErrorCode::CryptoUnavailable,
         ErrorCode::RequestInvalid,
+        ErrorCode::ListOffsetTooLarge,
         ErrorCode::RealmNotFound,
         ErrorCode::RealmNameInvalid,
         ErrorCode::RealmNameTaken,
@@ -215,7 +235,11 @@ mod tests {
         ErrorCode::ScopeNotAllowed,
         ErrorCode::GrantNotAllowed,
         ErrorCode::GrantTypeUnsupported,
+        ErrorCode::ClientNotFound,
+        ErrorCode::CapabilityUnknown,
         ErrorCode::TokenInvalid,
+        ErrorCode::AdminAuthenticationFailed,
+        ErrorCode::CapabilityMissing,
         ErrorCode::TenantNameInvalid,
     ];
 
@@ -235,6 +259,7 @@ mod tests {
                 0..100 => "platform.",
                 100..200 => "realm.",
                 300..400 => "client.",
+                400..500 => "auth.",
                 500..600 => "token.",
                 600..700 => "tenant.",
                 other => panic!("no domain is written for {other}"),

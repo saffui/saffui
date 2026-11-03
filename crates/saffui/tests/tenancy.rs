@@ -137,25 +137,45 @@ fn a_first_client_is_told_with_its_secret_once_and_only_its_digest_is_kept() {
 }
 
 #[test]
-fn a_scope_without_a_client_is_a_usage_error() {
+fn an_administrator_is_given_every_capability_and_the_admin_scope() {
     let database = database::create_database(EMBEDDED);
 
-    let refused = support::saffui_command()
-        .args([
-            "bootstrap",
-            "--tenant",
-            "Acme",
-            "--realm",
-            "acme",
-            "--scope",
-            "x",
-        ])
+    let created = support::saffui_command()
+        .args(["bootstrap", "--tenant", "Acme", "--realm", "acme"])
+        .args(["--client", "operator", "--admin"])
         .env("SAFFUI_DATABASE_URL", database.connection_string(APP_ROLE))
         .env("SAFFUI_PUBLIC_ORIGIN", node::PUBLIC_ORIGIN)
         .output()
         .expect("the saffui binary starts");
+    assert_eq!(created.status.code(), Some(0));
 
-    assert_eq!(refused.status.code(), Some(2));
+    let kept = read_as(
+        &database,
+        MAINTENANCE_ROLE,
+        "SELECT array_to_string(scopes, ',') || ' ' || array_to_string(capabilities, ',') \
+         FROM clients",
+    );
+    assert_eq!(
+        kept,
+        ["admin realm:read,client:read,client:write,audit:read"]
+    );
+}
+
+#[test]
+fn a_scope_or_the_admin_flag_without_a_client_is_a_usage_error() {
+    let database = database::create_database(EMBEDDED);
+
+    for without_client in [&["--scope", "x"][..], &["--admin"][..]] {
+        let refused = support::saffui_command()
+            .args(["bootstrap", "--tenant", "Acme", "--realm", "acme"])
+            .args(without_client)
+            .env("SAFFUI_DATABASE_URL", database.connection_string(APP_ROLE))
+            .env("SAFFUI_PUBLIC_ORIGIN", node::PUBLIC_ORIGIN)
+            .output()
+            .expect("the saffui binary starts");
+
+        assert_eq!(refused.status.code(), Some(2), "{without_client:?}");
+    }
 }
 
 #[test]

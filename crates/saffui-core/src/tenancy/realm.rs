@@ -8,6 +8,7 @@ use super::{Realm, RealmId, RealmName, RealmScope, Tenant, TenantId};
 use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
+use crate::authz::capability::Capability;
 use crate::clients::register::{NewServiceClient, register_service_client};
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
@@ -24,6 +25,7 @@ pub struct NewRealm<'a> {
 pub struct FirstClient<'a> {
     pub client_id: &'a str,
     pub scopes: &'a [String],
+    pub capabilities: &'a [Capability],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,6 +107,7 @@ pub async fn provision_realm_with_client(
                 client_id: client.client_id,
                 name: client.client_id,
                 scopes: client.scopes,
+                capabilities: client.capabilities,
             };
             Some(
                 register_service_client(app, work.as_mut(), service)
@@ -224,6 +227,7 @@ mod tests {
             Some(FirstClient {
                 client_id: "billing",
                 scopes: &scopes,
+                capabilities: &[],
             }),
         ))
         .expect("a realm and its client");
@@ -248,6 +252,7 @@ mod tests {
             Some(FirstClient {
                 client_id: "bill ing",
                 scopes: &[],
+                capabilities: &[],
             }),
         ))
         .map(|_| ())

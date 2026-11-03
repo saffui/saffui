@@ -12,7 +12,7 @@ pub(crate) enum SortDirection {
 }
 
 impl SortDirection {
-    fn as_sql(self) -> &'static str {
+    pub(super) fn as_sql(self) -> &'static str {
         match self {
             Self::Ascending => "ASC",
             Self::Descending => "DESC",
@@ -78,10 +78,7 @@ impl<'a> Select<'a> {
         let _ = write!(sql, " FROM {}", self.table.name);
         sql.push_str(self.table.keys.predicate());
         let mut values = self.criteria.write(&mut sql, self.table.keys.count() + 1);
-        for (position, (column, direction)) in self.sort.iter().enumerate() {
-            sql.push_str(if position == 0 { " ORDER BY " } else { ", " });
-            let _ = write!(sql, "{} {}", column.0, direction.as_sql());
-        }
+        write_order(&mut sql, &self.sort);
         match self.limit {
             Limit::None => {}
             Limit::FirstRow => sql.push_str(" LIMIT 1"),
@@ -98,7 +95,14 @@ impl<'a> Select<'a> {
     }
 }
 
-fn write_columns(sql: &mut String, columns: &[Column]) {
+pub(super) fn write_order(sql: &mut String, sort: &[(Column, SortDirection)]) {
+    for (position, (column, direction)) in sort.iter().enumerate() {
+        sql.push_str(if position == 0 { " ORDER BY " } else { ", " });
+        let _ = write!(sql, "{} {}", column.0, direction.as_sql());
+    }
+}
+
+pub(super) fn write_columns(sql: &mut String, columns: &[Column]) {
     for (position, column) in columns.iter().enumerate() {
         if position > 0 {
             sql.push_str(", ");

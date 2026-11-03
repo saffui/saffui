@@ -20,6 +20,7 @@ pedantic = { level = "warn", priority = -1 }
 actix-rt = { version = "2.15.0", default-features = false, features = ["signal"] }
 actix-web = { version = "4.15.0", default-features = false, features = ["macros"] }
 anyhow = "1.0.104"
+api = { path = "crates/api" }
 argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "password-hash", "zeroize"] }
 async-trait = "0.1.92"
 base64 = { version = "0.23.1", default-features = false, features = ["std"] }
@@ -51,5 +52,7 @@ tokio = { version = "1.53.3", default-features = false, features = ["rt", "time"
 tokio-postgres = { version = "0.7.18", default-features = false, features = ["runtime", "with-serde_json-1", "with-time-0_3", "with-uuid-1"] }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }
+# The command line talks to a node: plain HTTP to a loopback address, no TLS yet.
+ureq = { version = "3.4.2", default-features = false }
 uuid = { version = "1.28.0", default-features = false, features = ["std"] }
 zeroize = { version = "1.9.1", default-features = false, features = ["alloc", "derive"] }

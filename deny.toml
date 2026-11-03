@@ -30,6 +30,7 @@ allow-wildcard-paths = true
 skip = [
     { crate = "syn@2", reason = "derive_more, which actix-web builds on, and tracing-attributes still ask for syn 2. It only runs at compile time." },
     { crate = "wasi@0.11", reason = "mio and whoami, which the PostgreSQL driver builds on, ask for two versions of the WASI bindings. Neither is built for a target this product ships on." },
+    { crate = "http@0.2", reason = "actix-web 4 is built on http 0.2, and ureq, which the command line talks to a node with, on http 1." },
     { crate = "base64@0.22", reason = "postgres-protocol still asks for base64 0.22 while bcrypt, which the crypto crate verifies imported passwords with, asks for 0.23." },
 ]
 skip-tree = [
@@ -54,7 +55,10 @@ deny = [
     { crate = "crypto", wrappers = ["saffui"], reason = "Only the binary binds the crypto crate to the ports of the core." },
     { crate = "store", wrappers = ["saffui"], reason = "Only the binary binds the store to the ports of the core." },
     { crate = "server", wrappers = ["saffui"], reason = "Only the binary mounts the server." },
+    { crate = "api", wrappers = ["saffui", "server"], reason = "The contract of the administration API is shared by the server that answers and the command line that asks, and by nothing else." },
     { crate = "pgcore", wrappers = ["gen-schema", "pgcore", "saffui", "store"], reason = "The database link is shared by the binary, the store and the schema tool." },
+    # A call over the network leaves from one place.
+    { crate = "ureq", wrappers = ["saffui"], reason = "Only the command line calls a node; a call the product itself makes will have its own builder." },
 ]
 
 [sources]

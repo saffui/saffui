@@ -9,6 +9,8 @@ use std::process::ExitCode;
 use actix_rt::System;
 use clap::Args;
 use pgcore::pool::PoolSettings;
+use saffui_core::authz::admin::ADMIN_SCOPE;
+use saffui_core::authz::capability::Capability;
 use saffui_core::error::{ErrorKind, Failure};
 use saffui_core::oidc::discovery::name_issuer;
 use saffui_core::secret::Secret;
@@ -40,6 +42,10 @@ pub(crate) struct BootstrapOptions {
     /// A scope the first client may be given. Repeat it for each scope.
     #[arg(long = "scope", value_name = "SCOPE", requires = "client")]
     scopes: Vec<String>,
+    /// Let the first client administer the realm: every capability, and the
+    /// scope that opens the administration plane.
+    #[arg(long, requires = "client")]
+    admin: bool,
     #[arg(
         long,
         value_name = "ORIGIN",
@@ -117,9 +123,15 @@ fn provision_from_options(options: &BootstrapOptions) -> Result<String, Bootstra
         &root_key,
     )?;
 
+    let mut scopes = options.scopes.clone();
+    if options.admin && !scopes.iter().any(|scope| scope == ADMIN_SCOPE) {
+        scopes.push(ADMIN_SCOPE.to_owned());
+    }
+    let capabilities: &[Capability] = if options.admin { &Capability::ALL } else { &[] };
     let first_client = options.client.as_deref().map(|client_id| FirstClient {
         client_id,
-        scopes: &options.scopes,
+        scopes: &scopes,
+        capabilities,
     });
     let (provisioned, secret): (Provisioned, Option<Secret>) = System::new().block_on(async {
         wired.refuse_unfit_database().await?;

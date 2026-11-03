@@ -2,12 +2,14 @@
 //! the value. One reference names one place, and a place that cannot be read
 //! is fatal: nothing falls back to another one.
 
+use std::fmt;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use saffui_core::secret::Secret;
+use zeroize::Zeroizing;
 
 /// Where the root key is: the key every realm's data key is wrapped under.
 /// It never reaches the database.
@@ -21,32 +23,85 @@ pub(crate) enum RootKeyError {
     Missing,
     #[error("{ROOT_KEY}: the reference must start with file:// or env://")]
     UnknownScheme,
-    #[error("{ROOT_KEY}: the variable {0} is not set")]
-    VariableNotSet(String),
-    #[error("{ROOT_KEY}: the file {0} cannot be read")]
-    FileUnreadable(String),
-    #[error("{ROOT_KEY}: the file {0} is readable by others than its owner")]
-    FileExposed(String),
+    #[error("{ROOT_KEY}: {0} is not set")]
+    VariableNotSet(Place),
+    #[error("{ROOT_KEY}: {0} cannot be read")]
+    FileUnreadable(Place),
+    #[error("{ROOT_KEY}: {0} is readable by others than its owner")]
+    FileExposed(Place),
     #[error("{ROOT_KEY}: the root key must be 32 bytes, written in base64")]
     NotARootKey,
+}
+
+/// The place a reference names, told in a message only when it reads as a
+/// place: `env://$SECRET`, expanded by a shell, puts the secret itself there.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Place {
+    kind: &'static str,
+    told: Option<String>,
+}
+
+impl Place {
+    /// A variable, told when its name is written as names of variables are.
+    fn variable(name: &str) -> Self {
+        let mut characters = name.chars();
+        let reads_as_a_name = characters
+            .next()
+            .is_some_and(|first| first.is_ascii_uppercase() || first == '_')
+            && characters
+                .all(|rest| rest.is_ascii_uppercase() || rest.is_ascii_digit() || rest == '_');
+        Self {
+            kind: "variable",
+            told: reads_as_a_name.then(|| name.to_owned()),
+        }
+    }
+
+    /// A file that exists, told by its path.
+    fn found_file(path: &str) -> Self {
+        Self {
+            kind: "file",
+            told: Some(path.to_owned()),
+        }
+    }
+
+    /// A file that does not exist, never told: `file://$KEY` names none, and
+    /// a key in base64 may start with `/`.
+    fn missing_file() -> Self {
+        Self {
+            kind: "file",
+            told: None,
+        }
+    }
+}
+
+impl fmt::Display for Place {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.told {
+            Some(told) => write!(formatter, "the {} {told}", self.kind),
+            None => write!(formatter, "the {} it names", self.kind),
+        }
+    }
 }
 
 /// Why a reference cannot be followed.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ReferenceFailure {
     UnknownScheme,
-    VariableNotSet(String),
-    FileUnreadable(String),
-    FileExposed(String),
+    VariableNotSet(Place),
+    FileUnreadable(Place),
+    FileExposed(Place),
 }
 
 /// Follows a reference, `env://NAME` or `file:///path`, to what it names.
+/// What it names is wiped when it goes.
 pub(crate) fn follow_reference(
     reference: &str,
     read_variable: impl Fn(&str) -> Option<String>,
-) -> Result<String, ReferenceFailure> {
+) -> Result<Zeroizing<String>, ReferenceFailure> {
     if let Some(name) = reference.strip_prefix("env://") {
-        read_variable(name).ok_or_else(|| ReferenceFailure::VariableNotSet(name.to_owned()))
+        read_variable(name)
+            .map(Zeroizing::new)
+            .ok_or_else(|| ReferenceFailure::VariableNotSet(Place::variable(name)))
     } else if let Some(path) = reference.strip_prefix("file://") {
         read_private_file(path)
     } else {
@@ -61,9 +116,9 @@ pub(crate) fn resolve_root_key(
     let reference = read_variable(ROOT_KEY).ok_or(RootKeyError::Missing)?;
     let written = follow_reference(&reference, read_variable).map_err(|failure| match failure {
         ReferenceFailure::UnknownScheme => RootKeyError::UnknownScheme,
-        ReferenceFailure::VariableNotSet(name) => RootKeyError::VariableNotSet(name),
-        ReferenceFailure::FileUnreadable(path) => RootKeyError::FileUnreadable(path),
-        ReferenceFailure::FileExposed(path) => RootKeyError::FileExposed(path),
+        ReferenceFailure::VariableNotSet(place) => RootKeyError::VariableNotSet(place),
+        ReferenceFailure::FileUnreadable(place) => RootKeyError::FileUnreadable(place),
+        ReferenceFailure::FileExposed(place) => RootKeyError::FileExposed(place),
     })?;
     match STANDARD.decode(written.trim()) {
         Ok(key) if key.len() == ROOT_KEY_BYTES => Ok(Secret::new(key)),
@@ -71,17 +126,18 @@ pub(crate) fn resolve_root_key(
     }
 }
 
-fn read_private_file(path: &str) -> Result<String, ReferenceFailure> {
-    let unreadable = || ReferenceFailure::FileUnreadable(path.to_owned());
+fn read_private_file(path: &str) -> Result<Zeroizing<String>, ReferenceFailure> {
     let mode = fs::metadata(path)
-        .map_err(|_| unreadable())?
+        .map_err(|_| ReferenceFailure::FileUnreadable(Place::missing_file()))?
         .permissions()
         .mode();
     // Group and others: a key anyone on the machine can read protects nothing.
     if mode & 0o077 != 0 {
-        return Err(ReferenceFailure::FileExposed(path.to_owned()));
+        return Err(ReferenceFailure::FileExposed(Place::found_file(path)));
     }
-    fs::read_to_string(path).map_err(|_| unreadable())
+    fs::read_to_string(path)
+        .map(Zeroizing::new)
+        .map_err(|_| ReferenceFailure::FileUnreadable(Place::found_file(path)))
 }
 
 #[cfg(test)]
@@ -89,7 +145,7 @@ mod tests {
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD;
 
-    use super::{ROOT_KEY, RootKeyError, resolve_root_key};
+    use super::{Place, ROOT_KEY, RootKeyError, resolve_root_key};
 
     fn read_from(
         pairs: &'static [(&'static str, &'static str)],
@@ -124,11 +180,11 @@ mod tests {
         );
         assert_eq!(
             resolve_root_key(read_from(&[(ROOT_KEY, "env://ABSENT")])).map(|_| ()),
-            Err(RootKeyError::VariableNotSet("ABSENT".to_owned()))
+            Err(RootKeyError::VariableNotSet(Place::variable("ABSENT")))
         );
         assert_eq!(
             resolve_root_key(read_from(&[(ROOT_KEY, "file:///no/such/file")])).map(|_| ()),
-            Err(RootKeyError::FileUnreadable("/no/such/file".to_owned()))
+            Err(RootKeyError::FileUnreadable(Place::missing_file()))
         );
         assert_eq!(
             resolve_root_key(read_from(&[(ROOT_KEY, "c2VjcmV0")])).map(|_| ()),
@@ -167,8 +223,29 @@ mod tests {
 
         assert_eq!(
             exposed,
-            Err(RootKeyError::FileExposed(path.display().to_string()))
+            Err(RootKeyError::FileExposed(Place::found_file(
+                &path.display().to_string()
+            )))
         );
         assert_eq!(private, Ok(vec![5_u8; 32]));
+    }
+
+    #[test]
+    fn a_reference_that_holds_a_secret_in_place_of_a_name_is_not_repeated() {
+        // What `env://$KEY` and `file://$KEY` become once a shell expanded them,
+        // with a key whose base64 starts with `/`, as one key in 64 does.
+        let expanded = STANDARD.encode([0xFC_u8; 32]);
+        assert!(expanded.starts_with('/'));
+        for reference in [format!("env://{expanded}"), format!("file://{expanded}")] {
+            let read = |name: &str| (name == ROOT_KEY).then(|| reference.clone());
+            let refused = resolve_root_key(read).expect_err("nothing there");
+            assert!(!refused.to_string().contains(&expanded), "{refused}");
+        }
+        assert_eq!(
+            resolve_root_key(read_from(&[(ROOT_KEY, "env://ABSENT")]))
+                .expect_err("not set")
+                .to_string(),
+            "SAFFUI_ROOT_KEY: the variable ABSENT is not set"
+        );
     }
 }

@@ -4,9 +4,14 @@
 //! `tests/mounted.rs` would say so.
 
 use crate::api::rest::endpoints::health::{self, DrainFlag};
-use crate::api::rest::endpoints::oidc;
+use crate::api::rest::endpoints::{admin, oidc};
+use crate::error::{refuse_unreadable_json, refuse_unreadable_query};
 use actix_web::web;
 use saffui_core::app::App as Product;
+
+/// The largest JSON body the data plane reads, in bytes: written here, not
+/// inherited, since the plane is reached before anyone is authenticated.
+const JSON_BODY_LIMIT: usize = 64 * 1024;
 
 /// Mounts the data plane. The probe paths are not on it: a probe is never
 /// reachable from where traffic is.
@@ -18,9 +23,20 @@ pub fn register_data_plane(
             .app_data(product.clone())
             // The only form of the plane: its limit and its refusals are the token's.
             .app_data(oidc::token::limit_form())
+            .app_data(
+                web::JsonConfig::default()
+                    .limit(JSON_BODY_LIMIT)
+                    .error_handler(refuse_unreadable_json),
+            )
+            .app_data(web::QueryConfig::default().error_handler(refuse_unreadable_query))
             .service(oidc::discovery::serve_provider_metadata)
             .service(oidc::certs::serve_key_set)
-            .service(oidc::token::grant);
+            .service(oidc::token::grant)
+            .service(admin::realm::read_realm)
+            .service(admin::client::list_clients)
+            .service(admin::client::create_client)
+            .service(admin::client::read_client)
+            .service(admin::audit::verify_audit_chain);
     }
 }
 

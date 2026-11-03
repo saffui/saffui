@@ -9,6 +9,8 @@ use crate::tenancy::RealmName;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ProviderMetadata {
     pub issuer: String,
+    /// Where the public keys of the realm are published.
+    pub jwks_uri: String,
 }
 
 /// The issuer of a realm: the public origin, then the realm, and nothing else.
@@ -19,14 +21,16 @@ pub fn name_issuer(settings: &Settings, realm: &RealmName) -> String {
 
 #[must_use]
 pub fn describe_provider(settings: &Settings, realm: &RealmName) -> ProviderMetadata {
+    let issuer = name_issuer(settings, realm);
     ProviderMetadata {
-        issuer: name_issuer(settings, realm),
+        jwks_uri: format!("{issuer}/oauth2/jwks"),
+        issuer,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::name_issuer;
+    use super::{describe_provider, name_issuer};
     use crate::settings::{PublicOrigin, Settings};
     use crate::tenancy::RealmName;
 
@@ -40,6 +44,19 @@ mod tests {
         assert_eq!(
             name_issuer(&settings, &realm),
             "https://id.example.org/realms/acme"
+        );
+    }
+
+    #[test]
+    fn the_keys_are_published_under_the_issuer() {
+        let settings = Settings {
+            public_origin: PublicOrigin::parse("https://id.example.org").expect("an origin"),
+        };
+        let realm = RealmName::parse("acme").expect("a realm name");
+
+        assert_eq!(
+            describe_provider(&settings, &realm).jwks_uri,
+            "https://id.example.org/realms/acme/oauth2/jwks"
         );
     }
 }

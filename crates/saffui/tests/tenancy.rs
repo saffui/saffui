@@ -126,7 +126,24 @@ fn a_bootstrapped_realm_is_published_by_a_node_on_its_data_plane_only() {
     );
     assert_eq!(
         published.body,
-        r#"{"issuer":"http://localhost:8080/realms/acme"}"#
+        r#"{"issuer":"http://localhost:8080/realms/acme","jwks_uri":"http://localhost:8080/realms/acme/oauth2/jwks"}"#
+    );
+
+    // The key set holds the public half of the first key, and nothing private.
+    let keys = http::get(node.data, "/realms/acme/oauth2/jwks").expect("an answer");
+    assert_eq!(keys.status, 200, "{}", keys.body);
+    for member in [
+        r#""kty":"EC""#,
+        r#""crv":"P-256""#,
+        r#""alg":"ES256""#,
+        r#""use":"sig""#,
+    ] {
+        assert!(keys.body.contains(member), "{member} in {}", keys.body);
+    }
+    assert!(
+        !keys.body.contains(r#""d":"#),
+        "no private member: {}",
+        keys.body
     );
 
     let unknown =

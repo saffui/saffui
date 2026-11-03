@@ -32,6 +32,10 @@ async fn a_realm_publishes_its_issuer_under_the_public_origin() {
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(document["issuer"], "https://id.example.test/realms/acme");
+    assert_eq!(
+        document["jwks_uri"],
+        "https://id.example.test/realms/acme/oauth2/jwks"
+    );
 }
 
 #[actix_web::test]

@@ -4,4 +4,5 @@
 pub mod api;
 mod error;
 mod extract;
+mod middleware;
 pub mod serve;

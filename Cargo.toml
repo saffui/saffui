@@ -20,6 +20,7 @@ pedantic = { level = "warn", priority = -1 }
 actix-rt = { version = "2.15.0", default-features = false, features = ["signal"] }
 actix-web = { version = "4.15.0", default-features = false, features = ["macros"] }
 anyhow = "1.0.104"
+api = { path = "crates/api" }
 argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "password-hash", "zeroize"] }
 async-trait = "0.1.92"
 base64 = { version = "0.23.1", default-features = false, features = ["std"] }

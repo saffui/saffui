@@ -2,9 +2,9 @@
 //! catalog is the only source of the status and of the message: the detail
 //! goes to the journal and never leaves.
 
-use actix_web::HttpResponse;
 use actix_web::http::StatusCode;
 use actix_web::http::header::{CACHE_CONTROL, PRAGMA, WWW_AUTHENTICATE};
+use actix_web::{HttpRequest, HttpResponse};
 use saffui_core::error::{ErrorKind, Failure};
 use saffui_core::oidc::errors::{OAuthError, OAuthFailure};
 use serde::Serialize;
@@ -29,7 +29,7 @@ fn choose_status(kind: ErrorKind) -> StatusCode {
     }
 }
 
-/// Renders a refusal as the data plane answers it today.
+/// Renders a refusal in the dialect of the administration plane.
 pub(crate) fn render_failure(failure: &Failure) -> HttpResponse {
     let kind = failure.code.kind();
     if matches!(kind, ErrorKind::Unavailable | ErrorKind::Internal) {
@@ -39,11 +39,34 @@ pub(crate) fn render_failure(failure: &Failure) -> HttpResponse {
             "a request failed"
         );
     }
-    HttpResponse::build(choose_status(kind)).json(ErrorBody {
+    let mut response = HttpResponse::build(choose_status(kind));
+    // A caller that was not authenticated is told which scheme to come back with.
+    if kind == ErrorKind::Unauthenticated {
+        response.insert_header((WWW_AUTHENTICATE, "Bearer"));
+    }
+    response.json(ErrorBody {
         code: failure.code.slug(),
         error_code: failure.code.number(),
         message: failure.code.message(),
     })
+}
+
+/// A JSON body that cannot be read, in the dialect of the administration plane.
+pub(crate) fn refuse_unreadable_json(
+    error: actix_web::error::JsonPayloadError,
+    _request: &HttpRequest,
+) -> actix_web::Error {
+    let refusal = render_failure(&saffui_core::error::ErrorCode::RequestInvalid.into());
+    actix_web::error::InternalError::from_response(error, refusal).into()
+}
+
+/// A query string that cannot be read, in the dialect of the administration plane.
+pub(crate) fn refuse_unreadable_query(
+    error: actix_web::error::QueryPayloadError,
+    _request: &HttpRequest,
+) -> actix_web::Error {
+    let refusal = render_failure(&saffui_core::error::ErrorCode::RequestInvalid.into());
+    actix_web::error::InternalError::from_response(error, refusal).into()
 }
 
 #[derive(Serialize)]

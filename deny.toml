@@ -54,6 +54,7 @@ deny = [
     { crate = "crypto", wrappers = ["saffui"], reason = "Only the binary binds the crypto crate to the ports of the core." },
     { crate = "store", wrappers = ["saffui"], reason = "Only the binary binds the store to the ports of the core." },
     { crate = "server", wrappers = ["saffui"], reason = "Only the binary mounts the server." },
+    { crate = "api", wrappers = ["server"], reason = "The contract of the administration API: the server answers in it, and nothing else reads it yet." },
     { crate = "pgcore", wrappers = ["gen-schema", "pgcore", "saffui", "store"], reason = "The database link is shared by the binary, the store and the schema tool." },
 ]
 

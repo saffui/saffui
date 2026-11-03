@@ -7,6 +7,7 @@ pub mod authz;
 pub mod clients;
 pub mod error;
 pub mod ids;
+pub mod instant;
 pub mod keys;
 pub mod oidc;
 pub mod ports;

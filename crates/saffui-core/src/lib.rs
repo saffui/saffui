@@ -14,3 +14,4 @@ pub mod settings;
 pub mod tenancy;
 #[cfg(feature = "testkit")]
 pub mod testkit;
+pub mod tokens;

@@ -184,9 +184,25 @@ async fn a_session_writes_only_the_realm_of_its_scope_in_a_tenant_that_has_two()
 #[tokio::test]
 async fn the_directory_follows_a_realm_that_is_disabled_renamed_or_deleted() {
     let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
-    let acme = provision(&app, "Acme", "acme").await;
     let maintenance = connect(&database, MAINTENANCE_ROLE).await;
-    let realm = acme.realm.id.as_uuid();
+    // Written by hand, with no history: a realm the product creates has its
+    // creation in its chain, and a chain is not deleted with its realm.
+    let (tenant, realm) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2));
+    maintenance
+        .execute(
+            "INSERT INTO tenants (tenant_id, name, created_at) VALUES ($1, 'Acme', now())",
+            &[&tenant],
+        )
+        .await
+        .expect("a tenant");
+    maintenance
+        .execute(
+            "INSERT INTO realms (tenant_id, realm_id, name, enabled, created_at) \
+             VALUES ($1, $2, 'acme', true, now())",
+            &[&tenant, &realm],
+        )
+        .await
+        .expect("a realm");
     let locate = |name: &'static str| {
         let name = RealmName::parse(name).expect("a realm name");
         let storage = &app.storage;

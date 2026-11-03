@@ -1,8 +1,12 @@
 //! Creating a tenant with its first realm: what an operator does once per
 //! customer, before anyone can sign in anywhere.
 
+use serde_json::json;
+
 use super::{Realm, RealmId, RealmName, RealmScope, Tenant, TenantId};
 use crate::app::App;
+use crate::audit::EventKind;
+use crate::audit::append::record_event;
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
 use crate::ports::storage::StorageError;
@@ -18,7 +22,9 @@ pub struct Provisioned {
     pub realm: Realm,
 }
 
-/// Creates a tenant and its first realm, both or neither.
+/// Creates a tenant and its first realm, both or neither. The creation is
+/// the first event of the chain of the realm, written by the same unit of
+/// work: a realm never exists without it.
 ///
 /// # Errors
 ///
@@ -61,6 +67,8 @@ pub async fn provision_first_realm(
             StorageError::Taken("realm name") => Failure::new(ErrorCode::RealmNameTaken),
             other => other.into(),
         })?;
+    let created = json!({ "name": realm.name.as_str(), "tenant_name": tenant.name });
+    record_event(app, work.as_mut(), EventKind::RealmCreated, created).await?;
     work.commit().await?;
     Ok(Provisioned { tenant, realm })
 }
@@ -89,6 +97,27 @@ mod tests {
         assert!(provisioned.realm.enabled);
         assert_eq!(storage.count_tenants(), 1);
         assert_eq!(storage.count_realms(), 1);
+    }
+
+    #[test]
+    fn creating_a_realm_is_recorded_in_its_chain_by_the_same_unit_of_work() {
+        let (app, storage) = MemoryStorage::wire();
+
+        let provisioned = complete(provision_first_realm(&app, acme())).expect("a first realm");
+
+        let recorded = storage.read_audit_envelopes(provisioned.realm.id);
+        let kinds: Vec<&str> = recorded
+            .iter()
+            .filter_map(|event| event["kind"].as_str())
+            .collect();
+        assert_eq!(kinds, ["realm.created"]);
+        assert_eq!(recorded[0]["payload"]["name"], "acme");
+        assert_eq!(recorded[0]["payload"]["tenant_name"], "Acme");
+        assert_eq!(
+            storage.count_units_of_work(),
+            1,
+            "the event was written by the unit of work that created the realm"
+        );
     }
 
     #[test]

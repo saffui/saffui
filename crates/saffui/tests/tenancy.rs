@@ -50,6 +50,51 @@ fn run_as(database: &TestDatabase, role: &str, sql: &str) {
         });
 }
 
+/// Reads the first column of each row `sql` returns, as `role`.
+fn read_as(database: &TestDatabase, role: &str, sql: &str) -> Vec<String> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime for the statement")
+        .block_on(async {
+            database
+                .plan(role)
+                .connect_directly()
+                .await
+                .expect("a connection")
+                .query(sql, &[])
+                .await
+                .expect("the statement ran")
+                .iter()
+                .map(|row| row.get(0))
+                .collect()
+        })
+}
+
+#[test]
+fn a_bootstrapped_realm_has_its_creation_as_the_first_event_of_its_chain() {
+    let database = database::create_database(EMBEDDED);
+
+    let created = bootstrap(&database, "Acme", "acme");
+    assert_eq!(created.status.code(), Some(0));
+
+    // The maintenance role reads across scopes: the chain as it is stored.
+    let chain = read_as(
+        &database,
+        MAINTENANCE_ROLE,
+        "SELECT seq || ' ' || kind || ' ' || (convert_from(envelope, 'UTF8')::jsonb #>> '{payload,name}') \
+         FROM audit_events ORDER BY seq",
+    );
+    assert_eq!(chain, ["1 realm.created acme"]);
+    let head = read_as(
+        &database,
+        MAINTENANCE_ROLE,
+        "SELECT h.seq::text FROM audit_chain_heads h \
+         JOIN audit_events e USING (tenant_id, realm_id, seq) WHERE h.hash = e.hash",
+    );
+    assert_eq!(head, ["1"], "the head is the event just written");
+}
+
 #[test]
 fn a_bootstrapped_realm_is_published_by_a_node_on_its_data_plane_only() {
     let database = database::create_database(EMBEDDED);

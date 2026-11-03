@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use crypto::adapters::digest::ProviderDigester;
 use crypto::adapters::open_provider;
 use crypto::adapters::random::ProviderRandom;
 use deadpool_postgres::Pool;
@@ -65,7 +66,8 @@ pub(crate) fn wire_product(
             settings,
             storage: Arc::new(storage),
             clock: Arc::new(SystemClock),
-            random: Arc::new(ProviderRandom::new(provider)),
+            random: Arc::new(ProviderRandom::new(Arc::clone(&provider))),
+            digester: Arc::new(ProviderDigester::new(provider)),
         },
         pool,
     })

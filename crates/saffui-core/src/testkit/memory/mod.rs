@@ -15,6 +15,7 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use super::clock::FixedClock;
+use super::digest::WeakDigester;
 use super::random::CountingRandom;
 use crate::app::App;
 use crate::ports::storage::{RealmLocation, Storage, StorageError, StorageUnavailable, UnitOfWork};
@@ -71,6 +72,7 @@ impl MemoryStorage {
             storage: storage.clone(),
             clock: Arc::new(FixedClock::default()),
             random: Arc::new(CountingRandom::default()),
+            digester: Arc::new(WeakDigester),
         };
         (app, storage)
     }

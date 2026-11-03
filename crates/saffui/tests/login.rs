@@ -435,7 +435,7 @@ fn guesses_lock_out_the_address_they_come_from_and_a_header_is_believed_from_a_n
     // Behind a proxy the deployment named: the address it reports is the caller.
     let database = database::create_database(EMBEDDED);
     let mut behind_a_proxy = support::saffui_command();
-    behind_a_proxy.env("SAFFUI_TRUSTED_PROXIES", "127.0.0.1");
+    behind_a_proxy.env("SAFFUI_TRUSTED_PROXIES", "127.0.0.0/8");
     let node = prepare_realm(&database, behind_a_proxy);
     for _ in 0..5 {
         let (refused, _) = sign_in_from(&node, "a guess", Some("203.0.113.7"));

@@ -16,5 +16,8 @@ pub struct IssuedAccessToken {
 /// identity token for one, is never accepted in its place.
 pub const ACCESS_TOKEN_TYPE: &str = "at+jwt";
 
+/// The `typ` of an identity token.
+pub const IDENTITY_TOKEN_TYPE: &str = "JWT";
+
 /// How long an access token lives.
 pub const ACCESS_TOKEN_LIFETIME_SECONDS: u64 = 300;

@@ -89,9 +89,70 @@ pub async fn create_administrator(
         scope: None,
         client_id: Some(client_id),
         client_secret: Some(secret),
+        ..TokenRequest::default()
     };
     grant_token(app, realm, request)
         .await
         .expect("a token")
         .access_token
+}
+
+/// Creates a person with a password, and an address made from the name.
+///
+/// # Panics
+///
+/// Panics when the person cannot be created.
+pub async fn create_person(
+    app: &App,
+    scope: RealmScope,
+    username: &str,
+    password: &str,
+) -> crate::directory::Person {
+    use crate::directory::create::{NewPerson, create_person as create};
+
+    let wanted = NewPerson {
+        username,
+        email: Some(&format!("{username}@example.org")),
+        display_name: Some("A person under test"),
+        password: Some(Secret::new(password.as_bytes().to_vec())),
+        created_by: None,
+    };
+    create(app, scope, wanted).await.expect("a person")
+}
+
+/// Registers an application that sends people back to `callback`, and
+/// returns its secret unless it is public.
+///
+/// # Panics
+///
+/// Panics when the application cannot be registered.
+pub async fn create_application(
+    app: &App,
+    scope: RealmScope,
+    client_id: &str,
+    callback: &str,
+    public: bool,
+) -> Option<Secret> {
+    use crate::clients::register::{NewClient, register_client};
+
+    let scopes = ["openid", "profile", "email"].map(str::to_owned);
+    let callbacks = [callback.to_owned()];
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let (_client, secret) = register_client(
+        app,
+        work.as_mut(),
+        NewClient {
+            client_id,
+            name: client_id,
+            scopes: &scopes,
+            capabilities: &[],
+            redirect_uris: &callbacks,
+            public,
+            created_by: None,
+        },
+    )
+    .await
+    .expect("an application");
+    work.commit().await.expect("a commit");
+    secret
 }

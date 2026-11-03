@@ -4,5 +4,7 @@
 mod admin;
 mod certs;
 mod discovery;
+mod headers;
 mod health;
+mod login;
 mod token;

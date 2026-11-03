@@ -1,11 +1,15 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use time::OffsetDateTime;
 
+use crate::error::{ErrorCode, Failure};
 use crate::ports::clock::Clock;
-use crate::ports::crypto::{Digester, Sealer, Signer};
+use crate::ports::crypto::{Digester, PasswordHasher, Sealer, Signer};
 use crate::ports::random::Random;
 use crate::ports::storage::Storage;
+use crate::secret::Secret;
 use crate::settings::Settings;
 
 /// Everything a use case can reach. The binary fills it once.
@@ -18,6 +22,9 @@ pub struct App {
     pub digester: Arc<dyn Digester>,
     pub sealer: Arc<dyn Sealer>,
     pub signer: Arc<dyn Signer>,
+    pub hasher: Arc<dyn PasswordHasher>,
+    /// A hash nobody's password matches, made once per process. Start it empty.
+    pub decoy_hash: Arc<OnceLock<String>>,
 }
 
 impl App {
@@ -28,5 +35,30 @@ impl App {
         let now = self.clock.now();
         now.replace_nanosecond(now.nanosecond() / 1_000 * 1_000)
             .unwrap_or(now)
+    }
+
+    /// The hash an unknown name is verified against, so that it costs what a
+    /// known name costs. It is the hash of bytes nobody was told.
+    ///
+    /// # Errors
+    ///
+    /// Returns the failure of the random source or of the hasher.
+    pub async fn read_decoy_hash(&self) -> Result<String, Failure> {
+        if let Some(hash) = self.decoy_hash.get() {
+            return Ok(hash.clone());
+        }
+        let mut unknown = vec![0_u8; 32];
+        self.random
+            .fill(&mut unknown)
+            .map_err(|_| Failure::new(ErrorCode::RandomUnavailable))?;
+        // Written as text: a password is text, and a hasher may refuse anything else.
+        let unknown = Secret::new(URL_SAFE_NO_PAD.encode(&unknown).into_bytes());
+        let hash = self
+            .hasher
+            .hash_password(unknown)
+            .await
+            .map_err(crate::directory::create::translate_hashing_failure)?;
+        // Two requests may both compute it: either result serves.
+        Ok(self.decoy_hash.get_or_init(|| hash).clone())
     }
 }

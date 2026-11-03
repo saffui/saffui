@@ -11,3 +11,4 @@ pub(crate) mod ident;
 pub(crate) mod insert;
 pub(crate) mod list_query;
 pub(crate) mod select;
+pub(crate) mod update;

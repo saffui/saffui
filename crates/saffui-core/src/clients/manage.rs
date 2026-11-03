@@ -1,7 +1,7 @@
 //! What an administrator does with the clients of a realm.
 
 use super::Client;
-use super::register::{NewServiceClient, register_service_client};
+use super::register::{NewClient, register_client};
 use super::store::ListWindow;
 use crate::app::App;
 use crate::authz::admin::AdminCaller;
@@ -43,18 +43,19 @@ pub async fn find_client(app: &App, scope: RealmScope, client_id: &str) -> Resul
         .ok_or_else(|| Failure::new(ErrorCode::ClientNotFound))
 }
 
-/// Creates a service client on behalf of an administrator.
+/// Creates a client on behalf of an administrator, who is named in the
+/// event that records it.
 ///
 /// # Errors
 ///
 /// Returns [`ErrorCode::CapabilityMissing`] when the caller would grant a
 /// capability it does not hold itself: nobody hands out more than they have.
-/// Otherwise as [`register_service_client`].
+/// Otherwise as [`register_client`].
 pub async fn create_client(
     app: &App,
     caller: &AdminCaller,
-    wanted: NewServiceClient<'_>,
-) -> Result<(Client, Secret), Failure> {
+    wanted: NewClient<'_>,
+) -> Result<(Client, Option<Secret>), Failure> {
     if wanted
         .capabilities
         .iter()
@@ -63,7 +64,11 @@ pub async fn create_client(
         return Err(Failure::new(ErrorCode::CapabilityMissing));
     }
     let mut work = app.storage.begin(caller.scope).await?;
-    let created = register_service_client(app, work.as_mut(), wanted).await?;
+    let wanted = NewClient {
+        created_by: Some(&caller.client.client_id),
+        ..wanted
+    };
+    let created = register_client(app, work.as_mut(), wanted).await?;
     work.commit().await?;
     Ok(created)
 }

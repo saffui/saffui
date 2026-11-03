@@ -1,3 +1,5 @@
+use uuid::Uuid;
+
 use super::ACCESS_TOKEN_TYPE;
 use super::jws::verify_compact;
 use crate::app::App;
@@ -15,6 +17,8 @@ pub struct AccessTokenClaims {
     pub scopes: Vec<String>,
     pub token_id: String,
     pub expires_at: i64,
+    /// The session behind the token, when a person is.
+    pub session: Option<Uuid>,
 }
 
 /// Verifies an access token of the realm of `work`.
@@ -58,5 +62,14 @@ pub async fn verify_access_token(
             .collect(),
         token_id: read_text("jti")?,
         expires_at,
+        session: match claims.get("sid") {
+            None => None,
+            Some(session) => Some(
+                session
+                    .as_str()
+                    .and_then(|text| Uuid::parse_str(text).ok())
+                    .ok_or_else(invalid)?,
+            ),
+        },
     })
 }

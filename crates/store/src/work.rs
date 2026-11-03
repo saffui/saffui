@@ -91,7 +91,7 @@ impl PgUnitOfWork {
         StorageError::Failed
     }
 
-    fn scope_keys(&self) -> (Uuid, Uuid) {
+    pub(crate) fn scope_keys(&self) -> (Uuid, Uuid) {
         (self.scope.tenant().as_uuid(), self.scope.realm().as_uuid())
     }
 
@@ -205,6 +205,8 @@ fn name_what_is_taken(constraint: &str) -> Option<&'static str> {
     match constraint {
         "realms_name_taken" => Some("realm name"),
         "clients_client_id_taken" => Some("client identifier"),
+        "persons_username_taken" => Some("username"),
+        "persons_email_taken" => Some("email"),
         _ => None,
     }
 }

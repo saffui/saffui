@@ -59,7 +59,10 @@ pub async fn authorize_admin_call(
             ErrorCode::TokenInvalid => unauthenticated(),
             _ => failure,
         })?;
-    if !claims.scopes.iter().any(|scope| scope == ADMIN_SCOPE) {
+    // A token issued for a person carries their session. People hold no
+    // right on this plane: the capabilities read below are those of a client,
+    // and they are not lent to whoever signed in through it.
+    if claims.session.is_some() || !claims.scopes.iter().any(|scope| scope == ADMIN_SCOPE) {
         return Err(unauthenticated());
     }
 
@@ -123,6 +126,7 @@ mod tests {
             scope: None,
             client_id: Some(client_id),
             client_secret: Some(Secret::new(secret.expose().to_vec())),
+            ..TokenRequest::default()
         };
         complete(grant_token(app, realm, request))
             .expect("a token")
@@ -225,5 +229,43 @@ mod tests {
             decide(&app, "acme", Some(&token), Capability::RealmRead),
             Err(ErrorCode::AdminAuthenticationFailed)
         );
+    }
+
+    #[test]
+    fn a_token_issued_for_a_person_opens_nothing_whatever_its_client_may_do() {
+        use crate::ids::mint_id;
+        use crate::oidc::discovery::name_issuer;
+        use crate::tenancy::RealmName;
+        use crate::tokens::mint::{AccessTokenSubject, mint_access_token};
+
+        let (app, _storage) = MemoryStorage::wire();
+        let scope = complete(create_realm(&app, "acme"));
+        register(&app, scope, "operator", &["admin"], &Capability::ALL);
+        let issuer = name_issuer(&app.settings, &RealmName::parse("acme").expect("a name"));
+        let person = mint_id(&app).expect("an identifier").to_string();
+        let scopes = ["admin".to_owned()];
+        // What a person would hold had they signed in through that client.
+        let mut work = complete(app.storage.begin(scope)).expect("a unit of work");
+        let lent = complete(mint_access_token(
+            &app,
+            work.as_mut(),
+            AccessTokenSubject {
+                issuer: &issuer,
+                subject: &person,
+                client_id: "operator",
+                scopes: &scopes,
+                session: Some(mint_id(&app).expect("an identifier")),
+            },
+        ))
+        .expect("a token");
+        complete(work.commit()).expect("a commit");
+
+        for capability in Capability::ALL {
+            assert_eq!(
+                decide(&app, "acme", Some(&lent.token), capability),
+                Err(ErrorCode::AdminAuthenticationFailed),
+                "{capability:?}"
+            );
+        }
     }
 }

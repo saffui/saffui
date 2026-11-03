@@ -429,8 +429,10 @@ pub async fn check_clients_contract(app: &App) {
         id: mint_id(app).expect("an identifier"),
         client_id: "billing".to_owned(),
         name: "Billing".to_owned(),
-        secret_digest: vec![7; 32],
+        secret_digest: Some(vec![7; 32]),
         allows_client_credentials: true,
+        allows_authorization_code: false,
+        redirect_uris: Vec::new(),
         scopes: vec!["invoices:read".to_owned(), "invoices:write".to_owned()],
         capabilities: vec![
             crate::authz::capability::Capability::ClientRead,
@@ -447,6 +449,25 @@ pub async fn check_clients_contract(app: &App) {
     let mut work = app.storage.begin(scopes[0]).await.expect("a unit of work");
     assert_eq!(work.read_client("billing").await, Ok(Some(client.clone())));
     assert_eq!(work.read_client("nobody").await, Ok(None));
+
+    // An application without a secret is read back as it was written too.
+    let application = Client {
+        id: mint_id(app).expect("an identifier"),
+        client_id: "webapp".to_owned(),
+        secret_digest: None,
+        allows_client_credentials: false,
+        allows_authorization_code: true,
+        redirect_uris: vec!["https://app.example.org/callback".to_owned()],
+        capabilities: Vec::new(),
+        ..client.clone()
+    };
+    work.insert_client(&application)
+        .await
+        .expect("an application");
+    assert_eq!(
+        work.read_client("webapp").await,
+        Ok(Some(application.clone()))
+    );
 
     // An identifier is taken once in its realm, and free in every other.
     let again = Client {
@@ -493,4 +514,281 @@ pub async fn check_clients_contract(app: &App) {
         Ok(vec!["billing".to_owned()])
     );
     assert_eq!(work.count_clients().await, Ok(3));
+}
+
+/// What every storage must answer of the people of a realm.
+///
+/// # Panics
+///
+/// Panics at the first answer the contract does not allow.
+pub async fn check_persons_contract(app: &App) {
+    use crate::clients::store::ListWindow;
+    use crate::directory::Person;
+    use crate::testkit::fixtures::create_realm;
+
+    let scope = create_realm(app, "contract-persons").await;
+    let other = create_realm(app, "contract-persons-other").await;
+    let now = app.now();
+    let describe = |username: &str, email: Option<&str>| Person {
+        id: mint_id(app).expect("an identifier"),
+        username: username.to_owned(),
+        email: email.map(str::to_owned),
+        email_verified: false,
+        display_name: Some("Ada".to_owned()),
+        enabled: true,
+        created_at: now,
+    };
+
+    // People: read back equal, by identifier and by name, in their realm only.
+    let ada = describe("ada", Some("ada@example.org"));
+    let bob = describe("bob", None);
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.insert_person(&ada).await.expect("a person");
+    work.insert_person(&bob)
+        .await
+        .expect("a person without an address");
+    work.insert_person(&describe("carol", None))
+        .await
+        .expect("a second person without an address");
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(work.read_person(ada.id).await, Ok(Some(ada.clone())));
+    assert_eq!(
+        work.read_person_by_username("bob").await,
+        Ok(Some(bob.clone()))
+    );
+    assert_eq!(work.read_person_by_username("nobody").await, Ok(None));
+    assert_eq!(work.count_persons().await, Ok(3));
+    let listed = work
+        .list_persons(ListWindow { first: 1, max: 5 })
+        .await
+        .expect("a page");
+    let names: Vec<&str> = listed
+        .iter()
+        .map(|person| person.username.as_str())
+        .collect();
+    assert_eq!(names, ["bob", "carol"]);
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(elsewhere.read_person(ada.id).await, Ok(None));
+    elsewhere
+        .insert_person(&describe("ada", Some("ada@example.org")))
+        .await
+        .expect("the same name and address, elsewhere");
+    elsewhere.commit().await.expect("a commit");
+
+    // A name and an address are each taken once per realm.
+    assert_eq!(
+        work.insert_person(&describe("ada", None)).await,
+        Err(StorageError::Taken("username"))
+    );
+    drop(work);
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.insert_person(&describe("dave", Some("ada@example.org")))
+            .await,
+        Err(StorageError::Taken("email"))
+    );
+    drop(work);
+
+    // A password is kept for its person, and read in its realm only.
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(work.read_password(ada.id).await, Ok(None));
+    work.insert_password(ada.id, "$first", now)
+        .await
+        .expect("a password");
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.read_password(ada.id).await,
+        Ok(Some("$first".to_owned()))
+    );
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(elsewhere.read_password(ada.id).await, Ok(None));
+}
+
+/// What every storage must answer of sessions and of the counters of the brake.
+///
+/// # Panics
+///
+/// Panics at the first answer the contract does not allow.
+pub async fn check_sign_in_contract(app: &App) {
+    use time::Duration;
+
+    use crate::login::session::{Session, SessionState};
+    use crate::testkit::fixtures::{create_person, create_realm};
+
+    let scope = create_realm(app, "contract-sign-in").await;
+    let other = create_realm(app, "contract-sign-in-other").await;
+    let ada = create_person(app, scope, "ada", "correct horse battery").await;
+    let now = app.now();
+
+    // A session is read back equal, in its realm only.
+    let session = Session {
+        id: mint_id(app).expect("an identifier"),
+        person: ada.id,
+        secret_digest: vec![3; 32],
+        state: SessionState::Active,
+        authenticated_at: now,
+        expires_at: now + Duration::hours(1),
+    };
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.insert_session(&session).await.expect("a session");
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.read_session(session.id).await,
+        Ok(Some(session.clone()))
+    );
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(elsewhere.read_session(session.id).await, Ok(None));
+
+    // The brake: counts add up per digest, and only from the window asked for.
+    let (digest, another) = ([5_u8; 32], [6_u8; 32]);
+    let earlier = now - Duration::minutes(10);
+    work.record_login_failure(&digest, now)
+        .await
+        .expect("a failure");
+    work.record_login_failure(&digest, now)
+        .await
+        .expect("a failure");
+    work.record_login_failure(&digest, earlier)
+        .await
+        .expect("an older failure");
+    work.record_login_failure(&another, now)
+        .await
+        .expect("a failure of another name");
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(work.count_login_failures(&digest, now).await, Ok(2));
+    assert_eq!(work.count_login_failures(&digest, earlier).await, Ok(3));
+    assert_eq!(work.count_login_failures(&[9; 32], earlier).await, Ok(0));
+    assert_eq!(
+        elsewhere.count_login_failures(&digest, earlier).await,
+        Ok(0),
+        "a counter is kept per realm"
+    );
+
+    // A counter is forgotten whole, and only that one.
+    work.forget_login_failures(&digest)
+        .await
+        .expect("a forgotten counter");
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(work.count_login_failures(&digest, earlier).await, Ok(0));
+    assert_eq!(work.count_login_failures(&another, earlier).await, Ok(1));
+}
+
+/// What every storage must answer of the authorization code flow: requests
+/// that wait, codes, and sessions that end.
+///
+/// # Panics
+///
+/// Panics at the first answer the contract does not allow.
+pub async fn check_codes_contract(app: &App) {
+    use time::Duration;
+
+    use crate::login::session::{Session, SessionState};
+    use crate::oidc::code::{AuthorizationCode, PendingAuthorization};
+    use crate::testkit::fixtures::{create_person, create_realm};
+
+    let scope = create_realm(app, "contract-codes").await;
+    let other = create_realm(app, "contract-codes-other").await;
+    let ada = create_person(app, scope, "ada", "correct horse battery").await;
+    let now = app.now();
+
+    // A session ends, and is kept ended.
+    let session = Session {
+        id: mint_id(app).expect("an identifier"),
+        person: ada.id,
+        secret_digest: vec![3; 32],
+        state: SessionState::Active,
+        authenticated_at: now,
+        expires_at: now + Duration::hours(1),
+    };
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.insert_session(&session).await.expect("a session");
+    work.end_session(session.id)
+        .await
+        .expect("an ended session");
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let ended = work
+        .read_session(session.id)
+        .await
+        .expect("a read")
+        .expect("the session is kept");
+    assert_eq!(ended.state, SessionState::Ended);
+
+    // A request is read until it expires, and taken once.
+    let pending = PendingAuthorization {
+        id: mint_id(app).expect("an identifier"),
+        browser_digest: vec![4; 32],
+        client_id: "webapp".to_owned(),
+        redirect_uri: "https://app.example.org/cb".to_owned(),
+        scopes: vec!["openid".to_owned()],
+        state: Some("state".to_owned()),
+        nonce: None,
+        code_challenge: "challenge".to_owned(),
+        expires_at: now + Duration::minutes(10),
+    };
+    work.insert_pending_authorization(&pending)
+        .await
+        .expect("a pending request");
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.read_pending_authorization(pending.id, now).await,
+        Ok(Some(pending.clone()))
+    );
+    let later = now + Duration::minutes(11);
+    assert_eq!(
+        work.read_pending_authorization(pending.id, later).await,
+        Ok(None)
+    );
+    assert_eq!(
+        work.take_pending_authorization(pending.id, later).await,
+        Ok(None),
+        "an expired request is not taken"
+    );
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(
+        elsewhere.take_pending_authorization(pending.id, now).await,
+        Ok(None)
+    );
+    assert_eq!(
+        work.take_pending_authorization(pending.id, now).await,
+        Ok(Some(pending.clone()))
+    );
+    assert_eq!(
+        work.take_pending_authorization(pending.id, now).await,
+        Ok(None)
+    );
+
+    // A code is spent once, and not after it expired.
+    let code = AuthorizationCode {
+        code_digest: vec![8; 32],
+        client_id: "webapp".to_owned(),
+        person: ada.id,
+        session: session.id,
+        redirect_uri: "https://app.example.org/cb".to_owned(),
+        scopes: vec!["openid".to_owned()],
+        nonce: Some("nonce".to_owned()),
+        code_challenge: "challenge".to_owned(),
+        authenticated_at: now,
+        expires_at: now + Duration::minutes(1),
+    };
+    work.insert_authorization_code(&code).await.expect("a code");
+    assert_eq!(
+        work.take_authorization_code(&code.code_digest, now + Duration::minutes(2))
+            .await,
+        Ok(None)
+    );
+    assert_eq!(
+        work.take_authorization_code(&code.code_digest, now).await,
+        Ok(Some(code.clone()))
+    );
+    assert_eq!(
+        work.take_authorization_code(&code.code_digest, now).await,
+        Ok(None)
+    );
 }

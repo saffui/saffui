@@ -1,10 +1,11 @@
 //! The composition root: the one file that knows every crate. It fills the
 //! application once, by hand.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crypto::adapters::digest::ProviderDigester;
 use crypto::adapters::open_provider;
+use crypto::adapters::password::BoundedPasswordHasher;
 use crypto::adapters::random::ProviderRandom;
 use crypto::adapters::seal::EnvelopeSealer;
 use crypto::adapters::sign::JoseSigner;
@@ -44,7 +45,13 @@ pub(crate) enum WiringError {
     Library,
     #[error("the root key cannot be used")]
     RootKey,
+    #[error("the password hasher cannot be set up")]
+    Hasher,
 }
+
+/// How many passwords are hashed at once. Each takes the memory of one
+/// Argon2id run: the bound is what keeps a burst of sign-ins from taking the node.
+const CONCURRENT_PASSWORD_HASHES: usize = 4;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum StartupRefusal {
@@ -54,6 +61,12 @@ pub(crate) enum StartupRefusal {
     RoleUnreadable,
     #[error(transparent)]
     Role(#[from] PrivilegedRole),
+    #[error("the password hasher cannot answer")]
+    Hasher,
+    #[error(
+        "the maintenance link cannot purge: it must reach the database under the maintenance role, which bypasses row security and is no superuser"
+    )]
+    MaintenanceRole,
 }
 
 /// Wires the product on its database, under the root key of the deployment.
@@ -68,6 +81,8 @@ pub(crate) fn wire_product(
     let provider = open_provider().map_err(|_| WiringError::Library)?;
     let sealer =
         EnvelopeSealer::new(Arc::clone(&provider), root_key).map_err(|_| WiringError::RootKey)?;
+    let hasher = BoundedPasswordHasher::new(Arc::clone(&provider), CONCURRENT_PASSWORD_HASHES)
+        .map_err(|_| WiringError::Hasher)?;
     let pool = build_pool(database, pool)?;
     let storage = PgStorage::new(pool.clone(), SchemaWindow::of_exactly(EMBEDDED));
     Ok(Wired {
@@ -78,6 +93,8 @@ pub(crate) fn wire_product(
             random: Arc::new(ProviderRandom::new(Arc::clone(&provider))),
             digester: Arc::new(ProviderDigester::new(Arc::clone(&provider))),
             sealer: Arc::new(sealer),
+            hasher: Arc::new(hasher),
+            decoy_hash: Arc::new(OnceLock::new()),
             signer: Arc::new(JoseSigner::new(provider)),
         },
         pool,
@@ -103,5 +120,16 @@ impl Wired {
         })?;
         refuse_privileged_role(&facts)?;
         Ok(())
+    }
+
+    /// Makes the hash an unknown name is verified against. Made here and not
+    /// at the first unknown name: that request would take twice the time of
+    /// the others, and tell that its name is unknown.
+    pub(crate) async fn prepare_decoy_hash(&self) -> Result<(), StartupRefusal> {
+        self.app
+            .read_decoy_hash()
+            .await
+            .map(|_| ())
+            .map_err(|_| StartupRefusal::Hasher)
     }
 }

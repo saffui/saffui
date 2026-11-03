@@ -8,23 +8,28 @@
 mod audit;
 mod clients;
 mod keys;
+mod login;
 mod tenancy;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use async_trait::async_trait;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::clock::FixedClock;
-use super::crypto::{TransparentSealer, WeakSigner};
+use super::crypto::{InstantHasher, TransparentSealer, WeakSigner};
 use super::digest::WeakDigester;
 use super::random::CountingRandom;
 use crate::app::App;
 use crate::audit::store::ChainedEvent;
 use crate::clients::Client;
+use crate::directory::Person;
 use crate::keys::SigningKey;
+use crate::login::session::Session;
+use crate::oidc::code::{AuthorizationCode, PendingAuthorization};
 use crate::ports::crypto::WrappedDataKey;
 use crate::ports::storage::{RealmLocation, Storage, StorageError, StorageUnavailable, UnitOfWork};
 use crate::settings::{PublicOrigin, Settings};
@@ -42,6 +47,18 @@ pub(crate) struct State {
     pub(crate) signing_keys: HashMap<Uuid, Vec<SigningKey>>,
     /// The clients of each realm, by realm.
     pub(crate) clients: HashMap<Uuid, Vec<Client>>,
+    /// The people of each realm, by realm.
+    pub(crate) persons: HashMap<Uuid, Vec<Person>>,
+    /// The password of each person, by person.
+    pub(crate) passwords: HashMap<Uuid, String>,
+    /// The sessions of each realm, by realm.
+    pub(crate) sessions: HashMap<Uuid, Vec<Session>>,
+    /// The counters of the brake, by realm, digest and start of bucket.
+    pub(crate) login_failures: HashMap<(Uuid, Vec<u8>, OffsetDateTime), u32>,
+    /// The requests that wait for their person, by realm.
+    pub(crate) pending_authorizations: HashMap<Uuid, Vec<PendingAuthorization>>,
+    /// The codes not yet spent, by realm.
+    pub(crate) authorization_codes: HashMap<Uuid, Vec<AuthorizationCode>>,
 }
 
 #[derive(Default)]
@@ -103,16 +120,17 @@ impl MemoryStorage {
         let storage = Arc::new(Self::default());
         let clock = Arc::new(FixedClock::default());
         let app = App {
-            settings: Settings {
-                public_origin: PublicOrigin::parse("https://id.example.test")
-                    .expect("a well-formed origin"),
-            },
+            settings: Settings::reached_directly(
+                PublicOrigin::parse("https://id.example.test").expect("a well-formed origin"),
+            ),
             storage: storage.clone(),
             clock: clock.clone(),
             random: Arc::new(CountingRandom::default()),
             digester: Arc::new(WeakDigester),
             sealer: Arc::new(TransparentSealer),
             signer: Arc::new(WeakSigner::default()),
+            hasher: Arc::new(InstantHasher),
+            decoy_hash: Arc::new(OnceLock::new()),
         };
         (app, storage, clock)
     }
@@ -149,6 +167,27 @@ impl MemoryStorage {
     #[must_use]
     pub fn count_realms(&self) -> usize {
         lock(&self.state).realms.len()
+    }
+
+    /// Disables the person of that username in every realm that has one.
+    pub fn disable_person(&self, username: &str) {
+        for persons in lock(&self.state).persons.values_mut() {
+            for person in persons
+                .iter_mut()
+                .filter(|person| person.username == username)
+            {
+                person.enabled = false;
+            }
+        }
+    }
+
+    /// Ends every session, as if each person had signed out.
+    pub fn end_every_session(&self) {
+        for sessions in lock(&self.state).sessions.values_mut() {
+            for session in sessions {
+                session.state = crate::login::session::SessionState::Ended;
+            }
+        }
     }
 
     /// Disables the realm of that name, as an operator would.
@@ -268,7 +307,8 @@ impl UnitOfWork for MemoryUnitOfWork {
 mod tests {
     use super::MemoryStorage;
     use crate::testkit::contract::{
-        check_audit_contract, check_clients_contract, check_keys_contract, check_tenancy_contract,
+        check_audit_contract, check_clients_contract, check_codes_contract, check_keys_contract,
+        check_persons_contract, check_sign_in_contract, check_tenancy_contract,
     };
     use crate::testkit::drive::complete;
 
@@ -294,5 +334,23 @@ mod tests {
     fn the_double_passes_the_clients_contract() {
         let (app, _storage) = MemoryStorage::wire();
         complete(check_clients_contract(&app));
+    }
+
+    #[test]
+    fn the_double_passes_the_persons_contract() {
+        let (app, _storage) = MemoryStorage::wire();
+        complete(check_persons_contract(&app));
+    }
+
+    #[test]
+    fn the_double_passes_the_sign_in_contract() {
+        let (app, _storage) = MemoryStorage::wire();
+        complete(check_sign_in_contract(&app));
+    }
+
+    #[test]
+    fn the_double_passes_the_codes_contract() {
+        let (app, _storage) = MemoryStorage::wire();
+        complete(check_codes_contract(&app));
     }
 }

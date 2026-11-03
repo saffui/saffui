@@ -7,14 +7,18 @@ pub enum Capability {
     ClientRead,
     ClientWrite,
     AuditRead,
+    UserRead,
+    UserWrite,
 }
 
 impl Capability {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 6] = [
         Self::RealmRead,
         Self::ClientRead,
         Self::ClientWrite,
         Self::AuditRead,
+        Self::UserRead,
+        Self::UserWrite,
     ];
 
     #[must_use]
@@ -24,6 +28,8 @@ impl Capability {
             Self::ClientRead => "client:read",
             Self::ClientWrite => "client:write",
             Self::AuditRead => "audit:read",
+            Self::UserRead => "user:read",
+            Self::UserWrite => "user:write",
         }
     }
 

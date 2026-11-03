@@ -18,6 +18,9 @@ pub enum EventKind {
     SigningKeyCreated,
     ClientCreated,
     TokenIssued,
+    PersonCreated,
+    SessionOpened,
+    SessionEnded,
 }
 
 impl EventKind {
@@ -28,6 +31,9 @@ impl EventKind {
             Self::SigningKeyCreated => "key.created",
             Self::ClientCreated => "client.created",
             Self::TokenIssued => "token.issued",
+            Self::PersonCreated => "person.created",
+            Self::SessionOpened => "session.opened",
+            Self::SessionEnded => "session.ended",
         }
     }
 }

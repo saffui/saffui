@@ -117,7 +117,7 @@ fn provision_from_options(options: &BootstrapOptions) -> Result<String, Bootstra
         ..PoolSettings::default()
     };
     let wired = wire_product(
-        Settings { public_origin },
+        Settings::reached_directly(public_origin),
         &database,
         one_connection,
         &root_key,

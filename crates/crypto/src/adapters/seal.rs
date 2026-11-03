@@ -6,7 +6,9 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use super::SharedProvider;
-use crate::envelope::{Envelope, RealmDek, SecretScope};
+use crate::envelope::{Envelope, MacPurpose, RealmDek, SecretScope};
+use crate::provider::HmacAlg;
+use crate::secret::MacKey;
 
 /// What a wrapped data key is bound to, beside its tenant, its realm and its
 /// generation.
@@ -16,7 +18,10 @@ const DATA_KEY_PURPOSE: &str = "realm-data-key";
 /// key wraps one data key per realm and generation, and a data key seals the
 /// values of its realm, each bound to its place.
 pub struct EnvelopeSealer {
+    provider: SharedProvider,
     envelope: Envelope,
+    /// Derived once from the root key, for the names people type.
+    typed_names: MacKey,
 }
 
 impl EnvelopeSealer {
@@ -26,8 +31,16 @@ impl EnvelopeSealer {
     pub fn new(provider: SharedProvider, root_key: &Secret) -> Result<Self, CryptoFailure> {
         // The envelope takes its key as text: the bytes are written in base64url.
         let written = Zeroizing::new(BASE64URL_NOPAD.encode(root_key.expose()));
-        let envelope = Envelope::new(provider, &written).map_err(|_| CryptoFailure)?;
-        Ok(Self { envelope })
+        let envelope =
+            Envelope::new(std::sync::Arc::clone(&provider), &written).map_err(|_| CryptoFailure)?;
+        let typed_names = envelope
+            .derive_mac_key(MacPurpose::TypedNames)
+            .map_err(|_| CryptoFailure)?;
+        Ok(Self {
+            provider,
+            envelope,
+            typed_names,
+        })
     }
 
     fn unwrap_data_key(
@@ -126,6 +139,24 @@ impl Sealer for EnvelopeSealer {
             .map_err(|_| CryptoFailure)?;
         Ok(Secret::new(opened.expose_secret().clone()))
     }
+
+    fn digest_typed_name(
+        &self,
+        tenant: Uuid,
+        realm: Uuid,
+        typed: &[u8],
+    ) -> Result<Vec<u8>, CryptoFailure> {
+        // The two identifiers have a fixed length: nothing typed can be
+        // read as part of them.
+        let mut message = Vec::with_capacity(32 + typed.len());
+        message.extend_from_slice(tenant.as_bytes());
+        message.extend_from_slice(realm.as_bytes());
+        message.extend_from_slice(typed);
+        self.provider
+            .hmac()
+            .hmac(HmacAlg::Hs256, self.typed_names.secret(), &message)
+            .map_err(|_| CryptoFailure)
+    }
 }
 
 #[cfg(test)]
@@ -221,5 +252,34 @@ mod tests {
         let provider = open_provider().expect("a provider");
 
         assert!(EnvelopeSealer::new(provider, &Secret::new(vec![1; 4])).is_err());
+    }
+
+    #[test]
+    fn a_typed_name_is_digested_under_the_root_key_and_for_its_realm_only() {
+        let sealer = open_sealer(1);
+        let (tenant, realm) = (Uuid::from_u128(1), Uuid::from_u128(2));
+
+        let digest = sealer
+            .digest_typed_name(tenant, realm, b"ada")
+            .expect("a digest");
+
+        assert_eq!(digest.len(), 32);
+        assert_eq!(
+            sealer.digest_typed_name(tenant, realm, b"ada"),
+            Ok(digest.clone())
+        );
+        assert_ne!(
+            sealer.digest_typed_name(tenant, realm, b"adb"),
+            Ok(digest.clone())
+        );
+        assert_ne!(
+            sealer.digest_typed_name(tenant, Uuid::from_u128(3), b"ada"),
+            Ok(digest.clone())
+        );
+        assert_ne!(
+            open_sealer(2).digest_typed_name(tenant, realm, b"ada"),
+            Ok(digest),
+            "another root key gives another digest: the table alone tells nothing"
+        );
     }
 }

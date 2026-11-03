@@ -33,6 +33,10 @@ impl<'a> Criteria<'a> {
         self
     }
 
+    pub(super) fn is_empty(&self) -> bool {
+        self.tests.is_empty()
+    }
+
     /// Writes each test after the scope predicate, numbering placeholders
     /// from `next`, and returns what they bind, in that order.
     pub(super) fn write(&self, sql: &mut String, next: usize) -> Vec<Value<'a>> {

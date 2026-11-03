@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use crypto::adapters::digest::ProviderDigester;
 use crypto::adapters::open_provider;
+use crypto::adapters::password::BoundedPasswordHasher;
 use crypto::adapters::seal::EnvelopeSealer;
 use crypto::adapters::sign::JoseSigner;
 use pgcore::APP_ROLE;
@@ -31,15 +32,17 @@ pub fn wire_app(database: &TestDatabase, root_key: &Secret) -> App {
     let pool = build_pool(&database.plan(APP_ROLE), PoolSettings::default()).expect("a pool");
     let provider = open_provider().expect("a provider");
     App {
-        settings: Settings {
-            public_origin: PublicOrigin::parse("https://id.example.test").expect("an origin"),
-        },
+        settings: Settings::reached_directly(
+            PublicOrigin::parse("https://id.example.test").expect("an origin"),
+        ),
         storage: Arc::new(PgStorage::new(pool, SchemaWindow::of_exactly(EMBEDDED))),
         clock: Arc::new(FixedClock::default()),
         random: Arc::new(CountingRandom::default()),
         digester: Arc::new(ProviderDigester::new(Arc::clone(&provider))),
         sealer: Arc::new(EnvelopeSealer::new(Arc::clone(&provider), root_key).expect("a sealer")),
+        hasher: Arc::new(BoundedPasswordHasher::new(Arc::clone(&provider), 2).expect("a hasher")),
         signer: Arc::new(JoseSigner::new(provider)),
+        decoy_hash: Arc::new(std::sync::OnceLock::new()),
     }
 }
 

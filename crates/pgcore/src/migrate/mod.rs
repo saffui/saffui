@@ -26,6 +26,13 @@ pub const EMBEDDED: &[Migration] = &[
     embed!(3, "0003_keys"),
     embed!(4, "0004_clients"),
     embed!(5, "0005_capabilities"),
+    embed!(6, "0006_persons"),
+    embed!(7, "0007_user_capabilities"),
+    embed!(8, "0008_sign_in"),
+    embed!(9, "0009_applications"),
+    embed!(10, "0010_authorization_code"),
+    embed!(11, "0011_known_browsers"),
+    embed!(12, "0012_retention"),
 ];
 
 /// One numbered step of the schema, as SQL text.

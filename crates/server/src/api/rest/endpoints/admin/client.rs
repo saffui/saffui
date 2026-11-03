@@ -3,7 +3,7 @@ use api::{CreatedClient, NewClient};
 use saffui_core::app::App as Product;
 use saffui_core::authz::capability::Capability;
 use saffui_core::clients::manage;
-use saffui_core::clients::register::NewServiceClient;
+use saffui_core::clients::register::NewClient as WantedClient;
 use saffui_core::error::{ErrorCode, Failure};
 
 use super::listing::{ListParameters, answer_page};
@@ -54,20 +54,24 @@ pub async fn create_client(
             .iter()
             .map(|name| Capability::parse(name).ok_or(Failure::new(ErrorCode::CapabilityUnknown)))
             .collect::<Result<Vec<_>, _>>()?;
-        let service = NewServiceClient {
+        let client = WantedClient {
             client_id: &wanted.client_id,
             name: wanted.name.as_deref().unwrap_or(&wanted.client_id),
             scopes: &wanted.scopes,
             capabilities: &capabilities,
+            redirect_uris: &wanted.redirect_uris,
+            public: wanted.public,
+            created_by: None,
         };
-        manage::create_client(&product, &caller, service).await
+        manage::create_client(&product, &caller, client).await
     }
     .await;
     match created {
         Ok((client, secret)) => HttpResponse::Created().json(CreatedClient {
             client: show_client(&client),
             // The one showing of the secret: it is base64url text by construction.
-            client_secret: String::from_utf8_lossy(secret.expose()).into_owned(),
+            client_secret: secret
+                .map(|secret| String::from_utf8_lossy(secret.expose()).into_owned()),
         }),
         Err(failure) => render_failure(&failure),
     }

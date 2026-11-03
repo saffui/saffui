@@ -5,6 +5,7 @@ use std::fmt;
 use std::future::{Future, poll_fn};
 use std::io::{self, Write};
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::task::Poll;
 
 use actix_rt::System;
@@ -17,11 +18,15 @@ use server::serve::{
 
 use crate::config::crypto::{RootKeyError, resolve_root_key};
 use crate::config::database::{
-    DATABASE_POOL_SIZE, DATABASE_TLS, DATABASE_URL, DatabaseSettingsError, resolve_connection,
-    resolve_pool_settings,
+    DATABASE_POOL_SIZE, DATABASE_TLS, DATABASE_URL, DatabaseSettingsError, RETENTION,
+    RetentionPlan, RetentionSettingError, resolve_connection, resolve_pool_settings,
+    resolve_retention,
 };
 use crate::config::origin::{PUBLIC_ORIGIN, PublicOriginSettingError, resolve_public_origin};
-use tracing::info;
+use crate::config::proxy::{TrustedProxiesError, resolve_trusted_proxies};
+use crate::jobs;
+use store::retention::PgRetention;
+use tracing::{info, warn};
 
 use crate::config::serving::{
     DATA_PLANE, DRAIN_DELAY, OPS_PLANE, ServingSettingsError, Setting, resolve_serving_settings,
@@ -91,7 +96,9 @@ pub(crate) fn run_command(options: &ServeOptions) -> ExitCode {
 enum ServeError {
     Settings(ServingSettingsError),
     Origin(PublicOriginSettingError),
+    Proxies(TrustedProxiesError),
     Database(DatabaseSettingsError),
+    Retention(RetentionSettingError),
     RootKey(RootKeyError),
     Wiring(WiringError),
     Refused(StartupRefusal),
@@ -103,9 +110,12 @@ impl ServeError {
     fn exit_code(&self) -> ExitCode {
         match self {
             // A setting that cannot be used is a usage error, option or variable alike.
-            Self::Settings(_) | Self::Origin(_) | Self::Database(_) | Self::RootKey(_) => {
-                ExitCode::from(2)
-            }
+            Self::Settings(_)
+            | Self::Origin(_)
+            | Self::Proxies(_)
+            | Self::Database(_)
+            | Self::Retention(_)
+            | Self::RootKey(_) => ExitCode::from(2),
             Self::Wiring(_) | Self::Refused(_) | Self::Bind(_) | Self::Serving(_) => {
                 ExitCode::FAILURE
             }
@@ -118,7 +128,9 @@ impl fmt::Display for ServeError {
         match self {
             Self::Settings(error) => error.fmt(formatter),
             Self::Origin(error) => error.fmt(formatter),
+            Self::Proxies(error) => error.fmt(formatter),
             Self::Database(error) => error.fmt(formatter),
+            Self::Retention(error) => error.fmt(formatter),
             Self::RootKey(error) => error.fmt(formatter),
             Self::Wiring(error) => error.fmt(formatter),
             Self::Refused(error) => write!(formatter, "refusing to serve: {error}"),
@@ -145,8 +157,21 @@ fn serve_until_signal(options: &ServeOptions) -> Result<(), ServeError> {
     let pool = resolve_pool_settings(options.database_pool_size.as_deref(), read_variable)
         .map_err(ServeError::Database)?;
     let root_key = resolve_root_key(read_variable).map_err(ServeError::RootKey)?;
+    let trusted_proxies = resolve_trusted_proxies(read_variable).map_err(ServeError::Proxies)?;
+    // Retention needs a role of its own, never the one that serves. A node
+    // purges unless told off in so many words.
+    let retention = match resolve_retention(options.database_tls.as_deref(), read_variable)
+        .map_err(ServeError::Retention)?
+    {
+        RetentionPlan::Purge(plan) => Some(PgRetention::new(*plan)),
+        RetentionPlan::Off => None,
+    };
     telemetry::start_journal();
-    let wired = wire_product(Settings { public_origin }, &database, pool, &root_key)
+    let settings_of_the_product = Settings {
+        public_origin,
+        trusted_proxies,
+    };
+    let wired = wire_product(settings_of_the_product, &database, pool, &root_key)
         .map_err(ServeError::Wiring)?;
 
     // Both are bound before anything is announced: an address already taken
@@ -171,12 +196,26 @@ fn serve_until_signal(options: &ServeOptions) -> Result<(), ServeError> {
             if let Err(refusal) = wired.refuse_unfit_database().await {
                 return Ok(Err(refusal));
             }
+            if let Err(refusal) = wired.prepare_decoy_hash().await {
+                return Ok(Err(refusal));
+            }
+            if let Some(retention) = &retention
+                && retention.verify_role().await.is_err()
+            {
+                return Ok(Err(StartupRefusal::MaintenanceRole));
+            }
             let shutdown_requested = listen_for_shutdown_signals()?;
             info!(
                 data = %planes.addresses.data,
                 ops = %planes.addresses.ops,
                 "listening"
             );
+            // After the node said it listens: its first line is where it serves.
+            if let Some(retention) = retention {
+                jobs::start_retention(Arc::new(retention), Arc::clone(&wired.app.clock));
+            } else {
+                warn!("{RETENTION} is off: expired rows are not purged");
+            }
             planes.run_until(shutdown_requested).await.map(Ok)
         })
         .map_err(ServeError::Serving)?

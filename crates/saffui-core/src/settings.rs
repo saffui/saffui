@@ -71,6 +71,20 @@ impl fmt::Display for PublicOrigin {
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub public_origin: PublicOrigin,
+    /// The proxies in front of this deployment. Only a peer named here is
+    /// believed when it says who the request comes from.
+    pub trusted_proxies: Vec<IpAddr>,
+}
+
+impl Settings {
+    /// The settings of a deployment that nothing stands in front of.
+    #[must_use]
+    pub fn reached_directly(public_origin: PublicOrigin) -> Self {
+        Self {
+            public_origin,
+            trusted_proxies: Vec::new(),
+        }
+    }
 }
 
 fn read_authority(authority: &str) -> Option<(Host<'_>, Option<u16>)> {

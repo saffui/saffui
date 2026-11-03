@@ -30,6 +30,7 @@ pub async fn wire_on_postgres(pool: PoolSettings) -> (App, TestDatabase) {
         sealer: Arc::new(TransparentSealer),
         signer: Arc::new(WeakSigner::default()),
         hasher: Arc::new(InstantHasher),
+        hashing_shares: Arc::new(saffui_core::login::fairness::HashingShares::new(4)),
         decoy_hash: Arc::new(OnceLock::new()),
     };
     (app, database)

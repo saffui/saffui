@@ -365,6 +365,20 @@ fn an_unreadable_drain_delay_is_named_on_stderr_and_exits_with_2() {
 }
 
 #[test]
+fn a_number_of_password_hashers_out_of_bounds_is_named_on_stderr_and_exits_with_2() {
+    let refused = Serve::spawn(|command| {
+        command.env("SAFFUI_PASSWORD_HASHERS", "0");
+    });
+
+    let (code, stderr) = refused.wait_for_exit();
+    assert_eq!(code, Some(2), "stderr was: {stderr}");
+    assert!(
+        stderr.contains("SAFFUI_PASSWORD_HASHERS: \"0\""),
+        "the setting is not named: {stderr}"
+    );
+}
+
+#[test]
 fn a_variable_that_is_not_unicode_is_refused_with_code_2_and_does_not_pass_for_absent() {
     let refused = Serve::spawn(|command| {
         command.env("SAFFUI_LISTEN", OsString::from_vec(vec![0xff]));

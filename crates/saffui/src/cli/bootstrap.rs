@@ -24,6 +24,7 @@ use crate::config::crypto::{RootKeyError, resolve_root_key};
 use crate::config::database::{
     DATABASE_TLS, DATABASE_URL, DatabaseSettingsError, resolve_connection,
 };
+use crate::config::hashing::PASSWORD_HASHERS;
 use crate::config::origin::{PUBLIC_ORIGIN, PublicOriginSettingError, resolve_public_origin};
 use crate::telemetry;
 use crate::wiring::{StartupRefusal, WiringError, wire_product};
@@ -121,6 +122,7 @@ fn provision_from_options(options: &BootstrapOptions) -> Result<String, Bootstra
         &database,
         one_connection,
         &root_key,
+        PASSWORD_HASHERS.default,
     )?;
 
     let mut scopes = options.scopes.clone();

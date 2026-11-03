@@ -143,6 +143,7 @@ impl MemoryStorage {
             sealer: Arc::new(TransparentSealer),
             signer: Arc::new(WeakSigner::default()),
             hasher: Arc::new(InstantHasher),
+            hashing_shares: Arc::new(crate::login::fairness::HashingShares::new(4)),
             decoy_hash: Arc::new(OnceLock::new()),
         };
         (app, storage, clock)

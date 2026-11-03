@@ -95,6 +95,20 @@ pub fn write_address_bucket(address: IpAddr) -> String {
     }
 }
 
+/// The network an IPv6 address shares the hashers with, beyond its /64: its
+/// /48, the network a site is given whole, 65536 subscribers of a /64 each.
+/// An IPv4 address has none: each costs its holder alone.
+#[must_use]
+pub fn write_network_bucket(address: IpAddr) -> Option<String> {
+    match address.to_canonical() {
+        IpAddr::V6(address) => {
+            let [a, b, c, ..] = address.segments();
+            Some(format!("{a:x}:{b:x}:{c:x}::/48"))
+        }
+        IpAddr::V4(_) => None,
+    }
+}
+
 /// Counts one more sign-in left waiting by the caller, in the unit of work
 /// that keeps it, or refuses it once the address left too many in the
 /// window. An address unknown is not counted, as the brake does not count it.

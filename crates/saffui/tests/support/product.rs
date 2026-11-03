@@ -41,6 +41,7 @@ pub fn wire_app(database: &TestDatabase, root_key: &Secret) -> App {
         digester: Arc::new(ProviderDigester::new(Arc::clone(&provider))),
         sealer: Arc::new(EnvelopeSealer::new(Arc::clone(&provider), root_key).expect("a sealer")),
         hasher: Arc::new(BoundedPasswordHasher::new(Arc::clone(&provider), 2).expect("a hasher")),
+        hashing_shares: Arc::new(saffui_core::login::fairness::HashingShares::new(2)),
         signer: Arc::new(JoseSigner::new(provider)),
         decoy_hash: Arc::new(std::sync::OnceLock::new()),
     }

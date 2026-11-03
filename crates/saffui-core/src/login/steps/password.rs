@@ -1,6 +1,7 @@
 use std::net::IpAddr;
 
 use serde_json::json;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::app::App;
@@ -14,8 +15,9 @@ use crate::login::session::{SessionTicket, open_session};
 use crate::login::throttle::{
     MAX_DAILY_FAILURES, MAX_DAILY_FAILURES_PER_BROWSER, MAX_RECENT_ATTEMPTS_PER_ADDRESS,
     MAX_RECENT_FAILURES_PER_NAME, is_locked, start_bucket, start_long_bucket, start_long_window,
-    start_window, write_address_bucket,
+    start_window, write_address_bucket, write_network_bucket,
 };
+use crate::ports::storage::UnitOfWork;
 use crate::secret::Secret;
 use crate::tenancy::RealmScope;
 
@@ -67,8 +69,10 @@ fn name_counters(
     app: &App,
     scope: RealmScope,
     typed: &str,
-    address: Option<&str>,
+    caller: Option<IpAddr>,
 ) -> Result<Counters, Failure> {
+    let address = caller.map(write_address_bucket);
+    let address = address.as_deref();
     let typed = typed.as_bytes();
     Ok(Counters {
         name: digest_counter(app, scope, 1, &[typed])?,
@@ -95,6 +99,29 @@ fn device_counters(
     })
 }
 
+/// Counts an attempt against its address, or refuses it once the address
+/// tried too often in the window: a hash is ours to pay, whatever name is
+/// typed.
+async fn admit_attempt(
+    work: &mut dyn UnitOfWork,
+    counters: &Counters,
+    now: OffsetDateTime,
+) -> Result<(), Failure> {
+    let Some(counter) = &counters.address else {
+        return Ok(());
+    };
+    if work
+        .count_login_failures(counter, start_window(now))
+        .await?
+        >= MAX_RECENT_ATTEMPTS_PER_ADDRESS
+    {
+        return Err(Failure::new(ErrorCode::HashingBusy));
+    }
+    work.record_login_failure(counter, start_bucket(now))
+        .await?;
+    Ok(())
+}
+
 /// Signs a person in with a username and a password.
 ///
 /// An unknown name, a wrong password, a disabled person and a locked name
@@ -110,8 +137,9 @@ fn device_counters(
 /// # Errors
 ///
 /// Returns [`ErrorCode::SignInFailed`] for every refusal above but the last,
-/// [`ErrorCode::HashingBusy`] when the address spent its attempts or too
-/// many passwords are being hashed, or the storage failure.
+/// [`ErrorCode::HashingBusy`] when the address spent its attempts, or the
+/// realm or the /48 of an IPv6 caller runs its share of hashes already, or
+/// the storage failure.
 pub async fn sign_in(
     app: &App,
     scope: RealmScope,
@@ -131,8 +159,7 @@ pub async fn sign_in(
     // Kept under a key the database does not hold: people type passwords
     // into the wrong field.
     let typed = typed_name.trim().to_lowercase();
-    let address = caller.map(write_address_bucket);
-    let counters = name_counters(app, scope, &typed, address.as_deref())?;
+    let counters = name_counters(app, scope, &typed, caller)?;
     let now = app.now();
     let (window, day) = (start_window(now), start_long_window(now));
     let device = match known_browser {
@@ -146,13 +173,7 @@ pub async fn sign_in(
     // its address. It commits before anything is hashed: attempts made
     // together are each counted, and none holds a transaction meanwhile.
     let mut work = app.storage.begin(scope).await?;
-    if let Some(by_address) = &counters.address {
-        if work.count_login_failures(by_address, window).await? >= MAX_RECENT_ATTEMPTS_PER_ADDRESS {
-            return Err(Failure::new(ErrorCode::HashingBusy));
-        }
-        work.record_login_failure(by_address, start_bucket(now))
-            .await?;
-    }
+    admit_attempt(work.as_mut(), &counters, now).await?;
     // A known browser answers for its own failures, and only for them.
     let locked = if let Some(device) = &device {
         is_locked(work.count_login_failures(&device.recent, window).await?)
@@ -189,11 +210,18 @@ pub async fn sign_in(
         Some(hash) => hash,
         None => app.read_decoy_hash().await?,
     };
-    let verified = app
-        .hasher
-        .verify_password(password, against)
-        .await
-        .map_err(translate_hashing_failure)?;
+    // Held for the hash alone: the realm, and the /48 of an IPv6 caller,
+    // run no more than their share at once, and an idle one is never refused.
+    let verified = {
+        let _share = app
+            .hashing_shares
+            .take(scope.realm(), caller.and_then(write_network_bucket))
+            .ok_or_else(|| Failure::new(ErrorCode::HashingBusy))?;
+        app.hasher
+            .verify_password(password, against)
+            .await
+            .map_err(translate_hashing_failure)?
+    };
 
     let mut work = app.storage.begin(scope).await?;
     let Some(person) = person.filter(|person| verified && person.enabled) else {
@@ -457,6 +485,89 @@ mod tests {
             attempt_from(&app, scope, "198.51.100.9", "ada", PASSWORD),
             Ok("ada".to_owned()),
             "another address is not slowed"
+        );
+    }
+
+    #[test]
+    fn a_network_hashes_no_more_than_its_share_and_its_subscribers_still_sign_in() {
+        let (app, _storage) = MemoryStorage::wire();
+        let scope = complete(create_realm(&app, "acme"));
+        let other = complete(create_realm(&app, "globex"));
+        complete(create_person(&app, scope, "ada", PASSWORD));
+
+        // A guess from each of 300 /64 networks of one /48 closes nothing:
+        // the network is bounded by the hashes it runs at once, not by a count.
+        for subscriber in 0..300 {
+            let address = format!("2001:db8:7:{subscriber:x}::1");
+            assert_eq!(
+                attempt_from(
+                    &app,
+                    scope,
+                    &address,
+                    &format!("nobody-{subscriber}"),
+                    "a guess"
+                ),
+                Err(ErrorCode::SignInFailed)
+            );
+        }
+        assert_eq!(
+            attempt_from(&app, scope, "2001:db8:7:ffff::1", "ada", PASSWORD),
+            Ok("ada".to_owned()),
+            "a /64 of that /48 still signs in"
+        );
+
+        // Four hashers: the one a /48 may hold is taken, from another realm.
+        let held = app
+            .hashing_shares
+            .take(other.realm(), Some("2001:db8:7::/48".to_owned()))
+            .expect("a share");
+        assert_eq!(
+            attempt_from(&app, scope, "2001:db8:7:ffff::1", "ada", PASSWORD),
+            Err(ErrorCode::HashingBusy),
+            "the /48 runs its share already"
+        );
+        assert_eq!(
+            attempt_from(&app, scope, "2001:db8:8::1", "ada", PASSWORD),
+            Ok("ada".to_owned()),
+            "another /48 is not slowed"
+        );
+        assert_eq!(
+            attempt_from(&app, scope, "203.0.113.7", "ada", PASSWORD),
+            Ok("ada".to_owned())
+        );
+        drop(held);
+        assert_eq!(
+            attempt_from(&app, scope, "2001:db8:7:ffff::1", "ada", PASSWORD),
+            Ok("ada".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_realm_hashes_no_more_than_its_share_and_another_realm_still_signs_in() {
+        let (app, _storage) = MemoryStorage::wire();
+        let flooded = complete(create_realm(&app, "acme"));
+        let other = complete(create_realm(&app, "globex"));
+        complete(create_person(&app, flooded, "ada", PASSWORD));
+        complete(create_person(&app, other, "ada", PASSWORD));
+        // Four hashers: the two a realm may hold are taken.
+        let held = [
+            app.hashing_shares
+                .take(flooded.realm(), None)
+                .expect("a share"),
+            app.hashing_shares
+                .take(flooded.realm(), None)
+                .expect("a share"),
+        ];
+
+        assert_eq!(
+            attempt(&app, flooded, "ada", PASSWORD),
+            Err(ErrorCode::HashingBusy)
+        );
+        assert_eq!(attempt(&app, other, "ada", PASSWORD), Ok("ada".to_owned()));
+        drop(held);
+        assert_eq!(
+            attempt(&app, flooded, "ada", PASSWORD),
+            Ok("ada".to_owned())
         );
     }
 

@@ -22,6 +22,7 @@ use crate::config::database::{
     RetentionPlan, RetentionSettingError, resolve_connection, resolve_pool_settings,
     resolve_retention,
 };
+use crate::config::hashing::{PASSWORD_HASHERS, PasswordHashersError, resolve_password_hashers};
 use crate::config::origin::{PUBLIC_ORIGIN, PublicOriginSettingError, resolve_public_origin};
 use crate::config::proxy::{TrustedProxiesError, resolve_trusted_proxies};
 use crate::jobs;
@@ -72,6 +73,12 @@ pub(crate) struct ServeOptions {
         help = describe_setting("Connections this node keeps to the database", &DATABASE_POOL_SIZE)
     )]
     database_pool_size: Option<String>,
+    #[arg(
+        long,
+        value_name = "HASHERS",
+        help = describe_setting("Passwords this node hashes at once, half of them for one realm at most", &PASSWORD_HASHERS)
+    )]
+    password_hashers: Option<String>,
 }
 
 fn describe_setting<T: fmt::Display>(purpose: &str, setting: &Setting<T>) -> String {
@@ -97,6 +104,7 @@ enum ServeError {
     Settings(ServingSettingsError),
     Origin(PublicOriginSettingError),
     Proxies(TrustedProxiesError),
+    Hashers(PasswordHashersError),
     Database(DatabaseSettingsError),
     Retention(RetentionSettingError),
     RootKey(RootKeyError),
@@ -113,6 +121,7 @@ impl ServeError {
             Self::Settings(_)
             | Self::Origin(_)
             | Self::Proxies(_)
+            | Self::Hashers(_)
             | Self::Database(_)
             | Self::Retention(_)
             | Self::RootKey(_) => ExitCode::from(2),
@@ -129,6 +138,7 @@ impl fmt::Display for ServeError {
             Self::Settings(error) => error.fmt(formatter),
             Self::Origin(error) => error.fmt(formatter),
             Self::Proxies(error) => error.fmt(formatter),
+            Self::Hashers(error) => error.fmt(formatter),
             Self::Database(error) => error.fmt(formatter),
             Self::Retention(error) => error.fmt(formatter),
             Self::RootKey(error) => error.fmt(formatter),
@@ -158,6 +168,9 @@ fn serve_until_signal(options: &ServeOptions) -> Result<(), ServeError> {
         .map_err(ServeError::Database)?;
     let root_key = resolve_root_key(read_variable).map_err(ServeError::RootKey)?;
     let trusted_proxies = resolve_trusted_proxies(read_variable).map_err(ServeError::Proxies)?;
+    let password_hashers =
+        resolve_password_hashers(options.password_hashers.as_deref(), read_variable)
+            .map_err(ServeError::Hashers)?;
     // Retention needs a role of its own, never the one that serves. A node
     // purges unless told off in so many words.
     let retention = match resolve_retention(options.database_tls.as_deref(), read_variable)
@@ -171,8 +184,14 @@ fn serve_until_signal(options: &ServeOptions) -> Result<(), ServeError> {
         public_origin,
         trusted_proxies,
     };
-    let wired = wire_product(settings_of_the_product, &database, pool, &root_key)
-        .map_err(ServeError::Wiring)?;
+    let wired = wire_product(
+        settings_of_the_product,
+        &database,
+        pool,
+        &root_key,
+        password_hashers,
+    )
+    .map_err(ServeError::Wiring)?;
 
     // Both are bound before anything is announced: an address already taken
     // fails here, not after the journal says the process listens.

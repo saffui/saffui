@@ -17,6 +17,7 @@ use pgcore::pool::{BuildPoolError, PoolSettings, build_pool};
 use pgcore::probe::describe_driver_error;
 use pgcore::role::{PrivilegedRole, read_role_facts, refuse_privileged_role};
 use saffui_core::app::App;
+use saffui_core::login::fairness::HashingShares;
 use saffui_core::ports::clock::Clock;
 use saffui_core::ports::storage::StorageUnavailable;
 use saffui_core::secret::Secret;
@@ -49,10 +50,6 @@ pub(crate) enum WiringError {
     Hasher,
 }
 
-/// How many passwords are hashed at once. Each takes the memory of one
-/// Argon2id run: the bound is what keeps a burst of sign-ins from taking the node.
-const CONCURRENT_PASSWORD_HASHES: usize = 4;
-
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum StartupRefusal {
     #[error("the database cannot serve: {0}")]
@@ -76,12 +73,13 @@ pub(crate) fn wire_product(
     database: &ConnectionPlan,
     pool: PoolSettings,
     root_key: &Secret,
+    password_hashers: usize,
 ) -> Result<Wired, WiringError> {
     // Before anything draws: a library that fails its own vector draws nothing.
     let provider = open_provider().map_err(|_| WiringError::Library)?;
     let sealer =
         EnvelopeSealer::new(Arc::clone(&provider), root_key).map_err(|_| WiringError::RootKey)?;
-    let hasher = BoundedPasswordHasher::new(Arc::clone(&provider), CONCURRENT_PASSWORD_HASHES)
+    let hasher = BoundedPasswordHasher::new(Arc::clone(&provider), password_hashers)
         .map_err(|_| WiringError::Hasher)?;
     let pool = build_pool(database, pool)?;
     let storage = PgStorage::new(pool.clone(), SchemaWindow::of_exactly(EMBEDDED));
@@ -94,6 +92,7 @@ pub(crate) fn wire_product(
             digester: Arc::new(ProviderDigester::new(Arc::clone(&provider))),
             sealer: Arc::new(sealer),
             hasher: Arc::new(hasher),
+            hashing_shares: Arc::new(HashingShares::new(password_hashers)),
             decoy_hash: Arc::new(OnceLock::new()),
             signer: Arc::new(JoseSigner::new(provider)),
         },

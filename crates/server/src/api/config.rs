@@ -6,6 +6,7 @@
 use crate::api::rest::endpoints::health::{self, DrainFlag};
 use crate::api::rest::endpoints::{admin, oidc};
 use crate::error::{refuse_unreadable_json, refuse_unreadable_query};
+use crate::middleware::security_headers::protect_answers;
 use actix_web::web;
 use saffui_core::app::App as Product;
 
@@ -29,16 +30,23 @@ pub fn register_data_plane(
                     .error_handler(refuse_unreadable_json),
             )
             .app_data(web::QueryConfig::default().error_handler(refuse_unreadable_query))
-            .service(oidc::discovery::serve_provider_metadata)
-            .service(oidc::certs::serve_key_set)
-            .service(oidc::token::grant)
-            .service(admin::realm::read_realm)
-            .service(admin::client::list_clients)
-            .service(admin::client::create_client)
-            .service(admin::client::read_client)
-            .service(admin::user::list_users)
-            .service(admin::user::create_user)
-            .service(admin::audit::verify_audit_chain);
+            .service(
+                // An empty prefix: the scope is there for what it wraps, not
+                // for a path. Its headers go on every answer, a refusal and
+                // an unknown path included.
+                web::scope("")
+                    .wrap(protect_answers(&product))
+                    .service(oidc::discovery::serve_provider_metadata)
+                    .service(oidc::certs::serve_key_set)
+                    .service(oidc::token::grant)
+                    .service(admin::realm::read_realm)
+                    .service(admin::client::list_clients)
+                    .service(admin::client::create_client)
+                    .service(admin::client::read_client)
+                    .service(admin::user::list_users)
+                    .service(admin::user::create_user)
+                    .service(admin::audit::verify_audit_chain),
+            );
     }
 }
 

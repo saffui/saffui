@@ -77,6 +77,12 @@ pub(crate) mod authorization_codes {
     pub(crate) const AUTHENTICATED_AT: Column = Column("authenticated_at");
     /// timestamp with time zone
     pub(crate) const EXPIRES_AT: Column = Column("expires_at");
+    /// timestamp with time zone, nullable
+    pub(crate) const SPENT_AT: Column = Column("spent_at");
+    /// uuid, nullable
+    pub(crate) const FAMILY: Column = Column("family");
+    /// timestamp with time zone, nullable
+    pub(crate) const REPLAYED_AT: Column = Column("replayed_at");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -90,6 +96,9 @@ pub(crate) mod authorization_codes {
         CODE_CHALLENGE,
         AUTHENTICATED_AT,
         EXPIRES_AT,
+        SPENT_AT,
+        FAMILY,
+        REPLAYED_AT,
     ];
 }
 

@@ -2,13 +2,13 @@ use async_trait::async_trait;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::MemoryUnitOfWork;
+use super::{KeptCode, MemoryUnitOfWork};
 use crate::clients::store::ListWindow;
 use crate::directory::Person;
 use crate::directory::store::PersonStore;
 use crate::login::session::{Session, SessionState};
 use crate::login::store::{SessionStore, ThrottleStore};
-use crate::oidc::code::{AuthorizationCode, CodeStore, PendingAuthorization};
+use crate::oidc::code::{AuthorizationCode, CodeStore, PendingAuthorization, ReplayedCode};
 use crate::ports::storage::StorageError;
 
 impl MemoryUnitOfWork {
@@ -263,30 +263,77 @@ impl CodeStore for MemoryUnitOfWork {
             .authorization_codes
             .entry(self.scope.realm().as_uuid())
             .or_default()
-            .push(code.clone());
+            .push(KeptCode {
+                code: code.clone(),
+                spent_at: None,
+                family: None,
+                replayed_at: None,
+            });
         Ok(())
     }
 
-    async fn take_authorization_code(
+    async fn spend_authorization_code(
         &mut self,
         code_digest: &[u8],
         now: OffsetDateTime,
     ) -> Result<Option<AuthorizationCode>, StorageError> {
         let outcome = self.refuse_in_snapshot();
         self.record_refusal(outcome)?;
-        let Some(codes) = self
-            .working
+        let Some(kept) = self.find_code(code_digest) else {
+            return Ok(None);
+        };
+        if kept.spent_at.is_some() || kept.code.expires_at <= now {
+            return Ok(None);
+        }
+        kept.spent_at = Some(now);
+        Ok(Some(kept.code.clone()))
+    }
+
+    async fn bind_code_family(
+        &mut self,
+        code_digest: &[u8],
+        family: Uuid,
+    ) -> Result<bool, StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        let Some(kept) = self.find_code(code_digest) else {
+            return Ok(false);
+        };
+        if kept.spent_at.is_none() || kept.replayed_at.is_some() {
+            return Ok(false);
+        }
+        kept.family = Some(family);
+        Ok(true)
+    }
+
+    async fn mark_code_replayed(
+        &mut self,
+        code_digest: &[u8],
+        client_id: &str,
+        now: OffsetDateTime,
+    ) -> Result<Option<ReplayedCode>, StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        let Some(kept) = self.find_code(code_digest) else {
+            return Ok(None);
+        };
+        if kept.spent_at.is_none() || kept.code.client_id != client_id {
+            return Ok(None);
+        }
+        kept.replayed_at.get_or_insert(now);
+        Ok(Some(ReplayedCode {
+            person: kept.code.person,
+            family: kept.family,
+        }))
+    }
+}
+
+impl MemoryUnitOfWork {
+    fn find_code(&mut self, code_digest: &[u8]) -> Option<&mut KeptCode> {
+        self.working
             .authorization_codes
-            .get_mut(&self.scope.realm().as_uuid())
-        else {
-            return Ok(None);
-        };
-        let Some(position) = codes
-            .iter()
-            .position(|code| code.code_digest == code_digest && code.expires_at > now)
-        else {
-            return Ok(None);
-        };
-        Ok(Some(codes.remove(position)))
+            .get_mut(&self.scope.realm().as_uuid())?
+            .iter_mut()
+            .find(|kept| kept.code.code_digest == code_digest)
     }
 }

@@ -193,20 +193,25 @@ async fn exchange_code(
     let invalid = || OAuthFailure::from(ErrorCode::GrantInvalid);
 
     // The code is spent first, in a unit of work of its own that commits
-    // whatever follows: a code presented once is gone, even when the rest of
-    // the exchange is refused.
+    // whatever follows: a code presented once is spent, even when the rest
+    // of the exchange is refused.
     let mut work = app.storage.begin(scope).await.map_err(Failure::from)?;
     let client = identify_client(app, work.as_mut(), client_id, request.client_secret).await?;
     if !client.allows_authorization_code {
         return Err(ErrorCode::GrantNotAllowed.into());
     }
     let digest = app.digester.sha256(code.as_bytes());
+    let now = app.now();
     let spent = work
-        .take_authorization_code(&digest, app.now())
+        .spend_authorization_code(&digest, now)
         .await
         .map_err(Failure::from)?;
+    let Some(code) = spent else {
+        take_back_what_a_code_obtained(app, work.as_mut(), &digest, &client.client_id, now).await?;
+        work.commit().await.map_err(Failure::from)?;
+        return Err(invalid());
+    };
     work.commit().await.map_err(Failure::from)?;
-    let code = spent.ok_or_else(invalid)?;
 
     // Compared to what was bound to the code, not to what the client has registered.
     if code.client_id != client.client_id
@@ -238,9 +243,47 @@ async fn exchange_code(
             scopes: &code.scopes,
         },
     };
-    let (response, _family) = answer_for_person(app, work.as_mut(), granted).await?;
+    let (response, family) = answer_for_person(app, work.as_mut(), granted).await?;
+    // Presented again meanwhile, the code obtains nothing.
+    let bound = work
+        .bind_code_family(&digest, family)
+        .await
+        .map_err(Failure::from)?;
+    if !bound {
+        return Err(invalid());
+    }
     work.commit().await.map_err(Failure::from)?;
     Ok(response)
+}
+
+/// A code presented after it was spent was copied by someone: the refresh
+/// tokens its first exchange started are taken back (RFC 6749, section
+/// 4.1.2). Which of the two holders is the thief cannot be told. The access
+/// token already given lives out its few minutes.
+async fn take_back_what_a_code_obtained(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    digest: &[u8],
+    client_id: &str,
+    now: time::OffsetDateTime,
+) -> Result<(), Failure> {
+    let Some(replayed) = work.mark_code_replayed(digest, client_id, now).await? else {
+        return Ok(());
+    };
+    let Some(family) = replayed.family else {
+        return Ok(());
+    };
+    let revoked = work.revoke_refresh_family(family, now).await?;
+    if revoked > 0 {
+        let told = json!({
+            "client_id": client_id,
+            "family": family.to_string(),
+            "person_id": replayed.person.to_string(),
+            "reason": "code_replayed",
+        });
+        record_event(app, work, EventKind::TokenRevoked, told).await?;
+    }
+    Ok(())
 }
 
 pub(super) struct Granted<'a> {

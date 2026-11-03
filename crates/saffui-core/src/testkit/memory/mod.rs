@@ -59,10 +59,19 @@ pub(crate) struct State {
     pub(crate) login_failures: HashMap<(Uuid, Vec<u8>, OffsetDateTime), u32>,
     /// The requests that wait for their person, by realm.
     pub(crate) pending_authorizations: HashMap<Uuid, Vec<PendingAuthorization>>,
-    /// The codes not yet spent, by realm.
-    pub(crate) authorization_codes: HashMap<Uuid, Vec<AuthorizationCode>>,
+    /// The codes of each realm, with what became of them.
+    pub(crate) authorization_codes: HashMap<Uuid, Vec<KeptCode>>,
     /// The refresh tokens of each realm, with what became of them.
     pub(crate) refresh_tokens: HashMap<Uuid, Vec<StoredRefreshToken>>,
+}
+
+/// A code as the double keeps it: spent codes stay, so that a replay is told.
+#[derive(Clone)]
+pub(crate) struct KeptCode {
+    pub(crate) code: AuthorizationCode,
+    pub(crate) spent_at: Option<OffsetDateTime>,
+    pub(crate) family: Option<Uuid>,
+    pub(crate) replayed_at: Option<OffsetDateTime>,
 }
 
 #[derive(Default)]

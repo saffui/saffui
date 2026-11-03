@@ -688,7 +688,7 @@ pub async fn check_codes_contract(app: &App) {
     use time::Duration;
 
     use crate::login::session::{Session, SessionState};
-    use crate::oidc::code::{AuthorizationCode, PendingAuthorization};
+    use crate::oidc::code::PendingAuthorization;
     use crate::testkit::fixtures::{create_person, create_realm};
 
     let scope = create_realm(app, "contract-codes").await;
@@ -764,11 +764,28 @@ pub async fn check_codes_contract(app: &App) {
         Ok(None)
     );
 
-    // A code is spent once, and not after it expired.
+    work.commit().await.expect("a commit");
+    check_that_a_code_is_spent_once(app, scope, other, &session).await;
+}
+
+/// A code is spent once, and not after it expired. A spent code is kept, so
+/// that an exchange that comes after can be told.
+async fn check_that_a_code_is_spent_once(
+    app: &App,
+    scope: RealmScope,
+    other: RealmScope,
+    session: &crate::login::session::Session,
+) {
+    use time::Duration;
+
+    use crate::oidc::code::AuthorizationCode;
+
+    let now = app.now();
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
     let code = AuthorizationCode {
         code_digest: vec![8; 32],
         client_id: "webapp".to_owned(),
-        person: ada.id,
+        person: session.person,
         session: session.id,
         redirect_uri: "https://app.example.org/cb".to_owned(),
         scopes: vec!["openid".to_owned()],
@@ -779,17 +796,112 @@ pub async fn check_codes_contract(app: &App) {
     };
     work.insert_authorization_code(&code).await.expect("a code");
     assert_eq!(
-        work.take_authorization_code(&code.code_digest, now + Duration::minutes(2))
+        work.spend_authorization_code(&code.code_digest, now + Duration::minutes(2))
             .await,
         Ok(None)
     );
     assert_eq!(
-        work.take_authorization_code(&code.code_digest, now).await,
+        work.mark_code_replayed(&code.code_digest, "webapp", now)
+            .await,
+        Ok(None),
+        "a code not spent yet is not a replay"
+    );
+    assert_eq!(
+        work.spend_authorization_code(&code.code_digest, now).await,
         Ok(Some(code.clone()))
     );
     assert_eq!(
-        work.take_authorization_code(&code.code_digest, now).await,
+        work.spend_authorization_code(&code.code_digest, now).await,
         Ok(None)
+    );
+    work.commit().await.expect("a commit");
+    check_what_a_replayed_code_finds(app, scope, other, &code, session).await;
+}
+
+/// A spent code tells what it obtained, to its own client and in its realm
+/// only. Once marked as presented again, it binds nothing more.
+async fn check_what_a_replayed_code_finds(
+    app: &App,
+    scope: RealmScope,
+    other: RealmScope,
+    code: &crate::oidc::code::AuthorizationCode,
+    session: &crate::login::session::Session,
+) {
+    use crate::oidc::code::ReplayedCode;
+
+    let now = app.now();
+    let family = mint_id(app).expect("an identifier");
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(
+        elsewhere.bind_code_family(&code.code_digest, family).await,
+        Ok(false)
+    );
+    assert_eq!(
+        elsewhere
+            .mark_code_replayed(&code.code_digest, "webapp", now)
+            .await,
+        Ok(None)
+    );
+    drop(elsewhere);
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.bind_code_family(&code.code_digest, family).await,
+        Ok(true)
+    );
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.mark_code_replayed(&code.code_digest, "another-client", now)
+            .await,
+        Ok(None)
+    );
+    let replayed = Some(ReplayedCode {
+        person: session.person,
+        family: Some(family),
+    });
+    assert_eq!(
+        work.mark_code_replayed(&code.code_digest, "webapp", now)
+            .await,
+        Ok(replayed.clone())
+    );
+    assert_eq!(
+        work.bind_code_family(&code.code_digest, family).await,
+        Ok(false),
+        "a code presented again binds nothing more"
+    );
+    assert_eq!(
+        work.mark_code_replayed(&code.code_digest, "webapp", now)
+            .await,
+        Ok(replayed),
+        "a second replay finds the same"
+    );
+    work.commit().await.expect("a commit");
+
+    // Marked before its exchange finished, a code binds no family.
+    let early = crate::oidc::code::AuthorizationCode {
+        code_digest: vec![9; 32],
+        ..code.clone()
+    };
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.insert_authorization_code(&early)
+        .await
+        .expect("a code");
+    assert_eq!(
+        work.spend_authorization_code(&early.code_digest, now).await,
+        Ok(Some(early.clone()))
+    );
+    assert_eq!(
+        work.mark_code_replayed(&early.code_digest, "webapp", now)
+            .await,
+        Ok(Some(ReplayedCode {
+            person: session.person,
+            family: None,
+        }))
+    );
+    assert_eq!(
+        work.bind_code_family(&early.code_digest, family).await,
+        Ok(false)
     );
 }
 

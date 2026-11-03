@@ -38,6 +38,15 @@ pub struct AuthorizationCode {
     pub expires_at: OffsetDateTime,
 }
 
+/// What an exchange of a code that was already spent finds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayedCode {
+    pub person: Uuid,
+    /// The refresh tokens the first exchange started. `None` while it has
+    /// not finished: it then finds the code replayed and issues nothing.
+    pub family: Option<Uuid>,
+}
+
 #[async_trait]
 pub trait CodeStore {
     async fn insert_pending_authorization(
@@ -66,12 +75,32 @@ pub trait CodeStore {
         code: &AuthorizationCode,
     ) -> Result<(), StorageError>;
 
-    /// Spends a code: returns it and removes it, in one operation. Of two
-    /// exchanges of one code, exactly one gets it. A code that expired at
-    /// `now` is not returned.
-    async fn take_authorization_code(
+    /// Spends a code: marks it spent and returns it, in one operation. Of
+    /// two exchanges of one code, exactly one gets it. A code that is spent,
+    /// or that expired at `now`, is not returned. A spent code is kept, so
+    /// that an exchange that comes after can be told.
+    async fn spend_authorization_code(
         &mut self,
         code_digest: &[u8],
         now: OffsetDateTime,
     ) -> Result<Option<AuthorizationCode>, StorageError>;
+
+    /// Ties a spent code to the refresh tokens its exchange started. Returns
+    /// `false` when the code was presented again meanwhile: the exchange
+    /// must then issue nothing.
+    async fn bind_code_family(
+        &mut self,
+        code_digest: &[u8],
+        family: Uuid,
+    ) -> Result<bool, StorageError>;
+
+    /// Marks a spent code of `client_id` as presented again, and says what
+    /// its exchange obtained. A code that is unknown, not spent, or of
+    /// another client is left as it was and not returned.
+    async fn mark_code_replayed(
+        &mut self,
+        code_digest: &[u8],
+        client_id: &str,
+        now: OffsetDateTime,
+    ) -> Result<Option<ReplayedCode>, StorageError>;
 }

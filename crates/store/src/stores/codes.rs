@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use saffui_core::oidc::code::{AuthorizationCode, CodeStore, PendingAuthorization};
+use saffui_core::oidc::code::{AuthorizationCode, CodeStore, PendingAuthorization, ReplayedCode};
 use saffui_core::ports::storage::StorageError;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -137,18 +137,20 @@ impl CodeStore for PgUnitOfWork {
         self.execute(&insert).await.map(|_| ())
     }
 
-    async fn take_authorization_code(
+    async fn spend_authorization_code(
         &mut self,
         code_digest: &[u8],
         now: OffsetDateTime,
     ) -> Result<Option<AuthorizationCode>, StorageError> {
         let (tenant, realm) = self.scope_keys();
-        // Constant SQL: one statement finds the code and removes it. Of two
-        // exchanges of one code, the second finds no row.
+        // Constant SQL: one statement finds the code and marks it. Of two
+        // exchanges of one code, the second waits for the first, then finds
+        // it spent.
         let rows = self
             .read_raw(
-                "DELETE FROM authorization_codes
-                 WHERE tenant_id = $1 AND realm_id = $2 AND code_digest = $3 AND expires_at > $4
+                "UPDATE authorization_codes SET spent_at = $4
+                 WHERE tenant_id = $1 AND realm_id = $2 AND code_digest = $3
+                   AND spent_at IS NULL AND expires_at > $4
                  RETURNING client_id, person_id, session_id, redirect_uri, scopes, nonce,
                            code_challenge, authenticated_at, expires_at",
                 &[&tenant, &realm, &code_digest, &now],
@@ -165,6 +167,49 @@ impl CodeStore for PgUnitOfWork {
             code_challenge: row.get(6),
             authenticated_at: row.get(7),
             expires_at: row.get(8),
+        }))
+    }
+
+    async fn bind_code_family(
+        &mut self,
+        code_digest: &[u8],
+        family: Uuid,
+    ) -> Result<bool, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        // Constant SQL: the row is locked until the exchange commits. A
+        // replay marked before finds no row here; one marked after waits,
+        // then reads the family.
+        let rows = self
+            .read_raw(
+                "UPDATE authorization_codes SET family = $4
+                 WHERE tenant_id = $1 AND realm_id = $2 AND code_digest = $3
+                   AND spent_at IS NOT NULL AND replayed_at IS NULL
+                 RETURNING family",
+                &[&tenant, &realm, &code_digest, &family],
+            )
+            .await?;
+        Ok(!rows.is_empty())
+    }
+
+    async fn mark_code_replayed(
+        &mut self,
+        code_digest: &[u8],
+        client_id: &str,
+        now: OffsetDateTime,
+    ) -> Result<Option<ReplayedCode>, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        let rows = self
+            .read_raw(
+                "UPDATE authorization_codes SET replayed_at = COALESCE(replayed_at, $5)
+                 WHERE tenant_id = $1 AND realm_id = $2 AND code_digest = $3
+                   AND client_id = $4 AND spent_at IS NOT NULL
+                 RETURNING person_id, family",
+                &[&tenant, &realm, &code_digest, &client_id, &now],
+            )
+            .await?;
+        Ok(rows.first().map(|row| ReplayedCode {
+            person: row.get(0),
+            family: row.get(1),
         }))
     }
 }

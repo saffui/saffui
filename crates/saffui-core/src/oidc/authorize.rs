@@ -704,17 +704,88 @@ mod tests {
         assert!(identity["auth_time"].is_i64());
     }
 
+    fn refresh(app: &App, secret: Option<&Secret>, refresh_token: &str) -> Result<(), OAuthError> {
+        let request = TokenRequest {
+            grant_type: Some("refresh_token"),
+            client_id: Some("webapp"),
+            client_secret: secret.map(|secret| Secret::new(secret.expose().to_vec())),
+            refresh_token: Some(refresh_token),
+            ..TokenRequest::default()
+        };
+        complete(grant_token(app, "acme", request))
+            .map(|_| ())
+            .map_err(|failure| failure.error)
+    }
+
+    fn read_revocations(app: &App, storage: &MemoryStorage) -> Vec<Value> {
+        let (_, scope) =
+            complete(crate::tenancy::resolve::resolve_realm(app, "acme")).expect("the realm");
+        storage
+            .read_audit_envelopes(scope.realm())
+            .into_iter()
+            .filter(|event| event["kind"] == "token.revoked")
+            .collect()
+    }
+
     #[test]
-    fn a_code_is_exchanged_once() {
-        let (app, _storage, _clock, secret) = start(false);
+    fn a_code_presented_again_is_refused_and_takes_back_the_refresh_token_it_obtained() {
+        let (app, storage, _clock, secret) = start(false);
         let (location, _ticket) = sign_in_through_the_flow(&app);
         let code = read_query(&location, "code").expect("a code");
+        let first = exchange(&app, &code, secret.as_ref(), VERIFIER, CALLBACK).expect("tokens");
+        let refresh_token = first.refresh_token.expect("a refresh token");
 
-        assert!(exchange(&app, &code, secret.as_ref(), VERIFIER, CALLBACK).is_ok());
         assert_eq!(
             exchange(&app, &code, secret.as_ref(), VERIFIER, CALLBACK).map(|_| ()),
             Err(OAuthError::InvalidGrant)
         );
+        assert_eq!(
+            refresh(&app, secret.as_ref(), &refresh_token),
+            Err(OAuthError::InvalidGrant),
+            "what the first exchange obtained is taken back"
+        );
+        assert_eq!(
+            exchange(&app, &code, secret.as_ref(), VERIFIER, CALLBACK).map(|_| ()),
+            Err(OAuthError::InvalidGrant)
+        );
+        let revocations = read_revocations(&app, &storage);
+        assert_eq!(revocations.len(), 1, "taken back once: {revocations:?}");
+        assert_eq!(revocations[0]["payload"]["reason"], "code_replayed");
+        assert_eq!(revocations[0]["payload"]["client_id"], "webapp");
+    }
+
+    #[test]
+    fn a_spent_code_presented_by_another_client_takes_nothing_back() {
+        let (app, storage, _clock, _secret) = start(true);
+        let (_, scope) =
+            complete(crate::tenancy::resolve::resolve_realm(&app, "acme")).expect("the realm");
+        complete(create_application(
+            &app,
+            scope,
+            "other",
+            "https://other.example.org/callback",
+            true,
+        ));
+        let (location, _ticket) = sign_in_through_the_flow(&app);
+        let code = read_query(&location, "code").expect("a code");
+        let first = exchange(&app, &code, None, VERIFIER, CALLBACK).expect("tokens");
+
+        let from_other = TokenRequest {
+            grant_type: Some("authorization_code"),
+            client_id: Some("other"),
+            code: Some(&code),
+            redirect_uri: Some(CALLBACK),
+            code_verifier: Some(VERIFIER),
+            ..TokenRequest::default()
+        };
+        let refused = complete(grant_token(&app, "acme", from_other)).map(|_| ());
+        assert_eq!(
+            refused.map_err(|failure| failure.error),
+            Err(OAuthError::InvalidGrant)
+        );
+        let refresh_token = first.refresh_token.expect("a refresh token");
+        assert_eq!(refresh(&app, None, &refresh_token), Ok(()));
+        assert!(read_revocations(&app, &storage).is_empty());
     }
 
     #[test]

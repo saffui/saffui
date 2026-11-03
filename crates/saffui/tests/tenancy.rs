@@ -72,7 +72,7 @@ fn read_as(database: &TestDatabase, role: &str, sql: &str) -> Vec<String> {
 }
 
 #[test]
-fn a_bootstrapped_realm_has_its_creation_as_the_first_event_of_its_chain() {
+fn a_bootstrapped_realm_has_its_creation_and_its_first_key_first_in_its_chain() {
     let database = database::create_database(EMBEDDED);
 
     let created = bootstrap(&database, "Acme", "acme");
@@ -82,17 +82,16 @@ fn a_bootstrapped_realm_has_its_creation_as_the_first_event_of_its_chain() {
     let chain = read_as(
         &database,
         MAINTENANCE_ROLE,
-        "SELECT seq || ' ' || kind || ' ' || (convert_from(envelope, 'UTF8')::jsonb #>> '{payload,name}') \
-         FROM audit_events ORDER BY seq",
+        "SELECT seq || ' ' || kind FROM audit_events ORDER BY seq",
     );
-    assert_eq!(chain, ["1 realm.created acme"]);
+    assert_eq!(chain, ["1 realm.created", "2 key.created"]);
     let head = read_as(
         &database,
         MAINTENANCE_ROLE,
         "SELECT h.seq::text FROM audit_chain_heads h \
          JOIN audit_events e USING (tenant_id, realm_id, seq) WHERE h.hash = e.hash",
     );
-    assert_eq!(head, ["1"], "the head is the event just written");
+    assert_eq!(head, ["2"], "the head is the last event written");
 }
 
 #[test]
@@ -127,7 +126,24 @@ fn a_bootstrapped_realm_is_published_by_a_node_on_its_data_plane_only() {
     );
     assert_eq!(
         published.body,
-        r#"{"issuer":"http://localhost:8080/realms/acme"}"#
+        r#"{"issuer":"http://localhost:8080/realms/acme","jwks_uri":"http://localhost:8080/realms/acme/oauth2/jwks"}"#
+    );
+
+    // The key set holds the public half of the first key, and nothing private.
+    let keys = http::get(node.data, "/realms/acme/oauth2/jwks").expect("an answer");
+    assert_eq!(keys.status, 200, "{}", keys.body);
+    for member in [
+        r#""kty":"EC""#,
+        r#""crv":"P-256""#,
+        r#""alg":"ES256""#,
+        r#""use":"sig""#,
+    ] {
+        assert!(keys.body.contains(member), "{member} in {}", keys.body);
+    }
+    assert!(
+        !keys.body.contains(r#""d":"#),
+        "no private member: {}",
+        keys.body
     );
 
     let unknown =

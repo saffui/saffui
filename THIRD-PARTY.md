@@ -300,9 +300,13 @@ Code meant for the whole crate goes into a module of its own rather than into
     cryptographic interfaces the core declares, and adds no cryptography of its
     own. `adapters::random` binds the random port of the core to the provider,
     and `adapters::digest` its digest port: SHA-256, and the comparison in
-    constant time of `constant_time`. `adapters::open_provider` opens the
-    OpenSSL provider and refuses one that does not answer a known digest. The
-    crate now depends on `saffui-core`, for those interfaces.
+    constant time of `constant_time`. `adapters::seal` binds its sealing port
+    to `envelope`: the root key wraps one data key per realm and generation,
+    and a data key seals each value for its place. `adapters::sign` makes the
+    signing keys of a realm with the JOSE layer, each named by the RFC 7638
+    thumbprint of `thumbprint`. `adapters::open_provider` opens the OpenSSL
+    provider and refuses one that does not answer a known digest. The crate
+    now depends on `saffui-core`, for those interfaces.
 
 ## Before vendoring anything
 

@@ -5,9 +5,11 @@ pub mod app;
 pub mod audit;
 pub mod error;
 pub mod ids;
+pub mod keys;
 pub mod oidc;
 pub mod ports;
 pub mod readiness;
+pub mod secret;
 pub mod settings;
 pub mod tenancy;
 #[cfg(feature = "testkit")]

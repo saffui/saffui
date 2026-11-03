@@ -6,6 +6,8 @@ use std::sync::Arc;
 use crypto::adapters::digest::ProviderDigester;
 use crypto::adapters::open_provider;
 use crypto::adapters::random::ProviderRandom;
+use crypto::adapters::seal::EnvelopeSealer;
+use crypto::adapters::sign::JoseSigner;
 use deadpool_postgres::Pool;
 use pgcore::connect::ConnectionPlan;
 use pgcore::migrate::EMBEDDED;
@@ -16,6 +18,7 @@ use pgcore::role::{PrivilegedRole, read_role_facts, refuse_privileged_role};
 use saffui_core::app::App;
 use saffui_core::ports::clock::Clock;
 use saffui_core::ports::storage::StorageUnavailable;
+use saffui_core::secret::Secret;
 use saffui_core::settings::Settings;
 use store::PgStorage;
 use time::OffsetDateTime;
@@ -39,6 +42,8 @@ pub(crate) enum WiringError {
     Pool(#[from] BuildPoolError),
     #[error("the cryptographic library failed its self-test")]
     Library,
+    #[error("the root key cannot be used")]
+    RootKey,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -51,14 +56,18 @@ pub(crate) enum StartupRefusal {
     Role(#[from] PrivilegedRole),
 }
 
-/// Wires the product on its database. No connection is opened yet.
+/// Wires the product on its database, under the root key of the deployment.
+/// No connection is opened yet.
 pub(crate) fn wire_product(
     settings: Settings,
     database: &ConnectionPlan,
     pool: PoolSettings,
+    root_key: &Secret,
 ) -> Result<Wired, WiringError> {
     // Before anything draws: a library that fails its own vector draws nothing.
     let provider = open_provider().map_err(|_| WiringError::Library)?;
+    let sealer =
+        EnvelopeSealer::new(Arc::clone(&provider), root_key).map_err(|_| WiringError::RootKey)?;
     let pool = build_pool(database, pool)?;
     let storage = PgStorage::new(pool.clone(), SchemaWindow::of_exactly(EMBEDDED));
     Ok(Wired {
@@ -67,7 +76,9 @@ pub(crate) fn wire_product(
             storage: Arc::new(storage),
             clock: Arc::new(SystemClock),
             random: Arc::new(ProviderRandom::new(Arc::clone(&provider))),
-            digester: Arc::new(ProviderDigester::new(provider)),
+            digester: Arc::new(ProviderDigester::new(Arc::clone(&provider))),
+            sealer: Arc::new(sealer),
+            signer: Arc::new(JoseSigner::new(provider)),
         },
         pool,
     })

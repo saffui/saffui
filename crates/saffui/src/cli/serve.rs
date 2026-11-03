@@ -15,6 +15,7 @@ use server::serve::{
     BindError, DEFAULT_DRAIN_TIMEOUT_SECONDS, PlaneAddresses, ShutdownOptions, bind_planes,
 };
 
+use crate::config::crypto::{RootKeyError, resolve_root_key};
 use crate::config::database::{
     DATABASE_POOL_SIZE, DATABASE_TLS, DATABASE_URL, DatabaseSettingsError, resolve_connection,
     resolve_pool_settings,
@@ -91,6 +92,7 @@ enum ServeError {
     Settings(ServingSettingsError),
     Origin(PublicOriginSettingError),
     Database(DatabaseSettingsError),
+    RootKey(RootKeyError),
     Wiring(WiringError),
     Refused(StartupRefusal),
     Bind(BindError),
@@ -101,7 +103,9 @@ impl ServeError {
     fn exit_code(&self) -> ExitCode {
         match self {
             // A setting that cannot be used is a usage error, option or variable alike.
-            Self::Settings(_) | Self::Origin(_) | Self::Database(_) => ExitCode::from(2),
+            Self::Settings(_) | Self::Origin(_) | Self::Database(_) | Self::RootKey(_) => {
+                ExitCode::from(2)
+            }
             Self::Wiring(_) | Self::Refused(_) | Self::Bind(_) | Self::Serving(_) => {
                 ExitCode::FAILURE
             }
@@ -115,6 +119,7 @@ impl fmt::Display for ServeError {
             Self::Settings(error) => error.fmt(formatter),
             Self::Origin(error) => error.fmt(formatter),
             Self::Database(error) => error.fmt(formatter),
+            Self::RootKey(error) => error.fmt(formatter),
             Self::Wiring(error) => error.fmt(formatter),
             Self::Refused(error) => write!(formatter, "refusing to serve: {error}"),
             Self::Bind(BindError { address, source }) => {
@@ -139,9 +144,10 @@ fn serve_until_signal(options: &ServeOptions) -> Result<(), ServeError> {
         .map_err(ServeError::Database)?;
     let pool = resolve_pool_settings(options.database_pool_size.as_deref(), read_variable)
         .map_err(ServeError::Database)?;
+    let root_key = resolve_root_key(read_variable).map_err(ServeError::RootKey)?;
     telemetry::start_journal();
-    let wired =
-        wire_product(Settings { public_origin }, &database, pool).map_err(ServeError::Wiring)?;
+    let wired = wire_product(Settings { public_origin }, &database, pool, &root_key)
+        .map_err(ServeError::Wiring)?;
 
     // Both are bound before anything is announced: an address already taken
     // fails here, not after the journal says the process listens.

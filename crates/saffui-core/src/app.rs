@@ -3,7 +3,7 @@ use std::sync::Arc;
 use time::OffsetDateTime;
 
 use crate::ports::clock::Clock;
-use crate::ports::crypto::Digester;
+use crate::ports::crypto::{Digester, Sealer, Signer};
 use crate::ports::random::Random;
 use crate::ports::storage::Storage;
 use crate::settings::Settings;
@@ -16,6 +16,8 @@ pub struct App {
     pub clock: Arc<dyn Clock>,
     pub random: Arc<dyn Random>,
     pub digester: Arc<dyn Digester>,
+    pub sealer: Arc<dyn Sealer>,
+    pub signer: Arc<dyn Signer>,
 }
 
 impl App {

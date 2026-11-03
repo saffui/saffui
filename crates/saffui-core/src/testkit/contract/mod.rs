@@ -322,3 +322,80 @@ async fn check_that_an_envelope_of_another_scope_is_refused(
     );
     assert_eq!(read_events_in_chain(app, scope).await, created + 3);
 }
+
+/// Plays the key contract on the storage `app` is wired on.
+///
+/// # Panics
+///
+/// Panics at the first answer that breaks the contract.
+pub async fn check_keys_contract(app: &App) {
+    use crate::keys::SIGNING_KEY_PURPOSE;
+    use crate::keys::jwks::{open_signing_key, publish_key_set};
+    use crate::ports::crypto::{SealPlace, SignatureAlgorithm};
+    use crate::tenancy::realm::{NewRealm, provision_first_realm};
+
+    let provisioned = provision_first_realm(
+        app,
+        NewRealm {
+            tenant_name: "Keyed",
+            realm_name: "contract-keys",
+        },
+    )
+    .await
+    .expect("a realm");
+    let scope = RealmScope::bind(provisioned.tenant.id, provisioned.realm.id);
+
+    // A realm is born with its data key and one signing key.
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let data_key = work
+        .read_data_key()
+        .await
+        .expect("a read")
+        .expect("a data key");
+    assert_eq!(data_key.generation, 1);
+    let keys = work.list_signing_keys().await.expect("the keys");
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0].algorithm, SignatureAlgorithm::Es256);
+    assert_eq!(keys[0].public_jwk["kid"], keys[0].key_id.as_str());
+
+    // What is published is the public half, and the private half opens
+    // where it is stored.
+    let published = publish_key_set(app, scope).await.expect("a key set");
+    assert_eq!(published.keys, [keys[0].public_jwk.clone()]);
+    let (key, _private_key) = open_signing_key(app, work.as_mut(), SignatureAlgorithm::Es256)
+        .await
+        .expect("the signing key");
+    assert_eq!(key, keys[0]);
+
+    // The sealed key opens for its own row only.
+    let elsewhere = SealPlace {
+        tenant: scope.tenant().as_uuid(),
+        realm: scope.realm().as_uuid(),
+        purpose: SIGNING_KEY_PURPOSE,
+        row: mint_id(app).expect("an identifier"),
+    };
+    assert!(
+        app.sealer
+            .open(&data_key, &elsewhere, &key.sealed_private_key)
+            .is_err(),
+        "a sealed key moved to another row does not open"
+    );
+
+    // A generation of the data key is written once, and so is a key.
+    assert!(work.insert_data_key(&data_key).await.is_err());
+    drop(work);
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert!(work.insert_signing_key(&keys[0]).await.is_err());
+    drop(work);
+
+    // A newer generation is the one read.
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let newer = app
+        .sealer
+        .make_data_key(scope.tenant().as_uuid(), scope.realm().as_uuid(), 2)
+        .expect("a data key");
+    work.insert_data_key(&newer)
+        .await
+        .expect("a second generation");
+    assert_eq!(work.read_data_key().await, Ok(Some(newer)));
+}

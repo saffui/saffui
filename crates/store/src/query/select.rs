@@ -8,12 +8,14 @@ use super::ident::{Column, Table};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SortDirection {
     Ascending,
+    Descending,
 }
 
 impl SortDirection {
     fn as_sql(self) -> &'static str {
         match self {
             Self::Ascending => "ASC",
+            Self::Descending => "DESC",
         }
     }
 }
@@ -26,7 +28,13 @@ pub(crate) struct Select<'a> {
     columns: &'static [Column],
     criteria: Criteria<'a>,
     sort: Vec<(Column, SortDirection)>,
-    limit: Option<Value<'a>>,
+    limit: Limit<'a>,
+}
+
+enum Limit<'a> {
+    None,
+    FirstRow,
+    Bound(Value<'a>),
 }
 
 impl<'a> Select<'a> {
@@ -36,7 +44,7 @@ impl<'a> Select<'a> {
             columns,
             criteria: Criteria::new(),
             sort: Vec::new(),
-            limit: None,
+            limit: Limit::None,
         }
     }
 
@@ -52,9 +60,15 @@ impl<'a> Select<'a> {
         self
     }
 
+    /// Keeps the first row of the order alone.
+    pub(crate) fn first_row_only(mut self) -> Self {
+        self.limit = Limit::FirstRow;
+        self
+    }
+
     /// Keeps at most as many rows as the bound value says.
     pub(crate) fn limited_to(mut self, rows: Value<'a>) -> Self {
-        self.limit = Some(rows);
+        self.limit = Limit::Bound(rows);
         self
     }
 
@@ -68,13 +82,17 @@ impl<'a> Select<'a> {
             sql.push_str(if position == 0 { " ORDER BY " } else { ", " });
             let _ = write!(sql, "{} {}", column.0, direction.as_sql());
         }
-        if let Some(rows) = self.limit {
-            let _ = write!(
-                sql,
-                " LIMIT ${}",
-                self.table.keys.count() + values.len() + 1
-            );
-            values.push(rows);
+        match self.limit {
+            Limit::None => {}
+            Limit::FirstRow => sql.push_str(" LIMIT 1"),
+            Limit::Bound(rows) => {
+                let _ = write!(
+                    sql,
+                    " LIMIT ${}",
+                    self.table.keys.count() + values.len() + 1
+                );
+                values.push(rows);
+            }
         }
         Built::new(sql, self.table.keys, values)
     }
@@ -146,6 +164,22 @@ mod tests {
              AND note_id > $3 ORDER BY note_id ASC LIMIT $4"
         );
         assert_eq!(built.count_values(), 2, "the criterion, then the limit");
+    }
+
+    #[test]
+    fn the_first_row_of_a_descending_order_binds_nothing_more() {
+        let built = Select::from(NOTES, READ)
+            .sorted_by(ID, SortDirection::Descending)
+            .sorted_by(BODY, SortDirection::Ascending)
+            .first_row_only()
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT note_id, body FROM notes WHERE tenant_id = $1 AND realm_id = $2 \
+             ORDER BY note_id DESC, body ASC LIMIT 1"
+        );
+        assert_eq!(built.count_values(), 0);
     }
 
     #[test]

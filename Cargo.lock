@@ -516,6 +516,7 @@ dependencies = [
  "subtle",
  "thiserror",
  "time",
+ "uuid",
  "zeroize",
 ]
 
@@ -1336,6 +1337,8 @@ dependencies = [
  "bytes",
  "fallible-iterator",
  "postgres-protocol",
+ "serde_core",
+ "serde_json",
  "time",
  "uuid",
 ]
@@ -1535,6 +1538,7 @@ name = "saffui"
 version = "0.1.0"
 dependencies = [
  "actix-rt",
+ "base64 0.23.1",
  "clap",
  "crypto",
  "deadpool-postgres",
@@ -1562,6 +1566,7 @@ dependencies = [
  "thiserror",
  "time",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -1742,6 +1747,7 @@ dependencies = [
  "deadpool-postgres",
  "pgcore",
  "saffui-core",
+ "serde_json",
  "tokio",
  "tokio-postgres",
  "tracing",

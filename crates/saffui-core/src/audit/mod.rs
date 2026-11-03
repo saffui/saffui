@@ -15,6 +15,7 @@ use crate::ports::crypto::Digester;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventKind {
     RealmCreated,
+    SigningKeyCreated,
 }
 
 impl EventKind {
@@ -22,6 +23,7 @@ impl EventKind {
     pub fn name(self) -> &'static str {
         match self {
             Self::RealmCreated => "realm.created",
+            Self::SigningKeyCreated => "key.created",
         }
     }
 }

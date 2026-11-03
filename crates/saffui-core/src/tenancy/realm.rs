@@ -9,6 +9,7 @@ use crate::audit::EventKind;
 use crate::audit::append::record_event;
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
+use crate::keys::generate::create_first_keys;
 use crate::ports::storage::StorageError;
 
 pub struct NewRealm<'a> {
@@ -23,13 +24,16 @@ pub struct Provisioned {
 }
 
 /// Creates a tenant and its first realm, both or neither. The creation is
-/// the first event of the chain of the realm, written by the same unit of
-/// work: a realm never exists without it.
+/// the first event of the chain of the realm, and the realm is born with its
+/// keys, all written by the same unit of work: a realm never exists without
+/// them.
 ///
 /// # Errors
 ///
 /// Returns the code of the name that is refused, [`ErrorCode::RealmNameTaken`]
-/// when the realm name designates a realm already, or the storage failure.
+/// when the realm name designates a realm already,
+/// [`ErrorCode::CryptoUnavailable`] when its keys cannot be made, or the
+/// storage failure.
 pub async fn provision_first_realm(
     app: &App,
     wanted: NewRealm<'_>,
@@ -69,6 +73,7 @@ pub async fn provision_first_realm(
         })?;
     let created = json!({ "name": realm.name.as_str(), "tenant_name": tenant.name });
     record_event(app, work.as_mut(), EventKind::RealmCreated, created).await?;
+    create_first_keys(app, work.as_mut()).await?;
     work.commit().await?;
     Ok(Provisioned { tenant, realm })
 }
@@ -100,7 +105,7 @@ mod tests {
     }
 
     #[test]
-    fn creating_a_realm_is_recorded_in_its_chain_by_the_same_unit_of_work() {
+    fn creating_a_realm_and_its_keys_is_recorded_in_its_chain_by_the_same_unit_of_work() {
         let (app, storage) = MemoryStorage::wire();
 
         let provisioned = complete(provision_first_realm(&app, acme())).expect("a first realm");
@@ -110,13 +115,17 @@ mod tests {
             .iter()
             .filter_map(|event| event["kind"].as_str())
             .collect();
-        assert_eq!(kinds, ["realm.created"]);
+        assert_eq!(kinds, ["realm.created", "key.created"]);
         assert_eq!(recorded[0]["payload"]["name"], "acme");
         assert_eq!(recorded[0]["payload"]["tenant_name"], "Acme");
         assert_eq!(
             storage.count_units_of_work(),
             1,
-            "the event was written by the unit of work that created the realm"
+            "the events were written by the unit of work that created the realm"
+        );
+        assert_eq!(
+            recorded[1]["payload"]["alg"], "ES256",
+            "the first key signs in ES256"
         );
     }
 

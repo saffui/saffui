@@ -1,46 +1,22 @@
 //! The audit chain on Postgres, verified with the digest the binary links:
 //! the database hashes each link, and the verification hashes it again.
-//! This is the one crate that sees the store and the cryptography together.
 
-use std::sync::Arc;
-
-use crypto::adapters::digest::ProviderDigester;
-use crypto::adapters::open_provider;
 use pgcore::APP_ROLE;
-use pgcore::migrate::EMBEDDED;
-use pgcore::migrate::window::SchemaWindow;
-use pgcore::pool::{PoolSettings, build_pool};
-use pgcore::testkit::TestDatabase;
 use saffui_core::app::App;
 use saffui_core::audit::EventKind;
 use saffui_core::audit::append::record_event;
 use saffui_core::audit::verify::{ChainBreak, ChainVerdict, verify_chain};
-use saffui_core::settings::{PublicOrigin, Settings};
 use saffui_core::tenancy::RealmScope;
-use saffui_core::tenancy::realm::{NewRealm, provision_first_realm};
-use saffui_core::tenancy::resolve::resolve_realm;
-use saffui_core::testkit::clock::FixedClock;
 use saffui_core::testkit::contract::check_audit_contract;
-use saffui_core::testkit::random::CountingRandom;
 use serde_json::json;
-use store::PgStorage;
 use tokio_postgres::error::SqlState;
 
-/// An application on a database of its own, with the digest of the provider.
-async fn wire_on_postgres() -> (App, TestDatabase) {
-    let database = TestDatabase::create(EMBEDDED).await;
-    let pool = build_pool(&database.plan(APP_ROLE), PoolSettings::default()).expect("a pool");
-    let app = App {
-        settings: Settings {
-            public_origin: PublicOrigin::parse("https://id.example.test").expect("an origin"),
-        },
-        storage: Arc::new(PgStorage::new(pool, SchemaWindow::of_exactly(EMBEDDED))),
-        clock: Arc::new(FixedClock::default()),
-        random: Arc::new(CountingRandom::default()),
-        digester: Arc::new(ProviderDigester::new(open_provider().expect("a provider"))),
-    };
-    (app, database)
-}
+#[path = "support/product.rs"]
+mod product;
+
+use product::{connect_as, create_realm, scope_statement, wire_on_postgres};
+
+const OWNER: &str = "saffui_owner";
 
 #[tokio::test]
 async fn postgres_passes_the_audit_contract() {
@@ -49,46 +25,12 @@ async fn postgres_passes_the_audit_contract() {
     check_audit_contract(&app).await;
 }
 
-const OWNER: &str = "saffui_owner";
-
-async fn create_realm(app: &App, name: &str) -> RealmScope {
-    provision_first_realm(
-        app,
-        NewRealm {
-            tenant_name: "Acme",
-            realm_name: name,
-        },
-    )
-    .await
-    .expect("a realm");
-    resolve_realm(app, name)
-        .await
-        .expect("the realm resolves")
-        .1
-}
-
 async fn append_event(app: &App, scope: RealmScope, payload: serde_json::Value) {
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
     record_event(app, work.as_mut(), EventKind::RealmCreated, payload)
         .await
         .expect("an event");
     work.commit().await.expect("a commit");
-}
-
-fn scope_statement(scope: RealmScope) -> String {
-    format!(
-        "SELECT set_config('saffui.tenant', '{}', true), set_config('saffui.realm', '{}', true)",
-        scope.tenant().as_uuid(),
-        scope.realm().as_uuid()
-    )
-}
-
-async fn connect_as(database: &TestDatabase, role: &str) -> tokio_postgres::Client {
-    database
-        .plan(role)
-        .connect_directly()
-        .await
-        .expect("a connection")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -126,11 +68,12 @@ async fn writers_at_once_leave_one_chain_that_verifies_whole_while_they_write() 
             .all(|verdict| matches!(verdict, Ok(ChainVerdict::Intact { .. }))),
         "{verdicts:?}"
     );
-    // Then the whole chain: its creation, then every append, no gap, no fork.
+    // Then the whole chain: its creation and its first key, then every
+    // append, no gap, no fork.
     assert_eq!(
         verify_chain(&app, scope).await,
         Ok(ChainVerdict::Intact {
-            events: 1 + WRITERS * EVENTS_EACH
+            events: 2 + WRITERS * EVENTS_EACH
         })
     );
 }
@@ -148,7 +91,7 @@ async fn an_envelope_changed_behind_the_product_is_found_by_the_verification() {
             "BEGIN; {};
              UPDATE audit_events
              SET envelope = convert_to(replace(convert_from(envelope, 'UTF8'), '\"amount\":10', '\"amount\":99'), 'UTF8')
-             WHERE seq = 2;
+             WHERE seq = 3;
              COMMIT;",
             scope_statement(scope)
         ))
@@ -158,7 +101,7 @@ async fn an_envelope_changed_behind_the_product_is_found_by_the_verification() {
     assert_eq!(
         verify_chain(&app, scope).await,
         Ok(ChainVerdict::Broken {
-            at_seq: 2,
+            at_seq: 3,
             reason: ChainBreak::Altered
         })
     );
@@ -174,7 +117,7 @@ async fn an_event_removed_behind_the_product_is_found_by_the_verification() {
     connect_as(&database, OWNER)
         .await
         .batch_execute(&format!(
-            "BEGIN; {}; DELETE FROM audit_events WHERE seq = 2; COMMIT;",
+            "BEGIN; {}; DELETE FROM audit_events WHERE seq = 3; COMMIT;",
             scope_statement(scope)
         ))
         .await
@@ -183,7 +126,7 @@ async fn an_event_removed_behind_the_product_is_found_by_the_verification() {
     assert_eq!(
         verify_chain(&app, scope).await,
         Ok(ChainVerdict::Broken {
-            at_seq: 3,
+            at_seq: 4,
             reason: ChainBreak::Gap
         })
     );
@@ -251,6 +194,6 @@ async fn a_realm_with_a_history_is_not_deleted_with_it() {
     assert_eq!(refused.code(), Some(&SqlState::FOREIGN_KEY_VIOLATION));
     assert_eq!(
         verify_chain(&app, scope).await,
-        Ok(ChainVerdict::Intact { events: 1 })
+        Ok(ChainVerdict::Intact { events: 2 })
     );
 }

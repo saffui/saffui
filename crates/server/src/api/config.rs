@@ -16,7 +16,8 @@ pub fn register_data_plane(
     move |config| {
         config
             .app_data(product.clone())
-            .service(oidc::discovery::serve_provider_metadata);
+            .service(oidc::discovery::serve_provider_metadata)
+            .service(oidc::certs::serve_key_set);
     }
 }
 

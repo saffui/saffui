@@ -1296,6 +1296,32 @@ async fn check_that_a_step_is_accepted_once(
     );
 }
 
+/// The codes of a person who typed one are forgotten only while they are
+/// fewer than a bound.
+async fn check_that_code_attempts_are_forgotten_below_a_bound(
+    work: &mut dyn crate::ports::storage::UnitOfWork,
+    person: Uuid,
+    now: time::OffsetDateTime,
+) {
+    assert_eq!(work.count_code_attempt(person, now).await, Ok(2));
+    work.clear_code_attempts_below(person, 2)
+        .await
+        .expect("an answer");
+    assert_eq!(
+        work.count_code_attempt(person, now).await,
+        Ok(3),
+        "two codes are not fewer than two: kept"
+    );
+    work.clear_code_attempts_below(person, 4)
+        .await
+        .expect("an answer");
+    assert_eq!(
+        work.count_code_attempt(person, now).await,
+        Ok(1),
+        "three codes are fewer than four: forgotten"
+    );
+}
+
 /// Asks twice whether `person` holds a second factor: alone, and with a
 /// session of theirs written in `work` and read back.
 async fn ask_whether_holder(
@@ -1438,6 +1464,10 @@ pub async fn check_authenticators_contract(app: &App) {
         .await
         .expect("nothing to forget");
     assert_eq!(work.count_code_attempt(ada.id, now).await, Ok(1));
+    work.commit().await.expect("a commit");
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    check_that_code_attempts_are_forgotten_below_a_bound(work.as_mut(), ada.id, now).await;
     work.commit().await.expect("a commit");
 }
 

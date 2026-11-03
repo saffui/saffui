@@ -567,6 +567,25 @@ impl AuthenticatorStore for MemoryUnitOfWork {
         Ok(())
     }
 
+    async fn clear_code_attempts_below(
+        &mut self,
+        person: Uuid,
+        bound: u32,
+    ) -> Result<(), StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        let key = (self.scope.realm().as_uuid(), person);
+        if self
+            .working
+            .code_attempts
+            .get(&key)
+            .is_some_and(|attempts| *attempts < bound)
+        {
+            self.working.code_attempts.remove(&key);
+        }
+        Ok(())
+    }
+
     async fn holds_second_factor(&mut self, person: Uuid) -> Result<bool, StorageError> {
         Ok(self.holds_factor(person))
     }

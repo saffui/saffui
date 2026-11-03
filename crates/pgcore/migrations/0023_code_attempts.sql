@@ -1,6 +1,7 @@
 -- The codes a person typed at the second step since their last right one,
 -- whatever their address: past a bound, their codes are suspended until an
--- administrator lets them in again, or a key of theirs proves itself.
+-- administrator lets them in again. Short of it, a key of theirs that
+-- proves itself forgets them too.
 
 CREATE TABLE code_attempts (
     tenant_id uuid NOT NULL,

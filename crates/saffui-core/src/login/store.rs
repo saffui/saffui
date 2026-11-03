@@ -112,9 +112,17 @@ pub trait AuthenticatorStore {
         now: OffsetDateTime,
     ) -> Result<u32, StorageError>;
 
-    /// Forgets the codes a person typed: they proved a second factor, set up
-    /// a new application, or an administrator let them in.
+    /// Forgets the codes a person typed: they gave a right one, set up a new
+    /// application, or an administrator let them in.
     async fn clear_code_attempts(&mut self, person: Uuid) -> Result<(), StorageError>;
+
+    /// Forgets the codes a person typed only while they are fewer than
+    /// `bound`, in one operation that reads the count it compares.
+    async fn clear_code_attempts_below(
+        &mut self,
+        person: Uuid,
+        bound: u32,
+    ) -> Result<(), StorageError>;
 
     /// Whether a person holds a second factor: a confirmed authenticator
     /// application, or a security key. One operation.

@@ -12,6 +12,7 @@ use crate::audit::append::record_event;
 use crate::directory::Person;
 use crate::error::{ErrorCode, Failure};
 use crate::login::device::{DeviceMark, find_known_browser, prove_device_marks};
+use crate::login::steps::totp::MAX_CODE_FAILURES;
 use crate::login::throttle::Brake;
 use crate::ports::crypto::{KeyCeremony, KeyRefusal};
 use crate::ports::storage::UnitOfWork;
@@ -69,7 +70,8 @@ pub(crate) async fn start_key_proof(
 /// counter went back and a locked name are one refusal; a counter that went
 /// back is also written in the chain; a refused answer is counted under the name, with the
 /// guesses of the other steps, and not against its address: nothing is
-/// hashed here. A proven key forgets the codes the person got wrong.
+/// hashed here. A proven key forgets the codes the person got wrong short of
+/// a suspension, never a suspension: that one an administrator resumes.
 ///
 /// # Errors
 ///
@@ -125,7 +127,8 @@ pub(crate) async fn verify_key(
         Err(refusal) => Some(refusal),
     };
     if refusal.is_none() {
-        work.clear_code_attempts(person.id).await?;
+        work.clear_code_attempts_below(person.id, MAX_CODE_FAILURES)
+            .await?;
     } else {
         brake.record_failure(work.as_mut(), now).await?;
     }

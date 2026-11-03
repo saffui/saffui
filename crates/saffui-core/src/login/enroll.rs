@@ -268,10 +268,12 @@ pub async fn count_security_keys(
 /// proves again who they are with their password: a session someone else
 /// got hold of enrolls nothing, and a browser the realm keeps for them is
 /// counted apart, as at sign-in. Returns what the page hands to the browser.
+/// Where keys are not served, it is refused before the password is hashed.
 ///
 /// # Errors
 ///
 /// Returns [`ErrorCode::SessionRequired`] without a live session,
+/// [`ErrorCode::SecurityKeysNotServed`] where keys are not served,
 /// [`ErrorCode::SignInFailed`] for a wrong password,
 /// [`ErrorCode::SecondFactorProofRequired`] from a session the password
 /// alone opened for a person who holds a factor, [`ErrorCode::KeyRejected`]
@@ -285,6 +287,9 @@ pub async fn begin_key_enrollment(
     known_browsers: &[DeviceMark],
 ) -> Result<serde_json::Value, Failure> {
     let found = require_signed_in_person(app, realm, ticket).await?;
+    if !app.security_keys.are_served() {
+        return Err(Failure::new(ErrorCode::SecurityKeysNotServed));
+    }
     let (scope, session, person) = (found.scope, found.session, found.person);
     // No transaction is held while the password is hashed.
     drop(found.work);
@@ -1123,6 +1128,27 @@ mod tests {
             "an application was set up since the key was asked"
         );
         assert_eq!(count_keys(&scenario, &ticket), 0);
+    }
+
+    #[test]
+    fn where_keys_are_not_served_adding_one_is_refused_before_the_password_is_judged() {
+        use std::sync::Arc;
+
+        use crate::testkit::crypto::UnservedKeys;
+
+        let mut scenario = Scenario::start();
+        let ticket = scenario.sign_in("openid").ticket;
+        scenario.app.security_keys = Arc::new(UnservedKeys);
+
+        assert_eq!(
+            begin_key(&scenario, &ticket, "not the password"),
+            Err(ErrorCode::SecurityKeysNotServed),
+            "a wrong password is not judged: nothing was hashed"
+        );
+        assert_eq!(
+            begin_key(&scenario, &ticket, PASSWORD),
+            Err(ErrorCode::SecurityKeysNotServed)
+        );
     }
 
     /// Counts one more code typed by `person`, and answers how many that makes.

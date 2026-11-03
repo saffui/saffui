@@ -7,7 +7,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use saffui_core::authz::capability::Capability;
 use saffui_core::testkit::clock::FixedClock;
-use saffui_core::testkit::crypto::{PredictableCodes, TrustingKeys};
+use saffui_core::testkit::crypto::{PredictableCodes, TrustingKeys, UnservedKeys};
 use saffui_core::testkit::fixtures::{
     CodeFlow, create_administrator, create_application, create_person, create_realm, run_code_flow,
 };
@@ -688,6 +688,36 @@ async fn a_person_adds_a_security_key_with_their_password_and_the_answer_of_the_
         "{}",
         page.body
     );
+}
+
+#[actix_web::test]
+async fn where_keys_are_not_served_the_page_offers_no_form_and_says_why() {
+    let mut started = start().await;
+    let cookie = [(COOKIE.as_str(), started.session.as_str())];
+    let served = get(&started.product, SECURITY_KEY, &cookie).await;
+    assert!(served.body.contains("<form"), "{}", served.body);
+
+    started.product.security_keys = Arc::new(UnservedKeys);
+
+    let page = get(&started.product, SECURITY_KEY, &cookie).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.body.contains("No security key is set up"));
+    assert!(
+        page.body.contains("This service cannot use security keys"),
+        "{}",
+        page.body
+    );
+    assert!(!page.body.contains("<form"), "{}", page.body);
+    let posted = post(
+        &started.product,
+        SECURITY_KEY,
+        &cookie,
+        "password=correct+horse+battery",
+    )
+    .await;
+    assert_eq!(posted.status, StatusCode::FORBIDDEN, "{}", posted.body);
+    assert!(posted.body.contains("cannot use security keys"));
+    assert!(!posted.body.contains("data-options"));
 }
 
 #[actix_web::test]

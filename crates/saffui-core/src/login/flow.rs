@@ -768,7 +768,36 @@ mod tests {
     }
 
     #[test]
-    fn a_proven_key_forgets_the_codes_the_person_got_wrong() {
+    fn a_proven_key_forgets_the_codes_the_person_got_wrong_short_of_a_suspension() {
+        use crate::login::steps::totp::MAX_CODE_FAILURES;
+
+        let (scenario, secret) = start_enrolled();
+        let proved = scenario.sign_in_with_code(&secret);
+        scenario.enroll_security_key(&proved, "k1");
+        let person = owe_a_code_beside_a_key(&scenario);
+        guess_codes(&scenario, person, MAX_CODE_FAILURES - 1);
+        // Past the window that locks the name for whoever comes from no address.
+        scenario.clock.advance(Duration::from_mins(10));
+
+        scenario.sign_in_with_key("k1", 1);
+
+        // Counted once more in a unit of work that is not committed.
+        let counted = complete(async {
+            let mut work = scenario
+                .app
+                .storage
+                .begin(scenario.scope)
+                .await
+                .expect("a unit of work");
+            work.count_code_attempt(person, scenario.app.now())
+                .await
+                .expect("a count")
+        });
+        assert_eq!(counted, 1, "the key forgot the nine wrong codes");
+    }
+
+    #[test]
+    fn a_proven_key_lets_the_person_in_and_leaves_their_suspended_codes_suspended() {
         use crate::login::steps::totp::MAX_CODE_FAILURES;
 
         let (scenario, secret) = start_enrolled();
@@ -776,7 +805,6 @@ mod tests {
         scenario.enroll_security_key(&proved, "k1");
         let person = owe_a_code_beside_a_key(&scenario);
         guess_codes(&scenario, person, MAX_CODE_FAILURES);
-        // Past the window that locks the name for whoever comes from no address.
         scenario.clock.advance(Duration::from_mins(10));
 
         scenario.sign_in_with_key("k1", 1);
@@ -784,8 +812,8 @@ mod tests {
         let person = owe_a_code_beside_a_key(&scenario);
         assert_eq!(
             give_code(&scenario, person, &scenario.read_code_now(&secret), &[]).map(|_| ()),
-            Ok(()),
-            "the codes were suspended, and the key the person proved gave them back"
+            Err(ErrorCode::CodeRejected),
+            "only an administrator resumes suspended codes"
         );
     }
 

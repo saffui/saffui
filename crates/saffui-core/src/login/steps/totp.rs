@@ -22,11 +22,11 @@ use crate::tenancy::RealmScope;
 pub(crate) const TOTP_SECRET_PURPOSE: &str = "totp-secret";
 
 /// How many codes in a row a person may get wrong, from whatever addresses:
-/// past it, their codes are suspended until an administrator resumes them or
-/// a key of theirs proves itself. Ten guesses at the three codes each one is
-/// compared to leave about three chances in a hundred thousand. The person
-/// bounds the codes here, and the name by its lock; the address bounds the
-/// hashes, and a code hashes nothing.
+/// past it, their codes are suspended until an administrator resumes them;
+/// short of it, a key of theirs that proves itself forgets them. Ten guesses
+/// at the three codes each one is compared to leave about three chances in a
+/// hundred thousand. The person bounds the codes here, and the name by its
+/// lock; the address bounds the hashes, and a code hashes nothing.
 pub(crate) const MAX_CODE_FAILURES: u32 = 10;
 
 /// Where the secret of an authenticator is sealed: under the data key of the
@@ -95,7 +95,7 @@ pub(crate) async fn accept_code(
 /// locked name are one refusal, and so are codes suspended: ten wrong in a
 /// row, counted under a person who has an application whatever their
 /// address, and the right code too is refused until an administrator
-/// resumes them or a key of the person proves itself. A locked name and
+/// resumes them: a key the person proves does not. A locked name and
 /// suspended codes are refused before the secret is opened.
 ///
 /// # Errors

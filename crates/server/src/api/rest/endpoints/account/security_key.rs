@@ -22,6 +22,7 @@ use crate::extract::form::read_posted_form;
 use crate::middleware::caller_address::read_caller_address;
 
 const HEADING: &str = "<h1>Security key</h1>";
+const KEYS_NOT_SERVED: &str = "This service cannot use security keys: none can be added here.";
 
 // No `Debug`: the form carries a password.
 #[derive(Deserialize)]
@@ -108,11 +109,15 @@ pub async fn show_security_keys(
                 1 => "1 security key is set up for this account.".to_owned(),
                 many => format!("{many} security keys are set up for this account."),
             };
-            let body = format!(
-                "{HEADING}<p>{held}</p><p>A security key you add will be asked each time \
-                 you sign in.</p>{}",
-                write_password_form(&realm, "")
-            );
+            let offer = if product.security_keys.are_served() {
+                format!(
+                    "<p>A security key you add will be asked each time you sign in.</p>{}",
+                    write_password_form(&realm, "")
+                )
+            } else {
+                format!("<p>{KEYS_NOT_SERVED}</p>")
+            };
+            let body = format!("{HEADING}<p>{held}</p>{offer}");
             render_page(&product, StatusCode::OK, &body)
         }
         Ok(_) => refuse_request(&product, &Failure::new(ErrorCode::RealmNotFound)),
@@ -187,6 +192,13 @@ pub async fn begin_enrollment(
             &realm,
             StatusCode::CONFLICT,
             "This account holds as many security keys as it may.",
+            StartAgain::NotOffered,
+        ),
+        Err(failure) if failure.code == ErrorCode::SecurityKeysNotServed => render_note(
+            &product,
+            &realm,
+            StatusCode::FORBIDDEN,
+            KEYS_NOT_SERVED,
             StartAgain::NotOffered,
         ),
         Err(failure) => refuse_request(&product, &failure),

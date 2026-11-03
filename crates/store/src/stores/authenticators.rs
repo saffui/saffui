@@ -132,6 +132,24 @@ impl AuthenticatorStore for PgUnitOfWork {
         .map(|_| ())
     }
 
+    async fn clear_code_attempts_below(
+        &mut self,
+        person: Uuid,
+        bound: u32,
+    ) -> Result<(), StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        let bound = i32::try_from(bound).map_err(|_| StorageError::Failed)?;
+        // One statement compares and forgets: beside an attempt being
+        // counted, it waits for the row and compares the count left there.
+        self.execute_raw(
+            "DELETE FROM code_attempts
+             WHERE tenant_id = $1 AND realm_id = $2 AND person_id = $3 AND attempts < $4",
+            &[&tenant, &realm, &person, &bound],
+        )
+        .await
+        .map(|_| ())
+    }
+
     async fn holds_second_factor(&mut self, person: Uuid) -> Result<bool, StorageError> {
         let (tenant, realm) = self.scope_keys();
         let rows = self

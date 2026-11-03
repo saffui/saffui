@@ -3,4 +3,5 @@
 mod audit;
 mod clients;
 mod keys;
+mod persons;
 mod realms;

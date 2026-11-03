@@ -95,3 +95,26 @@ pub async fn create_administrator(
         .expect("a token")
         .access_token
 }
+
+/// Creates a person with a password, and an address made from the name.
+///
+/// # Panics
+///
+/// Panics when the person cannot be created.
+pub async fn create_person(
+    app: &App,
+    scope: RealmScope,
+    username: &str,
+    password: &str,
+) -> crate::directory::Person {
+    use crate::directory::create::{NewPerson, create_person as create};
+
+    let wanted = NewPerson {
+        username,
+        email: Some(&format!("{username}@example.org")),
+        display_name: Some("A person under test"),
+        password: Some(Secret::new(password.as_bytes().to_vec())),
+        created_by: None,
+    };
+    create(app, scope, wanted).await.expect("a person")
+}

@@ -5,6 +5,7 @@ pub mod app;
 pub mod audit;
 pub mod authz;
 pub mod clients;
+pub mod directory;
 pub mod error;
 pub mod ids;
 pub mod instant;

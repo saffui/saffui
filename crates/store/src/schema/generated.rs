@@ -90,6 +90,58 @@ pub(crate) mod clients {
     ];
 }
 
+pub(crate) mod password_credentials {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "password_credentials",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// uuid
+    pub(crate) const PERSON_ID: Column = Column("person_id");
+    /// text
+    pub(crate) const PHC: Column = Column("phc");
+    /// timestamp with time zone
+    pub(crate) const CHANGED_AT: Column = Column("changed_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[PERSON_ID, PHC, CHANGED_AT];
+}
+
+pub(crate) mod persons {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "persons",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// uuid
+    pub(crate) const PERSON_ID: Column = Column("person_id");
+    /// text
+    pub(crate) const USERNAME: Column = Column("username");
+    /// text, nullable
+    pub(crate) const EMAIL: Column = Column("email");
+    /// boolean
+    pub(crate) const EMAIL_VERIFIED: Column = Column("email_verified");
+    /// text, nullable
+    pub(crate) const DISPLAY_NAME: Column = Column("display_name");
+    /// boolean
+    pub(crate) const ENABLED: Column = Column("enabled");
+    /// timestamp with time zone
+    pub(crate) const CREATED_AT: Column = Column("created_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[
+        PERSON_ID,
+        USERNAME,
+        EMAIL,
+        EMAIL_VERIFIED,
+        DISPLAY_NAME,
+        ENABLED,
+        CREATED_AT,
+    ];
+}
+
 pub(crate) mod realm_data_keys {
     use super::{Column, ScopeKeys, Table};
 
@@ -176,6 +228,8 @@ pub(crate) const TABLES: &[(Table, &[Column])] = &[
     (audit_chain_heads::TABLE, audit_chain_heads::ALL),
     (audit_events::TABLE, audit_events::ALL),
     (clients::TABLE, clients::ALL),
+    (password_credentials::TABLE, password_credentials::ALL),
+    (persons::TABLE, persons::ALL),
     (realm_data_keys::TABLE, realm_data_keys::ALL),
     (realms::TABLE, realms::ALL),
     (signing_keys::TABLE, signing_keys::ALL),

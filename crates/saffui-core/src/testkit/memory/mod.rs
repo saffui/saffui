@@ -8,6 +8,7 @@
 mod audit;
 mod clients;
 mod keys;
+mod login;
 mod tenancy;
 
 use std::collections::HashMap;
@@ -24,6 +25,7 @@ use super::random::CountingRandom;
 use crate::app::App;
 use crate::audit::store::ChainedEvent;
 use crate::clients::Client;
+use crate::directory::Person;
 use crate::keys::SigningKey;
 use crate::ports::crypto::WrappedDataKey;
 use crate::ports::storage::{RealmLocation, Storage, StorageError, StorageUnavailable, UnitOfWork};
@@ -42,6 +44,10 @@ pub(crate) struct State {
     pub(crate) signing_keys: HashMap<Uuid, Vec<SigningKey>>,
     /// The clients of each realm, by realm.
     pub(crate) clients: HashMap<Uuid, Vec<Client>>,
+    /// The people of each realm, by realm.
+    pub(crate) persons: HashMap<Uuid, Vec<Person>>,
+    /// The password of each person, by person.
+    pub(crate) passwords: HashMap<Uuid, String>,
 }
 
 #[derive(Default)]
@@ -150,6 +156,18 @@ impl MemoryStorage {
     #[must_use]
     pub fn count_realms(&self) -> usize {
         lock(&self.state).realms.len()
+    }
+
+    /// Disables the person of that username in every realm that has one.
+    pub fn disable_person(&self, username: &str) {
+        for persons in lock(&self.state).persons.values_mut() {
+            for person in persons
+                .iter_mut()
+                .filter(|person| person.username == username)
+            {
+                person.enabled = false;
+            }
+        }
     }
 
     /// Disables the realm of that name, as an operator would.
@@ -269,7 +287,8 @@ impl UnitOfWork for MemoryUnitOfWork {
 mod tests {
     use super::MemoryStorage;
     use crate::testkit::contract::{
-        check_audit_contract, check_clients_contract, check_keys_contract, check_tenancy_contract,
+        check_audit_contract, check_clients_contract, check_keys_contract, check_persons_contract,
+        check_tenancy_contract,
     };
     use crate::testkit::drive::complete;
 
@@ -295,5 +314,11 @@ mod tests {
     fn the_double_passes_the_clients_contract() {
         let (app, _storage) = MemoryStorage::wire();
         complete(check_clients_contract(&app));
+    }
+
+    #[test]
+    fn the_double_passes_the_persons_contract() {
+        let (app, _storage) = MemoryStorage::wire();
+        complete(check_persons_contract(&app));
     }
 }

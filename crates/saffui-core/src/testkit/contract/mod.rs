@@ -494,3 +494,93 @@ pub async fn check_clients_contract(app: &App) {
     );
     assert_eq!(work.count_clients().await, Ok(3));
 }
+
+/// What every storage must answer of the people of a realm.
+///
+/// # Panics
+///
+/// Panics at the first answer the contract does not allow.
+pub async fn check_persons_contract(app: &App) {
+    use crate::clients::store::ListWindow;
+    use crate::directory::Person;
+    use crate::testkit::fixtures::create_realm;
+
+    let scope = create_realm(app, "contract-persons").await;
+    let other = create_realm(app, "contract-persons-other").await;
+    let now = app.now();
+    let describe = |username: &str, email: Option<&str>| Person {
+        id: mint_id(app).expect("an identifier"),
+        username: username.to_owned(),
+        email: email.map(str::to_owned),
+        email_verified: false,
+        display_name: Some("Ada".to_owned()),
+        enabled: true,
+        created_at: now,
+    };
+
+    // People: read back equal, by identifier and by name, in their realm only.
+    let ada = describe("ada", Some("ada@example.org"));
+    let bob = describe("bob", None);
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.insert_person(&ada).await.expect("a person");
+    work.insert_person(&bob)
+        .await
+        .expect("a person without an address");
+    work.insert_person(&describe("carol", None))
+        .await
+        .expect("a second person without an address");
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(work.read_person(ada.id).await, Ok(Some(ada.clone())));
+    assert_eq!(
+        work.read_person_by_username("bob").await,
+        Ok(Some(bob.clone()))
+    );
+    assert_eq!(work.read_person_by_username("nobody").await, Ok(None));
+    assert_eq!(work.count_persons().await, Ok(3));
+    let listed = work
+        .list_persons(ListWindow { first: 1, max: 5 })
+        .await
+        .expect("a page");
+    let names: Vec<&str> = listed
+        .iter()
+        .map(|person| person.username.as_str())
+        .collect();
+    assert_eq!(names, ["bob", "carol"]);
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(elsewhere.read_person(ada.id).await, Ok(None));
+    elsewhere
+        .insert_person(&describe("ada", Some("ada@example.org")))
+        .await
+        .expect("the same name and address, elsewhere");
+    elsewhere.commit().await.expect("a commit");
+
+    // A name and an address are each taken once per realm.
+    assert_eq!(
+        work.insert_person(&describe("ada", None)).await,
+        Err(StorageError::Taken("username"))
+    );
+    drop(work);
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.insert_person(&describe("dave", Some("ada@example.org")))
+            .await,
+        Err(StorageError::Taken("email"))
+    );
+    drop(work);
+
+    // A password is kept for its person, and read in its realm only.
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(work.read_password(ada.id).await, Ok(None));
+    work.insert_password(ada.id, "$first", now)
+        .await
+        .expect("a password");
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.read_password(ada.id).await,
+        Ok(Some("$first".to_owned()))
+    );
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(elsewhere.read_password(ada.id).await, Ok(None));
+}

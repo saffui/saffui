@@ -2,6 +2,7 @@ use async_trait::async_trait;
 
 use crate::audit::store::AuditStore;
 use crate::clients::store::ClientStore;
+use crate::directory::store::PersonStore;
 use crate::keys::store::KeyStore;
 use crate::tenancy::store::RealmStore;
 use crate::tenancy::{RealmId, RealmName, RealmScope, TenantId};
@@ -35,7 +36,9 @@ pub struct RealmLocation {
 /// One transaction, bound to its scope, that reaches nothing outside it.
 /// Abandoned, it leaves nothing: only `commit` keeps what was written.
 #[async_trait]
-pub trait UnitOfWork: RealmStore + AuditStore + KeyStore + ClientStore + Send {
+pub trait UnitOfWork:
+    RealmStore + AuditStore + KeyStore + ClientStore + PersonStore + Send
+{
     fn scope(&self) -> RealmScope;
 
     /// Keeps everything written since the unit of work was opened.

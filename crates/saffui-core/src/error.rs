@@ -36,6 +36,12 @@ pub enum ErrorCode {
     RealmNotFound = 100,
     RealmNameInvalid = 101,
     RealmNameTaken = 102,
+    UsernameInvalid = 200,
+    UsernameTaken = 201,
+    EmailInvalid = 202,
+    EmailTaken = 203,
+    DisplayNameInvalid = 204,
+    PasswordUnacceptable = 205,
     ClientAuthenticationFailed = 300,
     ClientIdentifierInvalid = 301,
     ClientIdentifierTaken = 302,
@@ -48,6 +54,7 @@ pub enum ErrorCode {
     CapabilityUnknown = 309,
     AdminAuthenticationFailed = 400,
     CapabilityMissing = 401,
+    HashingBusy = 403,
     TokenInvalid = 500,
     TenantNameInvalid = 600,
 }
@@ -64,10 +71,12 @@ impl ErrorCode {
             Self::Internal | Self::RandomUnavailable | Self::CryptoUnavailable => {
                 ErrorKind::Internal
             }
-            Self::StorageUnavailable => ErrorKind::Unavailable,
-            Self::Conflict | Self::RealmNameTaken | Self::ClientIdentifierTaken => {
-                ErrorKind::Conflict
-            }
+            Self::StorageUnavailable | Self::HashingBusy => ErrorKind::Unavailable,
+            Self::Conflict
+            | Self::RealmNameTaken
+            | Self::ClientIdentifierTaken
+            | Self::UsernameTaken
+            | Self::EmailTaken => ErrorKind::Conflict,
             Self::RealmNotFound | Self::ClientNotFound => ErrorKind::NotFound,
             Self::ClientAuthenticationFailed
             | Self::TokenInvalid
@@ -82,7 +91,11 @@ impl ErrorCode {
             | Self::ScopeNotAllowed
             | Self::GrantTypeUnsupported
             | Self::ListOffsetTooLarge
-            | Self::CapabilityUnknown => ErrorKind::Invalid,
+            | Self::CapabilityUnknown
+            | Self::UsernameInvalid
+            | Self::EmailInvalid
+            | Self::DisplayNameInvalid
+            | Self::PasswordUnacceptable => ErrorKind::Invalid,
         }
     }
 
@@ -100,6 +113,12 @@ impl ErrorCode {
             Self::RealmNotFound => "realm.not_found",
             Self::RealmNameInvalid => "realm.name_invalid",
             Self::RealmNameTaken => "realm.name_taken",
+            Self::UsernameInvalid => "user.username_invalid",
+            Self::UsernameTaken => "user.username_taken",
+            Self::EmailInvalid => "user.email_invalid",
+            Self::EmailTaken => "user.email_taken",
+            Self::DisplayNameInvalid => "user.display_name_invalid",
+            Self::PasswordUnacceptable => "user.password_unacceptable",
             Self::ClientAuthenticationFailed => "client.authentication_failed",
             Self::ClientIdentifierInvalid => "client.identifier_invalid",
             Self::ClientIdentifierTaken => "client.identifier_taken",
@@ -113,6 +132,7 @@ impl ErrorCode {
             Self::TokenInvalid => "token.invalid",
             Self::AdminAuthenticationFailed => "auth.admin_authentication_failed",
             Self::CapabilityMissing => "auth.capability_missing",
+            Self::HashingBusy => "auth.hashing_busy",
             Self::TenantNameInvalid => "tenant.name_invalid",
         }
     }
@@ -130,6 +150,17 @@ impl ErrorCode {
                 "A realm name is 1 to 63 lowercase letters, digits or hyphens, and neither starts nor ends with a hyphen."
             }
             Self::RealmNameTaken => "This realm name is already taken.",
+            Self::UsernameInvalid => {
+                "A username is 1 to 64 letters, digits, dots, hyphens or underscores, and starts and ends with a letter or a digit."
+            }
+            Self::UsernameTaken => "This username is already taken.",
+            Self::EmailInvalid => "This is not an email address.",
+            Self::EmailTaken => "This email address is already taken.",
+            Self::DisplayNameInvalid => {
+                "A display name is at most 120 characters, none of them a control or a format character."
+            }
+            Self::PasswordUnacceptable => "A password is 8 to 1024 bytes long.",
+            Self::HashingBusy => "The service is busy. Try again in a moment.",
             Self::RequestInvalid => "The request is missing a parameter or carries one it cannot.",
             Self::ClientAuthenticationFailed => "Client authentication failed.",
             Self::ScopeNotAllowed => "The client is not allowed a scope it asked for.",
@@ -146,7 +177,7 @@ impl ErrorCode {
             }
             Self::ClientIdentifierTaken => "This client identifier is already taken.",
             Self::ClientNameInvalid => {
-                "A client name is 1 to 120 characters, none of them a control character."
+                "A client name is 1 to 120 characters, none of them a control or a format character."
             }
             Self::ScopeInvalid => {
                 "A scope is 1 to 64 printable characters, without a space or a quote."
@@ -216,7 +247,7 @@ mod tests {
 
     use super::ErrorCode;
 
-    const ALL: [ErrorCode; 24] = [
+    const ALL: [ErrorCode; 31] = [
         ErrorCode::Internal,
         ErrorCode::StorageUnavailable,
         ErrorCode::Conflict,
@@ -227,6 +258,12 @@ mod tests {
         ErrorCode::RealmNotFound,
         ErrorCode::RealmNameInvalid,
         ErrorCode::RealmNameTaken,
+        ErrorCode::UsernameInvalid,
+        ErrorCode::UsernameTaken,
+        ErrorCode::EmailInvalid,
+        ErrorCode::EmailTaken,
+        ErrorCode::DisplayNameInvalid,
+        ErrorCode::PasswordUnacceptable,
         ErrorCode::ClientAuthenticationFailed,
         ErrorCode::ClientIdentifierInvalid,
         ErrorCode::ClientIdentifierTaken,
@@ -240,6 +277,7 @@ mod tests {
         ErrorCode::TokenInvalid,
         ErrorCode::AdminAuthenticationFailed,
         ErrorCode::CapabilityMissing,
+        ErrorCode::HashingBusy,
         ErrorCode::TenantNameInvalid,
     ];
 
@@ -258,6 +296,7 @@ mod tests {
             let domain = match code.number() {
                 0..100 => "platform.",
                 100..200 => "realm.",
+                200..300 => "user.",
                 300..400 => "client.",
                 400..500 => "auth.",
                 500..600 => "token.",

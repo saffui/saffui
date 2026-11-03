@@ -2,7 +2,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::json;
 
-use super::{Client, check_client_identifier, check_scope_token};
+use super::{Client, check_client_identifier, check_scope_token, is_unshowable};
 use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
@@ -37,7 +37,7 @@ pub async fn register_service_client(
         check_scope_token(scope)?;
     }
     let name = wanted.name.trim();
-    if !(1..=120).contains(&name.chars().count()) || name.chars().any(char::is_control) {
+    if !(1..=120).contains(&name.chars().count()) || name.chars().any(is_unshowable) {
         return Err(Failure::new(ErrorCode::ClientNameInvalid));
     }
 

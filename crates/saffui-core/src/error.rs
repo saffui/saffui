@@ -53,10 +53,13 @@ pub enum ErrorCode {
     ClientNotFound = 308,
     CapabilityUnknown = 309,
     RedirectUriInvalid = 310,
+    RedirectUriMismatch = 311,
     AdminAuthenticationFailed = 400,
     CapabilityMissing = 401,
     SignInFailed = 402,
     HashingBusy = 403,
+    AuthorizationRequestExpired = 404,
+    SignInRequestsTooFrequent = 405,
     TokenInvalid = 500,
     TenantNameInvalid = 600,
 }
@@ -73,7 +76,9 @@ impl ErrorCode {
             Self::Internal | Self::RandomUnavailable | Self::CryptoUnavailable => {
                 ErrorKind::Internal
             }
-            Self::StorageUnavailable | Self::HashingBusy => ErrorKind::Unavailable,
+            Self::StorageUnavailable | Self::HashingBusy | Self::SignInRequestsTooFrequent => {
+                ErrorKind::Unavailable
+            }
             Self::Conflict
             | Self::RealmNameTaken
             | Self::ClientIdentifierTaken
@@ -99,7 +104,9 @@ impl ErrorCode {
             | Self::EmailInvalid
             | Self::DisplayNameInvalid
             | Self::PasswordUnacceptable
-            | Self::RedirectUriInvalid => ErrorKind::Invalid,
+            | Self::RedirectUriInvalid
+            | Self::RedirectUriMismatch
+            | Self::AuthorizationRequestExpired => ErrorKind::Invalid,
         }
     }
 
@@ -134,11 +141,14 @@ impl ErrorCode {
             Self::ClientNotFound => "client.not_found",
             Self::CapabilityUnknown => "client.capability_unknown",
             Self::RedirectUriInvalid => "client.redirect_uri_invalid",
+            Self::RedirectUriMismatch => "client.redirect_uri_mismatch",
             Self::TokenInvalid => "token.invalid",
             Self::AdminAuthenticationFailed => "auth.admin_authentication_failed",
             Self::CapabilityMissing => "auth.capability_missing",
             Self::SignInFailed => "auth.sign_in_failed",
             Self::HashingBusy => "auth.hashing_busy",
+            Self::AuthorizationRequestExpired => "auth.request_expired",
+            Self::SignInRequestsTooFrequent => "auth.sign_in_requests_too_frequent",
             Self::TenantNameInvalid => "tenant.name_invalid",
         }
     }
@@ -168,6 +178,13 @@ impl ErrorCode {
             Self::PasswordUnacceptable => "A password is 8 to 1024 bytes long.",
             Self::SignInFailed => "The name or the password is wrong.",
             Self::HashingBusy => "The service is busy. Try again in a moment.",
+            Self::AuthorizationRequestExpired => {
+                "This sign-in has expired. Start again from the application."
+            }
+            Self::SignInRequestsTooFrequent => {
+                "Too many sign-ins were started from here. Try again in a few minutes."
+            }
+            Self::RedirectUriMismatch => "The redirect URI is not one the client registered.",
             Self::RequestInvalid => "The request is missing a parameter or carries one it cannot.",
             Self::ClientAuthenticationFailed => "Client authentication failed.",
             Self::ScopeNotAllowed => "The client is not allowed a scope it asked for.",
@@ -257,7 +274,7 @@ mod tests {
 
     use super::ErrorCode;
 
-    const ALL: [ErrorCode; 33] = [
+    const ALL: [ErrorCode; 36] = [
         ErrorCode::Internal,
         ErrorCode::StorageUnavailable,
         ErrorCode::Conflict,
@@ -285,11 +302,14 @@ mod tests {
         ErrorCode::ClientNotFound,
         ErrorCode::CapabilityUnknown,
         ErrorCode::RedirectUriInvalid,
+        ErrorCode::RedirectUriMismatch,
         ErrorCode::TokenInvalid,
         ErrorCode::AdminAuthenticationFailed,
         ErrorCode::CapabilityMissing,
         ErrorCode::SignInFailed,
         ErrorCode::HashingBusy,
+        ErrorCode::AuthorizationRequestExpired,
+        ErrorCode::SignInRequestsTooFrequent,
         ErrorCode::TenantNameInvalid,
     ];
 

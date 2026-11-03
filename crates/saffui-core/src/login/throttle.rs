@@ -13,6 +13,10 @@ use std::net::IpAddr;
 
 use time::{Duration, OffsetDateTime};
 
+use crate::app::App;
+use crate::error::{ErrorCode, Failure};
+use crate::ports::storage::UnitOfWork;
+
 /// Failures are counted in buckets of this many seconds.
 const BUCKET_SECONDS: i64 = 300;
 
@@ -25,6 +29,11 @@ pub const MAX_RECENT_ATTEMPTS_PER_ADDRESS: u32 = 30;
 
 /// How many failures a name may gather from every address together.
 pub const MAX_RECENT_FAILURES_PER_NAME: u32 = 50;
+
+/// How many sign-ins one address may leave waiting in a realm in the
+/// window, before any session: each keeps a row for ten minutes, and asking
+/// for one takes nothing but a request.
+pub const MAX_PENDING_SIGN_INS_PER_ADDRESS: u32 = 60;
 
 /// The start of the bucket an instant falls in.
 #[must_use]
@@ -56,6 +65,44 @@ pub fn write_address_bucket(address: IpAddr) -> String {
         }
         address @ IpAddr::V4(_) => address.to_string(),
     }
+}
+
+/// Counts one more sign-in left waiting by the caller, in the unit of work
+/// that keeps it, or refuses it once the address left too many in the
+/// window. An address unknown is not counted, as the brake does not count it.
+///
+/// # Errors
+///
+/// Returns [`ErrorCode::SignInRequestsTooFrequent`], or the storage failure.
+pub(crate) async fn admit_pending_sign_in(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    caller: Option<IpAddr>,
+) -> Result<(), Failure> {
+    let Some(address) = caller.map(write_address_bucket) else {
+        return Ok(());
+    };
+    let scope = work.scope();
+    // A kind of its own, as each counter of the brake: no address counted
+    // here is counted as an attempt to sign in.
+    let mut written = vec![4_u8];
+    written.extend_from_slice(address.as_bytes());
+    written.push(0);
+    let counter = app
+        .sealer
+        .digest_typed_name(scope.tenant().as_uuid(), scope.realm().as_uuid(), &written)
+        .map_err(|_| Failure::new(ErrorCode::CryptoUnavailable))?;
+    let now = app.now();
+    if work
+        .count_login_failures(&counter, start_window(now))
+        .await?
+        >= MAX_PENDING_SIGN_INS_PER_ADDRESS
+    {
+        return Err(Failure::new(ErrorCode::SignInRequestsTooFrequent));
+    }
+    work.record_login_failure(&counter, start_bucket(now))
+        .await?;
+    Ok(())
 }
 
 #[cfg(test)]

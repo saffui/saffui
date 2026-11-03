@@ -5,6 +5,7 @@ use crate::clients::store::ClientStore;
 use crate::directory::store::PersonStore;
 use crate::keys::store::KeyStore;
 use crate::login::store::{SessionStore, ThrottleStore};
+use crate::oidc::code::CodeStore;
 use crate::tenancy::store::RealmStore;
 use crate::tenancy::{RealmId, RealmName, RealmScope, TenantId};
 
@@ -38,7 +39,15 @@ pub struct RealmLocation {
 /// Abandoned, it leaves nothing: only `commit` keeps what was written.
 #[async_trait]
 pub trait UnitOfWork:
-    RealmStore + AuditStore + KeyStore + ClientStore + PersonStore + SessionStore + ThrottleStore + Send
+    RealmStore
+    + AuditStore
+    + KeyStore
+    + ClientStore
+    + PersonStore
+    + SessionStore
+    + ThrottleStore
+    + CodeStore
+    + Send
 {
     fn scope(&self) -> RealmScope;
 

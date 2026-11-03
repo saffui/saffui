@@ -50,6 +50,89 @@ pub(crate) mod audit_events {
         &[SEQ, PREV_HASH, HASH, ENVELOPE, EVENT_ID, KIND, OCCURRED_AT];
 }
 
+pub(crate) mod authorization_codes {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "authorization_codes",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// bytea
+    pub(crate) const CODE_DIGEST: Column = Column("code_digest");
+    /// text
+    pub(crate) const CLIENT_ID: Column = Column("client_id");
+    /// uuid
+    pub(crate) const PERSON_ID: Column = Column("person_id");
+    /// uuid
+    pub(crate) const SESSION_ID: Column = Column("session_id");
+    /// text
+    pub(crate) const REDIRECT_URI: Column = Column("redirect_uri");
+    /// ARRAY
+    pub(crate) const SCOPES: Column = Column("scopes");
+    /// text, nullable
+    pub(crate) const NONCE: Column = Column("nonce");
+    /// text
+    pub(crate) const CODE_CHALLENGE: Column = Column("code_challenge");
+    /// timestamp with time zone
+    pub(crate) const AUTHENTICATED_AT: Column = Column("authenticated_at");
+    /// timestamp with time zone
+    pub(crate) const EXPIRES_AT: Column = Column("expires_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[
+        CODE_DIGEST,
+        CLIENT_ID,
+        PERSON_ID,
+        SESSION_ID,
+        REDIRECT_URI,
+        SCOPES,
+        NONCE,
+        CODE_CHALLENGE,
+        AUTHENTICATED_AT,
+        EXPIRES_AT,
+    ];
+}
+
+pub(crate) mod authorization_requests {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "authorization_requests",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// uuid
+    pub(crate) const REQUEST_ID: Column = Column("request_id");
+    /// bytea
+    pub(crate) const BROWSER_DIGEST: Column = Column("browser_digest");
+    /// text
+    pub(crate) const CLIENT_ID: Column = Column("client_id");
+    /// text
+    pub(crate) const REDIRECT_URI: Column = Column("redirect_uri");
+    /// ARRAY
+    pub(crate) const SCOPES: Column = Column("scopes");
+    /// text, nullable
+    pub(crate) const STATE: Column = Column("state");
+    /// text, nullable
+    pub(crate) const NONCE: Column = Column("nonce");
+    /// text
+    pub(crate) const CODE_CHALLENGE: Column = Column("code_challenge");
+    /// timestamp with time zone
+    pub(crate) const EXPIRES_AT: Column = Column("expires_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[
+        REQUEST_ID,
+        BROWSER_DIGEST,
+        CLIENT_ID,
+        REDIRECT_URI,
+        SCOPES,
+        STATE,
+        NONCE,
+        CODE_CHALLENGE,
+        EXPIRES_AT,
+    ];
+}
+
 pub(crate) mod clients {
     use super::{Column, ScopeKeys, Table};
 
@@ -282,6 +365,8 @@ pub(crate) mod tenants {
 pub(crate) const TABLES: &[(Table, &[Column])] = &[
     (audit_chain_heads::TABLE, audit_chain_heads::ALL),
     (audit_events::TABLE, audit_events::ALL),
+    (authorization_codes::TABLE, authorization_codes::ALL),
+    (authorization_requests::TABLE, authorization_requests::ALL),
     (clients::TABLE, clients::ALL),
     (login_failures::TABLE, login_failures::ALL),
     (password_credentials::TABLE, password_credentials::ALL),

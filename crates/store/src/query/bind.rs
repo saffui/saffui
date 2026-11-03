@@ -23,6 +23,15 @@ pub(crate) fn col(column: Column, value: Value<'_>) -> Bind<'_> {
     Bind { column, value }
 }
 
+/// Why a statement cannot be built.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum BuildError {
+    /// A write that writes no column.
+    NothingToWrite,
+    /// A write that names no row would reach every row of the scope.
+    Unfiltered,
+}
+
 /// A statement ready to run. Its first parameters are the keys of the scope,
 /// which only the unit of work supplies.
 pub(crate) struct Built<'a> {

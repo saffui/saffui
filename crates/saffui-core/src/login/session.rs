@@ -7,7 +7,11 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
+use serde_json::json;
+
 use crate::app::App;
+use crate::audit::EventKind;
+use crate::audit::append::record_event;
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
 use crate::ports::storage::UnitOfWork;
@@ -111,6 +115,46 @@ pub async fn open_session(
         secret: Secret::new(secret),
     };
     Ok((session, ticket))
+}
+
+/// Finds the live session a ticket proves, if there is one.
+///
+/// # Errors
+///
+/// Returns the storage failure. A ticket that proves nothing is `Ok(None)`.
+pub async fn find_live_session(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    ticket: &SessionTicket,
+) -> Result<Option<Session>, Failure> {
+    let session = work.read_session(ticket.session).await?;
+    let presented = app.digester.sha256(ticket.secret.expose());
+    // Compared even when there is no session, against a digest nothing matches.
+    let expected = session
+        .as_ref()
+        .map_or(&[0_u8; 32][..], |known| known.secret_digest.as_slice());
+    let proven = app.digester.equal_in_constant_time(&presented, expected);
+    Ok(session.filter(|known| {
+        proven && known.state == SessionState::Active && known.expires_at > app.now()
+    }))
+}
+
+/// Ends a session.
+///
+/// # Errors
+///
+/// Returns the storage failure.
+pub async fn close_session(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    session: &Session,
+) -> Result<(), Failure> {
+    work.end_session(session.id).await?;
+    let ended = json!({
+        "person_id": session.person.to_string(),
+        "session_id": session.id.to_string(),
+    });
+    record_event(app, work, EventKind::SessionEnded, ended).await
 }
 
 #[cfg(test)]

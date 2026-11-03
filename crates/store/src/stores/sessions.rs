@@ -9,6 +9,7 @@ use crate::query::criteria::Criteria;
 use crate::query::ident::Column;
 use crate::query::insert::Insert;
 use crate::query::select::Select;
+use crate::query::update::Update;
 use crate::schema::sessions;
 use crate::work::PgUnitOfWork;
 
@@ -58,5 +59,17 @@ impl SessionStore for PgUnitOfWork {
                 })
             })
             .transpose()
+    }
+
+    async fn end_session(&mut self, id: Uuid) -> Result<(), StorageError> {
+        let ended = SessionState::Ended.name();
+        let update = Update::table(
+            sessions::TABLE,
+            vec![col(sessions::STATE, &ended)],
+            Criteria::new().where_equal(sessions::SESSION_ID, &id),
+        )
+        .build()
+        .map_err(|_| StorageError::Failed)?;
+        self.execute(&update).await.map(|_| ())
     }
 }

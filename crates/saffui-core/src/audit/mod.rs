@@ -20,6 +20,7 @@ pub enum EventKind {
     TokenIssued,
     PersonCreated,
     SessionOpened,
+    SessionEnded,
 }
 
 impl EventKind {
@@ -32,6 +33,7 @@ impl EventKind {
             Self::TokenIssued => "token.issued",
             Self::PersonCreated => "person.created",
             Self::SessionOpened => "session.opened",
+            Self::SessionEnded => "session.ended",
         }
     }
 }

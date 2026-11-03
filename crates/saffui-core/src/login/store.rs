@@ -10,6 +10,9 @@ pub trait SessionStore {
     async fn insert_session(&mut self, session: &Session) -> Result<(), StorageError>;
 
     async fn read_session(&mut self, id: Uuid) -> Result<Option<Session>, StorageError>;
+
+    /// Ends a session. It is kept, ended: what it did stays explainable.
+    async fn end_session(&mut self, id: Uuid) -> Result<(), StorageError>;
 }
 
 #[async_trait]

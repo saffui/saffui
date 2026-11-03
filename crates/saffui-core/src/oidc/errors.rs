@@ -10,6 +10,9 @@ pub enum OAuthError {
     UnauthorizedClient,
     UnsupportedGrantType,
     InvalidScope,
+    UnsupportedResponseType,
+    LoginRequired,
+    ConsentRequired,
     ServerError,
     TemporarilyUnavailable,
 }
@@ -23,6 +26,9 @@ impl OAuthError {
             Self::UnauthorizedClient => "unauthorized_client",
             Self::UnsupportedGrantType => "unsupported_grant_type",
             Self::InvalidScope => "invalid_scope",
+            Self::UnsupportedResponseType => "unsupported_response_type",
+            Self::LoginRequired => "login_required",
+            Self::ConsentRequired => "consent_required",
             Self::ServerError => "server_error",
             Self::TemporarilyUnavailable => "temporarily_unavailable",
         }
@@ -41,6 +47,9 @@ impl OAuthError {
             Self::UnauthorizedClient => "The client is not allowed this grant.",
             Self::UnsupportedGrantType => "This grant type is not served.",
             Self::InvalidScope => "A scope that was asked for is unknown or not allowed.",
+            Self::UnsupportedResponseType => "Only the code response type is served.",
+            Self::LoginRequired => "The person must sign in.",
+            Self::ConsentRequired => "Consent cannot be asked here yet.",
             Self::ServerError => "The request could not be completed.",
             Self::TemporarilyUnavailable => "The service is busy. Try again in a moment.",
         }

@@ -6,8 +6,9 @@ use super::MemoryUnitOfWork;
 use crate::clients::store::ListWindow;
 use crate::directory::Person;
 use crate::directory::store::PersonStore;
-use crate::login::session::Session;
+use crate::login::session::{Session, SessionState};
 use crate::login::store::{SessionStore, ThrottleStore};
+use crate::oidc::code::{AuthorizationCode, CodeStore, PendingAuthorization};
 use crate::ports::storage::StorageError;
 
 impl MemoryUnitOfWork {
@@ -133,6 +134,17 @@ impl SessionStore for MemoryUnitOfWork {
             .and_then(|sessions| sessions.iter().find(|session| session.id == id))
             .cloned())
     }
+
+    async fn end_session(&mut self, id: Uuid) -> Result<(), StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        if let Some(sessions) = self.working.sessions.get_mut(&self.scope.realm().as_uuid()) {
+            for session in sessions.iter_mut().filter(|session| session.id == id) {
+                session.state = SessionState::Ended;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -168,5 +180,100 @@ impl ThrottleStore for MemoryUnitOfWork {
         );
         *self.working.login_failures.entry(key).or_default() += 1;
         Ok(())
+    }
+}
+
+#[async_trait]
+impl CodeStore for MemoryUnitOfWork {
+    async fn insert_pending_authorization(
+        &mut self,
+        pending: &PendingAuthorization,
+    ) -> Result<(), StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        self.working
+            .pending_authorizations
+            .entry(self.scope.realm().as_uuid())
+            .or_default()
+            .push(pending.clone());
+        Ok(())
+    }
+
+    async fn read_pending_authorization(
+        &mut self,
+        id: Uuid,
+        now: OffsetDateTime,
+    ) -> Result<Option<PendingAuthorization>, StorageError> {
+        Ok(self
+            .working
+            .pending_authorizations
+            .get(&self.scope.realm().as_uuid())
+            .and_then(|pending| {
+                pending
+                    .iter()
+                    .find(|request| request.id == id && request.expires_at > now)
+            })
+            .cloned())
+    }
+
+    async fn take_pending_authorization(
+        &mut self,
+        id: Uuid,
+        now: OffsetDateTime,
+    ) -> Result<Option<PendingAuthorization>, StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        let Some(pending) = self
+            .working
+            .pending_authorizations
+            .get_mut(&self.scope.realm().as_uuid())
+        else {
+            return Ok(None);
+        };
+        // As the statement does: an expired request is neither returned nor removed.
+        let Some(position) = pending
+            .iter()
+            .position(|request| request.id == id && request.expires_at > now)
+        else {
+            return Ok(None);
+        };
+        Ok(Some(pending.remove(position)))
+    }
+
+    async fn insert_authorization_code(
+        &mut self,
+        code: &AuthorizationCode,
+    ) -> Result<(), StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        self.working
+            .authorization_codes
+            .entry(self.scope.realm().as_uuid())
+            .or_default()
+            .push(code.clone());
+        Ok(())
+    }
+
+    async fn take_authorization_code(
+        &mut self,
+        code_digest: &[u8],
+        now: OffsetDateTime,
+    ) -> Result<Option<AuthorizationCode>, StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        let Some(codes) = self
+            .working
+            .authorization_codes
+            .get_mut(&self.scope.realm().as_uuid())
+        else {
+            return Ok(None);
+        };
+        let Some(position) = codes
+            .iter()
+            .position(|code| code.code_digest == code_digest && code.expires_at > now)
+        else {
+            return Ok(None);
+        };
+        Ok(Some(codes.remove(position)))
     }
 }

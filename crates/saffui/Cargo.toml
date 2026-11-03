@@ -25,7 +25,9 @@ tracing-subscriber.workspace = true
 [dev-dependencies]
 pgcore = { workspace = true, features = ["testkit"] }
 saffui-core = { workspace = true, features = ["testkit"] }
+serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+tokio-postgres.workspace = true
 
 [lints]
 workspace = true

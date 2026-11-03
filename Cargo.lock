@@ -1540,11 +1540,13 @@ dependencies = [
  "deadpool-postgres",
  "pgcore",
  "saffui-core",
+ "serde_json",
  "server",
  "store",
  "thiserror",
  "time",
  "tokio",
+ "tokio-postgres",
  "tracing",
  "tracing-subscriber",
 ]

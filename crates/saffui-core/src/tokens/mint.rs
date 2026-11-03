@@ -1,8 +1,11 @@
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::{Value, json};
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use super::jws::sign_compact;
+use super::store::RefreshToken;
 use super::{
     ACCESS_TOKEN_LIFETIME_SECONDS, ACCESS_TOKEN_TYPE, IDENTITY_TOKEN_TYPE, IssuedAccessToken,
 };
@@ -11,6 +14,7 @@ use crate::directory::Person;
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
 use crate::keys::jwks::open_signing_key;
+use crate::login::session::Session;
 use crate::ports::crypto::SignatureAlgorithm;
 use crate::ports::storage::UnitOfWork;
 
@@ -124,4 +128,50 @@ fn write_person_claims(claims: &mut Value, person: &Person, scopes: &[String]) {
         claims["email"] = Value::String(email.clone());
         claims["email_verified"] = Value::Bool(person.email_verified);
     }
+}
+
+/// The longest a refresh token lives. It never outlives its session.
+pub const REFRESH_TOKEN_LIFETIME: Duration = Duration::days(30);
+
+pub struct RefreshGrant<'a> {
+    /// The family the new token continues. `None` starts one.
+    pub family: Option<Uuid>,
+    pub client_id: &'a str,
+    pub session: &'a Session,
+    pub scopes: &'a [String],
+}
+
+/// Mints a refresh token, keeps its digest, and returns the token itself:
+/// the one time it exists outside the client, with its family.
+///
+/// # Errors
+///
+/// Returns [`ErrorCode::RandomUnavailable`] or the storage failure.
+pub async fn issue_refresh_token(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    grant: RefreshGrant<'_>,
+) -> Result<(String, Uuid), Failure> {
+    let mut random = [0_u8; 32];
+    app.random
+        .fill(&mut random)
+        .map_err(|_| Failure::new(ErrorCode::RandomUnavailable))?;
+    let token = URL_SAFE_NO_PAD.encode(random);
+    let now = app.now();
+    let family = match grant.family {
+        Some(family) => family,
+        None => mint_id(app)?,
+    };
+    work.insert_refresh_token(&RefreshToken {
+        token_digest: app.digester.sha256(token.as_bytes()).to_vec(),
+        family,
+        client_id: grant.client_id.to_owned(),
+        person: grant.session.person,
+        session: grant.session.id,
+        scopes: grant.scopes.to_vec(),
+        issued_at: now,
+        expires_at: (now + REFRESH_TOKEN_LIFETIME).min(grant.session.expires_at),
+    })
+    .await?;
+    Ok((token, family))
 }

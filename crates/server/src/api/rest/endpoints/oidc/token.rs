@@ -25,6 +25,7 @@ pub struct TokenForm {
     code: Option<String>,
     redirect_uri: Option<String>,
     code_verifier: Option<String>,
+    refresh_token: Option<String>,
 }
 
 /// The limit of the form, and a refusal in the dialect of the protocol for a
@@ -82,6 +83,7 @@ pub async fn grant(
             code: form.code.as_deref(),
             redirect_uri: form.redirect_uri.as_deref(),
             code_verifier: form.code_verifier.as_deref(),
+            refresh_token: form.refresh_token.as_deref(),
         },
     )
     .await;

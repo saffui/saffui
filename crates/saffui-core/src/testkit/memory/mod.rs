@@ -9,6 +9,7 @@ mod audit;
 mod clients;
 mod keys;
 mod login;
+mod refresh;
 mod tenancy;
 
 use std::collections::HashMap;
@@ -34,6 +35,7 @@ use crate::ports::crypto::WrappedDataKey;
 use crate::ports::storage::{RealmLocation, Storage, StorageError, StorageUnavailable, UnitOfWork};
 use crate::settings::{PublicOrigin, Settings};
 use crate::tenancy::{Realm, RealmId, RealmName, RealmScope, Tenant};
+use crate::tokens::store::StoredRefreshToken;
 
 #[derive(Clone, Default)]
 pub(crate) struct State {
@@ -59,6 +61,8 @@ pub(crate) struct State {
     pub(crate) pending_authorizations: HashMap<Uuid, Vec<PendingAuthorization>>,
     /// The codes not yet spent, by realm.
     pub(crate) authorization_codes: HashMap<Uuid, Vec<AuthorizationCode>>,
+    /// The refresh tokens of each realm, with what became of them.
+    pub(crate) refresh_tokens: HashMap<Uuid, Vec<StoredRefreshToken>>,
 }
 
 #[derive(Default)]
@@ -308,7 +312,8 @@ mod tests {
     use super::MemoryStorage;
     use crate::testkit::contract::{
         check_audit_contract, check_clients_contract, check_codes_contract, check_keys_contract,
-        check_persons_contract, check_sign_in_contract, check_tenancy_contract,
+        check_persons_contract, check_refresh_contract, check_sign_in_contract,
+        check_tenancy_contract,
     };
     use crate::testkit::drive::complete;
 
@@ -352,5 +357,11 @@ mod tests {
     fn the_double_passes_the_codes_contract() {
         let (app, _storage) = MemoryStorage::wire();
         complete(check_codes_contract(&app));
+    }
+
+    #[test]
+    fn the_double_passes_the_refresh_contract() {
+        let (app, _storage) = MemoryStorage::wire();
+        complete(check_refresh_contract(&app));
     }
 }

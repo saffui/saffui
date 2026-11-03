@@ -8,6 +8,7 @@ use crate::login::store::{SessionStore, ThrottleStore};
 use crate::oidc::code::CodeStore;
 use crate::tenancy::store::RealmStore;
 use crate::tenancy::{RealmId, RealmName, RealmScope, TenantId};
+use crate::tokens::store::RefreshStore;
 
 #[async_trait]
 pub trait Storage: Send + Sync {
@@ -47,6 +48,7 @@ pub trait UnitOfWork:
     + SessionStore
     + ThrottleStore
     + CodeStore
+    + RefreshStore
     + Send
 {
     fn scope(&self) -> RealmScope;

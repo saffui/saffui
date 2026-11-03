@@ -283,6 +283,49 @@ pub(crate) mod realms {
     pub(crate) const ALL: &[Column] = &[NAME, ENABLED, CREATED_AT];
 }
 
+pub(crate) mod refresh_tokens {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "refresh_tokens",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// bytea
+    pub(crate) const TOKEN_DIGEST: Column = Column("token_digest");
+    /// uuid
+    pub(crate) const FAMILY_ID: Column = Column("family_id");
+    /// text
+    pub(crate) const CLIENT_ID: Column = Column("client_id");
+    /// uuid
+    pub(crate) const PERSON_ID: Column = Column("person_id");
+    /// uuid
+    pub(crate) const SESSION_ID: Column = Column("session_id");
+    /// ARRAY
+    pub(crate) const SCOPES: Column = Column("scopes");
+    /// timestamp with time zone
+    pub(crate) const ISSUED_AT: Column = Column("issued_at");
+    /// timestamp with time zone
+    pub(crate) const EXPIRES_AT: Column = Column("expires_at");
+    /// timestamp with time zone, nullable
+    pub(crate) const USED_AT: Column = Column("used_at");
+    /// timestamp with time zone, nullable
+    pub(crate) const REVOKED_AT: Column = Column("revoked_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[
+        TOKEN_DIGEST,
+        FAMILY_ID,
+        CLIENT_ID,
+        PERSON_ID,
+        SESSION_ID,
+        SCOPES,
+        ISSUED_AT,
+        EXPIRES_AT,
+        USED_AT,
+        REVOKED_AT,
+    ];
+}
+
 pub(crate) mod sessions {
     use super::{Column, ScopeKeys, Table};
 
@@ -373,6 +416,7 @@ pub(crate) const TABLES: &[(Table, &[Column])] = &[
     (persons::TABLE, persons::ALL),
     (realm_data_keys::TABLE, realm_data_keys::ALL),
     (realms::TABLE, realms::ALL),
+    (refresh_tokens::TABLE, refresh_tokens::ALL),
     (sessions::TABLE, sessions::ALL),
     (signing_keys::TABLE, signing_keys::ALL),
     (tenants::TABLE, tenants::ALL),

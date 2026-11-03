@@ -5,4 +5,7 @@ pub mod code;
 pub mod discovery;
 pub mod errors;
 pub mod pkce;
+mod refresh;
+#[cfg(test)]
+mod scenario;
 pub mod token;

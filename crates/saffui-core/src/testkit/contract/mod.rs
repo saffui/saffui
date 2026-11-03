@@ -792,3 +792,189 @@ pub async fn check_codes_contract(app: &App) {
         Ok(None)
     );
 }
+
+/// What any storage owes to refresh tokens: a token is spent once, by the
+/// client it was issued to, in its realm; a used token stays readable so
+/// that a replay can be told; a family and a session are revoked whole.
+///
+/// # Panics
+///
+/// Panics when the storage breaks the contract.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario, read from top to bottom"
+)]
+pub async fn check_refresh_contract(app: &App) {
+    use time::Duration;
+
+    use crate::login::session::{Session, SessionState};
+    use crate::testkit::fixtures::{create_person, create_realm};
+    use crate::tokens::store::RefreshToken;
+
+    let scope = create_realm(app, "contract-refresh").await;
+    let other = create_realm(app, "contract-refresh-other").await;
+    let ada = create_person(app, scope, "ada", "correct horse battery").await;
+    let now = app.now();
+    let open = || Session {
+        id: mint_id(app).expect("an identifier"),
+        person: ada.id,
+        secret_digest: vec![7; 32],
+        state: SessionState::Active,
+        authenticated_at: now,
+        expires_at: now + Duration::hours(1),
+    };
+    let (first_session, second_session) = (open(), open());
+    let mint = |digest: u8, family: Uuid, session: &Session, lifetime: Duration| RefreshToken {
+        token_digest: vec![digest; 32],
+        family,
+        client_id: "webapp".to_owned(),
+        person: ada.id,
+        session: session.id,
+        scopes: vec!["openid".to_owned(), "email".to_owned()],
+        issued_at: now,
+        expires_at: now + lifetime,
+    };
+    let family = mint_id(app).expect("an identifier");
+    let other_family = mint_id(app).expect("an identifier");
+    let first = mint(1, family, &first_session, Duration::minutes(30));
+    let second = mint(2, family, &first_session, Duration::minutes(30));
+    let stale = mint(3, other_family, &second_session, Duration::seconds(-1));
+    let apart = mint(4, other_family, &second_session, Duration::minutes(30));
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.insert_session(&first_session)
+        .await
+        .expect("a session");
+    work.insert_session(&second_session)
+        .await
+        .expect("a second session");
+    for token in [&first, &second, &stale, &apart] {
+        work.insert_refresh_token(token).await.expect("a token");
+    }
+    work.commit().await.expect("a commit");
+
+    // Unknown in another realm: not read, not spent, not revoked.
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(
+        elsewhere.read_refresh_token(&first.token_digest).await,
+        Ok(None)
+    );
+    assert_eq!(
+        elsewhere
+            .spend_refresh_token(&first.token_digest, "webapp", now)
+            .await,
+        Ok(None)
+    );
+    assert_eq!(elsewhere.revoke_refresh_family(family, now).await, Ok(0));
+    drop(elsewhere);
+
+    // Read back equal and unused. Not spent by another client, nor once expired.
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let stored = work
+        .read_refresh_token(&first.token_digest)
+        .await
+        .expect("a read")
+        .expect("the token");
+    assert_eq!(stored.token, first);
+    assert_eq!((stored.used_at, stored.revoked_at), (None, None));
+    assert_eq!(
+        work.spend_refresh_token(&first.token_digest, "another-client", now)
+            .await,
+        Ok(None)
+    );
+    assert_eq!(
+        work.spend_refresh_token(&stale.token_digest, "webapp", now)
+            .await,
+        Ok(None)
+    );
+
+    // Spent once. The used token stays, and says when it was used.
+    assert_eq!(
+        work.spend_refresh_token(&first.token_digest, "webapp", now)
+            .await,
+        Ok(Some(first.clone()))
+    );
+    assert_eq!(
+        work.spend_refresh_token(&first.token_digest, "webapp", now)
+            .await,
+        Ok(None)
+    );
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let used = work
+        .read_refresh_token(&first.token_digest)
+        .await
+        .expect("a read")
+        .expect("the used token is kept");
+    assert_eq!(used.used_at, Some(now));
+    assert!(!used.is_live(now));
+
+    // A family is revoked whole, used tokens included, and once.
+    assert_eq!(work.revoke_refresh_family(family, now).await, Ok(2));
+    assert_eq!(work.revoke_refresh_family(family, now).await, Ok(0));
+    assert_eq!(
+        work.spend_refresh_token(&second.token_digest, "webapp", now)
+            .await,
+        Ok(None)
+    );
+    let untouched = work
+        .read_refresh_token(&apart.token_digest)
+        .await
+        .expect("a read")
+        .expect("the token of the other family");
+    assert!(untouched.is_live(now));
+
+    // Written into a family once it was revoked, as a rotation in flight
+    // does, a token is not spent and reads as revoked.
+    let late = mint(6, family, &first_session, Duration::minutes(30));
+    work.insert_refresh_token(&late).await.expect("a token");
+    assert_eq!(
+        work.spend_refresh_token(&late.token_digest, "webapp", now)
+            .await,
+        Ok(None)
+    );
+    let late = work
+        .read_refresh_token(&late.token_digest)
+        .await
+        .expect("a read")
+        .expect("the late token");
+    assert_eq!(late.revoked_at, Some(now));
+    assert!(!late.is_live(now));
+
+    // A session takes its tokens with it, and only its own.
+    assert_eq!(
+        work.revoke_refresh_tokens_of_session(second_session.id, now)
+            .await,
+        Ok(2)
+    );
+    assert_eq!(
+        work.spend_refresh_token(&apart.token_digest, "webapp", now)
+            .await,
+        Ok(None)
+    );
+    work.commit().await.expect("a commit");
+
+    // Abandoned, a spend leaves the token as it was.
+    let again = mint(
+        5,
+        mint_id(app).expect("an identifier"),
+        &first_session,
+        Duration::minutes(30),
+    );
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.insert_refresh_token(&again).await.expect("a token");
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.spend_refresh_token(&again.token_digest, "webapp", now)
+            .await,
+        Ok(Some(again.clone()))
+    );
+    drop(work);
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.spend_refresh_token(&again.token_digest, "webapp", now)
+            .await,
+        Ok(Some(again))
+    );
+}

@@ -48,7 +48,7 @@ pub fn describe_provider(settings: &Settings, realm: &RealmName) -> ProviderMeta
         token_endpoint: format!("{issuer}/oauth2/token"),
         jwks_uri: format!("{issuer}/oauth2/jwks"),
         response_types_supported: vec!["code"],
-        grant_types_supported: vec!["authorization_code", "client_credentials"],
+        grant_types_supported: vec!["authorization_code", "client_credentials", "refresh_token"],
         subject_types_supported: vec!["public"],
         id_token_signing_alg_values_supported: SignatureAlgorithm::ALL
             .iter()
@@ -112,7 +112,7 @@ mod tests {
         );
         assert_eq!(
             document.grant_types_supported,
-            ["authorization_code", "client_credentials"]
+            ["authorization_code", "client_credentials", "refresh_token"]
         );
         assert_eq!(document.code_challenge_methods_supported, ["S256"]);
         assert!(

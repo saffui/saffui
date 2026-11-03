@@ -8,6 +8,7 @@ use super::ident::Column;
 enum Test<'a> {
     Equal(Value<'a>),
     Greater(Value<'a>),
+    Null,
 }
 
 /// The tests of one statement, after the scope.
@@ -37,6 +38,12 @@ impl<'a> Criteria<'a> {
         self.tests.is_empty()
     }
 
+    /// Keeps the rows where the column holds nothing.
+    pub(crate) fn where_null(mut self, column: Column) -> Self {
+        self.tests.push((column, Test::Null));
+        self
+    }
+
     /// Writes each test after the scope predicate, numbering placeholders
     /// from `next`, and returns what they bind, in that order.
     pub(super) fn write(&self, sql: &mut String, next: usize) -> Vec<Value<'a>> {
@@ -47,6 +54,11 @@ impl<'a> Criteria<'a> {
             let (operator, value) = match test {
                 Test::Equal(value) => (" = $", value),
                 Test::Greater(value) => (" > $", value),
+                // Nothing to bind: the test is written whole.
+                Test::Null => {
+                    sql.push_str(" IS NULL");
+                    continue;
+                }
             };
             sql.push_str(operator);
             sql.push_str(&(next + bound.len()).to_string());
@@ -77,5 +89,19 @@ mod tests {
 
         assert_eq!(sql, " AND seq > $3 AND client_id = $4 AND expires_at > $5");
         assert_eq!(bound.len(), 3);
+    }
+
+    #[test]
+    fn a_test_for_nothing_binds_nothing_and_leaves_the_numbering_to_the_next() {
+        const REVOKED_AT: Column = Column("revoked_at");
+        let mut sql = String::new();
+
+        let bound = Criteria::new()
+            .where_null(REVOKED_AT)
+            .where_equal(CLIENT_ID, &"portal")
+            .write(&mut sql, 3);
+
+        assert_eq!(sql, " AND revoked_at IS NULL AND client_id = $3");
+        assert_eq!(bound.len(), 1);
     }
 }

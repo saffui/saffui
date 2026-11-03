@@ -274,6 +274,20 @@ async fn a_person_signs_in_and_the_application_exchanges_the_code_for_tokens() {
     assert!(tokens["access_token"].is_string());
     assert!(tokens["id_token"].is_string());
 
+    // The refresh token is spent for the next one, through the same form.
+    let presented = tokens["refresh_token"].as_str().expect("a refresh token");
+    let refresh = format!("grant_type=refresh_token&client_id=portal&refresh_token={presented}");
+    let refreshed = post(&product, "/realms/acme/oauth2/token", &[], &refresh).await;
+    assert_eq!(refreshed.status, StatusCode::OK, "{}", refreshed.body);
+    assert_eq!(refreshed.read_header("cache-control"), Some("no-store"));
+    let refreshed: Value = serde_json::from_str(&refreshed.body).expect("JSON");
+    assert_eq!(refreshed["scope"], "openid profile");
+    assert!(
+        refreshed["refresh_token"]
+            .as_str()
+            .is_some_and(|next| next != presented)
+    );
+
     // The code served once.
     let again = post(&product, "/realms/acme/oauth2/token", &[], &exchange).await;
     assert_eq!(again.status, StatusCode::BAD_REQUEST);

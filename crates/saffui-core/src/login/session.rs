@@ -167,7 +167,7 @@ pub async fn read_live_subject(
     Ok(person.map(|person| (session, person)))
 }
 
-/// Ends a session.
+/// Ends a session, and with it every refresh token it gave.
 ///
 /// # Errors
 ///
@@ -178,8 +178,12 @@ pub async fn close_session(
     session: &Session,
 ) -> Result<(), Failure> {
     work.end_session(session.id).await?;
+    let revoked = work
+        .revoke_refresh_tokens_of_session(session.id, app.now())
+        .await?;
     let ended = json!({
         "person_id": session.person.to_string(),
+        "refresh_tokens_revoked": revoked,
         "session_id": session.id.to_string(),
     });
     record_event(app, work, EventKind::SessionEnded, ended).await

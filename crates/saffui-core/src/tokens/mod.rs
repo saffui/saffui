@@ -2,6 +2,7 @@
 
 pub mod jws;
 pub mod mint;
+pub mod store;
 pub mod verify;
 
 /// What a token endpoint hands out.

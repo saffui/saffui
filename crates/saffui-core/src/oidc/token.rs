@@ -8,6 +8,7 @@ use serde_json::json;
 use super::discovery::name_issuer;
 use super::errors::OAuthFailure;
 use super::pkce::matches_challenge;
+use super::refresh::rotate_refresh_token;
 use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
@@ -21,7 +22,8 @@ use crate::secret::Secret;
 use crate::tenancy::resolve::resolve_realm;
 use crate::tenancy::{RealmName, RealmScope};
 use crate::tokens::mint::{
-    AccessTokenSubject, IdentityTokenSubject, mint_access_token, mint_identity_token,
+    AccessTokenSubject, IdentityTokenSubject, RefreshGrant, issue_refresh_token, mint_access_token,
+    mint_identity_token,
 };
 
 /// What a client sent to the token endpoint, already read from the request.
@@ -34,6 +36,7 @@ pub struct TokenRequest<'a> {
     pub code: Option<&'a str>,
     pub redirect_uri: Option<&'a str>,
     pub code_verifier: Option<&'a str>,
+    pub refresh_token: Option<&'a str>,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize)]
@@ -44,6 +47,8 @@ pub struct TokenResponse {
     pub scope: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
 }
 
 // Written by hand: a derived `Debug` would print the tokens.
@@ -56,6 +61,7 @@ impl fmt::Debug for TokenResponse {
             .field("expires_in", &self.expires_in)
             .field("scope", &self.scope)
             .field("id_token", &self.id_token.as_ref().map(|_| ".."))
+            .field("refresh_token", &self.refresh_token.as_ref().map(|_| ".."))
             .finish()
     }
 }
@@ -73,29 +79,55 @@ pub async fn grant_token(
     // Judged before the realm is looked for: a grant that is not served is
     // refused alike in a realm that exists and in one that does not.
     let grant = match request.grant_type {
-        Some(served @ ("client_credentials" | "authorization_code")) => served,
+        Some(served @ ("client_credentials" | "authorization_code" | "refresh_token")) => served,
         Some(_) => return Err(ErrorCode::GrantTypeUnsupported.into()),
         None => return Err(ErrorCode::RequestInvalid.into()),
     };
     // The form too: a request the realm could not serve is refused alike
     // whether the realm exists or not.
-    if grant == "authorization_code" {
+    if grant != "client_credentials" {
         request
             .client_id
             .ok_or(ErrorCode::ClientAuthenticationFailed)?;
-        if request.code.is_none()
-            || request.redirect_uri.is_none()
-            || request.code_verifier.is_none()
-        {
+        let complete = if grant == "authorization_code" {
+            request.code.is_some()
+                && request.redirect_uri.is_some()
+                && request.code_verifier.is_some()
+        } else {
+            request.refresh_token.is_some()
+        };
+        if !complete {
             return Err(ErrorCode::RequestInvalid.into());
         }
     }
     let (realm_name, scope) = resolve_realm(app, realm).await?;
-    if grant == "client_credentials" {
-        grant_to_service(app, &realm_name, scope, request).await
-    } else {
-        exchange_code(app, &realm_name, scope, request).await
+    match grant {
+        "client_credentials" => grant_to_service(app, &realm_name, scope, request).await,
+        "authorization_code" => exchange_code(app, &realm_name, scope, request).await,
+        _ => rotate_refresh_token(app, &realm_name, scope, request).await,
     }
+}
+
+/// Narrows what may be given to what was asked for. Asked for nothing, the
+/// whole is given. Nothing outside it ever is.
+pub(super) fn narrow_scopes(
+    asked: Option<&str>,
+    allowed: &[String],
+) -> Result<Vec<String>, Failure> {
+    let Some(asked) = asked else {
+        return Ok(allowed.to_vec());
+    };
+    let mut granted = Vec::new();
+    for token in asked.split(' ').filter(|token| !token.is_empty()) {
+        check_scope_token(token)?;
+        if !allowed.iter().any(|known| known == token) {
+            return Err(Failure::new(ErrorCode::ScopeNotAllowed));
+        }
+        if !granted.iter().any(|known| known == token) {
+            granted.push(token.to_owned());
+        }
+    }
+    Ok(granted)
 }
 
 async fn grant_to_service(
@@ -115,22 +147,7 @@ async fn grant_to_service(
     }
 
     // Asked for nothing, a client gets what it is allowed. It never gets more.
-    let granted: Vec<String> = match request.scope {
-        None => client.scopes.clone(),
-        Some(asked) => {
-            let mut granted = Vec::new();
-            for token in asked.split(' ').filter(|token| !token.is_empty()) {
-                check_scope_token(token)?;
-                if !client.scopes.iter().any(|allowed| allowed == token) {
-                    return Err(ErrorCode::ScopeNotAllowed.into());
-                }
-                if !granted.iter().any(|known| known == token) {
-                    granted.push(token.to_owned());
-                }
-            }
-            granted
-        }
-    };
+    let granted = narrow_scopes(request.scope, &client.scopes)?;
 
     let issuer = name_issuer(&app.settings, realm_name);
     let minted = mint_access_token(
@@ -155,6 +172,7 @@ async fn grant_to_service(
         expires_in: minted.expires_in,
         scope: minted.scope,
         id_token: None,
+        refresh_token: None,
     })
 }
 
@@ -212,28 +230,39 @@ async fn exchange_code(
         person: &person,
         scopes: &code.scopes,
         nonce: code.nonce.as_deref(),
+        grant: "authorization_code",
+        family: RefreshGrant {
+            family: None,
+            client_id: &client.client_id,
+            session: &session,
+            scopes: &code.scopes,
+        },
     };
-    let response = answer_for_person(app, work.as_mut(), granted).await?;
+    let (response, _family) = answer_for_person(app, work.as_mut(), granted).await?;
     work.commit().await.map_err(Failure::from)?;
     Ok(response)
 }
 
-struct Granted<'a> {
-    issuer: &'a str,
-    client_id: &'a str,
-    session: &'a Session,
-    person: &'a Person,
-    scopes: &'a [String],
-    nonce: Option<&'a str>,
+pub(super) struct Granted<'a> {
+    pub(super) issuer: &'a str,
+    pub(super) client_id: &'a str,
+    pub(super) session: &'a Session,
+    pub(super) person: &'a Person,
+    /// What this answer carries. The refresh token keeps its own.
+    pub(super) scopes: &'a [String],
+    pub(super) nonce: Option<&'a str>,
+    pub(super) grant: &'static str,
+    pub(super) family: RefreshGrant<'a>,
 }
 
-/// Mints everything a client gets for a person: an access token, and an
-/// identity token when `openid` was granted.
-async fn answer_for_person(
+/// Mints everything a client gets for a person: an access token, an identity
+/// token when `openid` was granted, and the next refresh token, with the
+/// family it belongs to.
+pub(super) async fn answer_for_person(
     app: &App,
     work: &mut dyn UnitOfWork,
     granted: Granted<'_>,
-) -> Result<TokenResponse, Failure> {
+) -> Result<(TokenResponse, uuid::Uuid), Failure> {
     let subject = granted.person.id.to_string();
     let minted = mint_access_token(
         app,
@@ -261,20 +290,23 @@ async fn answer_for_person(
     } else {
         None
     };
+    let (refresh_token, family) = issue_refresh_token(app, work, granted.family).await?;
     let told = json!({
         "client_id": granted.client_id,
-        "grant": "authorization_code",
+        "grant": granted.grant,
         "person_id": subject,
         "scope": minted.scope,
     });
     record_event(app, work, EventKind::TokenIssued, told).await?;
-    Ok(TokenResponse {
+    let response = TokenResponse {
         access_token: minted.token,
         token_type: "Bearer",
         expires_in: minted.expires_in,
         scope: minted.scope,
         id_token,
-    })
+        refresh_token: Some(refresh_token),
+    };
+    Ok((response, family))
 }
 
 #[cfg(test)]
@@ -541,11 +573,13 @@ mod tests {
             expires_in: 300,
             scope: "openid".to_owned(),
             id_token: Some("eyJ.identity.token".to_owned()),
+            refresh_token: Some("opaque-refresh".to_owned()),
         };
 
         let printed = format!("{answer:?}");
 
         assert!(!printed.contains("eyJ"), "{printed}");
+        assert!(!printed.contains("opaque"), "{printed}");
         assert!(printed.contains("Bearer"), "{printed}");
     }
 }

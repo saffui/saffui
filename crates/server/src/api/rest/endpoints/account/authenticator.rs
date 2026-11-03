@@ -66,7 +66,7 @@ fn write_confirmation_form(realm: &str, message: &str) -> String {
 }
 
 /// A refusal of these pages: the status of its kind, its message, no form.
-fn refuse(product: &Product, failure: &Failure) -> HttpResponse {
+fn refuse_request(product: &Product, failure: &Failure) -> HttpResponse {
     let status = match failure.code {
         ErrorCode::SessionRequired => StatusCode::UNAUTHORIZED,
         ErrorCode::SecondFactorProofRequired => StatusCode::FORBIDDEN,
@@ -102,8 +102,8 @@ pub async fn show_authenticator(
             );
             render_page(&product, StatusCode::OK, &body)
         }
-        Ok(_) => refuse(&product, &Failure::new(ErrorCode::RealmNotFound)),
-        Err(failure) => refuse(&product, &failure),
+        Ok(_) => refuse_request(&product, &Failure::new(ErrorCode::RealmNotFound)),
+        Err(failure) => refuse_request(&product, &failure),
     }
 }
 
@@ -116,7 +116,7 @@ pub async fn begin_enrollment(
     // The session cookie is withheld from a form another site posts: this
     // refuses such a post by name, before a secret is made.
     if is_posted_from_elsewhere(&product, &http) || !is_realm_label(&realm) {
-        return refuse(&product, &Failure::new(ErrorCode::SessionRequired));
+        return refuse_request(&product, &Failure::new(ErrorCode::SessionRequired));
     }
     let ticket = read_ticket(&product, &realm, &http);
     match begin_totp_enrollment(&product, &realm, ticket.as_ref()).await {
@@ -140,7 +140,7 @@ pub async fn begin_enrollment(
             );
             render_page(&product, StatusCode::CONFLICT, &body)
         }
-        Err(failure) => refuse(&product, &failure),
+        Err(failure) => refuse_request(&product, &failure),
     }
 }
 
@@ -152,11 +152,11 @@ pub async fn confirm_enrollment(
     payload: web::Payload,
 ) -> HttpResponse {
     if is_posted_from_elsewhere(&product, &http) || !is_realm_label(&realm) {
-        return refuse(&product, &Failure::new(ErrorCode::SessionRequired));
+        return refuse_request(&product, &Failure::new(ErrorCode::SessionRequired));
     }
     let ticket = read_ticket(&product, &realm, &http);
     if ticket.is_none() {
-        return refuse(&product, &Failure::new(ErrorCode::SessionRequired));
+        return refuse_request(&product, &Failure::new(ErrorCode::SessionRequired));
     }
     let Some(form) = read_posted_form::<ConfirmationForm>(&http, payload).await else {
         let body = format!(
@@ -207,6 +207,6 @@ pub async fn confirm_enrollment(
             );
             render_page(&product, StatusCode::CONFLICT, &body)
         }
-        Err(failure) => refuse(&product, &failure),
+        Err(failure) => refuse_request(&product, &failure),
     }
 }

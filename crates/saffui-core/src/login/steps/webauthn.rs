@@ -17,7 +17,7 @@ use crate::ports::crypto::{KeyCeremony, KeyRefusal};
 use crate::ports::storage::UnitOfWork;
 use crate::tenancy::RealmScope;
 
-fn fail(detail: &str) -> Failure {
+fn fail_ceremony(detail: &str) -> Failure {
     Failure::with_detail(ErrorCode::CryptoUnavailable, detail)
 }
 
@@ -45,7 +45,7 @@ pub(crate) async fn start_key_proof(
     app.security_keys
         .start_proof(&held)
         .map(Some)
-        .map_err(|_| fail("a proof by a security key cannot be started"))
+        .map_err(|_| fail_ceremony("a proof by a security key cannot be started"))
 }
 
 /// Proves that a person holds one of their security keys, with the answer
@@ -57,13 +57,12 @@ pub(crate) async fn start_key_proof(
 /// against and of no other. An answer that proves nothing, a key whose
 /// counter went back and a locked name are one refusal; a counter that went
 /// back is also written in the chain; a refused answer is counted under the name, with the
-/// guesses of the other steps. A proven key forgets the codes the person got
-/// wrong.
+/// guesses of the other steps, and not against its address: nothing is
+/// hashed here. A proven key forgets the codes the person got wrong.
 ///
 /// # Errors
 ///
-/// Returns [`ErrorCode::KeyRejected`] for every refusal above,
-/// [`ErrorCode::HashingBusy`] when the address spent its attempts, or the
+/// Returns [`ErrorCode::KeyRejected`] for every refusal above, or the
 /// storage failure.
 pub(crate) async fn verify_key(
     app: &App,
@@ -83,7 +82,6 @@ pub(crate) async fn verify_key(
     if let Some(device) = find_known_browser(work.as_mut(), &proven, Some(person), now).await? {
         brake.count_browser_apart(app, scope, typed, device)?;
     }
-    brake.admit(work.as_mut(), now).await?;
     if brake.is_name_locked(work.as_mut(), now).await? {
         work.commit().await?;
         return Err(Failure::new(ErrorCode::KeyRejected));
@@ -114,7 +112,9 @@ pub(crate) async fn verify_key(
             record_event(app, work.as_mut(), EventKind::KeyCopySuspected, suspected).await?;
         }
         Err(KeyRefusal::Failed) => {
-            return Err(fail("a proof by a security key cannot be finished"));
+            return Err(fail_ceremony(
+                "a proof by a security key cannot be finished",
+            ));
         }
     }
     if accepted {

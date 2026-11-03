@@ -807,7 +807,7 @@ async fn a_table_anybody_can_fill_spends_its_own_part_of_the_pass_and_no_more() 
     assert_eq!(
         report[5],
         (2_001, DONE),
-        "the counters, last, get what is left: {report:?}"
+        "the counters, after the requests, still get their part of what is left: {report:?}"
     );
 }
 

@@ -8,16 +8,34 @@ use saffui_core::ports::crypto::{
 };
 use serde_json::Value;
 use uuid::Uuid;
+use webauthn_rs::Webauthn;
 use webauthn_rs::prelude::{
     Credential, PublicKeyCredential, RegisterPublicKeyCredential, SecurityKey,
-    SecurityKeyAuthentication, SecurityKeyRegistration, Url, WebauthnError,
+    SecurityKeyAuthentication, SecurityKeyRegistration, WebauthnError,
 };
-use webauthn_rs::{Webauthn, WebauthnBuilder};
 
 pub struct WebauthnSecurityKeys {
-    /// Absent when the public origin is named by an address: a browser lets
-    /// no key sign for one.
+    /// Absent when the public origin is named by an address, for which a
+    /// browser lets no key sign, and in a build held to the validated module.
     party: Option<Webauthn>,
+}
+
+/// The relying party of an origin named by its host.
+#[cfg(not(feature = "fips-strict"))]
+fn build_party(origin: &str) -> Option<Webauthn> {
+    let url = webauthn_rs::prelude::Url::parse(origin).ok()?;
+    let host = url.domain()?.to_owned();
+    webauthn_rs::WebauthnBuilder::new(&host, &url)
+        .ok()?
+        .build()
+        .ok()
+}
+
+/// None: the library draws its challenges from `rand`, and this build draws
+/// from the validated module alone.
+#[cfg(feature = "fips-strict")]
+fn build_party(_origin: &str) -> Option<Webauthn> {
+    None
 }
 
 impl WebauthnSecurityKeys {
@@ -25,11 +43,9 @@ impl WebauthnSecurityKeys {
     /// enrolled here answers on this origin, and on no other.
     #[must_use]
     pub fn for_origin(origin: &str) -> Self {
-        let party = Url::parse(origin).ok().and_then(|url| {
-            let host = url.domain()?.to_owned();
-            WebauthnBuilder::new(&host, &url).ok()?.build().ok()
-        });
-        Self { party }
+        Self {
+            party: build_party(origin),
+        }
     }
 
     /// Whether a key can be enrolled and asked on this origin.
@@ -137,7 +153,8 @@ impl SecurityKeys for WebauthnSecurityKeys {
     }
 }
 
-#[cfg(test)]
+// Every ceremony below needs a relying party, which `fips-strict` builds none of.
+#[cfg(all(test, not(feature = "fips-strict")))]
 mod tests {
     use saffui_core::ports::crypto::{KeyCeremony, KeyRefusal, SecurityKeys};
     use serde_json::json;
@@ -367,6 +384,35 @@ mod tests {
                 .is_err()
         );
         assert!(keys.start_proof(&[]).is_err());
+        assert_eq!(
+            keys.finish_proof(b"", &json!({}), &[]),
+            Err(KeyRefusal::Failed)
+        );
+    }
+}
+
+#[cfg(all(test, feature = "fips-strict"))]
+mod fips_strict_tests {
+    use saffui_core::ports::crypto::{KeyRefusal, SecurityKeys};
+    use serde_json::json;
+    use uuid::Uuid;
+
+    use super::WebauthnSecurityKeys;
+
+    #[test]
+    fn a_build_held_to_the_validated_module_serves_no_security_key_on_any_origin() {
+        let keys = WebauthnSecurityKeys::for_origin("https://id.example.test");
+
+        assert!(!keys.is_available());
+        assert!(
+            keys.start_enrollment(Uuid::from_u128(7), "ada", &[])
+                .is_err()
+        );
+        assert!(keys.start_proof(&[]).is_err());
+        assert_eq!(
+            keys.finish_enrollment(b"", &json!({})),
+            Err(KeyRefusal::Failed)
+        );
         assert_eq!(
             keys.finish_proof(b"", &json!({}), &[]),
             Err(KeyRefusal::Failed)

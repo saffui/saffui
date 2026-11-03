@@ -88,16 +88,17 @@ pub(crate) async fn accept_code(
 /// The code is counted under the name, with the guesses of the password: a
 /// person who knows the password gets no fresh allowance for the code. A
 /// browser the realm keeps for this person answers for its own failures, as
-/// it does for the password. A wrong code, a code already used and a locked
-/// name are one refusal, and so are codes suspended: ten wrong in a row,
-/// counted under the person whatever their address, and the right code too
-/// is refused until an administrator resumes them. A locked name and
-/// suspended codes are refused before the secret is opened.
+/// it does for the password. Nothing is hashed here: the attempt is not
+/// counted against its address. A wrong code, a code already used and a
+/// locked name are one refusal, and so are codes suspended: ten wrong in a
+/// row, counted under a person who has an application whatever their
+/// address, and the right code too is refused until an administrator
+/// resumes them. A locked name and suspended codes are refused before the
+/// secret is opened.
 ///
 /// # Errors
 ///
-/// Returns [`ErrorCode::CodeRejected`] for every refusal above,
-/// [`ErrorCode::HashingBusy`] when the address spent its attempts, or the
+/// Returns [`ErrorCode::CodeRejected`] for every refusal above, or the
 /// storage failure.
 pub(crate) async fn verify_code(
     app: &App,
@@ -118,33 +119,36 @@ pub(crate) async fn verify_code(
     if let Some(device) = find_known_browser(work.as_mut(), &proven, Some(person), now).await? {
         brake.count_browser_apart(app, scope, typed, device)?;
     }
-    brake.admit(work.as_mut(), now).await?;
     if brake.is_name_locked(work.as_mut(), now).await? {
         work.commit().await?;
         return Err(rejected());
     }
-    // Counted before it is judged: attempts that run beside each other wait
-    // on one row, and none past the bound is judged.
-    let attempts = work.count_code_attempt(person.id, now).await?;
-    let authenticator = if attempts <= MAX_CODE_FAILURES {
-        work.read_totp(person.id)
-            .await?
-            .filter(|known| known.confirmed_at.is_some())
-    } else {
-        None
-    };
+    let authenticator = work
+        .read_totp(person.id)
+        .await?
+        .filter(|known| known.confirmed_at.is_some());
     let accepted = match &authenticator {
+        // Counted before it is judged, and only for a person who has codes:
+        // attempts that run beside each other wait on one row, and none past
+        // the bound is judged.
         Some(known) => {
+            let attempts = work.count_code_attempt(person.id, now).await?;
             let sign_in = TotpUse::SignIn;
-            accept_code(
-                app,
-                work.as_mut(),
-                person.id,
-                &known.sealed_secret,
-                code,
-                sign_in,
-            )
-            .await?
+            let accepted = attempts <= MAX_CODE_FAILURES
+                && accept_code(
+                    app,
+                    work.as_mut(),
+                    person.id,
+                    &known.sealed_secret,
+                    code,
+                    sign_in,
+                )
+                .await?;
+            if attempts == MAX_CODE_FAILURES && !accepted {
+                let suspended = json!({ "person_id": person.id.to_string() });
+                record_event(app, work.as_mut(), EventKind::CodesSuspended, suspended).await?;
+            }
+            accepted
         }
         None => false,
     };
@@ -152,10 +156,6 @@ pub(crate) async fn verify_code(
         work.clear_code_attempts(person.id).await?;
     } else {
         brake.record_failure(work.as_mut(), now).await?;
-        if attempts == MAX_CODE_FAILURES {
-            let suspended = json!({ "person_id": person.id.to_string() });
-            record_event(app, work.as_mut(), EventKind::CodesSuspended, suspended).await?;
-        }
     }
     work.commit().await?;
     if accepted { Ok(brake) } else { Err(rejected()) }

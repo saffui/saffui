@@ -227,13 +227,22 @@ struct WaitingRequest<'a> {
     browser_secret: &'a Secret,
 }
 
+/// The step of the page an answer was given at.
+#[derive(Clone, Copy)]
+enum AnsweredStep {
+    /// The name and the password.
+    Password,
+    /// A code or the answer of a key, after the password.
+    SecondFactor,
+}
+
 /// Shows a refused answer on the step it was given at: the first form
 /// again, or what the request still asks after the password.
 async fn show_refused_answer(
     product: &Product,
     waiting: &WaitingRequest<'_>,
     failure: &Failure,
-    second_step: bool,
+    step: AnsweredStep,
 ) -> HttpResponse {
     let status = if failure.code == ErrorCode::HashingBusy {
         StatusCode::SERVICE_UNAVAILABLE
@@ -241,18 +250,21 @@ async fn show_refused_answer(
         StatusCode::UNAUTHORIZED
     };
     let message = failure.code.message();
-    if second_step {
-        show_second_factor_again(
-            product,
-            waiting.realm,
-            waiting.request,
-            waiting.browser_secret,
-            status,
-            message,
-        )
-        .await
-    } else {
-        render_form(product, waiting.realm, waiting.request, status, message)
+    match step {
+        AnsweredStep::SecondFactor => {
+            show_second_factor_again(
+                product,
+                waiting.realm,
+                waiting.request,
+                waiting.browser_secret,
+                status,
+                message,
+            )
+            .await
+        }
+        AnsweredStep::Password => {
+            render_form(product, waiting.realm, waiting.request, status, message)
+        }
     }
 }
 
@@ -378,7 +390,7 @@ pub async fn submit_sign_in(
     // A code and the answer of a key are the two answers to the second
     // step. Anything else must be the whole of the first one.
     let key_answer;
-    let (answer, second_step) = match (&form.key, &form.code, &form.username, form.password) {
+    let (answer, answered) = match (&form.key, &form.code, &form.username, form.password) {
         (Some(written), ..) => {
             // A key that did not answer is no guess: nothing is counted.
             let Ok(read) = serde_json::from_str::<serde_json::Value>(written) else {
@@ -393,15 +405,15 @@ pub async fn submit_sign_in(
                 .await;
             };
             key_answer = read;
-            (SignInAnswer::Key(&key_answer), true)
+            (SignInAnswer::Key(&key_answer), AnsweredStep::SecondFactor)
         }
-        (None, Some(code), ..) => (SignInAnswer::Code(code), true),
+        (None, Some(code), ..) => (SignInAnswer::Code(code), AnsweredStep::SecondFactor),
         (None, None, Some(name), Some(password)) => (
             SignInAnswer::Password {
                 name,
                 password: Secret::new(password.into_bytes()),
             },
-            false,
+            AnsweredStep::Password,
         ),
         _ => return expired(),
     };
@@ -438,7 +450,7 @@ pub async fn submit_sign_in(
                 request,
                 browser_secret: &browser_secret,
             };
-            show_refused_answer(&product, &waiting, &failure, second_step).await
+            show_refused_answer(&product, &waiting, &failure, answered).await
         }
         Ok(SignInStep::SecondFactorRequired(_)) => expired(),
         Err(failure) => render_refusal(&product, &failure),

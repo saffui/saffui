@@ -49,23 +49,32 @@ fn write_password_form(realm: &str, message: &str) -> String {
     )
 }
 
+/// Whether a note offers to start the enrollment again.
+#[derive(Clone, Copy)]
+enum StartAgain {
+    Offered,
+    /// The key is set up, or the account holds as many as it may.
+    NotOffered,
+}
+
 /// A page that says one thing, and offers to start again when it can.
 fn render_note(
     product: &Product,
     realm: &str,
     status: StatusCode,
     note: &str,
-    start_again: bool,
+    start_again: StartAgain,
 ) -> HttpResponse {
     let class = if status.is_success() {
         ""
     } else {
         " class=\"error\""
     };
-    let link = if start_again {
-        format!("<p><a href=\"/realms/{realm}/account/security-key\">Start again</a></p>")
-    } else {
-        String::new()
+    let link = match start_again {
+        StartAgain::Offered => {
+            format!("<p><a href=\"/realms/{realm}/account/security-key\">Start again</a></p>")
+        }
+        StartAgain::NotOffered => String::new(),
     };
     render_page(
         product,
@@ -75,7 +84,7 @@ fn render_note(
 }
 
 /// A refusal of these pages: the status of its kind, its message, no form.
-fn refuse(product: &Product, failure: &Failure) -> HttpResponse {
+fn refuse_request(product: &Product, failure: &Failure) -> HttpResponse {
     let status = match failure.code {
         ErrorCode::SessionRequired => StatusCode::UNAUTHORIZED,
         ErrorCode::SecondFactorProofRequired => StatusCode::FORBIDDEN,
@@ -106,8 +115,8 @@ pub async fn show_security_keys(
             );
             render_page(&product, StatusCode::OK, &body)
         }
-        Ok(_) => refuse(&product, &Failure::new(ErrorCode::RealmNotFound)),
-        Err(failure) => refuse(&product, &failure),
+        Ok(_) => refuse_request(&product, &Failure::new(ErrorCode::RealmNotFound)),
+        Err(failure) => refuse_request(&product, &failure),
     }
 }
 
@@ -121,11 +130,11 @@ pub async fn begin_enrollment(
     // The session cookie is withheld from a form another site posts: this
     // refuses such a post by name, before its form is read.
     if is_posted_from_elsewhere(&product, &http) || !is_realm_label(&realm) {
-        return refuse(&product, &Failure::new(ErrorCode::SessionRequired));
+        return refuse_request(&product, &Failure::new(ErrorCode::SessionRequired));
     }
     let ticket = read_ticket(&product, &realm, &http);
     if ticket.is_none() {
-        return refuse(&product, &Failure::new(ErrorCode::SessionRequired));
+        return refuse_request(&product, &Failure::new(ErrorCode::SessionRequired));
     }
     let Some(form) = read_posted_form::<PasswordForm>(&http, payload).await else {
         let body = format!(
@@ -178,9 +187,9 @@ pub async fn begin_enrollment(
             &realm,
             StatusCode::CONFLICT,
             "This account holds as many security keys as it may.",
-            false,
+            StartAgain::NotOffered,
         ),
-        Err(failure) => refuse(&product, &failure),
+        Err(failure) => refuse_request(&product, &failure),
     }
 }
 
@@ -192,17 +201,29 @@ pub async fn finish_enrollment(
     payload: web::Payload,
 ) -> HttpResponse {
     if is_posted_from_elsewhere(&product, &http) || !is_realm_label(&realm) {
-        return refuse(&product, &Failure::new(ErrorCode::SessionRequired));
+        return refuse_request(&product, &Failure::new(ErrorCode::SessionRequired));
     }
     let ticket = read_ticket(&product, &realm, &http);
     if ticket.is_none() {
-        return refuse(&product, &Failure::new(ErrorCode::SessionRequired));
+        return refuse_request(&product, &Failure::new(ErrorCode::SessionRequired));
     }
     let Some(form) = read_posted_form::<KeyForm>(&http, payload).await else {
-        return render_note(&product, &realm, StatusCode::BAD_REQUEST, KEY_SILENT, true);
+        return render_note(
+            &product,
+            &realm,
+            StatusCode::BAD_REQUEST,
+            KEY_SILENT,
+            StartAgain::Offered,
+        );
     };
     let Ok(answer) = serde_json::from_str::<serde_json::Value>(&form.key) else {
-        return render_note(&product, &realm, StatusCode::BAD_REQUEST, KEY_SILENT, true);
+        return render_note(
+            &product,
+            &realm,
+            StatusCode::BAD_REQUEST,
+            KEY_SILENT,
+            StartAgain::Offered,
+        );
     };
     match finish_key_enrollment(&product, &realm, ticket.as_ref(), &answer).await {
         Ok(()) => render_note(
@@ -210,7 +231,7 @@ pub async fn finish_enrollment(
             &realm,
             StatusCode::OK,
             "Your security key is set up. It will be asked the next time you sign in.",
-            false,
+            StartAgain::NotOffered,
         ),
         // What was started is spent: the person starts again from their password.
         Err(failure) if failure.code == ErrorCode::KeyRejected => render_note(
@@ -218,8 +239,8 @@ pub async fn finish_enrollment(
             &realm,
             StatusCode::BAD_REQUEST,
             failure.code.message(),
-            true,
+            StartAgain::Offered,
         ),
-        Err(failure) => refuse(&product, &failure),
+        Err(failure) => refuse_request(&product, &failure),
     }
 }

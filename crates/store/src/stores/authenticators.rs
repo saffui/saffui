@@ -131,4 +131,19 @@ impl AuthenticatorStore for PgUnitOfWork {
         .await
         .map(|_| ())
     }
+
+    async fn holds_second_factor(&mut self, person: Uuid) -> Result<bool, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        let rows = self
+            .read_raw(
+                "SELECT EXISTS (SELECT 1 FROM totp_authenticators
+                                WHERE tenant_id = $1 AND realm_id = $2 AND person_id = $3
+                                  AND confirmed_at IS NOT NULL)
+                        OR EXISTS (SELECT 1 FROM security_keys
+                                   WHERE tenant_id = $1 AND realm_id = $2 AND person_id = $3)",
+                &[&tenant, &realm, &person],
+            )
+            .await?;
+        Ok(rows.first().ok_or(StorageError::Failed)?.get(0))
+    }
 }

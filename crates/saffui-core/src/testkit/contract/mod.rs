@@ -620,7 +620,7 @@ pub async fn check_persons_contract(app: &App) {
 pub async fn check_sign_in_contract(app: &App) {
     use time::Duration;
 
-    use crate::login::session::{AuthenticationMethod, Session, SessionState};
+    use crate::login::session::{AuthenticationMethod, ReadSession, Session, SessionState};
     use crate::testkit::fixtures::{create_person, create_realm};
 
     let scope = create_realm(app, "contract-sign-in").await;
@@ -644,7 +644,10 @@ pub async fn check_sign_in_contract(app: &App) {
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
     assert_eq!(
         work.read_session(session.id).await,
-        Ok(Some(session.clone()))
+        Ok(Some(ReadSession {
+            session: session.clone(),
+            person_holds_factor: false,
+        }))
     );
     let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
     assert_eq!(elsewhere.read_session(session.id).await, Ok(None));
@@ -728,7 +731,7 @@ pub async fn check_codes_contract(app: &App) {
         .await
         .expect("a read")
         .expect("the session is kept");
-    assert_eq!(ended.state, SessionState::Ended);
+    assert_eq!(ended.session.state, SessionState::Ended);
 
     // A request is read until it expires, and taken once.
     let pending = PendingAuthorization {
@@ -1293,10 +1296,41 @@ async fn check_that_a_step_is_accepted_once(
     );
 }
 
+/// Asks twice whether `person` holds a second factor: alone, and with a
+/// session of theirs written in `work` and read back.
+async fn ask_whether_holder(
+    app: &App,
+    work: &mut dyn crate::ports::storage::UnitOfWork,
+    person: Uuid,
+) -> [bool; 2] {
+    use time::Duration;
+
+    use crate::login::session::{AuthenticationMethod, Session, SessionState};
+
+    let now = app.now();
+    let session = Session {
+        id: mint_id(app).expect("an identifier"),
+        person,
+        secret_digest: vec![8; 32],
+        state: SessionState::Active,
+        methods: vec![AuthenticationMethod::Password],
+        authenticated_at: now,
+        expires_at: now + Duration::hours(1),
+    };
+    work.insert_session(&session).await.expect("a session");
+    let read = work
+        .read_session(session.id)
+        .await
+        .expect("a read")
+        .expect("the session");
+    let alone = work.holds_second_factor(person).await.expect("an answer");
+    [alone, read.person_holds_factor]
+}
+
 /// What any storage owes to the authenticator of a person: a secret that
 /// was never confirmed can be replaced and a confirmed one cannot, a time
-/// step is accepted once and never one before it, and nothing of it is
-/// reachable from another realm.
+/// step is accepted once and never one before it, it is a second factor
+/// once confirmed, and nothing of it is reachable from another realm.
 ///
 /// # Panics
 ///
@@ -1337,6 +1371,11 @@ pub async fn check_authenticators_contract(app: &App) {
         "a secret in place of one never confirmed"
     );
     assert_eq!(work.read_totp(ada.id).await, Ok(Some(offer(2))));
+    assert_eq!(
+        ask_whether_holder(app, work.as_mut(), ada.id).await,
+        [false; 2],
+        "a secret nobody confirmed is no factor"
+    );
     work.commit().await.expect("a commit");
 
     // Unknown from another realm.
@@ -1362,6 +1401,10 @@ pub async fn check_authenticators_contract(app: &App) {
         (confirmed.confirmed_at, confirmed.last_step),
         (Some(now), Some(11)),
         "the instant of the confirmation is the one of the first code"
+    );
+    assert_eq!(
+        ask_whether_holder(app, work.as_mut(), ada.id).await,
+        [true; 2]
     );
 
     // A confirmed authenticator is not replaced.
@@ -1505,15 +1548,30 @@ pub async fn check_ended_sessions_contract(app: &App) {
         (&of_bob, SessionState::Active),
     ] {
         let read = work.read_session(session.id).await.expect("a read");
-        assert_eq!(read.map(|read| read.state), Some(state));
+        assert_eq!(read.map(|read| read.session.state), Some(state));
     }
     work.commit().await.expect("a commit");
 }
 
+async fn check_that_a_key_is_a_factor_of_its_person(
+    app: &App,
+    work: &mut dyn crate::ports::storage::UnitOfWork,
+    holder: Uuid,
+    other: Uuid,
+) {
+    assert_eq!(ask_whether_holder(app, work, holder).await, [true; 2]);
+    assert_eq!(
+        ask_whether_holder(app, work, other).await,
+        [false; 2],
+        "the keys of someone else are no factor"
+    );
+}
+
 /// What any storage owes to the security keys of a person: a key is enrolled
-/// once in a realm, a use is kept only against the record it was judged
-/// with, an enrollment is taken once and not after it expired, and nothing
-/// of it is reachable from another realm.
+/// once in a realm and is a second factor of its person only, a use is kept
+/// only against the record it was judged with, an enrollment is taken once
+/// and not after it expired, and nothing of it is reachable from another
+/// realm.
 ///
 /// # Panics
 ///
@@ -1551,6 +1609,7 @@ pub async fn check_security_keys_contract(app: &App) {
         "the oldest first"
     );
     assert_eq!(work.list_security_keys(bob.id).await, Ok(vec![]));
+    check_that_a_key_is_a_factor_of_its_person(app, work.as_mut(), ada.id, bob.id).await;
 
     // A use is kept against the key as it was read, once.
     let moved = [1_u8, 1];
@@ -1600,6 +1659,7 @@ pub async fn check_security_keys_contract(app: &App) {
 
     let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
     assert_eq!(elsewhere.list_security_keys(ada.id).await, Ok(vec![]));
+    assert_eq!(elsewhere.holds_second_factor(ada.id).await, Ok(false));
     assert_eq!(elsewhere.delete_security_keys(ada.id).await, Ok(0));
     drop(elsewhere);
 
@@ -1621,5 +1681,6 @@ pub async fn check_security_keys_contract(app: &App) {
     assert_eq!(work.take_key_enrollment(ada.id, now).await, Ok(None));
     assert_eq!(work.delete_security_keys(ada.id).await, Ok(2));
     assert_eq!(work.list_security_keys(ada.id).await, Ok(vec![]));
+    assert_eq!(work.holds_second_factor(ada.id).await, Ok(false));
     work.commit().await.expect("a commit");
 }

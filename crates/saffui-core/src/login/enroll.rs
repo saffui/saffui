@@ -9,8 +9,7 @@ use uuid::Uuid;
 
 use super::device::DeviceMark;
 use super::session::{
-    AuthenticationMethod, Session, SessionTicket, find_live_session, has_second_factor,
-    proves_second_factor,
+    AuthenticationMethod, Session, SessionTicket, find_live_session, proves_second_factor,
 };
 use super::steps::password::verify_password;
 use super::steps::totp::{accept_code, read_secret_place};
@@ -140,7 +139,8 @@ pub async fn begin_totp_enrollment(
 /// secret, with one of its codes: a session someone else got hold of sets
 /// up nothing. A browser the realm keeps for the person is counted apart,
 /// as at sign-in: guesses on the name from elsewhere do not keep them from
-/// setting up a factor.
+/// setting up a factor. The application starts with no code counted
+/// against the person: it is not born suspended.
 ///
 /// # Errors
 ///
@@ -197,6 +197,7 @@ pub async fn confirm_totp_enrollment(
     {
         return Err(Failure::new(ErrorCode::CodeRejected));
     }
+    work.clear_code_attempts(person.id).await?;
     let closed =
         close_sessions_without_factor(app, work.as_mut(), person.id, Some(session.id)).await?;
     let enrolled = json!({
@@ -427,7 +428,7 @@ async fn require_factor_proof(
     person: Uuid,
     session: &Session,
 ) -> Result<(), Failure> {
-    if !proves_second_factor(session) && has_second_factor(work, person).await? {
+    if !proves_second_factor(session) && work.holds_second_factor(person).await? {
         return Err(Failure::new(ErrorCode::SecondFactorProofRequired));
     }
     Ok(())
@@ -656,7 +657,7 @@ mod tests {
         let refresh_token = other.tokens.refresh_token.expect("a refresh token");
         assert!(
             scenario.refresh(&refresh_token).is_err(),
-            "and its refresh tokens with it"
+            "a refresh token of the ended session gives nothing"
         );
         assert_eq!(
             describe(&scenario, &owner),
@@ -1077,5 +1078,120 @@ mod tests {
         assert_eq!(removed["payload"]["kind"], "security_key");
         assert_eq!(removed["payload"]["keys"], 2);
         assert_eq!(remove(), Err(ErrorCode::SecurityKeyNotFound));
+    }
+
+    #[test]
+    fn a_session_the_password_alone_opened_confirms_no_application_once_a_key_is_set_up() {
+        let scenario = Scenario::start();
+        let ticket = scenario.sign_in("openid").ticket;
+        let offered = complete(begin_totp_enrollment(&scenario.app, "acme", Some(&ticket)))
+            .expect("a secret to enroll");
+
+        scenario.enroll_security_key(&ticket, "k1");
+
+        let code = scenario.read_code_now(&offered.typed_secret);
+        assert_eq!(
+            confirm(&scenario, &ticket, PASSWORD, &code),
+            Err(ErrorCode::SecondFactorProofRequired),
+            "a key was set up since the secret was shown"
+        );
+        assert_eq!(describe(&scenario, &ticket), EnrollmentState::Pending);
+    }
+
+    #[test]
+    fn a_session_the_password_alone_opened_finishes_no_key_once_an_application_is_set_up() {
+        let scenario = Scenario::start();
+        let ticket = scenario.sign_in("openid").ticket;
+        let options = begin_key(&scenario, &ticket, PASSWORD).expect("a started enrollment");
+
+        scenario.enroll_authenticator(&ticket);
+
+        assert_eq!(
+            finish_key(
+                &scenario,
+                &ticket,
+                &TrustingKeys::answer_enrollment(&options, "k1")
+            ),
+            Err(ErrorCode::SecondFactorProofRequired),
+            "an application was set up since the key was asked"
+        );
+        assert_eq!(count_keys(&scenario, &ticket), 0);
+    }
+
+    /// Counts one more code typed by `person`, and answers how many that makes.
+    fn count_one_more_code(scenario: &Scenario, person: uuid::Uuid) -> u32 {
+        complete(async {
+            let mut work = scenario
+                .app
+                .storage
+                .begin(scenario.scope)
+                .await
+                .expect("a unit of work");
+            let counted = work
+                .count_code_attempt(person, scenario.app.now())
+                .await
+                .expect("a count");
+            work.commit().await.expect("a commit");
+            counted
+        })
+    }
+
+    fn give_code(scenario: &Scenario, person: uuid::Uuid, code: &str) -> Result<(), ErrorCode> {
+        use crate::login::flow::finish_sign_in_with_code;
+
+        complete(finish_sign_in_with_code(
+            &scenario.app,
+            scenario.scope,
+            person,
+            code,
+            None,
+            &[],
+        ))
+        .map(|_| ())
+        .map_err(|failure| failure.code)
+    }
+
+    #[test]
+    fn an_application_set_up_starts_with_no_code_counted_against_its_person() {
+        use crate::login::steps::totp::MAX_CODE_FAILURES;
+
+        let scenario = Scenario::start();
+        let ticket = scenario.sign_in("openid").ticket;
+        let person = scenario.find_ada();
+        // Left by codes counted before the application was set up.
+        for _ in 0..MAX_CODE_FAILURES {
+            count_one_more_code(&scenario, person);
+        }
+
+        let secret = scenario.enroll_authenticator(&ticket);
+
+        assert_eq!(
+            give_code(&scenario, person, &scenario.read_code_now(&secret)),
+            Ok(()),
+            "the application is not born suspended"
+        );
+    }
+
+    #[test]
+    fn an_administrator_who_takes_an_application_away_forgets_the_codes_typed_for_it() {
+        let scenario = Scenario::start();
+        let ticket = scenario.sign_in("openid").ticket;
+        scenario.enroll_authenticator(&ticket);
+        let person = scenario.find_ada();
+        for _ in 0..3 {
+            assert_eq!(
+                give_code(&scenario, person, "000000"),
+                Err(ErrorCode::CodeRejected)
+            );
+        }
+        let caller = name_operator(&scenario);
+
+        complete(remove_totp(&scenario.app, &caller, person)).expect("removed");
+
+        assert_eq!(
+            count_one_more_code(&scenario, person),
+            1,
+            "the three codes went with the application"
+        );
     }
 }

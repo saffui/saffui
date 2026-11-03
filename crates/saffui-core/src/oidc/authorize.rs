@@ -672,7 +672,7 @@ pub async fn finish_sign_in(
     // request. The other signed in for nothing, and its session ends here.
     let Some(pending) = work.take_pending_authorization(request, app.now()).await? else {
         if let Some(orphan) = work.read_session(signed_in.session).await? {
-            close_session(app, work.as_mut(), &orphan).await?;
+            close_session(app, work.as_mut(), &orphan.session).await?;
             work.commit().await?;
         }
         return Err(expired());

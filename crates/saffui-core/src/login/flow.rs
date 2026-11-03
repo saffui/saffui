@@ -307,6 +307,7 @@ mod tests {
                 .await
                 .expect("a read")
                 .expect("the session")
+                .session
         });
         assert_eq!(
             session.methods,
@@ -529,6 +530,7 @@ mod tests {
                 .await
                 .expect("a read")
                 .expect("the session")
+                .session
         });
         assert_eq!(
             session.methods,
@@ -652,5 +654,155 @@ mod tests {
             }
             FirstStep::SignedIn(_) => panic!("a person with two factors owes one"),
         }
+    }
+
+    /// Gives a wrong code for `person` `times` times, from an address of its
+    /// own each time: only the person and the name are counted.
+    fn guess_codes(scenario: &Scenario, person: Uuid, times: u32) {
+        for last in 1..=times {
+            let address = std::net::IpAddr::from([192, 0, 2, u8::try_from(last).expect("a byte")]);
+            let refused = complete(finish_sign_in_with_code(
+                &scenario.app,
+                scenario.scope,
+                person,
+                "000000",
+                Some(address),
+                &[],
+            ));
+            assert_eq!(
+                refused.map(|_| ()).map_err(|failure| failure.code),
+                Err(ErrorCode::CodeRejected)
+            );
+        }
+    }
+
+    /// Spends what `address` may attempt in the window, on a name nobody
+    /// has: one attempt more is refused before anything is hashed.
+    fn spend_attempts_of(scenario: &Scenario, address: std::net::IpAddr) {
+        use crate::login::throttle::MAX_RECENT_ATTEMPTS_PER_ADDRESS;
+
+        let attempt = || {
+            complete(sign_in_with_password(
+                &scenario.app,
+                scenario.scope,
+                "nobody",
+                Secret::new(b"a guess".to_vec()),
+                Some(address),
+                &[],
+            ))
+            .map(|_| ())
+            .map_err(|failure| failure.code)
+        };
+        for _ in 0..MAX_RECENT_ATTEMPTS_PER_ADDRESS {
+            assert_eq!(attempt(), Err(ErrorCode::SignInFailed));
+        }
+        assert_eq!(
+            attempt(),
+            Err(ErrorCode::HashingBusy),
+            "the address spent what it may attempt"
+        );
+    }
+
+    #[test]
+    fn a_second_step_is_not_counted_against_what_its_address_may_attempt() {
+        let address = std::net::IpAddr::from([203, 0, 113, 7]);
+        let (scenario, secret) = start_enrolled();
+        let person = owe_a_code(&scenario, &[]);
+        spend_attempts_of(&scenario, address);
+
+        let by_code = complete(finish_sign_in_with_code(
+            &scenario.app,
+            scenario.scope,
+            person,
+            &scenario.read_code_now(&secret),
+            Some(address),
+            &[],
+        ));
+        assert_eq!(
+            by_code.map(|_| ()).map_err(|failure| failure.code),
+            Ok(()),
+            "nothing is hashed for a code"
+        );
+
+        let scenario = start_with_a_key();
+        let (person, asked) = owe_a_key(&scenario);
+        spend_attempts_of(&scenario, address);
+        let by_key = complete(finish_sign_in_with_key(
+            &scenario.app,
+            scenario.scope,
+            person,
+            &asked.state,
+            &TrustingKeys::answer_proof(&asked.options, "k1", 1),
+            Some(address),
+            &[],
+        ));
+        assert_eq!(
+            by_key.map(|_| ()).map_err(|failure| failure.code),
+            Ok(()),
+            "nor for the answer of a key"
+        );
+    }
+
+    #[test]
+    fn a_key_that_counts_nothing_answers_zero_each_time_and_is_let_in_each_time() {
+        let scenario = start_with_a_key();
+
+        for _ in 0..2 {
+            let (person, asked) = owe_a_key(&scenario);
+            assert_eq!(
+                give_key(&scenario, person, &asked, 0).map(|_| ()),
+                Ok(()),
+                "a counter that stays at zero tells no copy"
+            );
+        }
+    }
+
+    #[test]
+    fn a_proven_key_forgets_the_codes_the_person_got_wrong() {
+        use crate::login::steps::totp::MAX_CODE_FAILURES;
+
+        let (scenario, secret) = start_enrolled();
+        let proved = scenario.sign_in_with_code(&secret);
+        scenario.enroll_security_key(&proved, "k1");
+        let person = owe_a_code_beside_a_key(&scenario);
+        guess_codes(&scenario, person, MAX_CODE_FAILURES);
+        // Past the window that locks the name for whoever comes from no address.
+        scenario.clock.advance(Duration::from_mins(10));
+
+        scenario.sign_in_with_key("k1", 1);
+
+        let person = owe_a_code_beside_a_key(&scenario);
+        assert_eq!(
+            give_code(&scenario, person, &scenario.read_code_now(&secret), &[]).map(|_| ()),
+            Ok(()),
+            "the codes were suspended, and the key the person proved gave them back"
+        );
+    }
+
+    #[test]
+    fn codes_given_by_a_person_without_an_application_suspend_nothing_and_a_later_one_is_let_in() {
+        use crate::login::steps::totp::MAX_CODE_FAILURES;
+
+        let scenario = start_with_a_key();
+        let (person, _) = owe_a_key(&scenario);
+        guess_codes(&scenario, person, MAX_CODE_FAILURES);
+        assert!(
+            !scenario
+                .read_event_kinds()
+                .iter()
+                .any(|kind| kind == "authenticator.codes_suspended"),
+            "a person who has no codes has none suspended"
+        );
+        scenario.clock.advance(Duration::from_mins(10));
+
+        let proved = scenario.sign_in_with_key("k1", 1);
+        let secret = scenario.enroll_authenticator(&proved);
+
+        let person = owe_a_code_beside_a_key(&scenario);
+        assert_eq!(
+            give_code(&scenario, person, &scenario.read_code_now(&secret), &[]).map(|_| ()),
+            Ok(()),
+            "the first right code of the new application is let in"
+        );
     }
 }

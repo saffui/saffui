@@ -37,8 +37,8 @@ impl Clock for SystemClock {
 
 pub(crate) struct Wired {
     pub(crate) app: App,
-    /// Whether a security key can be enrolled on the public origin.
-    pub(crate) security_keys_served: bool,
+    /// Why no security key can be enrolled, when none can.
+    pub(crate) security_keys_refused: Option<&'static str>,
     pool: Pool,
 }
 
@@ -88,8 +88,15 @@ pub(crate) fn wire_product(
     let pool = build_pool(database, pool)?;
     let storage = PgStorage::new(pool.clone(), SchemaWindow::of_exactly(EMBEDDED));
     let security_keys = WebauthnSecurityKeys::for_origin(settings.public_origin.as_str());
+    let security_keys_refused = if security_keys.is_available() {
+        None
+    } else if crypto::compiled_features().contains(&"fips-strict") {
+        Some("this build draws from the validated module alone: no security key is served")
+    } else {
+        Some("the public origin is named by an address: no security key can be enrolled")
+    };
     Ok(Wired {
-        security_keys_served: security_keys.is_available(),
+        security_keys_refused,
         app: App {
             settings,
             storage: Arc::new(storage),

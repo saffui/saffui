@@ -244,7 +244,8 @@ impl OneTimeCodes for PredictableCodes {
 /// Security keys that sign nothing: a key answers a challenge by repeating
 /// it, with its name and a counter. It keeps what matters of the real ones:
 /// an answer serves for one challenge, a key must be held to be believed,
-/// and a counter that does not move forward tells a copy.
+/// and a counter that does not move forward tells a copy, unless the key
+/// counts nothing.
 #[derive(Debug, Default)]
 pub struct TrustingKeys {
     started: AtomicU64,
@@ -344,12 +345,14 @@ impl SecurityKeys for TrustingKeys {
             .filter_map(|record| Self::read_record(record))
             .find(|(known, _)| known == credential_id)
             .ok_or(refused)?;
-        if counter <= last {
+        // As the adapter does: a key that counts nothing answers zero forever,
+        // and its record does not move.
+        if (counter > 0 || last > 0) && counter <= last {
             return Err(KeyRefusal::CopySuspected);
         }
         Ok(KeyProof {
             credential_id: credential_id.as_bytes().to_vec(),
-            record: Some(Self::write_record(credential_id, counter)),
+            record: (counter > last).then(|| Self::write_record(credential_id, counter)),
         })
     }
 }

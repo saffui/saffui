@@ -1,26 +1,15 @@
 use async_trait::async_trait;
-use saffui_core::login::session::{AuthenticationMethod, Session, SessionState};
+use saffui_core::login::session::{AuthenticationMethod, ReadSession, Session, SessionState};
 use saffui_core::login::store::SessionStore;
 use saffui_core::ports::storage::StorageError;
 use uuid::Uuid;
 
 use crate::query::bind::col;
 use crate::query::criteria::Criteria;
-use crate::query::ident::Column;
 use crate::query::insert::Insert;
-use crate::query::select::Select;
 use crate::query::update::Update;
 use crate::schema::sessions;
 use crate::work::PgUnitOfWork;
-
-const SESSION: &[Column] = &[
-    sessions::PERSON_ID,
-    sessions::SECRET_DIGEST,
-    sessions::STATE,
-    sessions::AUTHENTICATED_AT,
-    sessions::EXPIRES_AT,
-    sessions::METHODS,
-];
 
 #[async_trait]
 impl SessionStore for PgUnitOfWork {
@@ -43,16 +32,30 @@ impl SessionStore for PgUnitOfWork {
         self.execute(&insert).await.map(|_| ())
     }
 
-    async fn read_session(&mut self, id: Uuid) -> Result<Option<Session>, StorageError> {
-        let select = Select::from(sessions::TABLE, SESSION)
-            .filter(Criteria::new().where_equal(sessions::SESSION_ID, &id))
-            .build();
-        self.read_one(&select)
-            .await?
+    async fn read_session(&mut self, id: Uuid) -> Result<Option<ReadSession>, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        // One statement: whether the person holds a factor is asked at each
+        // use of a session, and costs no trip of its own.
+        let rows = self
+            .read_raw(
+                "SELECT s.person_id, s.secret_digest, s.state, s.authenticated_at, s.expires_at,
+                        s.methods,
+                        EXISTS (SELECT 1 FROM totp_authenticators AS t
+                                WHERE t.tenant_id = $1 AND t.realm_id = $2
+                                  AND t.person_id = s.person_id AND t.confirmed_at IS NOT NULL)
+                        OR EXISTS (SELECT 1 FROM security_keys AS k
+                                   WHERE k.tenant_id = $1 AND k.realm_id = $2
+                                     AND k.person_id = s.person_id)
+                 FROM sessions AS s
+                 WHERE s.tenant_id = $1 AND s.realm_id = $2 AND s.session_id = $3",
+                &[&tenant, &realm, &id],
+            )
+            .await?;
+        rows.first()
             .map(|row| {
                 let state: String = row.get(2);
                 let methods: Vec<String> = row.get(5);
-                Ok(Session {
+                let session = Session {
                     id,
                     person: row.get(0),
                     secret_digest: row.get(1),
@@ -64,6 +67,10 @@ impl SessionStore for PgUnitOfWork {
                         .collect::<Result<_, _>>()?,
                     authenticated_at: row.get(3),
                     expires_at: row.get(4),
+                };
+                Ok(ReadSession {
+                    session,
+                    person_holds_factor: row.get(6),
                 })
             })
             .transpose()

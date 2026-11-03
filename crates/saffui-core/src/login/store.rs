@@ -2,14 +2,16 @@ use async_trait::async_trait;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::session::{AuthenticationMethod, Session};
+use super::session::{AuthenticationMethod, ReadSession, Session};
 use crate::ports::storage::StorageError;
 
 #[async_trait]
 pub trait SessionStore {
     async fn insert_session(&mut self, session: &Session) -> Result<(), StorageError>;
 
-    async fn read_session(&mut self, id: Uuid) -> Result<Option<Session>, StorageError>;
+    /// Reads a session and, in the same operation, whether its person holds
+    /// a second factor now.
+    async fn read_session(&mut self, id: Uuid) -> Result<Option<ReadSession>, StorageError>;
 
     /// Ends a session that is still active, and tells whether it did: of two
     /// endings at once, one ends it. It is kept, ended, until it expires and
@@ -110,9 +112,13 @@ pub trait AuthenticatorStore {
         now: OffsetDateTime,
     ) -> Result<u32, StorageError>;
 
-    /// Forgets the codes a person typed: they proved a second factor, or an
-    /// administrator let them in.
+    /// Forgets the codes a person typed: they proved a second factor, set up
+    /// a new application, or an administrator let them in.
     async fn clear_code_attempts(&mut self, person: Uuid) -> Result<(), StorageError>;
+
+    /// Whether a person holds a second factor: a confirmed authenticator
+    /// application, or a security key. One operation.
+    async fn holds_second_factor(&mut self, person: Uuid) -> Result<bool, StorageError>;
 }
 
 /// A browser a person signed in from, as the realm keeps it.

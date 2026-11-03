@@ -6,7 +6,7 @@ use super::{KeptCode, MemoryUnitOfWork};
 use crate::clients::store::ListWindow;
 use crate::directory::Person;
 use crate::directory::store::PersonStore;
-use crate::login::session::{AuthenticationMethod, Session, SessionState};
+use crate::login::session::{AuthenticationMethod, ReadSession, Session, SessionState};
 use crate::login::store::{
     AuthenticatorStore, KnownBrowser, KnownBrowserStore, SecurityKey, SecurityKeyStore,
     SessionStore, ThrottleStore, TotpAuthenticator, TotpUse,
@@ -39,6 +39,20 @@ impl MemoryUnitOfWork {
             .or_default()
             .push(person.clone());
         Ok(())
+    }
+
+    fn holds_factor(&self, person: Uuid) -> bool {
+        let realm = self.scope.realm().as_uuid();
+        let code = self
+            .working
+            .totp
+            .get(&(realm, person))
+            .is_some_and(|known| known.confirmed_at.is_some());
+        code || self
+            .working
+            .security_keys
+            .get(&realm)
+            .is_some_and(|keys| keys.iter().any(|key| key.person == person))
     }
 
     fn keep_password(&mut self, person: Uuid, phc: &str) -> Result<(), StorageError> {
@@ -131,13 +145,17 @@ impl SessionStore for MemoryUnitOfWork {
         Ok(())
     }
 
-    async fn read_session(&mut self, id: Uuid) -> Result<Option<Session>, StorageError> {
-        Ok(self
+    async fn read_session(&mut self, id: Uuid) -> Result<Option<ReadSession>, StorageError> {
+        let session = self
             .working
             .sessions
             .get(&self.scope.realm().as_uuid())
             .and_then(|sessions| sessions.iter().find(|session| session.id == id))
-            .cloned())
+            .cloned();
+        Ok(session.map(|session| ReadSession {
+            person_holds_factor: self.holds_factor(session.person),
+            session,
+        }))
     }
 
     async fn end_session(&mut self, id: Uuid) -> Result<bool, StorageError> {
@@ -547,6 +565,10 @@ impl AuthenticatorStore for MemoryUnitOfWork {
             .code_attempts
             .remove(&(self.scope.realm().as_uuid(), person));
         Ok(())
+    }
+
+    async fn holds_second_factor(&mut self, person: Uuid) -> Result<bool, StorageError> {
+        Ok(self.holds_factor(person))
     }
 }
 

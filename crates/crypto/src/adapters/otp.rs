@@ -30,7 +30,7 @@ fn describe_codes() -> TotpParams {
     TotpParams::new(HashAlg::Sha1)
 }
 
-fn carry(secret: &Secret) -> SecretBox<Vec<u8>> {
+fn box_secret(secret: &Secret) -> SecretBox<Vec<u8>> {
     SecretBox::new(Box::new(secret.expose().to_vec()))
 }
 
@@ -63,7 +63,7 @@ impl OneTimeCodes for ProviderOneTimeCodes {
         };
         totp_verify_step_at(
             self.provider.hmac(),
-            &carry(secret),
+            &box_secret(secret),
             code,
             unix_seconds,
             describe_codes(),
@@ -78,7 +78,7 @@ impl OneTimeCodes for ProviderOneTimeCodes {
         account: &str,
         secret: &Secret,
     ) -> Result<TotpEnrollmentText, CryptoFailure> {
-        let uri = totp_provisioning_uri(&carry(secret), issuer, account, describe_codes())
+        let uri = totp_provisioning_uri(&box_secret(secret), issuer, account, describe_codes())
             .map_err(|_| CryptoFailure)?;
         Ok(TotpEnrollmentText {
             uri,

@@ -212,6 +212,7 @@ mod tests {
             complete(work.read_session(signed_in.ticket.session))
                 .expect("a read")
                 .expect("the session")
+                .session
         };
         // Both read it live, before either ended it.
         let (seen_first, seen_second) = (read(), read());

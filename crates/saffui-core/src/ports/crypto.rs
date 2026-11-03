@@ -255,7 +255,7 @@ pub struct KeyProof {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum KeyRefusal {
     /// The answer does not prove the key: wrong challenge, wrong origin,
-    /// wrong signature, a key that is not held, a counter that went back.
+    /// wrong signature, a key that is not held.
     #[error("the answer of the security key is refused")]
     Refused,
     /// The counter of the key did not move forward: a copy of the key

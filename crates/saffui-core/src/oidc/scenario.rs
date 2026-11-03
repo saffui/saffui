@@ -86,7 +86,8 @@ impl Scenario {
         let mut work = complete(self.app.storage.begin(self.scope)).expect("a unit of work");
         let session = complete(work.read_session(ticket.session))
             .expect("a read")
-            .expect("the session");
+            .expect("the session")
+            .session;
         complete(close_session(&self.app, work.as_mut(), &session)).expect("an ended session");
         complete(work.commit()).expect("a commit");
     }

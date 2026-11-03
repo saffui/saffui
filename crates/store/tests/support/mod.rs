@@ -10,6 +10,7 @@ use pgcore::testkit::TestDatabase;
 use saffui_core::app::App;
 use saffui_core::settings::{PublicOrigin, Settings};
 use saffui_core::testkit::clock::FixedClock;
+use saffui_core::testkit::digest::WeakDigester;
 use saffui_core::testkit::random::CountingRandom;
 use store::PgStorage;
 
@@ -24,6 +25,7 @@ pub async fn wire_on_postgres(pool: PoolSettings) -> (App, TestDatabase) {
         clock: Arc::new(FixedClock::default()),
         // Each test has a database of its own: identifiers need only differ within one.
         random: Arc::new(CountingRandom::default()),
+        digester: Arc::new(WeakDigester),
     };
     (app, database)
 }

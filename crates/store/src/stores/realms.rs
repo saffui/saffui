@@ -18,7 +18,7 @@ impl RealmStore for PgUnitOfWork {
         // The key is written from the scope: a tenant other than the one this
         // unit of work is bound to is refused here, before row security is.
         if tenant.id != saffui_core::ports::storage::UnitOfWork::scope(self).tenant() {
-            return Err(StorageError::Failed);
+            return Err(self.refuse_out_of_scope());
         }
         let insert = Insert::into(
             tenants::TABLE,
@@ -34,7 +34,7 @@ impl RealmStore for PgUnitOfWork {
     async fn insert_realm(&mut self, realm: &Realm) -> Result<(), StorageError> {
         let scope = saffui_core::ports::storage::UnitOfWork::scope(self);
         if realm.tenant != scope.tenant() || realm.id != scope.realm() {
-            return Err(StorageError::Failed);
+            return Err(self.refuse_out_of_scope());
         }
         let name = realm.name.as_str();
         let insert = Insert::into(

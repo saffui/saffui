@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 use deadpool_postgres::{Object, Pool};
-use pgcore::probe::classify_pool_error;
+use pgcore::probe::{classify_pool_error, describe_driver_error};
 use saffui_core::ports::storage::{StorageError, StorageUnavailable, UnitOfWork};
 use saffui_core::tenancy::RealmScope;
 use tokio_postgres::Row;
@@ -12,6 +12,27 @@ use uuid::Uuid;
 
 use crate::query::bind::{Built, Value};
 use crate::translate_probe_failure;
+
+/// How a unit of work reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Mode {
+    /// Each statement sees what committed before it, and may write.
+    Normal,
+    /// Every statement sees the instant of the first, and none may write.
+    Snapshot,
+}
+
+impl Mode {
+    fn begin(self) -> &'static str {
+        match self {
+            Self::Normal => "BEGIN",
+            Self::Snapshot => "BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY",
+        }
+    }
+}
+
+/// The bound of a lock when the pool sets none for its connections.
+const DEFAULT_LOCK_BOUND_MILLIS: u128 = 5_000;
 
 pub struct PgUnitOfWork {
     /// Taken by `commit`. Still here when the value is dropped: abandoned.
@@ -23,7 +44,11 @@ pub struct PgUnitOfWork {
 }
 
 impl PgUnitOfWork {
-    pub(crate) async fn open(pool: &Pool, scope: RealmScope) -> Result<Self, StorageError> {
+    pub(crate) async fn open(
+        pool: &Pool,
+        scope: RealmScope,
+        mode: Mode,
+    ) -> Result<Self, StorageError> {
         let client = pool
             .get()
             .await
@@ -32,15 +57,23 @@ impl PgUnitOfWork {
         // with it, so the next borrower of the session starts with none. The
         // two values are identifiers this process formats, never free text.
         // A lock waited for longer than the pool waits for a connection gives
-        // the connection back rather than holding it.
+        // the connection back rather than holding it: the bound is the pool's.
+        let lock_bound = pool
+            .timeouts()
+            .wait
+            .map_or(DEFAULT_LOCK_BOUND_MILLIS, |wait| wait.as_millis());
         let opening = format!(
-            "BEGIN; SELECT set_config('lock_timeout', '5s', true), \
+            "{}; SELECT set_config('lock_timeout', '{lock_bound}', true), \
              set_config('saffui.tenant', '{}', true), set_config('saffui.realm', '{}', true)",
+            mode.begin(),
             scope.tenant().as_uuid(),
             scope.realm().as_uuid()
         );
         client.batch_execute(&opening).await.map_err(|error| {
-            tracing::error!(%error, "a unit of work cannot be opened");
+            tracing::error!(
+                cause = %describe_driver_error(&error),
+                "a unit of work cannot be opened"
+            );
             StorageError::Unavailable(StorageUnavailable::Unreachable)
         })?;
         Ok(Self {
@@ -48,6 +81,14 @@ impl PgUnitOfWork {
             scope,
             failed: false,
         })
+    }
+
+    /// Refuses a write the store itself finds outside the scope. The unit of
+    /// work is over, as after a refusal of the database: a commit keeps
+    /// nothing it wrote before.
+    pub(crate) fn refuse_out_of_scope(&mut self) -> StorageError {
+        self.failed = true;
+        StorageError::Failed
     }
 
     fn scope_keys(&self) -> (Uuid, Uuid) {
@@ -77,6 +118,14 @@ impl PgUnitOfWork {
         read.map_err(|error| self.translate(error))
     }
 
+    /// Reads every row a statement of the builder selects. The statement says
+    /// how many: a read without a limit is the caller's choice to answer for.
+    pub(crate) async fn read_all(&mut self, built: &Built<'_>) -> Result<Vec<Row>, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        let values = built.bind(&tenant, &realm);
+        self.read_raw(&built.sql, &values).await
+    }
+
     /// Runs constant SQL written by hand: an atomic operation the builder does
     /// not express. The statement names its scope keys itself.
     pub(crate) async fn execute_raw(
@@ -93,6 +142,21 @@ impl PgUnitOfWork {
         ran.map_err(|error| self.translate(error))
     }
 
+    /// Reads the rows of constant SQL written by hand, as `execute_raw` runs it.
+    pub(crate) async fn read_raw(
+        &mut self,
+        sql: &str,
+        values: &[Value<'_>],
+    ) -> Result<Vec<Row>, StorageError> {
+        let read = async {
+            let client = self.client.as_ref().ok_or(None)?;
+            let statement = client.prepare_cached(sql).await.map_err(Some)?;
+            client.query(&statement, values).await.map_err(Some)
+        }
+        .await;
+        read.map_err(|error| self.translate(error))
+    }
+
     /// The text of the database goes to the journal and stops there.
     fn translate(&mut self, error: Option<tokio_postgres::Error>) -> StorageError {
         self.failed = true;
@@ -100,7 +164,10 @@ impl PgUnitOfWork {
             return StorageError::Failed;
         };
         let Some(refusal) = error.as_db_error() else {
-            tracing::error!(%error, "the link to the database failed inside a unit of work");
+            tracing::error!(
+                cause = %describe_driver_error(&error),
+                "the link to the database failed inside a unit of work"
+            );
             return StorageError::Unavailable(StorageUnavailable::Unreachable);
         };
         if *refusal.code() == SqlState::UNIQUE_VIOLATION
@@ -108,20 +175,24 @@ impl PgUnitOfWork {
         {
             return StorageError::Taken(taken);
         }
-        // Waited too long, or for a lock the other waits on: busy, not broken.
+        // Waited too long for a lock or for the statement itself, or for a
+        // lock the other waits on: busy, not broken.
         if [
             SqlState::LOCK_NOT_AVAILABLE,
+            SqlState::QUERY_CANCELED,
             SqlState::T_R_DEADLOCK_DETECTED,
         ]
         .contains(refusal.code())
         {
-            tracing::warn!(code = refusal.code().code(), "a statement gave up a lock");
+            tracing::warn!(
+                cause = %describe_driver_error(&error),
+                "a statement gave up waiting"
+            );
             return StorageError::Unavailable(StorageUnavailable::TimedOut);
         }
         // Not the detail: it quotes the values of the row.
         tracing::error!(
-            code = refusal.code().code(),
-            message = refusal.message(),
+            cause = %describe_driver_error(&error),
             constraint = refusal.constraint(),
             "a statement failed"
         );

@@ -6,6 +6,7 @@
 //! by hand in `stores/`, under the same rules.
 
 pub(crate) mod bind;
+pub(crate) mod criteria;
 pub(crate) mod ident;
 pub(crate) mod insert;
 pub(crate) mod select;

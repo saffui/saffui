@@ -1,7 +1,11 @@
 //! What every storage adapter must do, written once and played on the double
 //! and on Postgres: they must answer alike.
 
+use uuid::Uuid;
+
 use crate::app::App;
+use crate::audit::canonical::canonicalize;
+use crate::audit::verify::{ChainVerdict, verify_chain};
 use crate::ids::mint_id;
 use crate::ports::storage::StorageError;
 use crate::tenancy::{Realm, RealmId, RealmName, RealmScope, Tenant, TenantId};
@@ -146,7 +150,11 @@ async fn check_that_a_unit_of_work_stays_in_its_scope(app: &App, realm: Realm, s
         Err(StorageError::Failed),
         "a tenant other than the one of the scope is refused"
     );
-    drop(fresh);
+    assert_eq!(
+        fresh.commit().await,
+        Err(StorageError::Failed),
+        "a refusal of the store ends the unit of work, as one of the database does"
+    );
     let mut fresh = storage.begin(fresh_scope).await.expect("a unit of work");
     fresh.insert_tenant(&fresh_tenant).await.expect("a tenant");
     let other_realm_of_the_tenant = Realm {
@@ -167,4 +175,150 @@ async fn check_that_a_unit_of_work_stays_in_its_scope(app: &App, realm: Realm, s
         Err(StorageError::Failed),
         "the realm of the scope under another tenant is refused"
     );
+}
+
+/// Plays the audit contract on the storage `app` is wired on. The digester
+/// of `app` must be the one the storage links its chains with.
+///
+/// The counts are taken from the chain as the realm left it: whatever its
+/// creation recorded, the contract asks only for what follows.
+///
+/// # Panics
+///
+/// Panics at the first answer that breaks the contract.
+pub async fn check_audit_contract(app: &App) {
+    let (scope, created) = check_that_appends_are_kept_once_committed(app).await;
+    check_that_the_chain_is_read_in_order(app, scope, created).await;
+    check_that_a_snapshot_appends_nothing(app, scope, created).await;
+    check_that_an_envelope_of_another_scope_is_refused(app, scope, created).await;
+}
+
+/// A canonical envelope for `tenant` and `realm`, as an adapter receives it.
+fn write_envelope(app: &App, tenant: Uuid, realm: Uuid) -> Vec<u8> {
+    use serde_json::json;
+
+    canonicalize(&json!({
+        "id": mint_id(app).expect("an identifier").to_string(),
+        "tenant_id": tenant.to_string(),
+        "realm_id": realm.to_string(),
+        "kind": "realm.created",
+        "ts": "2026-01-01T00:00:00Z",
+        "payload": {},
+    }))
+    .expect("a canonical form")
+}
+
+async fn read_events_in_chain(app: &App, scope: RealmScope) -> i64 {
+    match verify_chain(app, scope).await {
+        Ok(ChainVerdict::Intact { events }) => events,
+        other => panic!("the chain is intact: {other:?}"),
+    }
+}
+
+async fn check_that_appends_are_kept_once_committed(app: &App) -> (RealmScope, i64) {
+    use serde_json::json;
+
+    use crate::audit::EventKind;
+    use crate::audit::append::record_event;
+    use crate::tenancy::realm::{NewRealm, provision_first_realm};
+
+    let provisioned = provision_first_realm(
+        app,
+        NewRealm {
+            tenant_name: "Audited",
+            realm_name: "contract-audit",
+        },
+    )
+    .await
+    .expect("a realm");
+    let scope = RealmScope::bind(provisioned.tenant.id, provisioned.realm.id);
+    let created = read_events_in_chain(app, scope).await;
+
+    for round in 0..3 {
+        let mut work = app.storage.begin(scope).await.expect("a unit of work");
+        record_event(
+            app,
+            work.as_mut(),
+            EventKind::RealmCreated,
+            json!({ "round": round }),
+        )
+        .await
+        .expect("an event");
+        work.commit().await.expect("a commit");
+    }
+    assert_eq!(read_events_in_chain(app, scope).await, created + 3);
+
+    // An event recorded by an abandoned unit of work is not in the chain.
+    {
+        let mut abandoned = app.storage.begin(scope).await.expect("a unit of work");
+        record_event(
+            app,
+            abandoned.as_mut(),
+            EventKind::RealmCreated,
+            json!({ "round": "lost" }),
+        )
+        .await
+        .expect("an event");
+    }
+    assert_eq!(read_events_in_chain(app, scope).await, created + 3);
+    (scope, created)
+}
+
+async fn check_that_the_chain_is_read_in_order(app: &App, scope: RealmScope, created: i64) {
+    use crate::audit::GENESIS_HASH;
+    use crate::audit::store::ChainedEvent;
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let whole = work.read_audit_events(0, 100).await.expect("a page");
+    assert_eq!(whole[0].previous_hash, GENESIS_HASH);
+    let first_two = work.read_audit_events(created, 2).await.expect("a page");
+    let rest = work
+        .read_audit_events(created + 2, 10)
+        .await
+        .expect("a page");
+    let numbers =
+        |page: &[ChainedEvent]| -> Vec<i64> { page.iter().map(|event| event.seq).collect() };
+    assert_eq!(numbers(&first_two), [created + 1, created + 2]);
+    assert_eq!(numbers(&rest), [created + 3]);
+    assert_eq!(first_two[1].previous_hash, first_two[0].hash);
+    assert_eq!(rest[0].previous_hash, first_two[1].hash);
+    let head = work
+        .read_audit_head()
+        .await
+        .expect("a head")
+        .expect("a chain");
+    assert_eq!((head.seq, &head.hash), (created + 3, &rest[0].hash));
+}
+
+async fn check_that_a_snapshot_appends_nothing(app: &App, scope: RealmScope, created: i64) {
+    let mut snapshot = app.storage.begin_snapshot(scope).await.expect("a snapshot");
+    let head = snapshot
+        .read_audit_head()
+        .await
+        .expect("a head")
+        .expect("a chain");
+    assert_eq!(head.seq, created + 3, "a snapshot reads");
+
+    let event = write_envelope(app, scope.tenant().as_uuid(), scope.realm().as_uuid());
+    assert!(snapshot.append_audit_event(&event).await.is_err());
+    assert_eq!(snapshot.commit().await, Err(StorageError::Failed));
+    assert_eq!(read_events_in_chain(app, scope).await, created + 3);
+}
+
+async fn check_that_an_envelope_of_another_scope_is_refused(
+    app: &App,
+    scope: RealmScope,
+    created: i64,
+) {
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let stranger = mint_id(app).expect("an identifier");
+
+    let foreign = write_envelope(app, stranger, scope.realm().as_uuid());
+    assert!(work.append_audit_event(&foreign).await.is_err());
+    assert_eq!(
+        work.commit().await,
+        Err(StorageError::Failed),
+        "the refusal ended the unit of work"
+    );
+    assert_eq!(read_events_in_chain(app, scope).await, created + 3);
 }

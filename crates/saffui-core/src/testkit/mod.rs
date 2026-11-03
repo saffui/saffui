@@ -4,6 +4,7 @@
 
 pub mod clock;
 pub mod contract;
+pub mod digest;
 pub mod drive;
 pub mod memory;
 pub mod random;

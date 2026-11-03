@@ -20,7 +20,7 @@ macro_rules! embed {
 }
 
 /// The schema of the product, in order.
-pub const EMBEDDED: &[Migration] = &[embed!(1, "0001_tenancy")];
+pub const EMBEDDED: &[Migration] = &[embed!(1, "0001_tenancy"), embed!(2, "0002_audit")];
 
 /// One numbered step of the schema, as SQL text.
 #[derive(Clone, Copy, Debug)]

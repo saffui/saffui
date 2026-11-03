@@ -2,6 +2,7 @@
 //! no SQL driver and no cryptographic library linked.
 
 pub mod app;
+pub mod audit;
 pub mod error;
 pub mod ids;
 pub mod oidc;

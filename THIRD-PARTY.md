@@ -298,10 +298,11 @@ Code meant for the whole crate goes into a module of its own rather than into
 
 17. `adapters` (2026-10-26, the ports of the core): a module that serves the
     cryptographic interfaces the core declares, and adds no cryptography of its
-    own. `adapters::random` binds the random port of the core to the provider.
-    `adapters::open_provider` opens the OpenSSL provider and refuses one that
-    does not answer a known digest. The crate now depends on `saffui-core`, for
-    those interfaces.
+    own. `adapters::random` binds the random port of the core to the provider,
+    and `adapters::digest` its digest port: SHA-256, and the comparison in
+    constant time of `constant_time`. `adapters::open_provider` opens the
+    OpenSSL provider and refuses one that does not answer a known digest. The
+    crate now depends on `saffui-core`, for those interfaces.
 
 ## Before vendoring anything
 

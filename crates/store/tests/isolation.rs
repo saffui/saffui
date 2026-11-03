@@ -92,11 +92,15 @@ async fn statements_written_by_hand_under_one_scope_reach_no_other_tenant() {
 
     assert_eq!(count_rows(&session, "tenants").await, 1);
     assert_eq!(count_rows(&session, "realms").await, 1);
+    // No store changes a realm yet: the serving role may not, in its scope or
+    // out of it.
     let disabled = session
         .execute("UPDATE realms SET enabled = false", &[])
         .await
-        .expect("an update with no predicate at all");
-    assert_eq!(disabled, 1, "only the realm of the scope was reached");
+        .expect_err("an update of a realm");
+    assert_eq!(disabled.code(), Some(&SqlState::INSUFFICIENT_PRIVILEGE));
+    session.batch_execute("ROLLBACK").await.expect("a rollback");
+    open_scope(&session, &acme).await;
 
     let planted = session
         .execute(
@@ -153,8 +157,14 @@ async fn a_session_writes_only_the_realm_of_its_scope_in_a_tenant_that_has_two()
     let disabled = session
         .execute("UPDATE realms SET enabled = false", &[])
         .await
-        .expect("an update with no predicate at all");
-    assert_eq!(disabled, 1, "only the realm of the scope was written");
+        .expect_err("an update of a realm");
+    assert_eq!(
+        disabled.code(),
+        Some(&SqlState::INSUFFICIENT_PRIVILEGE),
+        "no store changes a realm yet: the serving role may not"
+    );
+    session.batch_execute("ROLLBACK").await.expect("a rollback");
+    open_scope(&session, &acme).await;
     let planted = session
         .execute(
             "INSERT INTO realms (tenant_id, realm_id, name, enabled, created_at)
@@ -174,9 +184,25 @@ async fn a_session_writes_only_the_realm_of_its_scope_in_a_tenant_that_has_two()
 #[tokio::test]
 async fn the_directory_follows_a_realm_that_is_disabled_renamed_or_deleted() {
     let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
-    let acme = provision(&app, "Acme", "acme").await;
     let maintenance = connect(&database, MAINTENANCE_ROLE).await;
-    let realm = acme.realm.id.as_uuid();
+    // Written by hand, with no history: a realm the product creates has its
+    // creation in its chain, and a chain is not deleted with its realm.
+    let (tenant, realm) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2));
+    maintenance
+        .execute(
+            "INSERT INTO tenants (tenant_id, name, created_at) VALUES ($1, 'Acme', now())",
+            &[&tenant],
+        )
+        .await
+        .expect("a tenant");
+    maintenance
+        .execute(
+            "INSERT INTO realms (tenant_id, realm_id, name, enabled, created_at) \
+             VALUES ($1, $2, 'acme', true, now())",
+            &[&tenant, &realm],
+        )
+        .await
+        .expect("a realm");
     let locate = |name: &'static str| {
         let name = RealmName::parse(name).expect("a realm name");
         let storage = &app.storage;
@@ -321,14 +347,13 @@ async fn an_abandoned_unit_of_work_gives_its_connection_back() {
 }
 
 #[tokio::test]
-async fn a_statement_that_waits_for_a_lock_past_its_bound_is_told_busy() {
-    // The pool bounds a lock at a minute here: only the bound of the unit of
-    // work gives up before the test does.
-    let patient_pool = PoolSettings {
-        wait_timeout: Duration::from_mins(1),
+async fn a_statement_waits_for_a_lock_as_long_as_the_pool_waits_then_is_told_busy() {
+    // The bound of a lock is the patience of the pool, not a figure of its own.
+    let short_pool = PoolSettings {
+        wait_timeout: Duration::from_secs(2),
         ..PoolSettings::default()
     };
-    let (app, database) = support::wire_on_postgres(patient_pool).await;
+    let (app, database) = support::wire_on_postgres(short_pool).await;
     provision(&app, "Acme", "acme").await;
     let (_name, scope) = saffui_core::tenancy::resolve::resolve_realm(&app, "acme")
         .await
@@ -340,10 +365,12 @@ async fn a_statement_that_waits_for_a_lock_past_its_bound_is_told_busy() {
         .expect("a lock held");
 
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let started = std::time::Instant::now();
     // Bounded here too: without a bound, the read would wait forever.
     let read = tokio::time::timeout(Duration::from_secs(20), work.read_realm())
         .await
         .expect("the read gave up the lock before 20 s");
+    let waited = started.elapsed();
     drop(work);
     owner
         .batch_execute("ROLLBACK")
@@ -354,6 +381,10 @@ async fn a_statement_that_waits_for_a_lock_past_its_bound_is_told_busy() {
         read,
         Err(StorageError::Unavailable(StorageUnavailable::TimedOut)),
         "busy, not failed"
+    );
+    assert!(
+        waited >= Duration::from_secs(2) && waited < Duration::from_secs(4),
+        "the lock was waited for as long as the pool waits: {waited:?}"
     );
 }
 

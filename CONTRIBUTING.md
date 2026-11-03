@@ -82,10 +82,9 @@ change: you answer for every line, and a change you cannot explain is not
 merged. If a tool helped, say so in a comment on the pull request. Do not
 list a tool as an author or in a commit trailer.
 
-The maintainer works the same way and writes the core of saffui by hand:
-the unit of work, the tenancy scope and its row security, the SQL
-builder, the audit chain and the sealing of secrets at rest. Tools review
-changes and write the code around that core.
+The maintainer works the same way. Tools write a large part of saffui,
+its core included, and review every change. The maintainer reads each
+change before it is merged and answers for every line.
 
 ## Commit messages and pull requests
 

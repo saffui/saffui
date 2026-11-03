@@ -10,7 +10,7 @@ use crypto::adapters::password::BoundedPasswordHasher;
 use crypto::adapters::random::ProviderRandom;
 use crypto::adapters::seal::EnvelopeSealer;
 use crypto::adapters::sign::JoseSigner;
-use crypto::adapters::webauthn::WebauthnSecurityKeys;
+use crypto::adapters::webauthn::{KeyService, WebauthnSecurityKeys};
 use deadpool_postgres::Pool;
 use pgcore::connect::ConnectionPlan;
 use pgcore::migrate::EMBEDDED;
@@ -37,7 +37,8 @@ impl Clock for SystemClock {
 
 pub(crate) struct Wired {
     pub(crate) app: App,
-    /// Why no security key can be enrolled, when none can.
+    /// Why no security key is served, and who cannot sign in for it, when
+    /// none is: what the journal says once the node listens.
     pub(crate) security_keys_refused: Option<&'static str>,
     pool: Pool,
 }
@@ -88,13 +89,7 @@ pub(crate) fn wire_product(
     let pool = build_pool(database, pool)?;
     let storage = PgStorage::new(pool.clone(), SchemaWindow::of_exactly(EMBEDDED));
     let security_keys = WebauthnSecurityKeys::for_origin(settings.public_origin.as_str());
-    let security_keys_refused = if security_keys.is_available() {
-        None
-    } else if crypto::compiled_features().contains(&"fips-strict") {
-        Some("this build draws from the validated module alone: no security key is served")
-    } else {
-        Some("the public origin is named by an address: no security key can be enrolled")
-    };
+    let security_keys_refused = describe_unserved_keys(security_keys.describe_service());
     Ok(Wired {
         security_keys_refused,
         app: App {
@@ -113,6 +108,19 @@ pub(crate) fn wire_product(
         },
         pool,
     })
+}
+
+/// What an operator is told when no security key is served.
+fn describe_unserved_keys(service: KeyService) -> Option<&'static str> {
+    match service {
+        KeyService::Served => None,
+        KeyService::FipsStrictBuild => Some(
+            "this build is fips-strict and the challenges of a security key come from the rand crate: no security key is served, and a person who holds only a key cannot sign in",
+        ),
+        KeyService::OriginIsAnAddress => Some(
+            "the public origin is named by an address: no security key is served, and a person who holds only a key cannot sign in",
+        ),
+    }
 }
 
 impl Wired {
@@ -145,5 +153,39 @@ impl Wired {
             .await
             .map(|_| ())
             .map_err(|_| StartupRefusal::Hasher)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crypto::adapters::webauthn::{KeyService, WebauthnSecurityKeys};
+
+    use super::describe_unserved_keys;
+
+    const WHO_CANNOT: &str = "a person who holds only a key cannot sign in";
+
+    #[test]
+    fn a_node_whose_origin_is_an_address_says_so_and_who_cannot_sign_in() {
+        let keys = WebauthnSecurityKeys::for_origin("http://127.0.0.1:8080");
+
+        let told = describe_unserved_keys(keys.describe_service()).expect("a warning");
+
+        assert!(told.contains(WHO_CANNOT), "{told}");
+    }
+
+    #[test]
+    fn each_reason_no_key_is_served_is_named_and_a_fips_strict_build_claims_no_more() {
+        let address = describe_unserved_keys(KeyService::OriginIsAnAddress).expect("a warning");
+        assert!(address.contains("named by an address"), "{address}");
+
+        let fips = describe_unserved_keys(KeyService::FipsStrictBuild).expect("a warning");
+        assert!(
+            fips.contains("fips-strict") && fips.contains("rand crate"),
+            "{fips}"
+        );
+        assert!(fips.contains(WHO_CANNOT), "{fips}");
+        assert!(!fips.contains("validated module"), "{fips}");
+
+        assert_eq!(describe_unserved_keys(KeyService::Served), None);
     }
 }

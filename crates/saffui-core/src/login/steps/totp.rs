@@ -21,10 +21,12 @@ use crate::tenancy::RealmScope;
 /// What the secret of an authenticator is sealed for.
 pub(crate) const TOTP_SECRET_PURPOSE: &str = "totp-secret";
 
-/// How many codes in a row a person may get wrong. Past it, their codes are
-/// suspended until an administrator lets them in: ten guesses at the three
-/// codes each one is compared to leave about three chances in a hundred
-/// thousand, whatever the addresses they come from.
+/// How many codes in a row a person may get wrong, from whatever addresses:
+/// past it, their codes are suspended until an administrator resumes them or
+/// a key of theirs proves itself. Ten guesses at the three codes each one is
+/// compared to leave about three chances in a hundred thousand. The person
+/// bounds the codes here, and the name by its lock; the address bounds the
+/// hashes, and a code hashes nothing.
 pub(crate) const MAX_CODE_FAILURES: u32 = 10;
 
 /// Where the secret of an authenticator is sealed: under the data key of the
@@ -93,8 +95,8 @@ pub(crate) async fn accept_code(
 /// locked name are one refusal, and so are codes suspended: ten wrong in a
 /// row, counted under a person who has an application whatever their
 /// address, and the right code too is refused until an administrator
-/// resumes them. A locked name and suspended codes are refused before the
-/// secret is opened.
+/// resumes them or a key of the person proves itself. A locked name and
+/// suspended codes are refused before the secret is opened.
 ///
 /// # Errors
 ///
@@ -127,7 +129,7 @@ pub(crate) async fn verify_code(
         .read_totp(person.id)
         .await?
         .filter(|known| known.confirmed_at.is_some());
-    let accepted = match &authenticator {
+    let (accepted, attempts) = match &authenticator {
         // Counted before it is judged, and only for a person who has codes:
         // attempts that run beside each other wait on one row, and none past
         // the bound is judged.
@@ -144,18 +146,20 @@ pub(crate) async fn verify_code(
                     sign_in,
                 )
                 .await?;
-            if attempts == MAX_CODE_FAILURES && !accepted {
-                let suspended = json!({ "person_id": person.id.to_string() });
-                record_event(app, work.as_mut(), EventKind::CodesSuspended, suspended).await?;
-            }
-            accepted
+            (accepted, Some(attempts))
         }
-        None => false,
+        None => (false, None),
     };
     if accepted {
         work.clear_code_attempts(person.id).await?;
     } else {
         brake.record_failure(work.as_mut(), now).await?;
+    }
+    // Last, after the counters, in the order the opening of a session takes
+    // them: the head of the chain stays locked from the event to the commit.
+    if !accepted && attempts == Some(MAX_CODE_FAILURES) {
+        let suspended = json!({ "person_id": person.id.to_string() });
+        record_event(app, work.as_mut(), EventKind::CodesSuspended, suspended).await?;
     }
     work.commit().await?;
     if accepted { Ok(brake) } else { Err(rejected()) }

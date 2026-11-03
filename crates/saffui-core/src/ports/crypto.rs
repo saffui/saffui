@@ -258,8 +258,8 @@ pub enum KeyRefusal {
     /// wrong signature, a key that is not held.
     #[error("the answer of the security key is refused")]
     Refused,
-    /// The counter of the key did not move forward: a copy of the key
-    /// answered, or the key with a counter older than the one kept.
+    /// The counter did not move forward: a copy of the key answered. A key
+    /// that counts nothing answers zero forever, and is not suspected.
     #[error("the counter of the security key did not move forward")]
     CopySuspected,
     #[error("the ceremony cannot be carried out")]
@@ -269,6 +269,9 @@ pub enum KeyRefusal {
 /// Security keys (WebAuthn): a key proves itself by signing a challenge of
 /// the realm, for the origin the browser stands on.
 pub trait SecurityKeys: Send + Sync {
+    /// Whether keys are served here. Where they are not, every ceremony fails.
+    fn are_served(&self) -> bool;
+
     /// Starts the enrollment of a key for a person who holds `held` already.
     ///
     /// # Errors

@@ -3,12 +3,15 @@
 //! Counters kept per realm, by a keyed digest, whether or not the name is
 //! someone's: a locked name tells nothing about who exists. In buckets of
 //! five minutes, over ten: what one address may attempt, whatever names it
-//! types, since a hash is ours to pay; what one address failed for one name,
-//! a few guesses before that address is locked out of that name and nobody
-//! else is; what one name failed from everywhere, a much higher bound. In
-//! buckets of an hour, over a day: what one name failed, which no window
-//! resets. A browser where the person signed in before is counted apart, by
-//! its mark, and the counts of the name do not lock it out.
+//! types, which bounds the hashes, ours to pay; what one address failed for
+//! one name, a few guesses before that address is locked out of that name
+//! and nobody else is; what one name failed from everywhere, a much higher
+//! bound. In buckets of an hour, over a day: what one name failed, which no
+//! window resets. A browser where the person signed in before is counted
+//! apart, by its mark, and the counts of the name do not lock it out. A code
+//! hashes nothing and is not counted against its address: the lock of the
+//! name bounds it, and so does its person, whose codes ten wrong in a row
+//! suspend.
 
 use std::net::IpAddr;
 

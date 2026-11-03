@@ -285,6 +285,10 @@ impl TrustingKeys {
 }
 
 impl SecurityKeys for TrustingKeys {
+    fn are_served(&self) -> bool {
+        true
+    }
+
     fn start_enrollment(
         &self,
         _person: Uuid,
@@ -354,5 +358,42 @@ impl SecurityKeys for TrustingKeys {
             credential_id: credential_id.as_bytes().to_vec(),
             record: (counter > last).then(|| Self::write_record(credential_id, counter)),
         })
+    }
+}
+
+/// Security keys a deployment does not serve, as a `fips-strict` build or an
+/// origin named by an address: every ceremony fails.
+#[derive(Debug, Default)]
+pub struct UnservedKeys;
+
+impl SecurityKeys for UnservedKeys {
+    fn are_served(&self) -> bool {
+        false
+    }
+
+    fn start_enrollment(
+        &self,
+        _person: Uuid,
+        _username: &str,
+        _held: &[Vec<u8>],
+    ) -> Result<KeyCeremony, CryptoFailure> {
+        Err(CryptoFailure)
+    }
+
+    fn finish_enrollment(&self, _state: &[u8], _answer: &Value) -> Result<EnrolledKey, KeyRefusal> {
+        Err(KeyRefusal::Failed)
+    }
+
+    fn start_proof(&self, _held: &[Vec<u8>]) -> Result<KeyCeremony, CryptoFailure> {
+        Err(CryptoFailure)
+    }
+
+    fn finish_proof(
+        &self,
+        _state: &[u8],
+        _answer: &Value,
+        _held: &[Vec<u8>],
+    ) -> Result<KeyProof, KeyRefusal> {
+        Err(KeyRefusal::Failed)
     }
 }

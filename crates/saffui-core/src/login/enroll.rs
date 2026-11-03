@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use super::device::DeviceMark;
 use super::session::{
-    AuthenticationMethod, Session, SessionTicket, find_live_session, proves_second_factor,
+    AuthenticationMethod, Session, SessionTicket, proves_second_factor, read_proven_session,
 };
 use super::steps::password::verify_password;
 use super::steps::totp::{accept_code, read_secret_place};
@@ -41,6 +41,7 @@ struct SignedInPerson {
     scope: RealmScope,
     work: Box<dyn UnitOfWork>,
     session: Session,
+    person_holds_factor: bool,
     person: Person,
 }
 
@@ -55,11 +56,11 @@ async fn require_signed_in_person(
     let (realm, scope) = resolve_realm(app, realm).await?;
     let mut work = app.storage.begin(scope).await?;
     let ticket = ticket.ok_or_else(required)?;
-    let session = find_live_session(app, work.as_mut(), ticket)
+    let read = read_proven_session(app, work.as_mut(), ticket)
         .await?
         .ok_or_else(required)?;
     let person = work
-        .read_person(session.person)
+        .read_person(read.session.person)
         .await?
         .filter(|person| person.enabled)
         .ok_or_else(required)?;
@@ -67,7 +68,8 @@ async fn require_signed_in_person(
         realm,
         scope,
         work,
-        session,
+        session: read.session,
+        person_holds_factor: read.person_holds_factor,
         person,
     })
 }
@@ -107,7 +109,7 @@ pub async fn begin_totp_enrollment(
 ) -> Result<TotpEnrollmentText, Failure> {
     let unavailable = |detail: &str| Failure::with_detail(ErrorCode::CryptoUnavailable, detail);
     let mut found = require_signed_in_person(app, realm, ticket).await?;
-    require_factor_proof(found.work.as_mut(), found.person.id, &found.session).await?;
+    refuse_unproven_session(&found.session, found.person_holds_factor)?;
     let secret = app
         .one_time_codes
         .make_totp_secret()
@@ -423,15 +425,20 @@ pub async fn remove_security_keys(
 /// Refuses to set up a factor from a session the password alone opened, for
 /// a person who holds one already: whoever got hold of that session would
 /// add a factor of their own to the account.
+fn refuse_unproven_session(session: &Session, person_holds_factor: bool) -> Result<(), Failure> {
+    if !proves_second_factor(session) && person_holds_factor {
+        return Err(Failure::new(ErrorCode::SecondFactorProofRequired));
+    }
+    Ok(())
+}
+
+/// As [`refuse_unproven_session`], with what the person holds read again.
 async fn require_factor_proof(
     work: &mut dyn UnitOfWork,
     person: Uuid,
     session: &Session,
 ) -> Result<(), Failure> {
-    if !proves_second_factor(session) && work.holds_second_factor(person).await? {
-        return Err(Failure::new(ErrorCode::SecondFactorProofRequired));
-    }
-    Ok(())
+    refuse_unproven_session(session, work.holds_second_factor(person).await?)
 }
 
 /// What the setting up of a factor ended, as its event tells it: the chain

@@ -68,6 +68,7 @@ pub enum ErrorCode {
     CodeRejected = 408,
     SecondFactorProofRequired = 409,
     KeyRejected = 410,
+    SecurityKeysNotServed = 411,
     TokenInvalid = 500,
     GrantInvalid = 501,
     TokenScopeInsufficient = 502,
@@ -111,7 +112,8 @@ impl ErrorCode {
             Self::GrantNotAllowed
             | Self::CapabilityMissing
             | Self::TokenScopeInsufficient
-            | Self::SecondFactorProofRequired => ErrorKind::Forbidden,
+            | Self::SecondFactorProofRequired
+            | Self::SecurityKeysNotServed => ErrorKind::Forbidden,
             Self::RealmNameInvalid
             | Self::TenantNameInvalid
             | Self::ClientIdentifierInvalid
@@ -183,6 +185,7 @@ impl ErrorCode {
             Self::SecondFactorProofRequired => "auth.second_factor_proof_required",
             Self::AuthenticatorNotFound => "user.authenticator_not_found",
             Self::KeyRejected => "auth.key_rejected",
+            Self::SecurityKeysNotServed => "auth.security_keys_not_served",
             Self::SecurityKeyNotFound => "user.security_key_not_found",
             Self::TenantNameInvalid => "tenant.name_invalid",
         }
@@ -229,6 +232,9 @@ impl ErrorCode {
             }
             Self::AuthenticatorNotFound => "This person has no authenticator application.",
             Self::KeyRejected => "The security key was not accepted.",
+            Self::SecurityKeysNotServed => {
+                "This account needs a security key, and this service cannot use one. Ask an administrator."
+            }
             Self::SecurityKeyNotFound => "This person has no security key.",
             Self::RedirectUriMismatch => "The redirect URI is not one the client registered.",
             Self::RequestInvalid => "The request is missing a parameter or carries one it cannot.",
@@ -324,7 +330,7 @@ mod tests {
 
     use super::ErrorCode;
 
-    const ALL: [ErrorCode; 47] = [
+    const ALL: [ErrorCode; 48] = [
         ErrorCode::Internal,
         ErrorCode::StorageUnavailable,
         ErrorCode::Conflict,
@@ -370,6 +376,7 @@ mod tests {
         ErrorCode::SecondFactorProofRequired,
         ErrorCode::AuthenticatorNotFound,
         ErrorCode::KeyRejected,
+        ErrorCode::SecurityKeysNotServed,
         ErrorCode::SecurityKeyNotFound,
         ErrorCode::TenantNameInvalid,
     ];

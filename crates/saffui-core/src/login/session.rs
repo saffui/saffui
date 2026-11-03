@@ -56,6 +56,8 @@ pub enum AuthenticationMethod {
 }
 
 impl AuthenticationMethod {
+    pub const ALL: [Self; 3] = [Self::Password, Self::OneTimeCode, Self::SecurityKey];
+
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
@@ -67,9 +69,7 @@ impl AuthenticationMethod {
 
     #[must_use]
     pub fn parse(name: &str) -> Option<Self> {
-        [Self::Password, Self::OneTimeCode, Self::SecurityKey]
-            .into_iter()
-            .find(|method| method.name() == name)
+        Self::ALL.into_iter().find(|method| method.name() == name)
     }
 }
 
@@ -161,8 +161,9 @@ pub async fn open_session(
     Ok((session, ticket))
 }
 
-/// Reads the live session a ticket proves, if there is one.
-async fn read_proven_session(
+/// As [`find_live_session`], with whether its person holds a factor: what
+/// tells whether the session still answers for them.
+pub(crate) async fn read_proven_session(
     app: &App,
     work: &mut dyn UnitOfWork,
     ticket: &SessionTicket,

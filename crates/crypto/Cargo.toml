@@ -34,13 +34,11 @@ pq-hybrid = []
 # dependency.
 pkcs11 = ["dep:cryptoki"]
 
-# Pins the validated FIPS provider. Mutually exclusive with the non-FIPS
-# algorithms above, and a `compile_error!` in lib.rs enforces it rather than a
-# note in these docs: a binary that claims FIPS while linking ChaCha20 is a
-# contradiction an audit should catch at build time, not at runtime.
-# The ceremonies of a security key draw their challenges from `rand`, inside
-# webauthn-rs, and not from the provider: a deployment that must draw from
-# the validated module alone serves no security key.
+# Mutually exclusive with the non-FIPS algorithms above, and a `compile_error!`
+# in lib.rs enforces it rather than a note in these docs: a binary that claims
+# FIPS while linking ChaCha20 is a contradiction an audit should catch at build
+# time, not at runtime. Under it no security key is served: the ceremonies of
+# webauthn-rs draw their challenges from `rand`.
 fips-strict = []
 
 # A security key in software, for the tests of whoever wires this crate: it

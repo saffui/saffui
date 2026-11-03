@@ -11,7 +11,7 @@ use super::device::{DeviceMark, MOST_BROWSERS_PER_PERSON, issue_device_mark};
 use super::session::{AuthenticationMethod, SessionTicket, open_session};
 use super::steps::password::{ProvenPassword, verify_password};
 use super::steps::totp::verify_code;
-use super::steps::webauthn::{start_key_proof, verify_key};
+use super::steps::webauthn::{KeyProofStart, start_key_proof, verify_key};
 use super::store::KnownBrowser;
 use super::throttle::Brake;
 use crate::app::App;
@@ -39,7 +39,8 @@ pub struct SecondFactor {
     pub person: Person,
     /// They set up an authenticator application: one of its codes will do.
     pub code: bool,
-    /// They hold a security key: its answer to this ceremony will do.
+    /// They hold a security key, and keys are served here: its answer to
+    /// this ceremony will do.
     pub key: Option<KeyCeremony>,
 }
 
@@ -104,11 +105,14 @@ async fn open_session_for(
 
 /// Takes the name and the password of a person. Signs them in when that is
 /// all they owe, and says so when they owe a second factor: a code, or the
-/// answer of a key to the challenge started here.
+/// answer of a key to the challenge started here. Where keys are not served,
+/// a person who also set up an application owes its code.
 ///
 /// # Errors
 ///
-/// As [`verify_password`], or the storage failure.
+/// As [`verify_password`], [`ErrorCode::SecurityKeysNotServed`] after the
+/// right password of a person whose only factor is a key where keys are not
+/// served, or the storage failure.
 pub async fn sign_in_with_password(
     app: &App,
     scope: RealmScope,
@@ -127,7 +131,12 @@ pub async fn sign_in_with_password(
         .read_totp(person.id)
         .await?
         .is_some_and(|authenticator| authenticator.confirmed_at.is_some());
-    let key = start_key_proof(app, work.as_mut(), person.id).await?;
+    let key = match start_key_proof(app, work.as_mut(), person.id).await? {
+        KeyProofStart::Started(ceremony) => Some(ceremony),
+        KeyProofStart::NoKeyHeld => None,
+        KeyProofStart::NotServed if code => None,
+        KeyProofStart::NotServed => return Err(Failure::new(ErrorCode::SecurityKeysNotServed)),
+    };
     drop(work);
     if code || key.is_some() {
         return Ok(FirstStep::SecondFactorRequired(SecondFactor {
@@ -208,6 +217,7 @@ pub async fn finish_sign_in_with_code(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::time::Duration;
 
     use uuid::Uuid;
@@ -222,7 +232,7 @@ mod tests {
     use crate::oidc::scenario::{PASSWORD, Scenario};
     use crate::ports::crypto::KeyCeremony;
     use crate::secret::Secret;
-    use crate::testkit::crypto::TrustingKeys;
+    use crate::testkit::crypto::{TrustingKeys, UnservedKeys};
     use crate::testkit::drive::complete;
 
     /// A person with an authenticator, and the secret their application holds.
@@ -780,12 +790,13 @@ mod tests {
     }
 
     #[test]
-    fn codes_given_by_a_person_without_an_application_suspend_nothing_and_a_later_one_is_let_in() {
+    fn codes_given_by_a_person_without_an_application_are_not_counted_and_suspend_nothing() {
         use crate::login::steps::totp::MAX_CODE_FAILURES;
 
         let scenario = start_with_a_key();
         let (person, _) = owe_a_key(&scenario);
         guess_codes(&scenario, person, MAX_CODE_FAILURES);
+
         assert!(
             !scenario
                 .read_event_kinds()
@@ -793,16 +804,52 @@ mod tests {
                 .any(|kind| kind == "authenticator.codes_suspended"),
             "a person who has no codes has none suspended"
         );
-        scenario.clock.advance(Duration::from_mins(10));
-
-        let proved = scenario.sign_in_with_key("k1", 1);
-        let secret = scenario.enroll_authenticator(&proved);
-
-        let person = owe_a_code_beside_a_key(&scenario);
+        // Counted once more in a unit of work that is not committed.
+        let counted = complete(async {
+            let mut work = scenario
+                .app
+                .storage
+                .begin(scenario.scope)
+                .await
+                .expect("a unit of work");
+            work.count_code_attempt(person, scenario.app.now())
+                .await
+                .expect("a count")
+        });
         assert_eq!(
-            give_code(&scenario, person, &scenario.read_code_now(&secret), &[]).map(|_| ()),
-            Ok(()),
-            "the first right code of the new application is let in"
+            counted, 1,
+            "none of the codes was counted against the person"
         );
+    }
+
+    #[test]
+    fn where_keys_are_not_served_a_person_with_a_key_and_an_application_owes_the_code() {
+        let (mut scenario, secret) = start_enrolled();
+        let proved = scenario.sign_in_with_code(&secret);
+        scenario.enroll_security_key(&proved, "k1");
+        scenario.clock.advance(Duration::from_secs(30));
+        scenario.app.security_keys = Arc::new(UnservedKeys);
+
+        let person = owe_a_code(&scenario, &[]);
+
+        assert!(give_code(&scenario, person, &scenario.read_code_now(&secret), &[]).is_ok());
+    }
+
+    #[test]
+    fn where_keys_are_not_served_a_person_with_only_a_key_is_told_so_after_their_password() {
+        let mut scenario = start_with_a_key();
+        scenario.app.security_keys = Arc::new(UnservedKeys);
+        let opened_before = count_sessions_opened(&scenario);
+
+        assert_eq!(
+            give_password(&scenario, "not the password", &[]).map(|_| ()),
+            Err(ErrorCode::SignInFailed),
+            "nobody who does not know the password is told"
+        );
+        assert_eq!(
+            give_password(&scenario, PASSWORD, &[]).map(|_| ()),
+            Err(ErrorCode::SecurityKeysNotServed)
+        );
+        assert_eq!(count_sessions_opened(&scenario), opened_before);
     }
 }

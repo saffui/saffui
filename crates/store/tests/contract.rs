@@ -227,6 +227,7 @@ async fn of_two_endings_of_one_session_at_once_one_ends_it() {
 /// proven by nothing, or by a name nobody gave, is not written.
 #[tokio::test]
 async fn a_session_is_written_with_the_methods_this_binary_names_and_no_other() {
+    use saffui_core::login::session::AuthenticationMethod;
     use saffui_core::testkit::fixtures::{create_person, create_realm};
     use tokio_postgres::error::SqlState;
 
@@ -239,9 +240,14 @@ async fn a_session_is_written_with_the_methods_this_binary_names_and_no_other() 
         .await
         .expect("a connection");
     let (tenant, realm) = (scope.tenant().as_uuid(), scope.realm().as_uuid());
+    let named: Vec<&str> = AuthenticationMethod::ALL
+        .iter()
+        .map(|method| method.name())
+        .collect();
+    let every_one = format!("{{{}}}", named.join(","));
 
     for (methods, refused) in [
-        ("{pwd,otp,pop}", None),
+        (every_one.as_str(), None),
         ("{pwd,hwk}", Some(SqlState::CHECK_VIOLATION)),
         ("{}", Some(SqlState::CHECK_VIOLATION)),
     ] {

@@ -27,6 +27,9 @@ pub struct SoftKey {
     pub credential_id: Vec<u8>,
     /// The signature counter. A test winds it back to play a copy of the key.
     pub counter: u32,
+    /// Whether an answer moves the counter. A key that counts nothing, as a
+    /// key kept by an account may, answers zero forever.
+    pub counts: bool,
 }
 
 impl SoftKey {
@@ -56,6 +59,7 @@ impl SoftKey {
             cose,
             credential_id,
             counter: 0,
+            counts: true,
         }
     }
 
@@ -114,7 +118,7 @@ impl SoftKey {
     }
 
     /// Answers a challenge as a browser standing on `origin` hands it back,
-    /// and moves the counter, as a key does.
+    /// and moves the counter when the key counts.
     ///
     /// # Panics
     ///
@@ -125,7 +129,9 @@ impl SoftKey {
         let relying_party = asked["rpId"].as_str().expect("a relying party");
         let client_data = write_client_data("webauthn.get", challenge, origin);
 
-        self.counter += 1;
+        if self.counts {
+            self.counter += 1;
+        }
         let mut authenticator_data = self.digest(relying_party.as_bytes());
         authenticator_data.push(PRESENT);
         authenticator_data.extend_from_slice(&self.counter.to_be_bytes());

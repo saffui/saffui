@@ -21,8 +21,16 @@ fn fail_ceremony(detail: &str) -> Failure {
     Failure::with_detail(ErrorCode::CryptoUnavailable, detail)
 }
 
+/// What the keys of a person can be asked after their password.
+pub(crate) enum KeyProofStart {
+    NoKeyHeld,
+    /// They hold keys, and keys are not served here.
+    NotServed,
+    Started(KeyCeremony),
+}
+
 /// Starts a proof by one of the keys of a person. Nothing is started for a
-/// person who holds none.
+/// person who holds none, nor where keys are not served.
 ///
 /// # Errors
 ///
@@ -32,7 +40,7 @@ pub(crate) async fn start_key_proof(
     app: &App,
     work: &mut dyn UnitOfWork,
     person: Uuid,
-) -> Result<Option<KeyCeremony>, Failure> {
+) -> Result<KeyProofStart, Failure> {
     let held: Vec<Vec<u8>> = work
         .list_security_keys(person)
         .await?
@@ -40,11 +48,14 @@ pub(crate) async fn start_key_proof(
         .map(|key| key.record)
         .collect();
     if held.is_empty() {
-        return Ok(None);
+        return Ok(KeyProofStart::NoKeyHeld);
+    }
+    if !app.security_keys.are_served() {
+        return Ok(KeyProofStart::NotServed);
     }
     app.security_keys
         .start_proof(&held)
-        .map(Some)
+        .map(KeyProofStart::Started)
         .map_err(|_| fail_ceremony("a proof by a security key cannot be started"))
 }
 
@@ -88,44 +99,46 @@ pub(crate) async fn verify_key(
     }
     let keys = work.list_security_keys(person.id).await?;
     let held: Vec<Vec<u8>> = keys.iter().map(|key| key.record.clone()).collect();
-    let mut accepted = false;
-    match app.security_keys.finish_proof(state, answer, &held) {
+    let refusal = match app.security_keys.finish_proof(state, answer, &held) {
         // The counter the key moved is kept in place of the one this proof
         // was compared to and of no other: a copy of the key is told by a
         // counter that goes back, and two proofs compared to one counter are
         // not both believed.
         Ok(proof) => {
-            if let Some(judged) = keys
+            let judged = keys
                 .iter()
-                .find(|key| key.credential_id == proof.credential_id)
-            {
-                accepted = work
-                    .record_key_use(judged, proof.record.as_deref(), now)
-                    .await?;
-            }
-        }
-        Err(KeyRefusal::Refused) => {}
-        // Refused as any other answer, and said: the key may have been
-        // copied, and whoever holds the realm should look.
-        Err(KeyRefusal::CopySuspected) => {
-            let suspected = json!({ "person_id": person.id.to_string() });
-            record_event(app, work.as_mut(), EventKind::KeyCopySuspected, suspected).await?;
+                .find(|key| key.credential_id == proof.credential_id);
+            let recorded = match judged {
+                Some(judged) => {
+                    work.record_key_use(judged, proof.record.as_deref(), now)
+                        .await?
+                }
+                None => false,
+            };
+            (!recorded).then_some(KeyRefusal::Refused)
         }
         Err(KeyRefusal::Failed) => {
             return Err(fail_ceremony(
                 "a proof by a security key cannot be finished",
             ));
         }
-    }
-    if accepted {
+        Err(refusal) => Some(refusal),
+    };
+    if refusal.is_none() {
         work.clear_code_attempts(person.id).await?;
     } else {
         brake.record_failure(work.as_mut(), now).await?;
     }
+    // Refused as any other answer, and said after the counters, as a
+    // suspension of codes is: the key may have been copied, and whoever
+    // holds the realm should look.
+    if refusal == Some(KeyRefusal::CopySuspected) {
+        let suspected = json!({ "person_id": person.id.to_string() });
+        record_event(app, work.as_mut(), EventKind::KeyCopySuspected, suspected).await?;
+    }
     work.commit().await?;
-    if accepted {
-        Ok(brake)
-    } else {
-        Err(Failure::new(ErrorCode::KeyRejected))
+    match refusal {
+        None => Ok(brake),
+        Some(_) => Err(Failure::new(ErrorCode::KeyRejected)),
     }
 }

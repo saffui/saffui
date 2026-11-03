@@ -50,6 +50,22 @@ pub(crate) mod audit_events {
         &[SEQ, PREV_HASH, HASH, ENVELOPE, EVENT_ID, KIND, OCCURRED_AT];
 }
 
+pub(crate) mod realm_data_keys {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "realm_data_keys",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// integer
+    pub(crate) const GENERATION: Column = Column("generation");
+    /// bytea
+    pub(crate) const WRAPPED: Column = Column("wrapped");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[GENERATION, WRAPPED];
+}
+
 pub(crate) mod realms {
     use super::{Column, ScopeKeys, Table};
 
@@ -66,6 +82,37 @@ pub(crate) mod realms {
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[NAME, ENABLED, CREATED_AT];
+}
+
+pub(crate) mod signing_keys {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "signing_keys",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// uuid
+    pub(crate) const SIGNING_KEY_ID: Column = Column("signing_key_id");
+    /// text
+    pub(crate) const KID: Column = Column("kid");
+    /// text
+    pub(crate) const ALGORITHM: Column = Column("algorithm");
+    /// jsonb
+    pub(crate) const PUBLIC_JWK: Column = Column("public_jwk");
+    /// bytea
+    pub(crate) const SEALED_PRIVATE_KEY: Column = Column("sealed_private_key");
+    /// timestamp with time zone
+    pub(crate) const CREATED_AT: Column = Column("created_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[
+        SIGNING_KEY_ID,
+        KID,
+        ALGORITHM,
+        PUBLIC_JWK,
+        SEALED_PRIVATE_KEY,
+        CREATED_AT,
+    ];
 }
 
 pub(crate) mod tenants {
@@ -88,7 +135,9 @@ pub(crate) mod tenants {
 pub(crate) const TABLES: &[(Table, &[Column])] = &[
     (audit_chain_heads::TABLE, audit_chain_heads::ALL),
     (audit_events::TABLE, audit_events::ALL),
+    (realm_data_keys::TABLE, realm_data_keys::ALL),
     (realms::TABLE, realms::ALL),
+    (signing_keys::TABLE, signing_keys::ALL),
     (tenants::TABLE, tenants::ALL),
 ];
 

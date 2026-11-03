@@ -65,6 +65,23 @@ fn digest_counter(
         .map_err(|_| Failure::new(ErrorCode::CryptoUnavailable))
 }
 
+/// The two counters that lock a name for everyone: the window, and the day.
+///
+/// # Errors
+///
+/// Returns [`ErrorCode::CryptoUnavailable`] when the sealer cannot digest.
+pub(crate) fn digest_name_locks(
+    app: &App,
+    scope: RealmScope,
+    typed: &str,
+) -> Result<[Vec<u8>; 2], Failure> {
+    let typed = typed.as_bytes();
+    Ok([
+        digest_counter(app, scope, 1, &[typed])?,
+        digest_counter(app, scope, 5, &[typed])?,
+    ])
+}
+
 fn name_counters(
     app: &App,
     scope: RealmScope,
@@ -73,10 +90,11 @@ fn name_counters(
 ) -> Result<Counters, Failure> {
     let address = caller.map(write_address_bucket);
     let address = address.as_deref();
+    let [name, name_today] = digest_name_locks(app, scope, typed)?;
     let typed = typed.as_bytes();
     Ok(Counters {
-        name: digest_counter(app, scope, 1, &[typed])?,
-        name_today: digest_counter(app, scope, 5, &[typed])?,
+        name,
+        name_today,
         address: address
             .map(|address| digest_counter(app, scope, 2, &[address.as_bytes()]))
             .transpose()?,

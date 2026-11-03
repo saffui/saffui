@@ -53,6 +53,7 @@ pub fn register_data_plane(
                     .service(admin::client::read_client)
                     .service(admin::user::list_users)
                     .service(admin::user::create_user)
+                    .service(admin::user::unlock_user)
                     .service(admin::audit::verify_audit_chain),
             );
     }

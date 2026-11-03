@@ -389,6 +389,52 @@ async fn an_administrator_creates_a_person_and_lists_them_without_their_password
 }
 
 #[actix_web::test]
+async fn an_administrator_unlocks_a_person_by_name_and_a_reader_may_not() {
+    let (product, token) = start(&[Capability::UserWrite]).await;
+    let wanted = json!({ "username": "ada", "password": "correct horse battery" }).to_string();
+    let created = call(
+        &product,
+        Method::POST,
+        "/admin/v1/realms/acme/users",
+        Some(&token),
+        Some(&wanted),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+
+    let unlocked = call(
+        &product,
+        Method::POST,
+        "/admin/v1/realms/acme/users/ada/unlock",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(unlocked.status, StatusCode::NO_CONTENT, "{}", unlocked.body);
+    let unknown = call(
+        &product,
+        Method::POST,
+        "/admin/v1/realms/acme/users/nobody/unlock",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+    assert_eq!(unknown.body["code"], "user.not_found");
+
+    let (product, token) = start(&[Capability::UserRead]).await;
+    let refused = call(
+        &product,
+        Method::POST,
+        "/admin/v1/realms/acme/users/ada/unlock",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+}
+
+#[actix_web::test]
 async fn reading_people_does_not_let_one_create_them_and_a_field_nobody_reads_is_refused() {
     let (product, token) = start(&[Capability::UserRead]).await;
     let path = "/admin/v1/realms/acme/users";

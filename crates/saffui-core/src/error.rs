@@ -42,6 +42,7 @@ pub enum ErrorCode {
     EmailTaken = 203,
     DisplayNameInvalid = 204,
     PasswordUnacceptable = 205,
+    PersonNotFound = 206,
     ClientAuthenticationFailed = 300,
     ClientIdentifierInvalid = 301,
     ClientIdentifierTaken = 302,
@@ -87,7 +88,9 @@ impl ErrorCode {
             | Self::ClientIdentifierTaken
             | Self::UsernameTaken
             | Self::EmailTaken => ErrorKind::Conflict,
-            Self::RealmNotFound | Self::ClientNotFound => ErrorKind::NotFound,
+            Self::RealmNotFound | Self::ClientNotFound | Self::PersonNotFound => {
+                ErrorKind::NotFound
+            }
             Self::ClientAuthenticationFailed
             | Self::TokenInvalid
             | Self::AdminAuthenticationFailed
@@ -146,6 +149,7 @@ impl ErrorCode {
             Self::GrantNotAllowed => "client.grant_not_allowed",
             Self::GrantTypeUnsupported => "client.grant_type_unsupported",
             Self::ClientNotFound => "client.not_found",
+            Self::PersonNotFound => "user.not_found",
             Self::CapabilityUnknown => "client.capability_unknown",
             Self::RedirectUriInvalid => "client.redirect_uri_invalid",
             Self::RedirectUriMismatch => "client.redirect_uri_mismatch",
@@ -202,6 +206,7 @@ impl ErrorCode {
             Self::GrantTypeUnsupported => "This grant type is not supported.",
             Self::ListOffsetTooLarge => "A list starts at 100000 at the latest: narrow it instead.",
             Self::ClientNotFound => "No such client.",
+            Self::PersonNotFound => "No such person.",
             Self::CapabilityUnknown => "A capability that was asked for does not exist.",
             Self::RedirectUriInvalid => {
                 "A redirect URI is an https URL, or an http URL of this machine, without a fragment."
@@ -287,7 +292,7 @@ mod tests {
 
     use super::ErrorCode;
 
-    const ALL: [ErrorCode; 39] = [
+    const ALL: [ErrorCode; 40] = [
         ErrorCode::Internal,
         ErrorCode::StorageUnavailable,
         ErrorCode::Conflict,
@@ -313,6 +318,7 @@ mod tests {
         ErrorCode::GrantNotAllowed,
         ErrorCode::GrantTypeUnsupported,
         ErrorCode::ClientNotFound,
+        ErrorCode::PersonNotFound,
         ErrorCode::CapabilityUnknown,
         ErrorCode::RedirectUriInvalid,
         ErrorCode::RedirectUriMismatch,

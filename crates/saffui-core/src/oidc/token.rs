@@ -16,6 +16,7 @@ use crate::clients::authenticate::{authenticate_client, identify_client};
 use crate::clients::check_scope_token;
 use crate::directory::Person;
 use crate::error::{ErrorCode, Failure};
+use crate::ids::mint_id;
 use crate::login::session::{Session, read_live_subject};
 use crate::ports::storage::UnitOfWork;
 use crate::secret::Secret;
@@ -23,7 +24,7 @@ use crate::tenancy::resolve::resolve_realm;
 use crate::tenancy::{RealmName, RealmScope};
 use crate::tokens::mint::{
     AccessTokenSubject, IdentityTokenSubject, RefreshGrant, issue_refresh_token, mint_access_token,
-    mint_identity_token,
+    mint_identity_token, open_minting_key,
 };
 
 /// What a client sent to the token endpoint, already read from the request.
@@ -150,9 +151,10 @@ async fn grant_to_service(
     let granted = narrow_scopes(request.scope, &client.scopes)?;
 
     let issuer = name_issuer(&app.settings, realm_name);
+    let key = open_minting_key(app, work.as_mut()).await?;
     let minted = mint_access_token(
         app,
-        work.as_mut(),
+        &key,
         AccessTokenSubject {
             issuer: &issuer,
             subject: &client.client_id,
@@ -160,8 +162,7 @@ async fn grant_to_service(
             scopes: &granted,
             session: None,
         },
-    )
-    .await?;
+    )?;
     let told = json!({ "client_id": client.client_id, "grant": "client_credentials", "scope": minted.scope });
     record_event(app, work.as_mut(), EventKind::TokenIssued, told).await?;
     work.commit().await.map_err(Failure::from)?;
@@ -227,6 +228,17 @@ async fn exchange_code(
         .filter(|(_, person)| person.id == code.person)
         .ok_or_else(invalid)?;
 
+    // Presented again meanwhile, the code obtains nothing. Bound before
+    // anything is written: the event comes last, as the head of the chain
+    // stays locked from the event to the commit.
+    let family = mint_id(app)?;
+    let bound = work
+        .bind_code_family(&digest, family)
+        .await
+        .map_err(Failure::from)?;
+    if !bound {
+        return Err(invalid());
+    }
     let issuer = name_issuer(&app.settings, realm_name);
     let granted = Granted {
         issuer: &issuer,
@@ -235,23 +247,21 @@ async fn exchange_code(
         person: &person,
         scopes: &code.scopes,
         nonce: code.nonce.as_deref(),
-        grant: "authorization_code",
         family: RefreshGrant {
-            family: None,
+            family,
             client_id: &client.client_id,
             session: &session,
             scopes: &code.scopes,
         },
     };
-    let (response, family) = answer_for_person(app, work.as_mut(), granted).await?;
-    // Presented again meanwhile, the code obtains nothing.
-    let bound = work
-        .bind_code_family(&digest, family)
-        .await
-        .map_err(Failure::from)?;
-    if !bound {
-        return Err(invalid());
-    }
+    let response = answer_for_person(app, work.as_mut(), granted).await?;
+    let told = json!({
+        "client_id": client.client_id,
+        "grant": "authorization_code",
+        "person_id": person.id.to_string(),
+        "scope": response.scope,
+    });
+    record_event(app, work.as_mut(), EventKind::TokenIssued, told).await?;
     work.commit().await.map_err(Failure::from)?;
     Ok(response)
 }
@@ -294,22 +304,22 @@ pub(super) struct Granted<'a> {
     /// What this answer carries. The refresh token keeps its own.
     pub(super) scopes: &'a [String],
     pub(super) nonce: Option<&'a str>,
-    pub(super) grant: &'static str,
     pub(super) family: RefreshGrant<'a>,
 }
 
 /// Mints everything a client gets for a person: an access token, an identity
-/// token when `openid` was granted, and the next refresh token, with the
-/// family it belongs to.
+/// token when `openid` was granted, and the next refresh token of the family.
+/// It records nothing: what is said of it in the chain is the caller's.
 pub(super) async fn answer_for_person(
     app: &App,
     work: &mut dyn UnitOfWork,
     granted: Granted<'_>,
-) -> Result<(TokenResponse, uuid::Uuid), Failure> {
+) -> Result<TokenResponse, Failure> {
     let subject = granted.person.id.to_string();
+    let key = open_minting_key(app, work).await?;
     let minted = mint_access_token(
         app,
-        work,
+        &key,
         AccessTokenSubject {
             issuer: granted.issuer,
             subject: &subject,
@@ -317,8 +327,7 @@ pub(super) async fn answer_for_person(
             scopes: granted.scopes,
             session: Some(granted.session.id),
         },
-    )
-    .await?;
+    )?;
     let id_token = if granted.scopes.iter().any(|scope| scope == "openid") {
         let identity = IdentityTokenSubject {
             issuer: granted.issuer,
@@ -329,27 +338,19 @@ pub(super) async fn answer_for_person(
             session: granted.session.id,
             authenticated_at: granted.session.authenticated_at,
         };
-        Some(mint_identity_token(app, work, identity).await?)
+        Some(mint_identity_token(app, &key, identity)?)
     } else {
         None
     };
-    let (refresh_token, family) = issue_refresh_token(app, work, granted.family).await?;
-    let told = json!({
-        "client_id": granted.client_id,
-        "grant": granted.grant,
-        "person_id": subject,
-        "scope": minted.scope,
-    });
-    record_event(app, work, EventKind::TokenIssued, told).await?;
-    let response = TokenResponse {
+    let refresh_token = issue_refresh_token(app, work, granted.family).await?;
+    Ok(TokenResponse {
         access_token: minted.token,
         token_type: "Bearer",
         expires_in: minted.expires_in,
         scope: minted.scope,
         id_token,
         refresh_token: Some(refresh_token),
-    };
-    Ok((response, family))
+    })
 }
 
 #[cfg(test)]

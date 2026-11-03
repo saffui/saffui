@@ -11,7 +11,7 @@ use crate::error::render_protocol_failure;
 use crate::extract::client_credentials::read_client_identity;
 
 #[post("/realms/{realm}/oauth2/revoke")]
-pub async fn revoke(
+pub async fn take_back_token(
     product: web::Data<Product>,
     realm: web::Path<String>,
     request: HttpRequest,

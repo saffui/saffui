@@ -112,8 +112,7 @@ pub async fn confirm_logout(app: &App, realm: &str, ticket: &SessionTicket) -> R
 #[cfg(test)]
 mod tests {
     use super::{Logout, LogoutParameters, begin_logout, confirm_logout};
-    use crate::login::session::find_live_session;
-    use crate::oidc::errors::OAuthError;
+    use crate::login::session::{close_session, find_live_session};
     use crate::oidc::scenario::{GOODBYE, Scenario};
     use crate::testkit::drive::complete;
 
@@ -162,14 +161,73 @@ mod tests {
             })
         );
         assert!(!is_signed_in(&scenario, &signed_in.ticket));
-        assert_eq!(
-            scenario.refresh(&refresh).map(|tokens| tokens.scope),
-            Err(OAuthError::InvalidGrant),
+        let mut work =
+            complete(scenario.app.storage.begin(scenario.scope)).expect("a unit of work");
+        let digest = scenario.app.digester.sha256(refresh.as_bytes());
+        let stored = complete(work.read_refresh_token(&digest))
+            .expect("a read")
+            .expect("the refresh token");
+        assert!(
+            stored.revoked_at.is_some(),
             "the refresh tokens of the session went with it"
         );
         assert_eq!(
             scenario.read_event_kinds().last().map(String::as_str),
             Some("session.ended")
+        );
+    }
+
+    #[test]
+    fn a_client_disabled_since_gets_no_browser_back() {
+        let scenario = Scenario::start();
+        let signed_in = scenario.sign_in("openid");
+        let identity = signed_in
+            .tokens
+            .id_token
+            .clone()
+            .expect("an identity token");
+        scenario.storage.disable_client("webapp");
+
+        let outcome = complete(begin_logout(
+            &scenario.app,
+            "acme",
+            hint(&identity, Some(GOODBYE)),
+            Some(&signed_in.ticket),
+        ));
+
+        assert_eq!(outcome, Ok(Logout::SignedOut { location: None }));
+        assert!(
+            !is_signed_in(&scenario, &signed_in.ticket),
+            "the session ends all the same"
+        );
+    }
+
+    #[test]
+    fn a_session_two_sign_outs_end_at_once_is_said_ended_once() {
+        let scenario = Scenario::start();
+        let signed_in = scenario.sign_in("openid");
+        let read = || {
+            let mut work =
+                complete(scenario.app.storage.begin(scenario.scope)).expect("a unit of work");
+            complete(work.read_session(signed_in.ticket.session))
+                .expect("a read")
+                .expect("the session")
+        };
+        // Both read it live, before either ended it.
+        let (seen_first, seen_second) = (read(), read());
+
+        for seen in [seen_first, seen_second] {
+            let mut work =
+                complete(scenario.app.storage.begin(scenario.scope)).expect("a unit of work");
+            complete(close_session(&scenario.app, work.as_mut(), &seen)).expect("a sign-out");
+            complete(work.commit()).expect("a commit");
+        }
+
+        let kinds = scenario.read_event_kinds();
+        assert_eq!(
+            kinds.iter().filter(|kind| *kind == "session.ended").count(),
+            1,
+            "{kinds:?}"
         );
     }
 

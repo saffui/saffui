@@ -167,7 +167,8 @@ pub async fn read_live_subject(
     Ok(person.map(|person| (session, person)))
 }
 
-/// Ends a session, and with it every refresh token it gave.
+/// Ends a session, and with it every refresh token it gave. A session
+/// another request ended meanwhile is left to it: it was said ended once.
 ///
 /// # Errors
 ///
@@ -177,7 +178,9 @@ pub async fn close_session(
     work: &mut dyn UnitOfWork,
     session: &Session,
 ) -> Result<(), Failure> {
-    work.end_session(session.id).await?;
+    if !work.end_session(session.id).await? {
+        return Ok(());
+    }
     let revoked = work
         .revoke_refresh_tokens_of_session(session.id, app.now())
         .await?;

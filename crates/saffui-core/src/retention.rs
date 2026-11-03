@@ -61,15 +61,17 @@ pub struct PurgeReport {
 #[async_trait]
 pub trait Retention: Send + Sync {
     /// Removes, in every realm, what is older than `cutoffs` says, in
-    /// bounded batches: what one pass leaves, the next removes. Returns
-    /// `None` when another node is doing it: the work is done once.
+    /// bounded batches, as long as they come back full and `budget` is not
+    /// spent: what one pass leaves, the next removes. Returns `None` when
+    /// another node is doing it: the work is done once.
     async fn purge_expired(
         &self,
         cutoffs: PurgeCutoffs,
+        budget: std::time::Duration,
     ) -> Result<Option<PurgeReport>, StorageError>;
 }
 
-/// Runs one pass of retention at `now`.
+/// Runs one pass of retention at `now`, given `budget` to remove in.
 ///
 /// # Errors
 ///
@@ -78,8 +80,9 @@ pub trait Retention: Send + Sync {
 pub async fn run_retention_pass(
     retention: &dyn Retention,
     now: OffsetDateTime,
+    budget: std::time::Duration,
 ) -> Result<Option<PurgeReport>, StorageError> {
-    retention.purge_expired(PurgeCutoffs::at(now)).await
+    retention.purge_expired(PurgeCutoffs::at(now), budget).await
 }
 
 #[cfg(test)]
@@ -101,6 +104,7 @@ mod tests {
         async fn purge_expired(
             &self,
             cutoffs: PurgeCutoffs,
+            _budget: std::time::Duration,
         ) -> Result<Option<PurgeReport>, StorageError> {
             self.0.lock().expect("a lock nobody poisoned").push(cutoffs);
             Ok(Some(PurgeReport::default()))
@@ -112,7 +116,11 @@ mod tests {
         let retention = Recorded::default();
         let now = OffsetDateTime::from_unix_timestamp(1_700_000_000).expect("an instant");
 
-        let report = complete(run_retention_pass(&retention, now));
+        let report = complete(run_retention_pass(
+            &retention,
+            now,
+            std::time::Duration::from_secs(1),
+        ));
 
         assert_eq!(report, Ok(Some(PurgeReport::default())));
         assert_eq!(

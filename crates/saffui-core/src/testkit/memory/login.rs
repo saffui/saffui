@@ -135,15 +135,23 @@ impl SessionStore for MemoryUnitOfWork {
             .cloned())
     }
 
-    async fn end_session(&mut self, id: Uuid) -> Result<(), StorageError> {
+    async fn end_session(&mut self, id: Uuid) -> Result<bool, StorageError> {
         let outcome = self.refuse_in_snapshot();
         self.record_refusal(outcome)?;
-        if let Some(sessions) = self.working.sessions.get_mut(&self.scope.realm().as_uuid()) {
-            for session in sessions.iter_mut().filter(|session| session.id == id) {
-                session.state = SessionState::Ended;
-            }
-        }
-        Ok(())
+        let Some(active) = self
+            .working
+            .sessions
+            .get_mut(&self.scope.realm().as_uuid())
+            .and_then(|sessions| {
+                sessions
+                    .iter_mut()
+                    .find(|session| session.id == id && session.state == SessionState::Active)
+            })
+        else {
+            return Ok(false);
+        };
+        active.state = SessionState::Ended;
+        Ok(true)
     }
 }
 
@@ -374,15 +382,21 @@ impl KnownBrowserStore for MemoryUnitOfWork {
         Ok(())
     }
 
-    async fn read_known_browser(
+    async fn read_live_browsers(
         &mut self,
-        device: Uuid,
-    ) -> Result<Option<KnownBrowser>, StorageError> {
+        devices: &[Uuid],
+        now: OffsetDateTime,
+    ) -> Result<Vec<KnownBrowser>, StorageError> {
         Ok(self
             .working
             .known_browsers
             .get(&self.scope.realm().as_uuid())
-            .and_then(|kept| kept.iter().find(|known| known.device == device))
-            .cloned())
+            .map(|kept| {
+                kept.iter()
+                    .filter(|known| devices.contains(&known.device) && known.expires_at > now)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default())
     }
 }

@@ -19,7 +19,7 @@ pub struct TokenQuestion {
 }
 
 #[post("/realms/{realm}/oauth2/introspect")]
-pub async fn introspect(
+pub async fn describe_token(
     product: web::Data<Product>,
     realm: web::Path<String>,
     request: HttpRequest,

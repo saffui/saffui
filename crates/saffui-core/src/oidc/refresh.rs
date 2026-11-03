@@ -84,29 +84,36 @@ pub(super) async fn rotate_refresh_token(
         scopes: &scopes,
         // A nonce answers one authorization request: it is not said again.
         nonce: None,
-        grant: "refresh_token",
         family: RefreshGrant {
-            family: Some(spent.family),
+            family: spent.family,
             client_id: &client.client_id,
             session: &session,
             scopes: &spent.scopes,
         },
     };
-    let (response, _family) = answer_for_person(app, work.as_mut(), granted).await?;
+    // No event: a rotation only carries on what the chain already says was
+    // issued, and one would queue every rotation of the realm on its head.
+    let response = answer_for_person(app, work.as_mut(), granted).await?;
     work.commit().await.map_err(Failure::from)?;
     Ok(response)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use base64::Engine as _;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use serde_json::Value;
+    use uuid::Uuid;
 
     use crate::oidc::errors::OAuthError;
     use crate::oidc::scenario::Scenario;
+    use crate::ports::crypto::{CryptoFailure, SealPlace, Sealer, WrappedDataKey};
+    use crate::secret::Secret;
+    use crate::testkit::crypto::TransparentSealer;
     use crate::testkit::drive::complete;
     use crate::testkit::fixtures::create_application;
 
@@ -146,10 +153,92 @@ mod tests {
             identity.get("nonce").is_none(),
             "a nonce answers one authorization request: {identity}"
         );
+    }
+
+    #[test]
+    fn a_rotation_writes_nothing_in_the_chain_of_the_realm() {
+        let scenario = Scenario::start();
+        let presented = scenario
+            .sign_in("openid")
+            .tokens
+            .refresh_token
+            .expect("a refresh token");
+        let before = scenario.read_event_kinds();
         assert_eq!(
-            scenario.read_event_kinds().last().map(String::as_str),
-            Some("token.issued")
+            before.last().map(String::as_str),
+            Some("token.issued"),
+            "the exchange of the code is said"
         );
+
+        let next = scenario
+            .refresh(&presented)
+            .expect("new tokens")
+            .refresh_token
+            .expect("the next refresh token");
+        scenario.refresh(&next).expect("new tokens again");
+
+        assert_eq!(scenario.read_event_kinds(), before);
+    }
+
+    /// A sealer that counts how often a sealed value is opened.
+    #[derive(Default)]
+    struct CountingSealer(AtomicUsize);
+
+    impl Sealer for CountingSealer {
+        fn make_data_key(
+            &self,
+            tenant: Uuid,
+            realm: Uuid,
+            generation: u32,
+        ) -> Result<WrappedDataKey, CryptoFailure> {
+            TransparentSealer.make_data_key(tenant, realm, generation)
+        }
+
+        fn seal(
+            &self,
+            data_key: &WrappedDataKey,
+            place: &SealPlace,
+            plaintext: &Secret,
+        ) -> Result<Vec<u8>, CryptoFailure> {
+            TransparentSealer.seal(data_key, place, plaintext)
+        }
+
+        fn open(
+            &self,
+            data_key: &WrappedDataKey,
+            place: &SealPlace,
+            sealed: &[u8],
+        ) -> Result<Secret, CryptoFailure> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            TransparentSealer.open(data_key, place, sealed)
+        }
+
+        fn digest_typed_name(
+            &self,
+            tenant: Uuid,
+            realm: Uuid,
+            typed: &[u8],
+        ) -> Result<Vec<u8>, CryptoFailure> {
+            TransparentSealer.digest_typed_name(tenant, realm, typed)
+        }
+    }
+
+    #[test]
+    fn an_answer_opens_the_key_of_the_realm_once_for_all_its_tokens() {
+        let mut scenario = Scenario::start();
+        let sealer = Arc::new(CountingSealer::default());
+        scenario.app.sealer = sealer.clone();
+        let presented = scenario
+            .sign_in("openid")
+            .tokens
+            .refresh_token
+            .expect("a refresh token");
+        let opened_before = sealer.0.load(Ordering::Relaxed);
+
+        let answer = scenario.refresh(&presented).expect("new tokens");
+
+        assert!(answer.id_token.is_some(), "an access and an identity token");
+        assert_eq!(sealer.0.load(Ordering::Relaxed) - opened_before, 1);
     }
 
     #[test]
@@ -218,6 +307,44 @@ mod tests {
             .find(|event| event["kind"] == "token.revoked")
             .expect("the revocation");
         assert_eq!(revoked["payload"]["reason"], "replayed", "{revoked}");
+    }
+
+    #[test]
+    fn a_used_token_another_client_presents_takes_nothing_back_from_its_owner() {
+        let scenario = Scenario::start();
+        complete(create_application(
+            &scenario.app,
+            scenario.scope,
+            "other",
+            "https://other.example.org/callback",
+            true,
+        ));
+        let first = scenario
+            .sign_in("openid")
+            .tokens
+            .refresh_token
+            .expect("a refresh token");
+        let next = scenario
+            .refresh(&first)
+            .expect("new tokens")
+            .refresh_token
+            .expect("the next refresh token");
+
+        assert_eq!(
+            scenario
+                .refresh_as("other", &first, None)
+                .map(|tokens| tokens.scope),
+            Err(OAuthError::InvalidGrant)
+        );
+        assert!(
+            scenario.refresh(&next).is_ok(),
+            "a client cannot revoke the family of another by replaying its token"
+        );
+        assert!(
+            !scenario
+                .read_event_kinds()
+                .contains(&"token.revoked".to_owned())
+        );
     }
 
     #[test]

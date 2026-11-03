@@ -1290,6 +1290,63 @@ mod tests {
     }
 
     #[test]
+    fn a_browser_kept_past_its_expiry_leaves_its_sign_ins_waiting_under_its_address() {
+        use crate::login::device::DEVICE_MARK_LIFETIME;
+        use crate::login::throttle::MAX_PENDING_SIGN_INS_PER_ADDRESS;
+
+        let (app, _storage, clock, _secret) = start(true);
+        let challenge = challenge();
+        let begun = complete(begin_authorization(&app, "acme", ask(&challenge), None))
+            .expect("a pending request");
+        let Authorization::SignInRequired {
+            request,
+            browser_secret,
+        } = begun
+        else {
+            panic!("a person without a session must sign in");
+        };
+        let expired = complete(finish_sign_in(
+            &app,
+            "acme",
+            request,
+            &browser_secret,
+            TypedSignIn {
+                name: "ada",
+                password: Secret::new(PASSWORD.as_bytes().to_vec()),
+                caller: None,
+                known_browsers: &[],
+            },
+        ))
+        .expect("a signed-in person")
+        .device_mark;
+        // The realm still holds the row: nothing purged it yet.
+        clock.advance(Duration::from_secs(
+            DEVICE_MARK_LIFETIME.whole_seconds().unsigned_abs() + 60,
+        ));
+        let ask_with = |marks: &[DeviceMark]| {
+            let parameters = AuthorizationParameters {
+                caller: Some("198.51.100.7".parse().expect("an address")),
+                known_browsers: marks,
+                ..ask(&challenge)
+            };
+            match complete(begin_authorization(&app, "acme", parameters, None)) {
+                Ok(Authorization::SignInRequired { .. }) => Ok(()),
+                Err(AuthorizationRefusal::Shown(failure)) => Err(failure.code),
+                _ => panic!("neither a sign-in nor a refusal shown"),
+            }
+        };
+        for _ in 0..MAX_PENDING_SIGN_INS_PER_ADDRESS {
+            assert_eq!(ask_with(&[]), Ok(()));
+        }
+
+        assert_eq!(
+            ask_with(std::slice::from_ref(&expired)),
+            Err(ErrorCode::SignInRequestsTooFrequent),
+            "a browser past its expiry is held by its address"
+        );
+    }
+
+    #[test]
     fn a_session_answers_without_a_page_only_as_prompt_and_max_age_allow() {
         let (app, _storage, clock, _secret) = start(false);
         let (_location, ticket) = sign_in_through_the_flow(&app);

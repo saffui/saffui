@@ -11,8 +11,10 @@ pub trait SessionStore {
 
     async fn read_session(&mut self, id: Uuid) -> Result<Option<Session>, StorageError>;
 
-    /// Ends a session. It is kept, ended: what it did stays explainable.
-    async fn end_session(&mut self, id: Uuid) -> Result<(), StorageError>;
+    /// Ends a session that is still active, and tells whether it did: of two
+    /// endings at once, one ends it. It is kept, ended, until it expires and
+    /// retention removes it: what it did stays explainable until then.
+    async fn end_session(&mut self, id: Uuid) -> Result<bool, StorageError>;
 }
 
 #[async_trait]
@@ -57,8 +59,11 @@ pub trait KnownBrowserStore {
         keep: u32,
     ) -> Result<(), StorageError>;
 
-    async fn read_known_browser(
+    /// The browsers among `devices` that are kept, whoever for, and that have
+    /// not expired at `now`, in one read.
+    async fn read_live_browsers(
         &mut self,
-        device: Uuid,
-    ) -> Result<Option<KnownBrowser>, StorageError>;
+        devices: &[Uuid],
+        now: OffsetDateTime,
+    ) -> Result<Vec<KnownBrowser>, StorageError>;
 }

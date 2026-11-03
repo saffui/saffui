@@ -702,7 +702,7 @@ pub async fn check_codes_contract(app: &App) {
     let ada = create_person(app, scope, "ada", "correct horse battery").await;
     let now = app.now();
 
-    // A session ends, and is kept ended.
+    // A session ends once, and is kept ended.
     let session = Session {
         id: mint_id(app).expect("an identifier"),
         person: ada.id,
@@ -713,11 +713,14 @@ pub async fn check_codes_contract(app: &App) {
     };
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
     work.insert_session(&session).await.expect("a session");
-    work.end_session(session.id)
-        .await
-        .expect("an ended session");
+    assert_eq!(work.end_session(session.id).await, Ok(true));
     work.commit().await.expect("a commit");
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.end_session(session.id).await,
+        Ok(false),
+        "an ended session is not ended twice"
+    );
     let ended = work
         .read_session(session.id)
         .await
@@ -1099,8 +1102,8 @@ pub async fn check_refresh_contract(app: &App) {
 }
 
 /// What any storage owes to the browsers people signed in from: one is read
-/// back in its realm only, lives longer when kept again, never changes hands,
-/// and a person keeps the few that expire last.
+/// back in its realm only and until it expires, lives longer when kept
+/// again, never changes hands, and a person keeps the few that expire last.
 ///
 /// # Panics
 ///
@@ -1127,17 +1130,25 @@ pub async fn check_known_browsers_contract(app: &App) {
         .await
         .expect("a browser");
     work.commit().await.expect("a commit");
+    let devices =
+        |numbers: &[u128]| -> Vec<Uuid> { numbers.iter().copied().map(Uuid::from_u128).collect() };
     let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
     assert_eq!(
-        elsewhere.read_known_browser(Uuid::from_u128(1)).await,
-        Ok(None)
+        elsewhere.read_live_browsers(&devices(&[1]), now).await,
+        Ok(Vec::new())
     );
     drop(elsewhere);
 
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
     assert_eq!(
-        work.read_known_browser(Uuid::from_u128(1)).await,
-        Ok(Some(browser(1, ada.id, 10)))
+        work.read_live_browsers(&devices(&[1, 9]), now).await,
+        Ok(vec![browser(1, ada.id, 10)])
+    );
+    assert_eq!(
+        work.read_live_browsers(&devices(&[1]), now + Duration::days(10))
+            .await,
+        Ok(Vec::new()),
+        "a browser is believed until it expires, not at that instant"
     );
     // Kept again, it lives longer. Kept for someone else, it does not move.
     work.remember_browser(&browser(1, ada.id, 20), 2)
@@ -1147,8 +1158,8 @@ pub async fn check_known_browsers_contract(app: &App) {
         .await
         .expect("a claim that changes nothing");
     assert_eq!(
-        work.read_known_browser(Uuid::from_u128(1)).await,
-        Ok(Some(browser(1, ada.id, 20)))
+        work.read_live_browsers(&devices(&[1]), now).await,
+        Ok(vec![browser(1, ada.id, 20)])
     );
     // Of three browsers of ada, the one that expires first is forgotten.
     work.remember_browser(&browser(2, ada.id, 5), 2)
@@ -1157,10 +1168,11 @@ pub async fn check_known_browsers_contract(app: &App) {
     work.remember_browser(&browser(3, ada.id, 15), 2)
         .await
         .expect("a third browser");
-    assert_eq!(work.read_known_browser(Uuid::from_u128(2)).await, Ok(None));
-    assert!(matches!(
-        work.read_known_browser(Uuid::from_u128(3)).await,
-        Ok(Some(_))
-    ));
+    let mut live = work
+        .read_live_browsers(&devices(&[3, 2, 1]), now)
+        .await
+        .expect("a read");
+    live.sort_by_key(|browser| browser.device);
+    assert_eq!(live, [browser(1, ada.id, 20), browser(3, ada.id, 15)]);
     work.commit().await.expect("a commit");
 }

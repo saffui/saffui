@@ -194,13 +194,14 @@ async fn find_known_browser(
     let Some(person) = person else {
         return Ok(None);
     };
-    for device in proven {
-        let kept = work.read_known_browser(*device).await?;
-        if kept.is_some_and(|kept| kept.person == person.id && kept.expires_at > now) {
-            return Ok(Some(*device));
-        }
+    if proven.is_empty() {
+        return Ok(None);
     }
-    Ok(None)
+    let live = work.read_live_browsers(proven, now).await?;
+    Ok(proven.iter().copied().find(|device| {
+        live.iter()
+            .any(|kept| kept.device == *device && kept.person == person.id)
+    }))
 }
 
 /// Signs a person in with a username and a password.
@@ -243,6 +244,15 @@ pub async fn sign_in(
     // into the wrong field.
     let typed = typed_name.trim().to_lowercase();
     let counters = name_counters(app, scope, &typed, caller)?;
+    let network = caller.and_then(write_network_bucket);
+    // No hasher free now: refused before the attempt is counted, so that a
+    // busy node costs the address nothing. The share is taken further down.
+    if !app
+        .hashing_shares
+        .has_free_share(scope.realm(), network.as_deref())
+    {
+        return Err(Failure::new(ErrorCode::HashingBusy));
+    }
     let now = app.now();
     // The marks made for the name typed: their MAC proves them before
     // anything is read.
@@ -287,7 +297,7 @@ pub async fn sign_in(
     let verified = {
         let _share = app
             .hashing_shares
-            .take(scope.realm(), caller.and_then(write_network_bucket))
+            .take(scope.realm(), network)
             .ok_or_else(|| Failure::new(ErrorCode::HashingBusy))?;
         app.hasher
             .verify_password(password, against)
@@ -649,6 +659,43 @@ mod tests {
         assert_eq!(
             attempt(&app, flooded, "ada", PASSWORD),
             Ok("ada".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_node_with_no_hasher_free_refuses_before_it_counts_the_attempt_of_the_address() {
+        use crate::login::throttle::MAX_RECENT_ATTEMPTS_PER_ADDRESS;
+
+        let (app, storage) = MemoryStorage::wire();
+        let scope = complete(create_realm(&app, "acme"));
+        complete(create_person(&app, scope, "ada", PASSWORD));
+        let held = [
+            app.hashing_shares
+                .take(scope.realm(), None)
+                .expect("a share"),
+            app.hashing_shares
+                .take(scope.realm(), None)
+                .expect("a share"),
+        ];
+        let units_before = storage.count_units_of_work();
+
+        for _ in 0..=MAX_RECENT_ATTEMPTS_PER_ADDRESS {
+            assert_eq!(
+                attempt_from(&app, scope, "203.0.113.7", "ada", PASSWORD),
+                Err(ErrorCode::HashingBusy)
+            );
+        }
+
+        assert_eq!(
+            storage.count_units_of_work(),
+            units_before,
+            "nothing was read, nothing was counted"
+        );
+        drop(held);
+        assert_eq!(
+            attempt_from(&app, scope, "203.0.113.7", "ada", PASSWORD),
+            Ok("ada".to_owned()),
+            "the address kept every attempt it may make"
         );
     }
 

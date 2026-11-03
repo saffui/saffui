@@ -152,3 +152,46 @@ async fn a_token_written_while_its_family_was_revoked_is_not_spent() {
     assert!(stored.revoked_at.is_some(), "it reads as revoked");
     assert!(!stored.is_live(now));
 }
+
+/// Two sign-outs of one session at once: the second waits for the first,
+/// then finds nothing left to end, so that the session is said ended once.
+#[tokio::test]
+async fn of_two_endings_of_one_session_at_once_one_ends_it() {
+    use std::time::Duration as Wait;
+
+    use saffui_core::ids::mint_id;
+    use saffui_core::login::session::{Session, SessionState};
+    use saffui_core::testkit::fixtures::{create_person, create_realm};
+    use time::Duration;
+
+    let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let scope = create_realm(&app, "endings").await;
+    let ada = create_person(&app, scope, "ada", "correct horse battery").await;
+    let now = app.now();
+    let session = Session {
+        id: mint_id(&app).expect("an identifier"),
+        person: ada.id,
+        secret_digest: vec![7; 32],
+        state: SessionState::Active,
+        authenticated_at: now,
+        expires_at: now + Duration::hours(1),
+    };
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.insert_session(&session).await.expect("a session");
+    work.commit().await.expect("a commit");
+
+    let mut first = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(first.end_session(session.id).await, Ok(true));
+    let storage = app.storage.clone();
+    let second = tokio::spawn(async move {
+        let mut work = storage.begin(scope).await.expect("a unit of work");
+        let ended = work.end_session(session.id).await;
+        work.commit().await.expect("a commit");
+        ended
+    });
+    tokio::time::sleep(Wait::from_millis(300)).await;
+    assert!(!second.is_finished(), "the second waits for the first");
+    first.commit().await.expect("a commit");
+
+    assert_eq!(second.await.expect("the second ending"), Ok(false));
+}

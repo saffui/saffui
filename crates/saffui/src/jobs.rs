@@ -11,6 +11,10 @@ use tracing::{error, info};
 /// one of them does it.
 const RETENTION_PERIOD: Duration = Duration::from_mins(10);
 
+/// How long a pass goes on removing: a tenth of the period, room for millions
+/// of rows, and a pass ends long before the next one is offered.
+const RETENTION_BUDGET: Duration = Duration::from_mins(1);
+
 /// Starts the timer of retention on the runtime of the caller. The first
 /// pass runs at once: a node that restarts often still purges. Each pass
 /// runs as a task of its own: one that panics is said, and the next tick
@@ -27,7 +31,9 @@ fn start_retention_every(retention: Arc<dyn Retention>, clock: Arc<dyn Clock>, p
             let pass = {
                 let retention = Arc::clone(&retention);
                 let now = clock.now();
-                actix_rt::spawn(async move { run_retention_pass(retention.as_ref(), now).await })
+                actix_rt::spawn(async move {
+                    run_retention_pass(retention.as_ref(), now, RETENTION_BUDGET).await
+                })
             };
             match pass.await {
                 Ok(Ok(Some(report))) => info!(
@@ -72,6 +78,7 @@ mod tests {
         async fn purge_expired(
             &self,
             _cutoffs: PurgeCutoffs,
+            _budget: Duration,
         ) -> Result<Option<PurgeReport>, StorageError> {
             assert!(
                 self.0.fetch_add(1, Ordering::SeqCst) > 0,

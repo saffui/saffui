@@ -14,6 +14,33 @@ use crate::query::update::Update;
 use crate::schema::refresh_tokens;
 use crate::work::PgUnitOfWork;
 
+/// Constant SQL: one statement finds the token and marks it. Of two uses of
+/// one token, the second waits for the first, then matches no row. A token of
+/// a family revoked while it was being written was never seen by the
+/// revocation: the revoked tokens of its family refuse it.
+const SPEND_TOKEN: &str = "
+    UPDATE refresh_tokens AS token SET used_at = $5
+    WHERE tenant_id = $1 AND realm_id = $2 AND token_digest = $3 AND client_id = $4
+      AND used_at IS NULL AND revoked_at IS NULL AND expires_at > $5
+      AND NOT EXISTS (
+          SELECT 1 FROM refresh_tokens AS kin
+          WHERE kin.tenant_id = $1 AND kin.realm_id = $2
+            AND kin.family_id = token.family_id AND kin.revoked_at IS NOT NULL)
+    RETURNING token_digest, family_id, client_id, person_id, session_id, scopes,
+              issued_at, expires_at";
+
+/// Constant SQL: a token reads as revoked from the first revocation in its
+/// family, so that one written while it ran reads as it is spent.
+const READ_TOKEN: &str = "
+    SELECT token_digest, family_id, client_id, person_id, session_id, scopes,
+           issued_at, expires_at, used_at,
+           coalesce(revoked_at, (
+               SELECT min(kin.revoked_at) FROM refresh_tokens AS kin
+               WHERE kin.tenant_id = $1 AND kin.realm_id = $2
+                 AND kin.family_id = token.family_id AND kin.revoked_at IS NOT NULL))
+    FROM refresh_tokens AS token
+    WHERE tenant_id = $1 AND realm_id = $2 AND token_digest = $3";
+
 /// Reads a token from the first eight columns of a row: what it is, then
 /// what became of it follows.
 fn read_token_row(row: &Row) -> RefreshToken {
@@ -56,21 +83,9 @@ impl RefreshStore for PgUnitOfWork {
         now: OffsetDateTime,
     ) -> Result<Option<RefreshToken>, StorageError> {
         let (tenant, realm) = self.scope_keys();
-        // Constant SQL: one statement finds the token and marks it. Of two
-        // uses of one token, the second waits for the first, then matches no row.
-        // A token of a family revoked while it was being written was never seen
-        // by the revocation: the revoked tokens of its family refuse it.
         let rows = self
             .read_raw(
-                "UPDATE refresh_tokens AS token SET used_at = $5
-                 WHERE tenant_id = $1 AND realm_id = $2 AND token_digest = $3 AND client_id = $4
-                   AND used_at IS NULL AND revoked_at IS NULL AND expires_at > $5
-                   AND NOT EXISTS (
-                       SELECT 1 FROM refresh_tokens AS kin
-                       WHERE kin.tenant_id = $1 AND kin.realm_id = $2
-                         AND kin.family_id = token.family_id AND kin.revoked_at IS NOT NULL)
-                 RETURNING token_digest, family_id, client_id, person_id, session_id, scopes,
-                           issued_at, expires_at",
+                SPEND_TOKEN,
                 &[&tenant, &realm, &token_digest, &client_id, &now],
             )
             .await?;
@@ -82,20 +97,8 @@ impl RefreshStore for PgUnitOfWork {
         token_digest: &[u8],
     ) -> Result<Option<StoredRefreshToken>, StorageError> {
         let (tenant, realm) = self.scope_keys();
-        // Constant SQL: a token reads as revoked from the first revocation in
-        // its family, so that one written while it ran reads as it is spent.
         let rows = self
-            .read_raw(
-                "SELECT token_digest, family_id, client_id, person_id, session_id, scopes,
-                        issued_at, expires_at, used_at,
-                        coalesce(revoked_at, (
-                            SELECT min(kin.revoked_at) FROM refresh_tokens AS kin
-                            WHERE kin.tenant_id = $1 AND kin.realm_id = $2
-                              AND kin.family_id = token.family_id))
-                 FROM refresh_tokens AS token
-                 WHERE tenant_id = $1 AND realm_id = $2 AND token_digest = $3",
-                &[&tenant, &realm, &token_digest],
-            )
+            .read_raw(READ_TOKEN, &[&tenant, &realm, &token_digest])
             .await?;
         Ok(rows.first().map(|row| StoredRefreshToken {
             token: read_token_row(row),
@@ -136,5 +139,88 @@ impl RefreshStore for PgUnitOfWork {
         .build()
         .map_err(|_| StorageError::Failed)?;
         self.execute(&update).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pgcore::migrate::EMBEDDED;
+    use pgcore::testkit::TestDatabase;
+    use time::OffsetDateTime;
+    use uuid::Uuid;
+
+    use super::{READ_TOKEN, SPEND_TOKEN};
+
+    /// A realm whose families were revoked by the hundred, and one family
+    /// that grew a thousand tokens long and never was: whether it was is read
+    /// from the revoked tokens alone, not from the length of the family.
+    #[tokio::test]
+    async fn whether_a_family_was_revoked_is_read_from_its_revoked_tokens_alone() {
+        let database = TestDatabase::create(EMBEDDED).await;
+        let mut owner = database
+            .plan("saffui_owner")
+            .connect_directly()
+            .await
+            .expect("a connection");
+        let (tenant, realm) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let planting = owner.transaction().await.expect("a transaction");
+        planting
+            .batch_execute(&format!(
+                "SELECT set_config('saffui.tenant', '{tenant}', true),
+                        set_config('saffui.realm', '{realm}', true);
+                 INSERT INTO tenants VALUES ('{tenant}', 'acme', now());
+                 INSERT INTO realms VALUES ('{tenant}', '{realm}', 'acme', true, now());
+                 INSERT INTO persons (tenant_id, realm_id, person_id, username, email_verified,
+                                      enabled, created_at)
+                     VALUES ('{tenant}', '{realm}', '{realm}', 'ada', false, true, now());
+                 INSERT INTO sessions VALUES ('{tenant}', '{realm}', '{realm}', '{realm}', '\\x00',
+                                              'active', now(), now() + interval '1 hour');
+                 INSERT INTO refresh_tokens
+                     SELECT '{tenant}', '{realm}', int4send(n), uuid_in(md5((n % 1000)::text)::cstring),
+                            'webapp', '{realm}', '{realm}', '{{openid}}', now(),
+                            now() + interval '1 hour', now(), now()
+                     FROM generate_series(1, 5000) AS n;
+                 INSERT INTO refresh_tokens
+                     SELECT '{tenant}', '{realm}', int8send(n::bigint), '{tenant}', 'webapp', '{realm}',
+                            '{realm}', '{{openid}}', now(), now() + interval '1 hour',
+                            CASE WHEN n < 1000 THEN now() END, NULL
+                     FROM generate_series(1, 1000) AS n;"
+            ))
+            .await
+            .expect("the tokens of a realm");
+        planting.commit().await.expect("a commit");
+        owner
+            .batch_execute("ANALYZE refresh_tokens")
+            .await
+            .expect("statistics");
+        let digest = 1000_i64.to_be_bytes().to_vec();
+        let explain = |statement: &str| format!("EXPLAIN {statement}");
+
+        let spend = owner
+            .query(
+                &explain(SPEND_TOKEN),
+                &[
+                    &tenant,
+                    &realm,
+                    &digest,
+                    &"webapp",
+                    &OffsetDateTime::now_utc(),
+                ],
+            )
+            .await
+            .expect("the plan of a spending");
+        let read = owner
+            .query(&explain(READ_TOKEN), &[&tenant, &realm, &digest])
+            .await
+            .expect("the plan of a reading");
+
+        for (statement, plan) in [("spend", spend), ("read", read)] {
+            let plan: Vec<String> = plan.iter().map(|row| row.get(0)).collect();
+            assert!(
+                plan.iter()
+                    .any(|line| line.contains("refresh_tokens_revoked_family")),
+                "{statement}: {plan:#?}"
+            );
+        }
     }
 }

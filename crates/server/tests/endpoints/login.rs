@@ -803,14 +803,18 @@ async fn a_person_signs_out_at_once_with_the_identity_token_of_the_session_and_i
         "{:?}",
         out.cookies
     );
-    let refresh = format!(
-        "grant_type=refresh_token&client_id=portal&refresh_token={}",
-        tokens["refresh_token"].as_str().expect("a refresh token")
-    );
-    let refused = post(&product, "/realms/acme/oauth2/token", &[], &refresh).await;
-    assert_eq!(
-        refused.status,
-        StatusCode::BAD_REQUEST,
+    let refresh = tokens["refresh_token"].as_str().expect("a refresh token");
+    let (_, scope) = saffui_core::tenancy::resolve::resolve_realm(&product, "acme")
+        .await
+        .expect("the realm");
+    let mut work = product.storage.begin(scope).await.expect("a unit of work");
+    let stored = work
+        .read_refresh_token(&product.digester.sha256(refresh.as_bytes()))
+        .await
+        .expect("a read")
+        .expect("the refresh token");
+    assert!(
+        stored.revoked_at.is_some(),
         "the refresh tokens of the session went with it"
     );
 

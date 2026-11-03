@@ -13,6 +13,7 @@
 use std::net::IpAddr;
 
 use time::{Duration, OffsetDateTime};
+use uuid::Uuid;
 
 use crate::app::App;
 use crate::error::{ErrorCode, Failure};
@@ -132,14 +133,20 @@ pub(crate) async fn admit_pending_sign_in(
     known_browsers: &[DeviceMark],
 ) -> Result<(), Failure> {
     let now = app.now();
-    let mut kept = None;
-    for mark in known_browsers.iter().take(MOST_MARKS) {
-        let browser = work.read_known_browser(mark.device).await?;
-        if browser.is_some_and(|browser| browser.expires_at > now) {
-            kept = Some(mark.device);
-            break;
-        }
-    }
+    let devices: Vec<Uuid> = known_browsers
+        .iter()
+        .take(MOST_MARKS)
+        .map(|mark| mark.device)
+        .collect();
+    let live = if devices.is_empty() {
+        Vec::new()
+    } else {
+        work.read_live_browsers(&devices, now).await?
+    };
+    // Of the marks the realm keeps, the first of the cookie: the latest.
+    let kept = devices
+        .into_iter()
+        .find(|device| live.iter().any(|browser| browser.device == *device));
     // A kind of its own for each, as each counter of the brake: nothing
     // counted here is counted as an attempt to sign in.
     let written = match (kept, caller) {

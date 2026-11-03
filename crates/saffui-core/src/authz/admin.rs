@@ -236,7 +236,7 @@ mod tests {
         use crate::ids::mint_id;
         use crate::oidc::discovery::name_issuer;
         use crate::tenancy::RealmName;
-        use crate::tokens::mint::{AccessTokenSubject, mint_access_token};
+        use crate::tokens::mint::{AccessTokenSubject, mint_access_token, open_minting_key};
 
         let (app, _storage) = MemoryStorage::wire();
         let scope = complete(create_realm(&app, "acme"));
@@ -246,9 +246,10 @@ mod tests {
         let scopes = ["admin".to_owned()];
         // What a person would hold had they signed in through that client.
         let mut work = complete(app.storage.begin(scope)).expect("a unit of work");
-        let lent = complete(mint_access_token(
+        let key = complete(open_minting_key(&app, work.as_mut())).expect("the key of the realm");
+        let lent = mint_access_token(
             &app,
-            work.as_mut(),
+            &key,
             AccessTokenSubject {
                 issuer: &issuer,
                 subject: &person,
@@ -256,7 +257,7 @@ mod tests {
                 scopes: &scopes,
                 session: Some(mint_id(&app).expect("an identifier")),
             },
-        ))
+        )
         .expect("a token");
         complete(work.commit()).expect("a commit");
 

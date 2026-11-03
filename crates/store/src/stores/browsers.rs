@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use saffui_core::login::store::{KnownBrowser, KnownBrowserStore};
 use saffui_core::ports::storage::StorageError;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::work::PgUnitOfWork;
@@ -47,22 +48,27 @@ impl KnownBrowserStore for PgUnitOfWork {
         .map(|_| ())
     }
 
-    async fn read_known_browser(
+    async fn read_live_browsers(
         &mut self,
-        device: Uuid,
-    ) -> Result<Option<KnownBrowser>, StorageError> {
+        devices: &[Uuid],
+        now: OffsetDateTime,
+    ) -> Result<Vec<KnownBrowser>, StorageError> {
         let (tenant, realm) = self.scope_keys();
         let rows = self
             .read_raw(
-                "SELECT person_id, expires_at FROM known_browsers
-                 WHERE tenant_id = $1 AND realm_id = $2 AND device_id = $3",
-                &[&tenant, &realm, &device],
+                "SELECT device_id, person_id, expires_at FROM known_browsers
+                 WHERE tenant_id = $1 AND realm_id = $2 AND device_id = ANY ($3)
+                   AND expires_at > $4",
+                &[&tenant, &realm, &devices, &now],
             )
             .await?;
-        Ok(rows.first().map(|row| KnownBrowser {
-            device,
-            person: row.get(0),
-            expires_at: row.get(1),
-        }))
+        Ok(rows
+            .iter()
+            .map(|row| KnownBrowser {
+                device: row.get(0),
+                person: row.get(1),
+                expires_at: row.get(2),
+            })
+            .collect())
     }
 }

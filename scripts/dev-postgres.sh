@@ -103,6 +103,13 @@ BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'saffui_test_retention_noinherit_owner') THEN
     CREATE ROLE saffui_test_retention_noinherit_owner LOGIN BYPASSRLS NOINHERIT IN ROLE saffui_owner;
   END IF;
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'saffui_test_retention_creates_databases') THEN
+    CREATE ROLE saffui_test_retention_creates_databases LOGIN BYPASSRLS CREATEDB;
+  END IF;
+  -- And one that holds less: it bypasses row security, and may purge nothing.
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'saffui_test_retention_holds_nothing') THEN
+    CREATE ROLE saffui_test_retention_holds_nothing LOGIN BYPASSRLS;
+  END IF;
 END
 $$;
 -- Dropping a test database ends the sessions other roles still hold on it.

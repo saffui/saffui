@@ -51,6 +51,21 @@ impl HashingShares {
         }
     }
 
+    fn is_held_whole(&self, held: &Held, realm: RealmId, network: Option<&str>) -> bool {
+        held.realms.get(&realm).copied().unwrap_or(0) >= self.per_realm
+            || network.is_some_and(|network| {
+                held.networks.get(network).copied().unwrap_or(0) >= self.per_network
+            })
+    }
+
+    /// Tells whether a share is free for `realm` and `network` right now,
+    /// and keeps none: another caller may take it before this one does.
+    #[must_use]
+    pub fn has_free_share(&self, realm: RealmId, network: Option<&str>) -> bool {
+        let held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        !self.is_held_whole(&held, realm, network)
+    }
+
     /// Takes a share for `realm` and for `network`, the /48 of an IPv6
     /// caller, or none when either holds its whole share already.
     #[must_use]
@@ -58,12 +73,7 @@ impl HashingShares {
         // A thread that panicked while holding the lock left whole counts:
         // each change is one statement.
         let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
-        if held.realms.get(&realm).copied().unwrap_or(0) >= self.per_realm {
-            return None;
-        }
-        if let Some(network) = &network
-            && held.networks.get(network).copied().unwrap_or(0) >= self.per_network
-        {
+        if self.is_held_whole(&held, realm, network.as_deref()) {
             return None;
         }
         *held.realms.entry(realm).or_insert(0) += 1;
@@ -117,13 +127,19 @@ mod tests {
             "another realm is not held up"
         );
 
+        assert!(!shares.has_free_share(flooded, None));
+        assert!(shares.has_free_share(other, None));
         drop(first);
+        assert!(shares.has_free_share(flooded, None));
         let third = shares
             .take(flooded, None)
             .expect("a share given back is taken again");
         drop((second, third));
         let held = shares.held.lock().expect("a lock");
-        assert!(held.realms.is_empty() && held.networks.is_empty());
+        assert!(
+            held.realms.is_empty() && held.networks.is_empty(),
+            "every share is given back, and looking took none"
+        );
     }
 
     #[test]

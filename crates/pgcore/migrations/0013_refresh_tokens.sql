@@ -20,6 +20,10 @@ CREATE TABLE refresh_tokens (
 );
 
 CREATE INDEX refresh_tokens_family ON refresh_tokens (tenant_id, realm_id, family_id);
+-- Whether a family was revoked is asked at each use. A family that was not
+-- has no entry here, however many tokens it grew.
+CREATE INDEX refresh_tokens_revoked_family ON refresh_tokens (tenant_id, realm_id, family_id)
+    WHERE revoked_at IS NOT NULL;
 CREATE INDEX refresh_tokens_session ON refresh_tokens (tenant_id, realm_id, session_id);
 
 ALTER TABLE refresh_tokens ENABLE ROW LEVEL SECURITY;

@@ -349,3 +349,60 @@ async fn a_list_is_cut_to_500_with_a_warning_and_refused_past_an_offset_of_10000
     assert_eq!(unreadable.status, StatusCode::BAD_REQUEST);
     assert_eq!(unreadable.body["code"], "platform.request_invalid");
 }
+
+#[actix_web::test]
+async fn an_administrator_creates_a_person_and_lists_them_without_their_password() {
+    let (product, token) = start(&[Capability::UserRead, Capability::UserWrite]).await;
+    let path = "/admin/v1/realms/acme/users";
+    let wanted = json!({
+        "username": " Ada ",
+        "email": "Ada@Example.org",
+        "password": "correct horse battery",
+    })
+    .to_string();
+
+    let created = call(&product, Method::POST, path, Some(&token), Some(&wanted)).await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(created.body["username"], "ada");
+    assert_eq!(created.body["email"], "ada@example.org");
+
+    let again = call(&product, Method::POST, path, Some(&token), Some(&wanted)).await;
+    assert_eq!(again.status, StatusCode::CONFLICT);
+    assert_eq!(again.body["code"], "user.username_taken");
+
+    let listed = call(
+        &product,
+        Method::GET,
+        &format!("{path}?count=true"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(listed.body["total"], 1);
+    assert_eq!(listed.body["items"][0]["username"], "ada");
+    let told = listed.body.to_string();
+    assert!(
+        !told.contains("password") && !told.contains("correct horse"),
+        "nothing about a password is ever listed: {told}"
+    );
+}
+
+#[actix_web::test]
+async fn reading_people_does_not_let_one_create_them_and_a_field_nobody_reads_is_refused() {
+    let (product, token) = start(&[Capability::UserRead]).await;
+    let path = "/admin/v1/realms/acme/users";
+    let wanted = json!({ "username": "ada" }).to_string();
+
+    let refused = call(&product, Method::POST, path, Some(&token), Some(&wanted)).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+
+    let (product, token) = start(&[Capability::UserWrite]).await;
+    let more = json!({ "username": "ada", "is_admin": true }).to_string();
+    let unread = call(&product, Method::POST, path, Some(&token), Some(&more)).await;
+    assert_eq!(unread.status, StatusCode::BAD_REQUEST, "{}", unread.body);
+    let short = json!({ "username": "ada", "password": "short" }).to_string();
+    let weak = call(&product, Method::POST, path, Some(&token), Some(&short)).await;
+    assert_eq!(weak.status, StatusCode::BAD_REQUEST);
+    assert_eq!(weak.body["code"], "user.password_unacceptable");
+}

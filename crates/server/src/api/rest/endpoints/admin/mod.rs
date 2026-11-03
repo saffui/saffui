@@ -5,4 +5,5 @@ pub mod audit;
 pub mod client;
 mod listing;
 pub mod realm;
+pub mod user;
 mod views;

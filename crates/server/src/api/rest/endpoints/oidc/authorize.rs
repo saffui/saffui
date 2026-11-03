@@ -5,6 +5,7 @@ use actix_web::{HttpRequest, HttpResponse, get, web};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use saffui_core::app::App as Product;
+use saffui_core::login::device::read_device_marks;
 use saffui_core::login::session::SessionTicket;
 use saffui_core::oidc::authorize::{
     Authorization, AuthorizationParameters, AuthorizationRefusal, begin_authorization,
@@ -13,7 +14,8 @@ use serde::Deserialize;
 
 use crate::api::rest::endpoints::login::page::render_refusal;
 use crate::extract::cookies::{
-    is_served_over_tls, name_flow_cookie, name_session_cookie, read_cookie, write_cookie,
+    is_served_over_tls, name_device_cookie, name_flow_cookie, name_session_cookie, read_cookie,
+    write_cookie,
 };
 use crate::middleware::caller_address::read_caller_address;
 
@@ -33,6 +35,7 @@ pub struct AuthorizeQuery {
     code_challenge_method: Option<String>,
     prompt: Option<String>,
     max_age: Option<String>,
+    id_token_hint: Option<String>,
 }
 
 fn redirect_to(location: &str) -> HttpResponse {
@@ -52,6 +55,9 @@ pub async fn begin(
     let secure = is_served_over_tls(&product);
     let ticket = read_cookie(&http, &name_session_cookie(&realm, secure))
         .and_then(|value| SessionTicket::parse(&value));
+    let known_browsers = read_cookie(&http, &name_device_cookie(&realm, secure))
+        .map(|value| read_device_marks(&value))
+        .unwrap_or_default();
     let parameters = AuthorizationParameters {
         response_type: query.response_type.as_deref(),
         client_id: query.client_id.as_deref(),
@@ -63,7 +69,9 @@ pub async fn begin(
         code_challenge_method: query.code_challenge_method.as_deref(),
         prompt: query.prompt.as_deref(),
         max_age: query.max_age.as_deref(),
+        id_token_hint: query.id_token_hint.as_deref(),
         caller: read_caller_address(&product, &http),
+        known_browsers: &known_browsers,
     };
     match begin_authorization(&product, &realm, parameters, ticket.as_ref()).await {
         // With a code or with an error, the browser goes back to a trusted address.

@@ -42,6 +42,7 @@ pub enum ErrorCode {
     EmailTaken = 203,
     DisplayNameInvalid = 204,
     PasswordUnacceptable = 205,
+    PersonNotFound = 206,
     ClientAuthenticationFailed = 300,
     ClientIdentifierInvalid = 301,
     ClientIdentifierTaken = 302,
@@ -62,6 +63,8 @@ pub enum ErrorCode {
     SignInRequestsTooFrequent = 405,
     TokenInvalid = 500,
     GrantInvalid = 501,
+    TokenScopeInsufficient = 502,
+    TokenTypeUnsupported = 503,
     TenantNameInvalid = 600,
 }
 
@@ -85,12 +88,16 @@ impl ErrorCode {
             | Self::ClientIdentifierTaken
             | Self::UsernameTaken
             | Self::EmailTaken => ErrorKind::Conflict,
-            Self::RealmNotFound | Self::ClientNotFound => ErrorKind::NotFound,
+            Self::RealmNotFound | Self::ClientNotFound | Self::PersonNotFound => {
+                ErrorKind::NotFound
+            }
             Self::ClientAuthenticationFailed
             | Self::TokenInvalid
             | Self::AdminAuthenticationFailed
             | Self::SignInFailed => ErrorKind::Unauthenticated,
-            Self::GrantNotAllowed | Self::CapabilityMissing => ErrorKind::Forbidden,
+            Self::GrantNotAllowed | Self::CapabilityMissing | Self::TokenScopeInsufficient => {
+                ErrorKind::Forbidden
+            }
             Self::RealmNameInvalid
             | Self::TenantNameInvalid
             | Self::ClientIdentifierInvalid
@@ -108,7 +115,8 @@ impl ErrorCode {
             | Self::RedirectUriInvalid
             | Self::RedirectUriMismatch
             | Self::AuthorizationRequestExpired
-            | Self::GrantInvalid => ErrorKind::Invalid,
+            | Self::GrantInvalid
+            | Self::TokenTypeUnsupported => ErrorKind::Invalid,
         }
     }
 
@@ -141,11 +149,14 @@ impl ErrorCode {
             Self::GrantNotAllowed => "client.grant_not_allowed",
             Self::GrantTypeUnsupported => "client.grant_type_unsupported",
             Self::ClientNotFound => "client.not_found",
+            Self::PersonNotFound => "user.not_found",
             Self::CapabilityUnknown => "client.capability_unknown",
             Self::RedirectUriInvalid => "client.redirect_uri_invalid",
             Self::RedirectUriMismatch => "client.redirect_uri_mismatch",
             Self::TokenInvalid => "token.invalid",
             Self::GrantInvalid => "token.grant_invalid",
+            Self::TokenScopeInsufficient => "token.scope_insufficient",
+            Self::TokenTypeUnsupported => "token.type_unsupported",
             Self::AdminAuthenticationFailed => "auth.admin_authentication_failed",
             Self::CapabilityMissing => "auth.capability_missing",
             Self::SignInFailed => "auth.sign_in_failed",
@@ -195,12 +206,15 @@ impl ErrorCode {
             Self::GrantTypeUnsupported => "This grant type is not supported.",
             Self::ListOffsetTooLarge => "A list starts at 100000 at the latest: narrow it instead.",
             Self::ClientNotFound => "No such client.",
+            Self::PersonNotFound => "No such person.",
             Self::CapabilityUnknown => "A capability that was asked for does not exist.",
             Self::RedirectUriInvalid => {
                 "A redirect URI is an https URL, or an http URL of this machine, without a fragment."
             }
             Self::TokenInvalid => "The token is not valid.",
             Self::GrantInvalid => "The grant is invalid, expired, or was already used.",
+            Self::TokenScopeInsufficient => "The token was not granted what this asks.",
+            Self::TokenTypeUnsupported => "A token of this type cannot be revoked.",
             Self::AdminAuthenticationFailed => "Authentication is required.",
             Self::CapabilityMissing => "The caller is not allowed to do this.",
             Self::ClientIdentifierInvalid => {
@@ -278,7 +292,7 @@ mod tests {
 
     use super::ErrorCode;
 
-    const ALL: [ErrorCode; 37] = [
+    const ALL: [ErrorCode; 40] = [
         ErrorCode::Internal,
         ErrorCode::StorageUnavailable,
         ErrorCode::Conflict,
@@ -304,11 +318,14 @@ mod tests {
         ErrorCode::GrantNotAllowed,
         ErrorCode::GrantTypeUnsupported,
         ErrorCode::ClientNotFound,
+        ErrorCode::PersonNotFound,
         ErrorCode::CapabilityUnknown,
         ErrorCode::RedirectUriInvalid,
         ErrorCode::RedirectUriMismatch,
         ErrorCode::TokenInvalid,
         ErrorCode::GrantInvalid,
+        ErrorCode::TokenScopeInsufficient,
+        ErrorCode::TokenTypeUnsupported,
         ErrorCode::AdminAuthenticationFailed,
         ErrorCode::CapabilityMissing,
         ErrorCode::SignInFailed,

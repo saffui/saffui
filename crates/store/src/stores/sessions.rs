@@ -61,15 +61,19 @@ impl SessionStore for PgUnitOfWork {
             .transpose()
     }
 
-    async fn end_session(&mut self, id: Uuid) -> Result<(), StorageError> {
-        let ended = SessionState::Ended.name();
+    async fn end_session(&mut self, id: Uuid) -> Result<bool, StorageError> {
+        let (ended, active) = (SessionState::Ended.name(), SessionState::Active.name());
+        // Of two endings at once, the second waits for the first, then finds
+        // the session ended and matches no row.
         let update = Update::table(
             sessions::TABLE,
             vec![col(sessions::STATE, &ended)],
-            Criteria::new().where_equal(sessions::SESSION_ID, &id),
+            Criteria::new()
+                .where_equal(sessions::SESSION_ID, &id)
+                .where_equal(sessions::STATE, &active),
         )
         .build()
         .map_err(|_| StorageError::Failed)?;
-        self.execute(&update).await.map(|_| ())
+        Ok(self.execute(&update).await? == 1)
     }
 }

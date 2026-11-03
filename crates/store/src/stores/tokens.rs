@@ -1,0 +1,251 @@
+//! Refresh tokens.
+
+use async_trait::async_trait;
+use saffui_core::ports::storage::StorageError;
+use saffui_core::tokens::store::{EndedFamily, RefreshStore, RefreshToken, StoredRefreshToken};
+use time::OffsetDateTime;
+use tokio_postgres::Row;
+use uuid::Uuid;
+
+use crate::query::bind::col;
+use crate::query::criteria::Criteria;
+use crate::query::insert::Insert;
+use crate::query::update::Update;
+use crate::schema::refresh_tokens;
+use crate::work::PgUnitOfWork;
+
+/// Constant SQL: one statement finds the token and marks it. Of two uses of
+/// one token, the second waits for the first, then matches no row. A token of
+/// a family revoked while it was being written was never seen by the
+/// revocation: the revoked tokens of its family refuse it.
+const SPEND_TOKEN: &str = "
+    UPDATE refresh_tokens AS token SET used_at = $5
+    WHERE tenant_id = $1 AND realm_id = $2 AND token_digest = $3 AND client_id = $4
+      AND used_at IS NULL AND revoked_at IS NULL AND expires_at > $5
+      AND NOT EXISTS (
+          SELECT 1 FROM refresh_tokens AS kin
+          WHERE kin.tenant_id = $1 AND kin.realm_id = $2
+            AND kin.family_id = token.family_id AND kin.revoked_at IS NOT NULL)
+    RETURNING token_digest, family_id, client_id, person_id, session_id, scopes,
+              issued_at, expires_at";
+
+/// Constant SQL: a token reads as revoked from the first revocation in its
+/// family, so that one written while it ran reads as it is spent.
+const READ_TOKEN: &str = "
+    SELECT token_digest, family_id, client_id, person_id, session_id, scopes,
+           issued_at, expires_at, used_at,
+           coalesce(revoked_at, (
+               SELECT min(kin.revoked_at) FROM refresh_tokens AS kin
+               WHERE kin.tenant_id = $1 AND kin.realm_id = $2
+                 AND kin.family_id = token.family_id AND kin.revoked_at IS NOT NULL))
+    FROM refresh_tokens AS token
+    WHERE tenant_id = $1 AND realm_id = $2 AND token_digest = $3";
+
+/// Constant SQL: what is live of a family is found by the index of live
+/// tokens alone, revoked, and summed up in the same statement.
+const REVOKE_FAMILY: &str = "
+    WITH revoked AS (
+        UPDATE refresh_tokens SET revoked_at = $4
+        WHERE tenant_id = $1 AND realm_id = $2 AND family_id = $3 AND revoked_at IS NULL
+        RETURNING issued_at, used_at)
+    SELECT count(*), max(issued_at), max(used_at) FROM revoked";
+
+/// Reads a token from the first eight columns of a row: what it is, then
+/// what became of it follows.
+fn read_token_row(row: &Row) -> RefreshToken {
+    RefreshToken {
+        token_digest: row.get(0),
+        family: row.get(1),
+        client_id: row.get(2),
+        person: row.get(3),
+        session: row.get(4),
+        scopes: row.get(5),
+        issued_at: row.get(6),
+        expires_at: row.get(7),
+    }
+}
+
+#[async_trait]
+impl RefreshStore for PgUnitOfWork {
+    async fn insert_refresh_token(&mut self, token: &RefreshToken) -> Result<(), StorageError> {
+        let insert = Insert::into(
+            refresh_tokens::TABLE,
+            vec![
+                col(refresh_tokens::TOKEN_DIGEST, &token.token_digest),
+                col(refresh_tokens::FAMILY_ID, &token.family),
+                col(refresh_tokens::CLIENT_ID, &token.client_id),
+                col(refresh_tokens::PERSON_ID, &token.person),
+                col(refresh_tokens::SESSION_ID, &token.session),
+                col(refresh_tokens::SCOPES, &token.scopes),
+                col(refresh_tokens::ISSUED_AT, &token.issued_at),
+                col(refresh_tokens::EXPIRES_AT, &token.expires_at),
+            ],
+        )
+        .build();
+        self.execute(&insert).await.map(|_| ())
+    }
+
+    async fn spend_refresh_token(
+        &mut self,
+        token_digest: &[u8],
+        client_id: &str,
+        now: OffsetDateTime,
+    ) -> Result<Option<RefreshToken>, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        let rows = self
+            .read_raw(
+                SPEND_TOKEN,
+                &[&tenant, &realm, &token_digest, &client_id, &now],
+            )
+            .await?;
+        Ok(rows.first().map(read_token_row))
+    }
+
+    async fn read_refresh_token(
+        &mut self,
+        token_digest: &[u8],
+    ) -> Result<Option<StoredRefreshToken>, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        let rows = self
+            .read_raw(READ_TOKEN, &[&tenant, &realm, &token_digest])
+            .await?;
+        Ok(rows.first().map(|row| StoredRefreshToken {
+            token: read_token_row(row),
+            used_at: row.get(8),
+            revoked_at: row.get(9),
+        }))
+    }
+
+    async fn revoke_refresh_family(
+        &mut self,
+        family: Uuid,
+        now: OffsetDateTime,
+    ) -> Result<Option<EndedFamily>, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        let rows = self
+            .read_raw(REVOKE_FAMILY, &[&tenant, &realm, &family, &now])
+            .await?;
+        let Some(row) = rows.first() else {
+            return Ok(None);
+        };
+        let tokens = u64::try_from(row.get::<_, i64>(0)).map_err(|_| StorageError::Failed)?;
+        Ok(row
+            .get::<_, Option<OffsetDateTime>>(1)
+            .map(|last_issued_at| EndedFamily {
+                tokens,
+                last_issued_at,
+                last_used_at: row.get(2),
+            }))
+    }
+
+    async fn revoke_refresh_tokens_of_session(
+        &mut self,
+        session: Uuid,
+        now: OffsetDateTime,
+    ) -> Result<u64, StorageError> {
+        let update = Update::table(
+            refresh_tokens::TABLE,
+            vec![col(refresh_tokens::REVOKED_AT, &now)],
+            Criteria::new()
+                .where_equal(refresh_tokens::SESSION_ID, &session)
+                .where_null(refresh_tokens::REVOKED_AT),
+        )
+        .build()
+        .map_err(|_| StorageError::Failed)?;
+        self.execute(&update).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pgcore::migrate::EMBEDDED;
+    use pgcore::testkit::TestDatabase;
+    use time::OffsetDateTime;
+    use uuid::Uuid;
+
+    use super::{READ_TOKEN, REVOKE_FAMILY, SPEND_TOKEN};
+
+    /// A realm whose families were revoked by the hundred, and one family
+    /// that grew a thousand tokens long and never was: whether it was is read
+    /// from the revoked tokens alone, not from the length of the family, and
+    /// a revocation reads the live tokens alone.
+    #[tokio::test]
+    async fn whether_a_family_was_revoked_is_read_from_its_revoked_tokens_alone() {
+        let database = TestDatabase::create(EMBEDDED).await;
+        let mut owner = database
+            .plan("saffui_owner")
+            .connect_directly()
+            .await
+            .expect("a connection");
+        let (tenant, realm) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let planting = owner.transaction().await.expect("a transaction");
+        planting
+            .batch_execute(&format!(
+                "SELECT set_config('saffui.tenant', '{tenant}', true),
+                        set_config('saffui.realm', '{realm}', true);
+                 INSERT INTO tenants VALUES ('{tenant}', 'acme', now());
+                 INSERT INTO realms VALUES ('{tenant}', '{realm}', 'acme', true, now());
+                 INSERT INTO persons (tenant_id, realm_id, person_id, username, email_verified,
+                                      enabled, created_at)
+                     VALUES ('{tenant}', '{realm}', '{realm}', 'ada', false, true, now());
+                 INSERT INTO sessions VALUES ('{tenant}', '{realm}', '{realm}', '{realm}', '\\x00',
+                                              'active', now(), now() + interval '1 hour');
+                 INSERT INTO refresh_tokens
+                     SELECT '{tenant}', '{realm}', int4send(n), uuid_in(md5((n % 1000)::text)::cstring),
+                            'webapp', '{realm}', '{realm}', '{{openid}}', now(),
+                            now() + interval '1 hour', now(), now()
+                     FROM generate_series(1, 5000) AS n;
+                 INSERT INTO refresh_tokens
+                     SELECT '{tenant}', '{realm}', int8send(n::bigint), '{tenant}', 'webapp', '{realm}',
+                            '{realm}', '{{openid}}', now(), now() + interval '1 hour',
+                            CASE WHEN n < 1000 THEN now() END, NULL
+                     FROM generate_series(1, 1000) AS n;"
+            ))
+            .await
+            .expect("the tokens of a realm");
+        planting.commit().await.expect("a commit");
+        owner
+            .batch_execute("ANALYZE refresh_tokens")
+            .await
+            .expect("statistics");
+        let digest = 1000_i64.to_be_bytes().to_vec();
+        let explain = |statement: &str| format!("EXPLAIN {statement}");
+
+        let spend = owner
+            .query(
+                &explain(SPEND_TOKEN),
+                &[
+                    &tenant,
+                    &realm,
+                    &digest,
+                    &"webapp",
+                    &OffsetDateTime::now_utc(),
+                ],
+            )
+            .await
+            .expect("the plan of a spending");
+        let read = owner
+            .query(&explain(READ_TOKEN), &[&tenant, &realm, &digest])
+            .await
+            .expect("the plan of a reading");
+        let revoke = owner
+            .query(
+                &explain(REVOKE_FAMILY),
+                &[&tenant, &realm, &tenant, &OffsetDateTime::now_utc()],
+            )
+            .await
+            .expect("the plan of a revocation");
+
+        for (statement, plan, index) in [
+            ("spend", spend, "refresh_tokens_revoked_family"),
+            ("read", read, "refresh_tokens_revoked_family"),
+            ("revoke", revoke, "refresh_tokens_live_family"),
+        ] {
+            let plan: Vec<String> = plan.iter().map(|row| row.get(0)).collect();
+            assert!(
+                plan.iter().any(|line| line.contains(index)),
+                "{statement} reads {index}: {plan:#?}"
+            );
+        }
+    }
+}

@@ -26,6 +26,7 @@ const CLIENT: &[Column] = &[
     clients::CREATED_AT,
     clients::ALLOWS_AUTHORIZATION_CODE,
     clients::REDIRECT_URIS,
+    clients::POST_LOGOUT_REDIRECT_URIS,
 ];
 
 fn read_client_row(row: &Row) -> Result<Client, StorageError> {
@@ -38,6 +39,7 @@ fn read_client_row(row: &Row) -> Result<Client, StorageError> {
         allows_client_credentials: row.get(4),
         allows_authorization_code: row.get(9),
         redirect_uris: row.get(10),
+        post_logout_redirect_uris: row.get(11),
         scopes: row.get(5),
         // The schema holds the same list: a name unknown here was not
         // written by this binary.
@@ -74,6 +76,10 @@ impl ClientStore for PgUnitOfWork {
                     &client.allows_authorization_code,
                 ),
                 col(clients::REDIRECT_URIS, &client.redirect_uris),
+                col(
+                    clients::POST_LOGOUT_REDIRECT_URIS,
+                    &client.post_logout_redirect_uris,
+                ),
                 col(clients::SCOPES, &client.scopes),
                 col(clients::CAPABILITIES, &capabilities),
                 col(clients::ENABLED, &client.enabled),

@@ -19,8 +19,10 @@ pub enum EventKind {
     ClientCreated,
     TokenIssued,
     PersonCreated,
+    PersonUnlocked,
     SessionOpened,
     SessionEnded,
+    TokenRevoked,
 }
 
 impl EventKind {
@@ -32,8 +34,10 @@ impl EventKind {
             Self::ClientCreated => "client.created",
             Self::TokenIssued => "token.issued",
             Self::PersonCreated => "person.created",
+            Self::PersonUnlocked => "person.unlocked",
             Self::SessionOpened => "session.opened",
             Self::SessionEnded => "session.ended",
+            Self::TokenRevoked => "token.revoked",
         }
     }
 }

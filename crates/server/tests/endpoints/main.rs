@@ -6,5 +6,6 @@ mod certs;
 mod discovery;
 mod headers;
 mod health;
+mod introspect;
 mod login;
 mod token;

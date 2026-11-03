@@ -33,6 +33,7 @@ pub struct ClientView {
     /// Without a secret: an application that runs where none can be kept.
     pub public: bool,
     pub redirect_uris: Vec<String>,
+    pub post_logout_redirect_uris: Vec<String>,
     pub scopes: Vec<String>,
     pub capabilities: Vec<String>,
     pub enabled: bool,
@@ -55,6 +56,9 @@ pub struct NewClient {
     /// that signs people in, and holds no capability.
     #[serde(default)]
     pub redirect_uris: Vec<String>,
+    /// Where people may be sent after they sign out.
+    #[serde(default)]
+    pub post_logout_redirect_uris: Vec<String>,
     /// An application that runs where no secret can be kept: it gets none.
     #[serde(default)]
     pub public: bool,
@@ -144,6 +148,7 @@ mod tests {
                 name: "Billing".to_owned(),
                 public: false,
                 redirect_uris: Vec::new(),
+                post_logout_redirect_uris: Vec::new(),
                 scopes: Vec::new(),
                 capabilities: Vec::new(),
                 enabled: true,

@@ -197,3 +197,134 @@ async fn a_realm_with_a_history_is_not_deleted_with_it() {
         Ok(ChainVerdict::Intact { events: 2 })
     );
 }
+
+/// Waits until `waiters` sessions of the database wait on a lock, ten seconds
+/// at most or until `task` is done, and says whether they did.
+async fn wait_for_lock_waiters<T>(
+    observer: &tokio_postgres::Client,
+    waiters: i64,
+    task: &tokio::task::JoinHandle<T>,
+) -> bool {
+    use std::time::{Duration, Instant};
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !task.is_finished() && Instant::now() < deadline {
+        let waiting: i64 = observer
+            .query_one(
+                "SELECT count(*) FROM pg_stat_activity
+                 WHERE datname = current_database() AND wait_event_type = 'Lock'",
+                &[],
+            )
+            .await
+            .expect("a count")
+            .get(0);
+        if waiting >= waiters {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    false
+}
+
+/// An exchange binds its code before it waits on the head of the chain: a
+/// hand on the code then waits on the exchange, and never the other way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_exchange_binds_its_code_before_it_waits_on_the_head_of_the_chain() {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use saffui_core::oidc::authorize::{
+        Authorization, AuthorizationParameters, TypedSignIn, begin_authorization, finish_sign_in,
+    };
+    use saffui_core::oidc::token::{TokenRequest, grant_token};
+    use saffui_core::secret::Secret;
+    use saffui_core::testkit::fixtures::{create_application, create_person};
+
+    const CALLBACK: &str = "https://app.example.test/callback";
+    const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    let (app, database) = wire_on_postgres().await;
+    // Of the same role as the product: it sees what its sessions wait on.
+    let observer = connect_as(&database, APP_ROLE).await;
+    let scope = create_realm(&app, "exchange").await;
+    create_person(&app, scope, "ada", "correct horse battery").await;
+    create_application(&app, scope, "webapp", CALLBACK, true).await;
+    let challenge = URL_SAFE_NO_PAD.encode(app.digester.sha256(VERIFIER.as_bytes()));
+    let asked = AuthorizationParameters {
+        response_type: Some("code"),
+        client_id: Some("webapp"),
+        redirect_uri: Some(CALLBACK),
+        scope: Some("openid"),
+        code_challenge: Some(&challenge),
+        code_challenge_method: Some("S256"),
+        ..AuthorizationParameters::default()
+    };
+    let Ok(Authorization::SignInRequired {
+        request,
+        browser_secret,
+    }) = begin_authorization(&app, "exchange", asked, None).await
+    else {
+        panic!("a person without a session must sign in");
+    };
+    let typed = TypedSignIn {
+        name: "ada",
+        password: Secret::new(b"correct horse battery".to_vec()),
+        caller: None,
+        known_browsers: &[],
+    };
+    let signed_in = finish_sign_in(&app, "exchange", request, &browser_secret, typed)
+        .await
+        .expect("a signed-in person");
+    let code = signed_in
+        .location
+        .split_once("code=")
+        .and_then(|(_, rest)| rest.split('&').next())
+        .expect("a code")
+        .to_owned();
+    let digest = app.digester.sha256(code.as_bytes());
+
+    // Another writer holds the head of the chain of the realm.
+    let mut holder = app.storage.begin(scope).await.expect("a unit of work");
+    record_event(&app, holder.as_mut(), EventKind::RealmCreated, json!({}))
+        .await
+        .expect("an event");
+    let exchange = tokio::spawn({
+        let app = app.clone();
+        async move {
+            let exchanged = TokenRequest {
+                grant_type: Some("authorization_code"),
+                client_id: Some("webapp"),
+                code: Some(&code),
+                redirect_uri: Some(CALLBACK),
+                code_verifier: Some(VERIFIER),
+                ..TokenRequest::default()
+            };
+            grant_token(&app, "exchange", exchanged).await
+        }
+    });
+    assert!(
+        wait_for_lock_waiters(&observer, 1, &exchange).await,
+        "the exchange waits on the head"
+    );
+    let hand_on_the_code = tokio::spawn({
+        let app = app.clone();
+        async move {
+            let mut work = app.storage.begin(scope).await.expect("a unit of work");
+            work.mark_code_replayed(&digest, "webapp", app.now()).await
+        }
+    });
+    assert!(
+        wait_for_lock_waiters(&observer, 2, &hand_on_the_code).await,
+        "the code was bound before the exchange waited on the head"
+    );
+
+    drop(holder);
+    assert!(
+        exchange.await.expect("the exchange").is_ok(),
+        "the exchange finishes once the head is free"
+    );
+    let replayed = hand_on_the_code
+        .await
+        .expect("the hand on the code")
+        .expect("a read")
+        .expect("the code, spent");
+    assert!(replayed.family.is_some(), "and its family is bound");
+}

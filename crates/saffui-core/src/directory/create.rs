@@ -59,6 +59,10 @@ pub async fn create_person(
     let hash = match wanted.password {
         Some(password) => {
             check_password_bounds(password.expose())?;
+            let _share = app
+                .hashing_shares
+                .take(scope.realm(), None)
+                .ok_or_else(|| Failure::new(ErrorCode::HashingBusy))?;
             Some(
                 app.hasher
                     .hash_password(password)

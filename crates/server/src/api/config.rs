@@ -39,6 +39,11 @@ pub fn register_data_plane(
                     .service(oidc::discovery::serve_provider_metadata)
                     .service(oidc::certs::serve_key_set)
                     .service(oidc::token::grant)
+                    .service(oidc::userinfo::read)
+                    .service(oidc::introspect::describe_token)
+                    .service(oidc::revoke::take_back_token)
+                    .service(oidc::logout::begin)
+                    .service(oidc::logout::confirm)
                     .service(oidc::authorize::begin)
                     .service(login::page::show_sign_in)
                     .service(login::page::submit_sign_in)
@@ -48,6 +53,7 @@ pub fn register_data_plane(
                     .service(admin::client::read_client)
                     .service(admin::user::list_users)
                     .service(admin::user::create_user)
+                    .service(admin::user::unlock_user)
                     .service(admin::audit::verify_audit_chain),
             );
     }

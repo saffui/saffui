@@ -5,6 +5,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use time::OffsetDateTime;
 
 use crate::error::{ErrorCode, Failure};
+use crate::login::fairness::HashingShares;
 use crate::ports::clock::Clock;
 use crate::ports::crypto::{Digester, PasswordHasher, Sealer, Signer};
 use crate::ports::random::Random;
@@ -23,6 +24,8 @@ pub struct App {
     pub sealer: Arc<dyn Sealer>,
     pub signer: Arc<dyn Signer>,
     pub hasher: Arc<dyn PasswordHasher>,
+    /// What each realm may take of the hashers at once.
+    pub hashing_shares: Arc<HashingShares>,
     /// A hash nobody's password matches, made once per process. Start it empty.
     pub decoy_hash: Arc<OnceLock<String>>,
 }

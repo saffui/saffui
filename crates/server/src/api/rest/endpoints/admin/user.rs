@@ -5,6 +5,7 @@ use saffui_core::authz::capability::Capability;
 use saffui_core::directory::create::{NewPerson, create_person};
 use saffui_core::directory::list::list_persons;
 use saffui_core::error::Failure;
+use saffui_core::login::unlock::unlock_person;
 use saffui_core::secret::Secret;
 
 use super::listing::{ListParameters, answer_page};
@@ -58,6 +59,24 @@ pub async fn create_user(
     };
     match create_person(&product, caller.scope, person).await {
         Ok(person) => HttpResponse::Created().json(show_user(&person)),
+        Err(failure) => render_failure(&failure),
+    }
+}
+
+/// Gives back a name the brake locked. The name is in the path: it is the
+/// one the person types.
+#[post(
+    "/admin/v1/realms/{realm}/users/{username}/unlock",
+    wrap = "RequireCapability(Capability::UserWrite)"
+)]
+pub async fn unlock_user(
+    caller: Caller,
+    product: web::Data<Product>,
+    path: web::Path<(String, String)>,
+) -> HttpResponse {
+    let (_realm, username) = path.into_inner();
+    match unlock_person(&product, caller.scope, &username, &caller.client.client_id).await {
+        Ok(()) => HttpResponse::NoContent().finish(),
         Err(failure) => render_failure(&failure),
     }
 }

@@ -405,6 +405,10 @@ pub async fn check_keys_contract(app: &App) {
 /// # Panics
 ///
 /// Panics at the first answer that breaks the contract.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario, read from top to bottom"
+)]
 pub async fn check_clients_contract(app: &App) {
     use crate::clients::Client;
     use crate::tenancy::realm::{NewRealm, provision_first_realm};
@@ -433,6 +437,7 @@ pub async fn check_clients_contract(app: &App) {
         allows_client_credentials: true,
         allows_authorization_code: false,
         redirect_uris: Vec::new(),
+        post_logout_redirect_uris: Vec::new(),
         scopes: vec!["invoices:read".to_owned(), "invoices:write".to_owned()],
         capabilities: vec![
             crate::authz::capability::Capability::ClientRead,
@@ -458,6 +463,7 @@ pub async fn check_clients_contract(app: &App) {
         allows_client_credentials: false,
         allows_authorization_code: true,
         redirect_uris: vec!["https://app.example.org/callback".to_owned()],
+        post_logout_redirect_uris: vec!["https://app.example.org/goodbye".to_owned()],
         capabilities: Vec::new(),
         ..client.clone()
     };
@@ -688,7 +694,7 @@ pub async fn check_codes_contract(app: &App) {
     use time::Duration;
 
     use crate::login::session::{Session, SessionState};
-    use crate::oidc::code::{AuthorizationCode, PendingAuthorization};
+    use crate::oidc::code::PendingAuthorization;
     use crate::testkit::fixtures::{create_person, create_realm};
 
     let scope = create_realm(app, "contract-codes").await;
@@ -696,7 +702,7 @@ pub async fn check_codes_contract(app: &App) {
     let ada = create_person(app, scope, "ada", "correct horse battery").await;
     let now = app.now();
 
-    // A session ends, and is kept ended.
+    // A session ends once, and is kept ended.
     let session = Session {
         id: mint_id(app).expect("an identifier"),
         person: ada.id,
@@ -707,11 +713,14 @@ pub async fn check_codes_contract(app: &App) {
     };
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
     work.insert_session(&session).await.expect("a session");
-    work.end_session(session.id)
-        .await
-        .expect("an ended session");
+    assert_eq!(work.end_session(session.id).await, Ok(true));
     work.commit().await.expect("a commit");
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.end_session(session.id).await,
+        Ok(false),
+        "an ended session is not ended twice"
+    );
     let ended = work
         .read_session(session.id)
         .await
@@ -730,6 +739,7 @@ pub async fn check_codes_contract(app: &App) {
         nonce: None,
         code_challenge: "challenge".to_owned(),
         expires_at: now + Duration::minutes(10),
+        expected_person: Some(ada.id),
     };
     work.insert_pending_authorization(&pending)
         .await
@@ -764,11 +774,28 @@ pub async fn check_codes_contract(app: &App) {
         Ok(None)
     );
 
-    // A code is spent once, and not after it expired.
+    work.commit().await.expect("a commit");
+    check_that_a_code_is_spent_once(app, scope, other, &session).await;
+}
+
+/// A code is spent once, and not after it expired. A spent code is kept, so
+/// that an exchange that comes after can be told.
+async fn check_that_a_code_is_spent_once(
+    app: &App,
+    scope: RealmScope,
+    other: RealmScope,
+    session: &crate::login::session::Session,
+) {
+    use time::Duration;
+
+    use crate::oidc::code::AuthorizationCode;
+
+    let now = app.now();
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
     let code = AuthorizationCode {
         code_digest: vec![8; 32],
         client_id: "webapp".to_owned(),
-        person: ada.id,
+        person: session.person,
         session: session.id,
         redirect_uri: "https://app.example.org/cb".to_owned(),
         scopes: vec!["openid".to_owned()],
@@ -779,16 +806,389 @@ pub async fn check_codes_contract(app: &App) {
     };
     work.insert_authorization_code(&code).await.expect("a code");
     assert_eq!(
-        work.take_authorization_code(&code.code_digest, now + Duration::minutes(2))
+        work.spend_authorization_code(&code.code_digest, now + Duration::minutes(2))
             .await,
         Ok(None)
     );
     assert_eq!(
-        work.take_authorization_code(&code.code_digest, now).await,
+        work.mark_code_replayed(&code.code_digest, "webapp", now)
+            .await,
+        Ok(None),
+        "a code not spent yet is not a replay"
+    );
+    assert_eq!(
+        work.spend_authorization_code(&code.code_digest, now).await,
         Ok(Some(code.clone()))
     );
     assert_eq!(
-        work.take_authorization_code(&code.code_digest, now).await,
+        work.spend_authorization_code(&code.code_digest, now).await,
         Ok(None)
     );
+    work.commit().await.expect("a commit");
+    check_what_a_replayed_code_finds(app, scope, other, &code, session).await;
+}
+
+/// A spent code tells what it obtained, to its own client, in its realm, and
+/// once. Once marked as presented again, it binds nothing more.
+async fn check_what_a_replayed_code_finds(
+    app: &App,
+    scope: RealmScope,
+    other: RealmScope,
+    code: &crate::oidc::code::AuthorizationCode,
+    session: &crate::login::session::Session,
+) {
+    use crate::oidc::code::ReplayedCode;
+
+    let now = app.now();
+    let family = mint_id(app).expect("an identifier");
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(
+        elsewhere.bind_code_family(&code.code_digest, family).await,
+        Ok(false)
+    );
+    assert_eq!(
+        elsewhere
+            .mark_code_replayed(&code.code_digest, "webapp", now)
+            .await,
+        Ok(None)
+    );
+    drop(elsewhere);
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.bind_code_family(&code.code_digest, family).await,
+        Ok(true)
+    );
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.mark_code_replayed(&code.code_digest, "another-client", now)
+            .await,
+        Ok(None)
+    );
+    assert_eq!(
+        work.mark_code_replayed(&code.code_digest, "webapp", now)
+            .await,
+        Ok(Some(ReplayedCode {
+            person: session.person,
+            session: session.id,
+            family: Some(family),
+        }))
+    );
+    assert_eq!(
+        work.bind_code_family(&code.code_digest, family).await,
+        Ok(false),
+        "a code presented again binds nothing more"
+    );
+    assert_eq!(
+        work.mark_code_replayed(&code.code_digest, "webapp", now)
+            .await,
+        Ok(None),
+        "a second replay finds nothing left to take back"
+    );
+    work.commit().await.expect("a commit");
+
+    // Marked before its exchange finished, a code binds no family.
+    let early = crate::oidc::code::AuthorizationCode {
+        code_digest: vec![9; 32],
+        ..code.clone()
+    };
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.insert_authorization_code(&early)
+        .await
+        .expect("a code");
+    assert_eq!(
+        work.spend_authorization_code(&early.code_digest, now).await,
+        Ok(Some(early.clone()))
+    );
+    assert_eq!(
+        work.mark_code_replayed(&early.code_digest, "webapp", now)
+            .await,
+        Ok(Some(ReplayedCode {
+            person: session.person,
+            session: session.id,
+            family: None,
+        }))
+    );
+    assert_eq!(
+        work.bind_code_family(&early.code_digest, family).await,
+        Ok(false)
+    );
+}
+
+/// What any storage owes to refresh tokens: a token is spent once, by the
+/// client it was issued to, in its realm; a used token stays readable so
+/// that a replay can be told; a family and a session are revoked whole.
+///
+/// # Panics
+///
+/// Panics when the storage breaks the contract.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario, read from top to bottom"
+)]
+pub async fn check_refresh_contract(app: &App) {
+    use time::Duration;
+
+    use crate::login::session::{Session, SessionState};
+    use crate::testkit::fixtures::{create_person, create_realm};
+    use crate::tokens::store::{EndedFamily, RefreshToken};
+
+    let scope = create_realm(app, "contract-refresh").await;
+    let other = create_realm(app, "contract-refresh-other").await;
+    let ada = create_person(app, scope, "ada", "correct horse battery").await;
+    let now = app.now();
+    let open = || Session {
+        id: mint_id(app).expect("an identifier"),
+        person: ada.id,
+        secret_digest: vec![7; 32],
+        state: SessionState::Active,
+        authenticated_at: now,
+        expires_at: now + Duration::hours(1),
+    };
+    let (first_session, second_session) = (open(), open());
+    let mint = |digest: u8, family: Uuid, session: &Session, lifetime: Duration| RefreshToken {
+        token_digest: vec![digest; 32],
+        family,
+        client_id: "webapp".to_owned(),
+        person: ada.id,
+        session: session.id,
+        scopes: vec!["openid".to_owned(), "email".to_owned()],
+        issued_at: now,
+        expires_at: now + lifetime,
+    };
+    let family = mint_id(app).expect("an identifier");
+    let other_family = mint_id(app).expect("an identifier");
+    let first = mint(1, family, &first_session, Duration::minutes(30));
+    let second = RefreshToken {
+        issued_at: now + Duration::minutes(1),
+        ..mint(2, family, &first_session, Duration::minutes(30))
+    };
+    let stale = mint(3, other_family, &second_session, Duration::seconds(-1));
+    let apart = mint(4, other_family, &second_session, Duration::minutes(30));
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.insert_session(&first_session)
+        .await
+        .expect("a session");
+    work.insert_session(&second_session)
+        .await
+        .expect("a second session");
+    for token in [&first, &second, &stale, &apart] {
+        work.insert_refresh_token(token).await.expect("a token");
+    }
+    work.commit().await.expect("a commit");
+
+    // Unknown in another realm: not read, not spent, not revoked.
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(
+        elsewhere.read_refresh_token(&first.token_digest).await,
+        Ok(None)
+    );
+    assert_eq!(
+        elsewhere
+            .spend_refresh_token(&first.token_digest, "webapp", now)
+            .await,
+        Ok(None)
+    );
+    assert_eq!(elsewhere.revoke_refresh_family(family, now).await, Ok(None));
+    drop(elsewhere);
+
+    // Read back equal and unused. Not spent by another client, nor once expired.
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let stored = work
+        .read_refresh_token(&first.token_digest)
+        .await
+        .expect("a read")
+        .expect("the token");
+    assert_eq!(stored.token, first);
+    assert_eq!((stored.used_at, stored.revoked_at), (None, None));
+    assert_eq!(
+        work.spend_refresh_token(&first.token_digest, "another-client", now)
+            .await,
+        Ok(None)
+    );
+    assert_eq!(
+        work.spend_refresh_token(&stale.token_digest, "webapp", now)
+            .await,
+        Ok(None)
+    );
+
+    // Spent once. The used token stays, and says when it was used.
+    assert_eq!(
+        work.spend_refresh_token(&first.token_digest, "webapp", now)
+            .await,
+        Ok(Some(first.clone()))
+    );
+    assert_eq!(
+        work.spend_refresh_token(&first.token_digest, "webapp", now)
+            .await,
+        Ok(None)
+    );
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let used = work
+        .read_refresh_token(&first.token_digest)
+        .await
+        .expect("a read")
+        .expect("the used token is kept");
+    assert_eq!(used.used_at, Some(now));
+    assert!(!used.is_live(now));
+
+    // A family is revoked whole, used tokens included, and once.
+    assert_eq!(
+        work.revoke_refresh_family(family, now).await,
+        Ok(Some(EndedFamily {
+            tokens: 2,
+            last_issued_at: second.issued_at,
+            last_used_at: Some(now),
+        })),
+        "how many, the latest issued and the latest used"
+    );
+    assert_eq!(
+        work.revoke_refresh_family(family, now).await,
+        Ok(None),
+        "nothing is left to revoke"
+    );
+    assert_eq!(
+        work.spend_refresh_token(&second.token_digest, "webapp", now)
+            .await,
+        Ok(None)
+    );
+    let untouched = work
+        .read_refresh_token(&apart.token_digest)
+        .await
+        .expect("a read")
+        .expect("the token of the other family");
+    assert!(untouched.is_live(now));
+
+    // Written into a family once it was revoked, as a rotation in flight
+    // does, a token is not spent and reads as revoked.
+    let late = mint(6, family, &first_session, Duration::minutes(30));
+    work.insert_refresh_token(&late).await.expect("a token");
+    assert_eq!(
+        work.spend_refresh_token(&late.token_digest, "webapp", now)
+            .await,
+        Ok(None)
+    );
+    let late = work
+        .read_refresh_token(&late.token_digest)
+        .await
+        .expect("a read")
+        .expect("the late token");
+    assert_eq!(late.revoked_at, Some(now));
+    assert!(!late.is_live(now));
+
+    // A session takes its tokens with it, and only its own.
+    assert_eq!(
+        work.revoke_refresh_tokens_of_session(second_session.id, now)
+            .await,
+        Ok(2)
+    );
+    assert_eq!(
+        work.spend_refresh_token(&apart.token_digest, "webapp", now)
+            .await,
+        Ok(None)
+    );
+    work.commit().await.expect("a commit");
+
+    // Abandoned, a spend leaves the token as it was.
+    let again = mint(
+        5,
+        mint_id(app).expect("an identifier"),
+        &first_session,
+        Duration::minutes(30),
+    );
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.insert_refresh_token(&again).await.expect("a token");
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.spend_refresh_token(&again.token_digest, "webapp", now)
+            .await,
+        Ok(Some(again.clone()))
+    );
+    drop(work);
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.spend_refresh_token(&again.token_digest, "webapp", now)
+            .await,
+        Ok(Some(again))
+    );
+}
+
+/// What any storage owes to the browsers people signed in from: one is read
+/// back in its realm only and until it expires, lives longer when kept
+/// again, never changes hands, and a person keeps the few that expire last.
+///
+/// # Panics
+///
+/// Panics when the storage breaks the contract.
+pub async fn check_known_browsers_contract(app: &App) {
+    use time::Duration;
+
+    use crate::login::store::KnownBrowser;
+    use crate::testkit::fixtures::{create_person, create_realm};
+
+    let scope = create_realm(app, "contract-browsers").await;
+    let other = create_realm(app, "contract-browsers-other").await;
+    let ada = create_person(app, scope, "ada", "correct horse battery").await;
+    let bob = create_person(app, scope, "bob", "correct horse battery").await;
+    let now = app.now();
+    let browser = |device: u128, person: Uuid, days: i64| KnownBrowser {
+        device: Uuid::from_u128(device),
+        person,
+        expires_at: now + Duration::days(days),
+    };
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.remember_browser(&browser(1, ada.id, 10), 2)
+        .await
+        .expect("a browser");
+    work.commit().await.expect("a commit");
+    let devices =
+        |numbers: &[u128]| -> Vec<Uuid> { numbers.iter().copied().map(Uuid::from_u128).collect() };
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(
+        elsewhere.read_live_browsers(&devices(&[1]), now).await,
+        Ok(Vec::new())
+    );
+    drop(elsewhere);
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.read_live_browsers(&devices(&[1, 9]), now).await,
+        Ok(vec![browser(1, ada.id, 10)])
+    );
+    assert_eq!(
+        work.read_live_browsers(&devices(&[1]), now + Duration::days(10))
+            .await,
+        Ok(Vec::new()),
+        "a browser is believed until it expires, not at that instant"
+    );
+    // Kept again, it lives longer. Kept for someone else, it does not move.
+    work.remember_browser(&browser(1, ada.id, 20), 2)
+        .await
+        .expect("a browser kept again");
+    work.remember_browser(&browser(1, bob.id, 30), 2)
+        .await
+        .expect("a claim that changes nothing");
+    assert_eq!(
+        work.read_live_browsers(&devices(&[1]), now).await,
+        Ok(vec![browser(1, ada.id, 20)])
+    );
+    // Of three browsers of ada, the one that expires first is forgotten.
+    work.remember_browser(&browser(2, ada.id, 5), 2)
+        .await
+        .expect("a second browser");
+    work.remember_browser(&browser(3, ada.id, 15), 2)
+        .await
+        .expect("a third browser");
+    let mut live = work
+        .read_live_browsers(&devices(&[3, 2, 1]), now)
+        .await
+        .expect("a read");
+    live.sort_by_key(|browser| browser.device);
+    assert_eq!(live, [browser(1, ada.id, 20), browser(3, ada.id, 15)]);
+    work.commit().await.expect("a commit");
 }

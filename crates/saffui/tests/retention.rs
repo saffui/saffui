@@ -1,12 +1,12 @@
-//! A journey through the real binary: a node that is given the maintenance
-//! role purges what expired, and a node that is not serves all the same.
+//! A journey through the real binary: a node that is given the retention
+//! role purges what expired, and a node told not to serves all the same.
 
 use std::thread;
 use std::time::{Duration, Instant};
 
 use pgcore::migrate::EMBEDDED;
 use pgcore::testkit::TestDatabase;
-use pgcore::{APP_ROLE, MAINTENANCE_ROLE};
+use pgcore::{APP_ROLE, MAINTENANCE_ROLE, RETENTION_ROLE};
 
 #[path = "support/database.rs"]
 mod database;
@@ -84,7 +84,7 @@ fn count_pending_requests(database: &TestDatabase) -> i64 {
 }
 
 #[test]
-fn a_node_given_the_maintenance_role_purges_what_expired_and_one_without_it_still_serves() {
+fn a_node_given_the_retention_role_purges_what_expired_and_one_without_it_still_serves() {
     let database = database::create_database(EMBEDDED);
     bootstrap(&database);
     plant_an_expired_request(&database);
@@ -112,12 +112,12 @@ fn a_node_given_the_maintenance_role_purges_what_expired_and_one_without_it_stil
         assert_eq!(count_pending_requests(&database), 1);
     }
 
-    let mut with_maintenance = support::saffui_command();
-    with_maintenance.env("SAFFUI_RETENTION", "on").env(
-        "SAFFUI_MAINTENANCE_DATABASE_URL",
-        database.connection_string(MAINTENANCE_ROLE),
+    let mut with_retention = support::saffui_command();
+    with_retention.env("SAFFUI_RETENTION", "on").env(
+        "SAFFUI_RETENTION_DATABASE_URL",
+        database.connection_string(RETENTION_ROLE),
     );
-    let _node = node::Node::start(with_maintenance, &database);
+    let _node = node::Node::start(with_retention, &database);
     // The first pass runs when the node starts: it is waited for, not timed.
     let deadline = Instant::now() + Duration::from_secs(10);
     while count_pending_requests(&database) > 0 {
@@ -127,6 +127,46 @@ fn a_node_given_the_maintenance_role_purges_what_expired_and_one_without_it_stil
         );
         thread::sleep(Duration::from_millis(50));
     }
+}
+
+#[test]
+fn a_node_says_at_warn_a_table_its_pass_could_not_purge() {
+    let database = database::create_database(EMBEDDED);
+    bootstrap(&database);
+    plant_an_expired_request(&database);
+    // Every removal of a pending request fails, as a statement that times out would.
+    run(async {
+        database
+            .plan(OWNER)
+            .connect_directly()
+            .await
+            .expect("a connection")
+            .batch_execute(
+                "CREATE FUNCTION saffui_test_refuse() RETURNS trigger LANGUAGE plpgsql
+                     AS $$ BEGIN RAISE EXCEPTION 'refused'; END $$;
+                 CREATE TRIGGER saffui_test_refuse BEFORE DELETE ON authorization_requests
+                     FOR EACH ROW EXECUTE FUNCTION saffui_test_refuse();",
+            )
+            .await
+            .expect("a refusing trigger");
+    });
+    let mut with_retention = support::saffui_command();
+    with_retention.env("SAFFUI_RETENTION", "on").env(
+        "SAFFUI_RETENTION_DATABASE_URL",
+        database.connection_string(RETENTION_ROLE),
+    );
+
+    let node = node::Node::start(with_retention, &database);
+
+    let said = node.wait_for_journal_line(
+        &["WARN", "pending_requests", "retention failed on a table"],
+        Duration::from_secs(10),
+    );
+    assert!(
+        said.is_some(),
+        "the node did not say the table it could not purge"
+    );
+    assert_eq!(count_pending_requests(&database), 1, "the request stays");
 }
 
 /// Starts `serve` with these settings, and returns its exit code and what
@@ -155,24 +195,35 @@ fn refuse_to_serve(database: &TestDatabase, settings: &[(&str, String)]) -> (Opt
 }
 
 #[test]
-fn a_node_told_nothing_of_retention_or_given_the_serving_role_for_it_does_not_serve() {
+fn a_node_told_nothing_of_retention_or_given_a_role_unfit_for_it_does_not_serve() {
     let database = database::create_database(EMBEDDED);
     bootstrap(&database);
 
     let (code, said) = refuse_to_serve(&database, &[]);
     assert_eq!(code, Some(2), "{said}");
     assert!(
-        said.contains("SAFFUI_MAINTENANCE_DATABASE_URL is required"),
+        said.contains("SAFFUI_RETENTION_DATABASE_URL is required"),
         "{said}"
     );
 
     let (code, said) = refuse_to_serve(
         &database,
         &[(
-            "SAFFUI_MAINTENANCE_DATABASE_URL",
+            "SAFFUI_RETENTION_DATABASE_URL",
             database.connection_string(APP_ROLE),
         )],
     );
     assert_eq!(code, Some(1), "{said}");
-    assert!(said.contains("the maintenance link cannot purge"), "{said}");
+    assert!(said.contains("the retention link cannot purge"), "{said}");
+
+    // The maintenance role bypasses row security too, and writes tenants.
+    let (code, said) = refuse_to_serve(
+        &database,
+        &[(
+            "SAFFUI_RETENTION_DATABASE_URL",
+            database.connection_string(MAINTENANCE_ROLE),
+        )],
+    );
+    assert_eq!(code, Some(1), "{said}");
+    assert!(said.contains("the retention link cannot purge"), "{said}");
 }

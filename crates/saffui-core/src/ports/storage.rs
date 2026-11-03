@@ -4,10 +4,11 @@ use crate::audit::store::AuditStore;
 use crate::clients::store::ClientStore;
 use crate::directory::store::PersonStore;
 use crate::keys::store::KeyStore;
-use crate::login::store::{SessionStore, ThrottleStore};
+use crate::login::store::{KnownBrowserStore, SessionStore, ThrottleStore};
 use crate::oidc::code::CodeStore;
 use crate::tenancy::store::RealmStore;
 use crate::tenancy::{RealmId, RealmName, RealmScope, TenantId};
+use crate::tokens::store::RefreshStore;
 
 #[async_trait]
 pub trait Storage: Send + Sync {
@@ -46,7 +47,9 @@ pub trait UnitOfWork:
     + PersonStore
     + SessionStore
     + ThrottleStore
+    + KnownBrowserStore
     + CodeStore
+    + RefreshStore
     + Send
 {
     fn scope(&self) -> RealmScope;

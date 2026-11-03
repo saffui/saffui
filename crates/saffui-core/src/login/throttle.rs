@@ -13,9 +13,11 @@
 use std::net::IpAddr;
 
 use time::{Duration, OffsetDateTime};
+use uuid::Uuid;
 
 use crate::app::App;
 use crate::error::{ErrorCode, Failure};
+use crate::login::device::{DeviceMark, MOST_MARKS};
 use crate::ports::storage::UnitOfWork;
 
 /// Failures are counted in buckets of this many seconds.
@@ -27,6 +29,10 @@ pub const MAX_RECENT_FAILURES: u32 = 5;
 
 /// How many times one address may try to sign in to a realm in the window.
 pub const MAX_RECENT_ATTEMPTS_PER_ADDRESS: u32 = 30;
+
+/// How many times a browser the realm knows may try in the window. Counted
+/// under its mark, it is not held to the bound of an address it shares.
+pub const MAX_RECENT_ATTEMPTS_PER_BROWSER: u32 = 30;
 
 /// How many failures a name may gather from every address together.
 pub const MAX_RECENT_FAILURES_PER_NAME: u32 = 50;
@@ -44,9 +50,9 @@ pub const MAX_DAILY_FAILURES: u32 = 100;
 /// apart from the name. Its mark can be left on a shared machine.
 pub const MAX_DAILY_FAILURES_PER_BROWSER: u32 = 20;
 
-/// How many sign-ins one address may leave waiting in a realm in the
-/// window, before any session: each keeps a row for ten minutes, and asking
-/// for one takes nothing but a request.
+/// How many sign-ins one address, or one known browser, may leave waiting
+/// in a realm in the window, before any session: each keeps a row for ten
+/// minutes, and asking for one takes nothing but a request.
 pub const MAX_PENDING_SIGN_INS_PER_ADDRESS: u32 = 60;
 
 /// The start of the bucket an instant falls in.
@@ -95,9 +101,27 @@ pub fn write_address_bucket(address: IpAddr) -> String {
     }
 }
 
+/// The network an IPv6 address shares the hashers with, beyond its /64: its
+/// /48, the network a site is given whole, 65536 subscribers of a /64 each.
+/// An IPv4 address has none: each costs its holder alone.
+#[must_use]
+pub fn write_network_bucket(address: IpAddr) -> Option<String> {
+    match address.to_canonical() {
+        IpAddr::V6(address) => {
+            let [a, b, c, ..] = address.segments();
+            Some(format!("{a:x}:{b:x}:{c:x}::/48"))
+        }
+        IpAddr::V4(_) => None,
+    }
+}
+
 /// Counts one more sign-in left waiting by the caller, in the unit of work
-/// that keeps it, or refuses it once the address left too many in the
-/// window. An address unknown is not counted, as the brake does not count it.
+/// that keeps it, or refuses it once the caller left too many in the window.
+/// A browser the realm keeps for someone is counted under its device: an
+/// address it shares does not hold it. Its mark is not proven here, since no
+/// name is typed yet, but its device is a random number only that browser
+/// was given, and a device the realm does not keep counts for nothing. An
+/// address unknown is not counted, as the brake does not count it.
 ///
 /// # Errors
 ///
@@ -106,21 +130,37 @@ pub(crate) async fn admit_pending_sign_in(
     app: &App,
     work: &mut dyn UnitOfWork,
     caller: Option<IpAddr>,
+    known_browsers: &[DeviceMark],
 ) -> Result<(), Failure> {
-    let Some(address) = caller.map(write_address_bucket) else {
-        return Ok(());
+    let now = app.now();
+    let devices: Vec<Uuid> = known_browsers
+        .iter()
+        .take(MOST_MARKS)
+        .map(|mark| mark.device)
+        .collect();
+    let live = if devices.is_empty() {
+        Vec::new()
+    } else {
+        work.read_live_browsers(&devices, now).await?
+    };
+    // Of the marks the realm keeps, the first of the cookie: the latest.
+    let kept = devices
+        .into_iter()
+        .find(|device| live.iter().any(|browser| browser.device == *device));
+    // A kind of its own for each, as each counter of the brake: nothing
+    // counted here is counted as an attempt to sign in.
+    let written = match (kept, caller) {
+        (Some(device), _) => [&[11_u8][..], device.as_bytes()].concat(),
+        (None, Some(address)) => {
+            [&[4_u8][..], write_address_bucket(address).as_bytes(), &[0]].concat()
+        }
+        (None, None) => return Ok(()),
     };
     let scope = work.scope();
-    // A kind of its own, as each counter of the brake: no address counted
-    // here is counted as an attempt to sign in.
-    let mut written = vec![4_u8];
-    written.extend_from_slice(address.as_bytes());
-    written.push(0);
     let counter = app
         .sealer
         .digest_typed_name(scope.tenant().as_uuid(), scope.realm().as_uuid(), &written)
         .map_err(|_| Failure::new(ErrorCode::CryptoUnavailable))?;
-    let now = app.now();
     if work
         .count_login_failures(&counter, start_window(now))
         .await?

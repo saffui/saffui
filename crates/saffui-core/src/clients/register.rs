@@ -22,6 +22,7 @@ pub struct NewClient<'a> {
     pub scopes: &'a [String],
     pub capabilities: &'a [Capability],
     pub redirect_uris: &'a [String],
+    pub post_logout_redirect_uris: &'a [String],
     /// A public application runs where no secret can be kept: it gets none.
     pub public: bool,
     /// The client of the administration plane that asks, when one does.
@@ -52,8 +53,16 @@ pub async fn register_client(
     for scope in wanted.scopes {
         check_scope_token(scope)?;
     }
-    for uri in wanted.redirect_uris {
+    for uri in wanted
+        .redirect_uris
+        .iter()
+        .chain(wanted.post_logout_redirect_uris)
+    {
         check_redirect_uri(uri)?;
+    }
+    // Only a client that signs people in has anyone to send back after they sign out.
+    if wanted.redirect_uris.is_empty() && !wanted.post_logout_redirect_uris.is_empty() {
+        return Err(Failure::new(ErrorCode::RequestInvalid));
     }
     let name = wanted.name.trim();
     if !(1..=120).contains(&name.chars().count()) || name.chars().any(is_unshowable) {
@@ -92,6 +101,7 @@ pub async fn register_client(
         allows_client_credentials: !wanted.public && wanted.redirect_uris.is_empty(),
         allows_authorization_code: !wanted.redirect_uris.is_empty(),
         redirect_uris: wanted.redirect_uris.to_vec(),
+        post_logout_redirect_uris: wanted.post_logout_redirect_uris.to_vec(),
         scopes: wanted.scopes.to_vec(),
         capabilities: wanted.capabilities.to_vec(),
         enabled: true,
@@ -143,6 +153,7 @@ pub async fn register_service_client(
             scopes: wanted.scopes,
             capabilities: wanted.capabilities,
             redirect_uris: &[],
+            post_logout_redirect_uris: &[],
             public: false,
             created_by: None,
         },
@@ -250,6 +261,7 @@ mod tests {
                 scopes: &scopes,
                 capabilities: &[],
                 redirect_uris: &callbacks,
+                post_logout_redirect_uris: &[],
                 public: true,
                 created_by: Some("operator"),
             },
@@ -289,6 +301,7 @@ mod tests {
                     scopes: &[],
                     capabilities,
                     redirect_uris,
+                    post_logout_redirect_uris: &[],
                     public,
                     created_by: None,
                 },
@@ -306,6 +319,49 @@ mod tests {
         assert_eq!(
             register(&["http://app.example.org/cb".to_owned()], &[], true),
             Err(ErrorCode::RedirectUriInvalid)
+        );
+    }
+
+    #[test]
+    fn an_address_after_sign_out_is_checked_and_belongs_to_an_application_only() {
+        use super::{NewClient, register_client};
+
+        let (app, _storage) = MemoryStorage::wire();
+        let scope = complete(create_realm(&app, "acme"));
+        let callbacks = ["https://app.example.org/callback".to_owned()];
+        let register = |redirect_uris: &[String], goodbye: &str| {
+            let goodbyes = [goodbye.to_owned()];
+            let mut work = complete(app.storage.begin(scope)).expect("a unit of work");
+            complete(register_client(
+                &app,
+                work.as_mut(),
+                NewClient {
+                    client_id: "webapp",
+                    name: "Web app",
+                    scopes: &[],
+                    capabilities: &[],
+                    redirect_uris,
+                    post_logout_redirect_uris: &goodbyes,
+                    public: false,
+                    created_by: None,
+                },
+            ))
+            .map(|(client, _)| client.post_logout_redirect_uris)
+            .map_err(|failure| failure.code)
+        };
+
+        assert_eq!(
+            register(&[], "https://app.example.org/goodbye"),
+            Err(ErrorCode::RequestInvalid),
+            "a service signs nobody out"
+        );
+        assert_eq!(
+            register(&callbacks, "https://app.example.org/goodbye#part"),
+            Err(ErrorCode::RedirectUriInvalid)
+        );
+        assert_eq!(
+            register(&callbacks, "https://app.example.org/goodbye"),
+            Ok(vec!["https://app.example.org/goodbye".to_owned()])
         );
     }
 }

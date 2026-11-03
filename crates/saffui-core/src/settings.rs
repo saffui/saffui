@@ -68,12 +68,107 @@ impl fmt::Display for PublicOrigin {
     }
 }
 
+/// A range of addresses: one address, or a network and the length of its
+/// prefix (`10.0.0.0/8`, `2001:db8::/32`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AddressRange {
+    network: IpAddr,
+    prefix: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum AddressRangeError {
+    #[error("expected an address, or an address and the length of its prefix")]
+    Unreadable,
+    #[error("the address has bits set past its prefix: write the start of the range")]
+    NotItsStart,
+    #[error("a prefix shorter than 8 bits would hold callers from anywhere")]
+    TooWide,
+}
+
+/// The shortest prefix a range may have. Wider, it would believe the word
+/// of machines that are no proxy of the deployment.
+const SHORTEST_PREFIX: u8 = 8;
+
+impl AddressRange {
+    /// Reads an address or a range. An IPv4 address written in IPv6
+    /// (`::ffff:a.b.c.d`) is refused: it is written as itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the text is no range this deployment believes.
+    pub fn parse(text: &str) -> Result<Self, AddressRangeError> {
+        let (address, prefix) = match text.split_once('/') {
+            None => (text, None),
+            Some((address, prefix)) => (address, Some(prefix)),
+        };
+        let network: IpAddr = address.parse().map_err(|_| AddressRangeError::Unreadable)?;
+        if matches!(network, IpAddr::V6(v6) if v6.to_ipv4_mapped().is_some()) {
+            return Err(AddressRangeError::Unreadable);
+        }
+        let bits = if network.is_ipv4() { 32 } else { 128 };
+        let prefix = match prefix {
+            None => bits,
+            Some(written) => {
+                // Digits only, without a sign or a leading zero: one spelling per prefix.
+                if written.is_empty()
+                    || written.len() > 3
+                    || (written.len() > 1 && written.starts_with('0'))
+                    || !written.bytes().all(|byte| byte.is_ascii_digit())
+                {
+                    return Err(AddressRangeError::Unreadable);
+                }
+                written
+                    .parse::<u8>()
+                    .map_err(|_| AddressRangeError::Unreadable)?
+            }
+        };
+        if prefix > bits {
+            return Err(AddressRangeError::Unreadable);
+        }
+        if prefix < SHORTEST_PREFIX {
+            return Err(AddressRangeError::TooWide);
+        }
+        let range = Self { network, prefix };
+        if range.mask(network) != Some(to_bits(network)) {
+            return Err(AddressRangeError::NotItsStart);
+        }
+        Ok(range)
+    }
+
+    /// Tells whether an address is in the range, read in its canonical form.
+    #[must_use]
+    pub fn contains(&self, address: IpAddr) -> bool {
+        self.mask(address.to_canonical()) == Some(to_bits(self.network))
+    }
+
+    /// The bits of `address` under the prefix, when it is of the family of
+    /// the range.
+    fn mask(&self, address: IpAddr) -> Option<u128> {
+        if address.is_ipv4() != self.network.is_ipv4() {
+            return None;
+        }
+        let width: u32 = if self.network.is_ipv4() { 32 } else { 128 };
+        // At least 8 bits of prefix: the shift never reaches the width.
+        let host_bits = width - u32::from(self.prefix);
+        let mask = u128::MAX.checked_shl(host_bits).unwrap_or(0);
+        Some(to_bits(address) & mask)
+    }
+}
+
+fn to_bits(address: IpAddr) -> u128 {
+    match address {
+        IpAddr::V4(v4) => u128::from(u32::from(v4)),
+        IpAddr::V6(v6) => u128::from(v6),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub public_origin: PublicOrigin,
-    /// The proxies in front of this deployment. Only a peer named here is
-    /// believed when it says who the request comes from.
-    pub trusted_proxies: Vec<IpAddr>,
+    /// The proxies in front of this deployment. Only a peer in one of these
+    /// ranges is believed when it says who the request comes from.
+    pub trusted_proxies: Vec<AddressRange>,
 }
 
 impl Settings {
@@ -137,7 +232,9 @@ fn read_port(text: &str) -> Option<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PublicOrigin, PublicOriginError};
+    use std::net::IpAddr;
+
+    use super::{AddressRange, AddressRangeError, PublicOrigin, PublicOriginError};
 
     #[test]
     fn an_https_origin_and_a_loopback_http_origin_are_read() {
@@ -269,5 +366,49 @@ mod tests {
                 "{text}"
             );
         }
+    }
+
+    fn read(address: &str) -> IpAddr {
+        address.parse().expect("an address")
+    }
+
+    #[test]
+    fn a_range_holds_the_addresses_under_its_prefix_and_no_other() {
+        let private = AddressRange::parse("10.0.0.0/8").expect("a range");
+        let documentation = AddressRange::parse("2001:db8::/32").expect("a range");
+        let alone = AddressRange::parse("192.0.2.7").expect("an address");
+
+        assert!(private.contains(read("10.255.3.4")));
+        assert!(
+            private.contains(read("::ffff:10.1.2.3")),
+            "read in its canonical form"
+        );
+        assert!(!private.contains(read("11.0.0.1")));
+        assert!(!private.contains(read("::a00:1")), "another family");
+        assert!(documentation.contains(read("2001:db8:ffff::1")));
+        assert!(!documentation.contains(read("2001:db9::1")));
+        assert!(alone.contains(read("192.0.2.7")));
+        assert!(!alone.contains(read("192.0.2.8")));
+    }
+
+    #[test]
+    fn a_range_is_written_from_its_start_never_wider_than_eight_bits() {
+        for (written, refused) in [
+            ("10.0.0.1/8", AddressRangeError::NotItsStart),
+            ("2001:db8::1/32", AddressRangeError::NotItsStart),
+            ("0.0.0.0/0", AddressRangeError::TooWide),
+            ("::/0", AddressRangeError::TooWide),
+            ("8.0.0.0/7", AddressRangeError::TooWide),
+            ("10.0.0.0/33", AddressRangeError::Unreadable),
+            ("10.0.0.0/", AddressRangeError::Unreadable),
+            ("10.0.0.0/+8", AddressRangeError::Unreadable),
+            ("10.0.0.0/008", AddressRangeError::Unreadable),
+            ("::ffff:10.0.0.1", AddressRangeError::Unreadable),
+            ("proxy.internal", AddressRangeError::Unreadable),
+        ] {
+            assert_eq!(AddressRange::parse(written), Err(refused), "{written}");
+        }
+        assert!(AddressRange::parse("fd00::/8").is_ok());
+        assert!(AddressRange::parse("2001:db8::7/128").is_ok());
     }
 }

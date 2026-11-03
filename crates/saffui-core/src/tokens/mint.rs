@@ -1,8 +1,11 @@
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::{Value, json};
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use super::jws::sign_compact;
+use super::store::RefreshToken;
 use super::{
     ACCESS_TOKEN_LIFETIME_SECONDS, ACCESS_TOKEN_TYPE, IDENTITY_TOKEN_TYPE, IssuedAccessToken,
 };
@@ -10,13 +13,17 @@ use crate::app::App;
 use crate::directory::Person;
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
+use crate::keys::SigningKey;
 use crate::keys::jwks::open_signing_key;
+use crate::login::session::Session;
 use crate::ports::crypto::SignatureAlgorithm;
 use crate::ports::storage::UnitOfWork;
+use crate::secret::Secret;
 
 /// How long an identity token is good for: long enough to be read once.
 const IDENTITY_TOKEN_LIFETIME_SECONDS: u64 = 300;
 
+#[derive(Clone, Copy)]
 pub struct AccessTokenSubject<'a> {
     pub issuer: &'a str,
     pub subject: &'a str,
@@ -26,6 +33,7 @@ pub struct AccessTokenSubject<'a> {
     pub session: Option<Uuid>,
 }
 
+#[derive(Clone, Copy)]
 pub struct IdentityTokenSubject<'a> {
     pub issuer: &'a str,
     pub person: &'a Person,
@@ -36,26 +44,48 @@ pub struct IdentityTokenSubject<'a> {
     pub authenticated_at: OffsetDateTime,
 }
 
-async fn sign_claims(
+/// The key of the realm, opened once for every token of one answer.
+pub struct MintingKey {
+    key: SigningKey,
+    private_key: Secret,
+}
+
+/// Opens the key the tokens of the realm are signed with.
+///
+/// # Errors
+///
+/// Returns [`ErrorCode::CryptoUnavailable`] when the realm cannot sign, or
+/// the storage failure.
+pub async fn open_minting_key(app: &App, work: &mut dyn UnitOfWork) -> Result<MintingKey, Failure> {
+    let (key, private_key) = open_signing_key(app, work, SignatureAlgorithm::Es256).await?;
+    Ok(MintingKey { key, private_key })
+}
+
+fn sign_claims(
     app: &App,
-    work: &mut dyn UnitOfWork,
+    key: &MintingKey,
     token_type: &str,
     claims: &Value,
 ) -> Result<String, Failure> {
-    let (key, private_key) = open_signing_key(app, work, SignatureAlgorithm::Es256).await?;
-    sign_compact(app.signer.as_ref(), &key, &private_key, token_type, claims)
-        .map_err(|_| Failure::with_detail(ErrorCode::CryptoUnavailable, "a token cannot be signed"))
+    sign_compact(
+        app.signer.as_ref(),
+        &key.key,
+        &key.private_key,
+        token_type,
+        claims,
+    )
+    .map_err(|_| Failure::with_detail(ErrorCode::CryptoUnavailable, "a token cannot be signed"))
 }
 
 /// Mints an access token signed by the key of the realm.
 ///
 /// # Errors
 ///
-/// Returns [`ErrorCode::CryptoUnavailable`] when the realm cannot sign, or
-/// the storage failure.
-pub async fn mint_access_token(
+/// Returns [`ErrorCode::CryptoUnavailable`] when the key does not sign, or
+/// [`ErrorCode::RandomUnavailable`].
+pub fn mint_access_token(
     app: &App,
-    work: &mut dyn UnitOfWork,
+    key: &MintingKey,
     subject: AccessTokenSubject<'_>,
 ) -> Result<IssuedAccessToken, Failure> {
     let issued_at = app.now().unix_timestamp();
@@ -75,7 +105,7 @@ pub async fn mint_access_token(
         claims["sid"] = Value::String(session.to_string());
     }
     Ok(IssuedAccessToken {
-        token: sign_claims(app, work, ACCESS_TOKEN_TYPE, &claims).await?,
+        token: sign_claims(app, key, ACCESS_TOKEN_TYPE, &claims)?,
         expires_in: ACCESS_TOKEN_LIFETIME_SECONDS,
         scope,
     })
@@ -86,10 +116,10 @@ pub async fn mint_access_token(
 ///
 /// # Errors
 ///
-/// As [`mint_access_token`].
-pub async fn mint_identity_token(
+/// Returns [`ErrorCode::CryptoUnavailable`] when the key does not sign.
+pub fn mint_identity_token(
     app: &App,
-    work: &mut dyn UnitOfWork,
+    key: &MintingKey,
     subject: IdentityTokenSubject<'_>,
 ) -> Result<String, Failure> {
     let issued_at = app.now().unix_timestamp();
@@ -108,11 +138,11 @@ pub async fn mint_identity_token(
         claims["nonce"] = Value::String(nonce.to_owned());
     }
     write_person_claims(&mut claims, person, subject.scopes);
-    sign_claims(app, work, IDENTITY_TOKEN_TYPE, &claims).await
+    sign_claims(app, key, IDENTITY_TOKEN_TYPE, &claims)
 }
 
 /// Writes what the granted scopes allow to be said of a person, and nothing more.
-fn write_person_claims(claims: &mut Value, person: &Person, scopes: &[String]) {
+pub(crate) fn write_person_claims(claims: &mut Value, person: &Person, scopes: &[String]) {
     let granted = |scope: &str| scopes.iter().any(|known| known == scope);
     if granted("profile") {
         claims["preferred_username"] = Value::String(person.username.clone());
@@ -124,4 +154,46 @@ fn write_person_claims(claims: &mut Value, person: &Person, scopes: &[String]) {
         claims["email"] = Value::String(email.clone());
         claims["email_verified"] = Value::Bool(person.email_verified);
     }
+}
+
+/// The longest a refresh token lives. It never outlives its session.
+pub const REFRESH_TOKEN_LIFETIME: Duration = Duration::days(30);
+
+pub struct RefreshGrant<'a> {
+    /// The family the new token belongs to: every token of one grant.
+    pub family: Uuid,
+    pub client_id: &'a str,
+    pub session: &'a Session,
+    pub scopes: &'a [String],
+}
+
+/// Mints a refresh token, keeps its digest, and returns the token itself:
+/// the one time it exists outside the client.
+///
+/// # Errors
+///
+/// Returns [`ErrorCode::RandomUnavailable`] or the storage failure.
+pub async fn issue_refresh_token(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    grant: RefreshGrant<'_>,
+) -> Result<String, Failure> {
+    let mut random = [0_u8; 32];
+    app.random
+        .fill(&mut random)
+        .map_err(|_| Failure::new(ErrorCode::RandomUnavailable))?;
+    let token = URL_SAFE_NO_PAD.encode(random);
+    let now = app.now();
+    work.insert_refresh_token(&RefreshToken {
+        token_digest: app.digester.sha256(token.as_bytes()).to_vec(),
+        family: grant.family,
+        client_id: grant.client_id.to_owned(),
+        person: grant.session.person,
+        session: grant.session.id,
+        scopes: grant.scopes.to_vec(),
+        issued_at: now,
+        expires_at: (now + REFRESH_TOKEN_LIFETIME).min(grant.session.expires_at),
+    })
+    .await?;
+    Ok(token)
 }

@@ -16,8 +16,12 @@ pub struct ProviderMetadata {
     pub issuer: String,
     pub authorization_endpoint: String,
     pub token_endpoint: String,
+    pub userinfo_endpoint: String,
     /// Where the public keys of the realm are published.
     pub jwks_uri: String,
+    pub introspection_endpoint: String,
+    pub revocation_endpoint: String,
+    pub end_session_endpoint: String,
     pub response_types_supported: Vec<&'static str>,
     pub grant_types_supported: Vec<&'static str>,
     pub subject_types_supported: Vec<&'static str>,
@@ -46,9 +50,13 @@ pub fn describe_provider(settings: &Settings, realm: &RealmName) -> ProviderMeta
     ProviderMetadata {
         authorization_endpoint: format!("{issuer}/oauth2/authorize"),
         token_endpoint: format!("{issuer}/oauth2/token"),
+        userinfo_endpoint: format!("{issuer}/oauth2/userinfo"),
         jwks_uri: format!("{issuer}/oauth2/jwks"),
+        introspection_endpoint: format!("{issuer}/oauth2/introspect"),
+        revocation_endpoint: format!("{issuer}/oauth2/revoke"),
+        end_session_endpoint: format!("{issuer}/oauth2/logout"),
         response_types_supported: vec!["code"],
-        grant_types_supported: vec!["authorization_code", "client_credentials"],
+        grant_types_supported: vec!["authorization_code", "client_credentials", "refresh_token"],
         subject_types_supported: vec!["public"],
         id_token_signing_alg_values_supported: SignatureAlgorithm::ALL
             .iter()
@@ -111,8 +119,12 @@ mod tests {
             "https://id.example.org/realms/acme/oauth2/authorize"
         );
         assert_eq!(
+            document.userinfo_endpoint,
+            "https://id.example.org/realms/acme/oauth2/userinfo"
+        );
+        assert_eq!(
             document.grant_types_supported,
-            ["authorization_code", "client_credentials"]
+            ["authorization_code", "client_credentials", "refresh_token"]
         );
         assert_eq!(document.code_challenge_methods_supported, ["S256"]);
         assert!(

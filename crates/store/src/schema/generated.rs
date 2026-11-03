@@ -77,6 +77,12 @@ pub(crate) mod authorization_codes {
     pub(crate) const AUTHENTICATED_AT: Column = Column("authenticated_at");
     /// timestamp with time zone
     pub(crate) const EXPIRES_AT: Column = Column("expires_at");
+    /// timestamp with time zone, nullable
+    pub(crate) const SPENT_AT: Column = Column("spent_at");
+    /// uuid, nullable
+    pub(crate) const FAMILY: Column = Column("family");
+    /// timestamp with time zone, nullable
+    pub(crate) const REPLAYED_AT: Column = Column("replayed_at");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -90,6 +96,9 @@ pub(crate) mod authorization_codes {
         CODE_CHALLENGE,
         AUTHENTICATED_AT,
         EXPIRES_AT,
+        SPENT_AT,
+        FAMILY,
+        REPLAYED_AT,
     ];
 }
 
@@ -118,6 +127,8 @@ pub(crate) mod authorization_requests {
     pub(crate) const CODE_CHALLENGE: Column = Column("code_challenge");
     /// timestamp with time zone
     pub(crate) const EXPIRES_AT: Column = Column("expires_at");
+    /// uuid, nullable
+    pub(crate) const EXPECTED_PERSON: Column = Column("expected_person");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -130,6 +141,7 @@ pub(crate) mod authorization_requests {
         NONCE,
         CODE_CHALLENGE,
         EXPIRES_AT,
+        EXPECTED_PERSON,
     ];
 }
 
@@ -162,6 +174,8 @@ pub(crate) mod clients {
     pub(crate) const ALLOWS_AUTHORIZATION_CODE: Column = Column("allows_authorization_code");
     /// ARRAY
     pub(crate) const REDIRECT_URIS: Column = Column("redirect_uris");
+    /// ARRAY
+    pub(crate) const POST_LOGOUT_REDIRECT_URIS: Column = Column("post_logout_redirect_uris");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -176,7 +190,26 @@ pub(crate) mod clients {
         CAPABILITIES,
         ALLOWS_AUTHORIZATION_CODE,
         REDIRECT_URIS,
+        POST_LOGOUT_REDIRECT_URIS,
     ];
+}
+
+pub(crate) mod known_browsers {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "known_browsers",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// uuid
+    pub(crate) const DEVICE_ID: Column = Column("device_id");
+    /// uuid
+    pub(crate) const PERSON_ID: Column = Column("person_id");
+    /// timestamp with time zone
+    pub(crate) const EXPIRES_AT: Column = Column("expires_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[DEVICE_ID, PERSON_ID, EXPIRES_AT];
 }
 
 pub(crate) mod login_failures {
@@ -283,6 +316,49 @@ pub(crate) mod realms {
     pub(crate) const ALL: &[Column] = &[NAME, ENABLED, CREATED_AT];
 }
 
+pub(crate) mod refresh_tokens {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "refresh_tokens",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// bytea
+    pub(crate) const TOKEN_DIGEST: Column = Column("token_digest");
+    /// uuid
+    pub(crate) const FAMILY_ID: Column = Column("family_id");
+    /// text
+    pub(crate) const CLIENT_ID: Column = Column("client_id");
+    /// uuid
+    pub(crate) const PERSON_ID: Column = Column("person_id");
+    /// uuid
+    pub(crate) const SESSION_ID: Column = Column("session_id");
+    /// ARRAY
+    pub(crate) const SCOPES: Column = Column("scopes");
+    /// timestamp with time zone
+    pub(crate) const ISSUED_AT: Column = Column("issued_at");
+    /// timestamp with time zone
+    pub(crate) const EXPIRES_AT: Column = Column("expires_at");
+    /// timestamp with time zone, nullable
+    pub(crate) const USED_AT: Column = Column("used_at");
+    /// timestamp with time zone, nullable
+    pub(crate) const REVOKED_AT: Column = Column("revoked_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[
+        TOKEN_DIGEST,
+        FAMILY_ID,
+        CLIENT_ID,
+        PERSON_ID,
+        SESSION_ID,
+        SCOPES,
+        ISSUED_AT,
+        EXPIRES_AT,
+        USED_AT,
+        REVOKED_AT,
+    ];
+}
+
 pub(crate) mod sessions {
     use super::{Column, ScopeKeys, Table};
 
@@ -368,11 +444,13 @@ pub(crate) const TABLES: &[(Table, &[Column])] = &[
     (authorization_codes::TABLE, authorization_codes::ALL),
     (authorization_requests::TABLE, authorization_requests::ALL),
     (clients::TABLE, clients::ALL),
+    (known_browsers::TABLE, known_browsers::ALL),
     (login_failures::TABLE, login_failures::ALL),
     (password_credentials::TABLE, password_credentials::ALL),
     (persons::TABLE, persons::ALL),
     (realm_data_keys::TABLE, realm_data_keys::ALL),
     (realms::TABLE, realms::ALL),
+    (refresh_tokens::TABLE, refresh_tokens::ALL),
     (sessions::TABLE, sessions::ALL),
     (signing_keys::TABLE, signing_keys::ALL),
     (tenants::TABLE, tenants::ALL),

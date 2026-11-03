@@ -1557,6 +1557,7 @@ version = "0.1.0"
 dependencies = [
  "actix-rt",
  "api",
+ "async-trait",
  "base64 0.23.1",
  "clap",
  "crypto",

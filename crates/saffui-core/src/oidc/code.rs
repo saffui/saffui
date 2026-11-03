@@ -20,6 +20,9 @@ pub struct PendingAuthorization {
     pub nonce: Option<String>,
     pub code_challenge: String,
     pub expires_at: OffsetDateTime,
+    /// The person an identity token hint named: anyone else who signs in
+    /// for this request gets no code.
+    pub expected_person: Option<Uuid>,
 }
 
 /// A code, as it is kept: by its digest, with everything the exchange must
@@ -36,6 +39,16 @@ pub struct AuthorizationCode {
     pub code_challenge: String,
     pub authenticated_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
+}
+
+/// What an exchange of a code that was already spent finds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayedCode {
+    pub person: Uuid,
+    pub session: Uuid,
+    /// The refresh tokens the first exchange started. `None` while it has
+    /// not finished: it then finds the code replayed and issues nothing.
+    pub family: Option<Uuid>,
 }
 
 #[async_trait]
@@ -66,12 +79,33 @@ pub trait CodeStore {
         code: &AuthorizationCode,
     ) -> Result<(), StorageError>;
 
-    /// Spends a code: returns it and removes it, in one operation. Of two
-    /// exchanges of one code, exactly one gets it. A code that expired at
-    /// `now` is not returned.
-    async fn take_authorization_code(
+    /// Spends a code: marks it spent and returns it, in one operation. Of
+    /// two exchanges of one code, exactly one gets it. A code that is spent,
+    /// or that expired at `now`, is not returned. A spent code is kept, so
+    /// that an exchange that comes after can be told.
+    async fn spend_authorization_code(
         &mut self,
         code_digest: &[u8],
         now: OffsetDateTime,
     ) -> Result<Option<AuthorizationCode>, StorageError>;
+
+    /// Ties a spent code to the refresh tokens its exchange started. Returns
+    /// `false` when the code was presented again meanwhile: the exchange
+    /// must then issue nothing.
+    async fn bind_code_family(
+        &mut self,
+        code_digest: &[u8],
+        family: Uuid,
+    ) -> Result<bool, StorageError>;
+
+    /// Marks a spent code of `client_id` as presented again, and says what
+    /// its exchange obtained, once: the replay that marks it takes that back,
+    /// and nothing is bound to it after. A code that is unknown, not spent,
+    /// of another client, or marked already is left as it was and not returned.
+    async fn mark_code_replayed(
+        &mut self,
+        code_digest: &[u8],
+        client_id: &str,
+        now: OffsetDateTime,
+    ) -> Result<Option<ReplayedCode>, StorageError>;
 }

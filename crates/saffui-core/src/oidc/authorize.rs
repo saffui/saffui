@@ -22,13 +22,14 @@ use crate::clients::{Client, check_scope_token, read_named_client};
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
 use crate::login::device::DeviceMark;
-use crate::login::session::{SessionTicket, close_session, find_live_session};
+use crate::login::session::{Session, SessionTicket, close_session, find_live_session};
 use crate::login::steps::password::sign_in;
 use crate::login::throttle::admit_pending_sign_in;
 use crate::ports::storage::UnitOfWork;
 use crate::secret::Secret;
 use crate::tenancy::RealmName;
 use crate::tenancy::resolve::resolve_realm;
+use crate::tokens::verify::read_identity_hint;
 
 /// How long a code lives: the time of one redirect and one request.
 const CODE_LIFETIME: Duration = Duration::seconds(60);
@@ -52,9 +53,14 @@ pub struct AuthorizationParameters<'a> {
     pub prompt: Option<&'a str>,
     /// The longest time, in seconds, since the person last proved who they are.
     pub max_age: Option<&'a str>,
+    /// An identity token the client was given earlier: the person it expects.
+    pub id_token_hint: Option<&'a str>,
     /// The address of the browser, as a believed proxy said: the sign-ins
     /// it leaves waiting are counted under it.
     pub caller: Option<IpAddr>,
+    /// The marks the browser keeps: a browser the realm knows leaves its
+    /// sign-ins waiting under its device, not under the address.
+    pub known_browsers: &'a [DeviceMark],
 }
 
 pub enum Authorization {
@@ -327,6 +333,69 @@ async fn issue_code(
     ))
 }
 
+/// A hint names the person the client expects. The session of someone else
+/// does not answer for them: the person is asked, or, without a page, the
+/// client is told a sign-in is needed. A hint that is not an identity token
+/// this realm gave this very client is refused. Returns the session that
+/// answers, and the person the hint names.
+async fn hold_session_to_hint(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    trusted: &TrustedRequest,
+    issuer: &str,
+    hint: &str,
+    session: Option<Session>,
+) -> Result<(Option<Session>, Uuid), AuthorizationRefusal> {
+    let expected = read_identity_hint(app, work, issuer, hint)
+        .await?
+        .filter(|named| named.client_id == trusted.client.client_id)
+        .and_then(|named| Uuid::parse_str(&named.subject).ok());
+    let Some(expected) = expected else {
+        return Err(AuthorizationRefusal::Returned {
+            location: write_return_location(
+                &trusted.redirect_uri,
+                issuer,
+                trusted.state.as_deref(),
+                &[("error", OAuthError::InvalidRequest.name())],
+            ),
+        });
+    };
+    Ok((
+        session.filter(|session| session.person == expected),
+        expected,
+    ))
+}
+
+/// Keeps a request no session answered until a person signs in for it, and
+/// gives back its id and the secret only the browser that asked holds.
+async fn keep_pending_authorization(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    trusted: TrustedRequest,
+    expected_person: Option<Uuid>,
+) -> Result<(Uuid, Vec<u8>), Failure> {
+    let mut browser_secret = vec![0_u8; 32];
+    app.random
+        .fill(&mut browser_secret)
+        .map_err(|_| Failure::new(ErrorCode::RandomUnavailable))?;
+    let pending = PendingAuthorization {
+        id: mint_id(app)?,
+        browser_digest: app.digester.sha256(&browser_secret).to_vec(),
+        client_id: trusted.client.client_id,
+        redirect_uri: trusted.redirect_uri,
+        scopes: trusted.scopes,
+        state: trusted.state,
+        nonce: trusted.nonce,
+        code_challenge: trusted.code_challenge,
+        expires_at: app.now() + PENDING_LIFETIME,
+        expected_person,
+    };
+    work.insert_pending_authorization(&pending)
+        .await
+        .map_err(Failure::from)?;
+    Ok((pending.id, browser_secret))
+}
+
 /// Handles a request to the authorization endpoint.
 ///
 /// # Errors
@@ -360,8 +429,17 @@ pub async fn begin_authorization(
             .max_age
             .is_none_or(|max_age| (now - session.authenticated_at).whole_seconds() < max_age)
     });
+    let issuer = name_issuer(&app.settings, &trusted.realm);
+    let (session, expected_person) = match parameters.id_token_hint.filter(|hint| !hint.is_empty())
+    {
+        Some(hint) => {
+            let (session, expected) =
+                hold_session_to_hint(app, work.as_mut(), &trusted, &issuer, hint, session).await?;
+            (session, Some(expected))
+        }
+        None => (session, None),
+    };
     if session.is_none() && trusted.proof.silent {
-        let issuer = name_issuer(&app.settings, &trusted.realm);
         return Err(AuthorizationRefusal::Returned {
             location: write_return_location(
                 &trusted.redirect_uri,
@@ -398,25 +476,15 @@ pub async fn begin_authorization(
         return Ok(Authorization::Granted { location });
     }
 
-    admit_pending_sign_in(app, work.as_mut(), parameters.caller).await?;
-    let mut browser_secret = vec![0_u8; 32];
-    app.random
-        .fill(&mut browser_secret)
-        .map_err(|_| Failure::new(ErrorCode::RandomUnavailable))?;
-    let pending = PendingAuthorization {
-        id: mint_id(app)?,
-        browser_digest: app.digester.sha256(&browser_secret).to_vec(),
-        client_id: trusted.client.client_id,
-        redirect_uri: trusted.redirect_uri,
-        scopes: trusted.scopes,
-        state: trusted.state,
-        nonce: trusted.nonce,
-        code_challenge: trusted.code_challenge,
-        expires_at: app.now() + PENDING_LIFETIME,
-    };
-    work.insert_pending_authorization(&pending)
-        .await
-        .map_err(Failure::from)?;
+    admit_pending_sign_in(
+        app,
+        work.as_mut(),
+        parameters.caller,
+        parameters.known_browsers,
+    )
+    .await?;
+    let (request, browser_secret) =
+        keep_pending_authorization(app, work.as_mut(), trusted, expected_person).await?;
     work_slot
         .take()
         .ok_or(Failure::new(ErrorCode::Internal))?
@@ -424,7 +492,7 @@ pub async fn begin_authorization(
         .await
         .map_err(Failure::from)?;
     Ok(Authorization::SignInRequired {
-        request: pending.id,
+        request,
         browser_secret: Secret::new(browser_secret),
     })
 }
@@ -444,8 +512,8 @@ pub struct TypedSignIn<'a> {
     pub password: Secret,
     /// The address of the browser, as a believed proxy said.
     pub caller: Option<IpAddr>,
-    /// The mark of an earlier sign-in, when the browser brings one.
-    pub known_browser: Option<&'a DeviceMark>,
+    /// The marks of earlier sign-ins the browser brings, the latest first.
+    pub known_browsers: &'a [DeviceMark],
 }
 
 // Written by hand: the location carries the code.
@@ -496,7 +564,7 @@ pub async fn finish_sign_in(
         typed.name,
         typed.password,
         typed.caller,
-        typed.known_browser,
+        typed.known_browsers,
     )
     .await?;
 
@@ -510,6 +578,25 @@ pub async fn finish_sign_in(
         }
         return Err(expired());
     };
+    // The person a hint named is the one the client waits for: anyone else
+    // signed in for themselves, and the client is told a sign-in is needed.
+    if pending
+        .expected_person
+        .is_some_and(|expected| expected != signed_in.person.id)
+    {
+        work.commit().await?;
+        let issuer = name_issuer(&app.settings, &realm);
+        return Ok(SignedInForRequest {
+            location: write_return_location(
+                &pending.redirect_uri,
+                &issuer,
+                pending.state.as_deref(),
+                &[("error", OAuthError::LoginRequired.name())],
+            ),
+            ticket: signed_in.ticket,
+            device_mark: signed_in.device_mark,
+        });
+    }
     let location = issue_code(
         app,
         work.as_mut(),
@@ -550,6 +637,7 @@ mod tests {
     };
     use crate::app::App;
     use crate::error::ErrorCode;
+    use crate::login::device::DeviceMark;
     use crate::login::session::SessionTicket;
     use crate::oidc::errors::OAuthError;
     use crate::oidc::token::{TokenRequest, TokenResponse, grant_token};
@@ -580,7 +668,9 @@ mod tests {
             code_challenge_method: Some("S256"),
             prompt: None,
             max_age: None,
+            id_token_hint: None,
             caller: None,
+            known_browsers: &[],
         }
     }
 
@@ -615,6 +705,10 @@ mod tests {
 
     /// Goes through the endpoint, then the login page, and returns the redirection.
     fn sign_in_through_the_flow(app: &App) -> (String, SessionTicket) {
+        sign_in_as(app, "ada")
+    }
+
+    fn sign_in_as(app: &App, name: &str) -> (String, SessionTicket) {
         let challenge = challenge();
         let begun = complete(begin_authorization(app, "acme", ask(&challenge), None))
             .expect("a pending request");
@@ -631,10 +725,10 @@ mod tests {
             request,
             &browser_secret,
             TypedSignIn {
-                name: "ada",
+                name,
                 password: Secret::new(PASSWORD.as_bytes().to_vec()),
                 caller: None,
-                known_browser: None,
+                known_browsers: &[],
             },
         ))
         .expect("a signed-in person");
@@ -704,17 +798,106 @@ mod tests {
         assert!(identity["auth_time"].is_i64());
     }
 
-    #[test]
-    fn a_code_is_exchanged_once() {
-        let (app, _storage, _clock, secret) = start(false);
-        let (location, _ticket) = sign_in_through_the_flow(&app);
-        let code = read_query(&location, "code").expect("a code");
+    fn refresh(app: &App, secret: Option<&Secret>, refresh_token: &str) -> Result<(), OAuthError> {
+        let request = TokenRequest {
+            grant_type: Some("refresh_token"),
+            client_id: Some("webapp"),
+            client_secret: secret.map(|secret| Secret::new(secret.expose().to_vec())),
+            refresh_token: Some(refresh_token),
+            ..TokenRequest::default()
+        };
+        complete(grant_token(app, "acme", request))
+            .map(|_| ())
+            .map_err(|failure| failure.error)
+    }
 
-        assert!(exchange(&app, &code, secret.as_ref(), VERIFIER, CALLBACK).is_ok());
+    fn read_revocations(app: &App, storage: &MemoryStorage) -> Vec<Value> {
+        let (_, scope) =
+            complete(crate::tenancy::resolve::resolve_realm(app, "acme")).expect("the realm");
+        storage
+            .read_audit_envelopes(scope.realm())
+            .into_iter()
+            .filter(|event| event["kind"] == "token.revoked")
+            .collect()
+    }
+
+    #[test]
+    fn a_code_presented_again_is_refused_and_takes_back_the_refresh_token_it_obtained() {
+        let (app, storage, _clock, secret) = start(false);
+        let (location, ticket) = sign_in_through_the_flow(&app);
+        let code = read_query(&location, "code").expect("a code");
+        let first = exchange(&app, &code, secret.as_ref(), VERIFIER, CALLBACK).expect("tokens");
+        let refresh_token = first.refresh_token.expect("a refresh token");
+
         assert_eq!(
             exchange(&app, &code, secret.as_ref(), VERIFIER, CALLBACK).map(|_| ()),
             Err(OAuthError::InvalidGrant)
         );
+        assert_eq!(
+            refresh(&app, secret.as_ref(), &refresh_token),
+            Err(OAuthError::InvalidGrant),
+            "what the first exchange obtained is taken back"
+        );
+        assert_eq!(
+            exchange(&app, &code, secret.as_ref(), VERIFIER, CALLBACK).map(|_| ()),
+            Err(OAuthError::InvalidGrant)
+        );
+        let revocations = read_revocations(&app, &storage);
+        assert_eq!(revocations.len(), 1, "taken back once: {revocations:?}");
+        let told = &revocations[0]["payload"];
+        assert_eq!(told["reason"], "code_replayed");
+        assert_eq!(told["client_id"], "webapp");
+        assert_eq!(told["session_id"], ticket.session.to_string(), "{told}");
+        assert_eq!(told["tokens"], 1, "{told}");
+        assert_eq!(told["last_used_at"], Value::Null, "never spent: {told}");
+        // The exchange named the family it started, and in which session: a
+        // stolen token is traced from one event to the other.
+        let (_, scope) =
+            complete(crate::tenancy::resolve::resolve_realm(&app, "acme")).expect("the realm");
+        let issued = storage
+            .read_audit_envelopes(scope.realm())
+            .into_iter()
+            .find(|event| event["kind"] == "token.issued")
+            .expect("the exchange");
+        assert_eq!(issued["payload"]["family"], told["family"], "{issued}");
+        assert_eq!(
+            issued["payload"]["session_id"], told["session_id"],
+            "{issued}"
+        );
+    }
+
+    #[test]
+    fn a_spent_code_presented_by_another_client_takes_nothing_back() {
+        let (app, storage, _clock, _secret) = start(true);
+        let (_, scope) =
+            complete(crate::tenancy::resolve::resolve_realm(&app, "acme")).expect("the realm");
+        complete(create_application(
+            &app,
+            scope,
+            "other",
+            "https://other.example.org/callback",
+            true,
+        ));
+        let (location, _ticket) = sign_in_through_the_flow(&app);
+        let code = read_query(&location, "code").expect("a code");
+        let first = exchange(&app, &code, None, VERIFIER, CALLBACK).expect("tokens");
+
+        let from_other = TokenRequest {
+            grant_type: Some("authorization_code"),
+            client_id: Some("other"),
+            code: Some(&code),
+            redirect_uri: Some(CALLBACK),
+            code_verifier: Some(VERIFIER),
+            ..TokenRequest::default()
+        };
+        let refused = complete(grant_token(&app, "acme", from_other)).map(|_| ());
+        assert_eq!(
+            refused.map_err(|failure| failure.error),
+            Err(OAuthError::InvalidGrant)
+        );
+        let refresh_token = first.refresh_token.expect("a refresh token");
+        assert_eq!(refresh(&app, None, &refresh_token), Ok(()));
+        assert!(read_revocations(&app, &storage).is_empty());
     }
 
     #[test]
@@ -935,7 +1118,7 @@ mod tests {
                     name: "ada",
                     password: Secret::new(password.as_bytes().to_vec()),
                     caller: None,
-                    known_browser: None,
+                    known_browsers: &[],
                 },
             ))
             .map(|_| ())
@@ -979,7 +1162,7 @@ mod tests {
                 name: "ada",
                 password: Secret::new(PASSWORD.as_bytes().to_vec()),
                 caller: None,
-                known_browser: None,
+                known_browsers: &[],
             },
         ));
         assert_eq!(
@@ -1056,6 +1239,132 @@ mod tests {
     }
 
     #[test]
+    fn a_known_browser_leaves_its_sign_ins_waiting_under_its_device_not_its_address() {
+        use crate::login::throttle::MAX_PENDING_SIGN_INS_PER_ADDRESS;
+
+        let (app, _storage, _clock, _secret) = start(true);
+        let challenge = challenge();
+        let begun = complete(begin_authorization(&app, "acme", ask(&challenge), None))
+            .expect("a pending request");
+        let Authorization::SignInRequired {
+            request,
+            browser_secret,
+        } = begun
+        else {
+            panic!("a person without a session must sign in");
+        };
+        let known = complete(finish_sign_in(
+            &app,
+            "acme",
+            request,
+            &browser_secret,
+            TypedSignIn {
+                name: "ada",
+                password: Secret::new(PASSWORD.as_bytes().to_vec()),
+                caller: None,
+                known_browsers: &[],
+            },
+        ))
+        .expect("a signed-in person")
+        .device_mark;
+        let written = known.write();
+        let device = written.split('.').nth(1).expect("a device");
+        let unknown = DeviceMark::parse(&written.replace(device, &Uuid::nil().to_string()))
+            .expect("a mark of no kept browser");
+        let ask_with = |marks: &[DeviceMark]| {
+            let parameters = AuthorizationParameters {
+                caller: Some("198.51.100.7".parse().expect("an address")),
+                known_browsers: marks,
+                ..ask(&challenge)
+            };
+            match complete(begin_authorization(&app, "acme", parameters, None)) {
+                Ok(Authorization::SignInRequired { .. }) => Ok(()),
+                Err(AuthorizationRefusal::Shown(failure)) => Err(failure.code),
+                _ => panic!("neither a sign-in nor a refusal shown"),
+            }
+        };
+        for _ in 0..MAX_PENDING_SIGN_INS_PER_ADDRESS {
+            assert_eq!(ask_with(&[]), Ok(()));
+        }
+        assert_eq!(ask_with(&[]), Err(ErrorCode::SignInRequestsTooFrequent));
+        assert_eq!(
+            ask_with(std::slice::from_ref(&unknown)),
+            Err(ErrorCode::SignInRequestsTooFrequent),
+            "a device the realm does not keep counts for nothing"
+        );
+        assert_eq!(
+            ask_with(&[unknown, known.clone()]),
+            Ok(()),
+            "the browser the realm keeps is held by the address no longer"
+        );
+        for _ in 1..MAX_PENDING_SIGN_INS_PER_ADDRESS {
+            assert_eq!(ask_with(std::slice::from_ref(&known)), Ok(()));
+        }
+        assert_eq!(
+            ask_with(std::slice::from_ref(&known)),
+            Err(ErrorCode::SignInRequestsTooFrequent),
+            "and it is bounded as an address is"
+        );
+    }
+
+    #[test]
+    fn a_browser_kept_past_its_expiry_leaves_its_sign_ins_waiting_under_its_address() {
+        use crate::login::device::DEVICE_MARK_LIFETIME;
+        use crate::login::throttle::MAX_PENDING_SIGN_INS_PER_ADDRESS;
+
+        let (app, _storage, clock, _secret) = start(true);
+        let challenge = challenge();
+        let begun = complete(begin_authorization(&app, "acme", ask(&challenge), None))
+            .expect("a pending request");
+        let Authorization::SignInRequired {
+            request,
+            browser_secret,
+        } = begun
+        else {
+            panic!("a person without a session must sign in");
+        };
+        let expired = complete(finish_sign_in(
+            &app,
+            "acme",
+            request,
+            &browser_secret,
+            TypedSignIn {
+                name: "ada",
+                password: Secret::new(PASSWORD.as_bytes().to_vec()),
+                caller: None,
+                known_browsers: &[],
+            },
+        ))
+        .expect("a signed-in person")
+        .device_mark;
+        // The realm still holds the row: nothing purged it yet.
+        clock.advance(Duration::from_secs(
+            DEVICE_MARK_LIFETIME.whole_seconds().unsigned_abs() + 60,
+        ));
+        let ask_with = |marks: &[DeviceMark]| {
+            let parameters = AuthorizationParameters {
+                caller: Some("198.51.100.7".parse().expect("an address")),
+                known_browsers: marks,
+                ..ask(&challenge)
+            };
+            match complete(begin_authorization(&app, "acme", parameters, None)) {
+                Ok(Authorization::SignInRequired { .. }) => Ok(()),
+                Err(AuthorizationRefusal::Shown(failure)) => Err(failure.code),
+                _ => panic!("neither a sign-in nor a refusal shown"),
+            }
+        };
+        for _ in 0..MAX_PENDING_SIGN_INS_PER_ADDRESS {
+            assert_eq!(ask_with(&[]), Ok(()));
+        }
+
+        assert_eq!(
+            ask_with(std::slice::from_ref(&expired)),
+            Err(ErrorCode::SignInRequestsTooFrequent),
+            "a browser past its expiry is held by its address"
+        );
+    }
+
+    #[test]
     fn a_session_answers_without_a_page_only_as_prompt_and_max_age_allow() {
         let (app, _storage, clock, _secret) = start(false);
         let (_location, ticket) = sign_in_through_the_flow(&app);
@@ -1101,6 +1410,150 @@ mod tests {
         assert_eq!(
             ask_with(Some("none"), Some("3600"), Some(&ticket)),
             "login_required"
+        );
+    }
+
+    #[test]
+    fn a_session_answers_a_hint_only_for_the_person_it_names() {
+        let (app, _storage, _clock, secret) = start(false);
+        let (_, scope) =
+            complete(crate::tenancy::resolve::resolve_realm(&app, "acme")).expect("the realm");
+        complete(create_person(&app, scope, "bob", PASSWORD));
+        let (location, ada) = sign_in_as(&app, "ada");
+        let code = read_query(&location, "code").expect("a code");
+        let tokens = exchange(&app, &code, secret.as_ref(), VERIFIER, CALLBACK).expect("tokens");
+        let of_ada = tokens.id_token.expect("an identity token");
+        let (_, bob) = sign_in_as(&app, "bob");
+        let challenge = challenge();
+        let ask_with = |hint: &str, prompt: Option<&'static str>, ticket| {
+            let parameters = AuthorizationParameters {
+                prompt,
+                id_token_hint: Some(hint),
+                ..ask(&challenge)
+            };
+            match complete(begin_authorization(&app, "acme", parameters, ticket)) {
+                Ok(Authorization::Granted { .. }) => "granted".to_owned(),
+                Ok(Authorization::SignInRequired { .. }) => "sign in".to_owned(),
+                Err(AuthorizationRefusal::Returned { location }) => {
+                    read_query(&location, "error").expect("an error")
+                }
+                Err(AuthorizationRefusal::Shown(failure)) => panic!("shown: {failure:?}"),
+            }
+        };
+
+        assert_eq!(ask_with(&of_ada, Some("none"), Some(&ada)), "granted");
+        assert_eq!(
+            ask_with(&of_ada, Some("none"), Some(&bob)),
+            "login_required",
+            "the session of bob does not answer for ada"
+        );
+        assert_eq!(ask_with(&of_ada, None, Some(&bob)), "sign in");
+        assert_eq!(ask_with(&of_ada, Some("none"), None), "login_required");
+        for unreadable in ["not.a.token", tokens.access_token.as_str()] {
+            assert_eq!(
+                ask_with(unreadable, Some("none"), Some(&ada)),
+                "invalid_request",
+                "an access token is no hint"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hint_holds_the_person_who_signs_in_to_the_one_it_names() {
+        let (app, _storage, _clock, secret) = start(false);
+        let (_, scope) =
+            complete(crate::tenancy::resolve::resolve_realm(&app, "acme")).expect("the realm");
+        complete(create_person(&app, scope, "bob", PASSWORD));
+        let (location, _) = sign_in_as(&app, "ada");
+        let code = read_query(&location, "code").expect("a code");
+        let of_ada = exchange(&app, &code, secret.as_ref(), VERIFIER, CALLBACK)
+            .expect("tokens")
+            .id_token
+            .expect("an identity token");
+        let challenge = challenge();
+        // A fresh proof is asked, so no session answers: whoever is at the
+        // browser signs in.
+        let sign_in_with_hint = |name: &str| {
+            let parameters = AuthorizationParameters {
+                prompt: Some("login"),
+                id_token_hint: Some(&of_ada),
+                ..ask(&challenge)
+            };
+            let begun = complete(begin_authorization(&app, "acme", parameters, None))
+                .expect("a pending request");
+            let Authorization::SignInRequired {
+                request,
+                browser_secret,
+            } = begun
+            else {
+                panic!("a fresh proof is asked of whoever is there");
+            };
+            complete(finish_sign_in(
+                &app,
+                "acme",
+                request,
+                &browser_secret,
+                TypedSignIn {
+                    name,
+                    password: Secret::new(PASSWORD.as_bytes().to_vec()),
+                    caller: None,
+                    known_browsers: &[],
+                },
+            ))
+            .expect("a signed-in person")
+            .location
+        };
+
+        let of_bob = sign_in_with_hint("bob");
+        assert_eq!(
+            read_query(&of_bob, "error").as_deref(),
+            Some("login_required"),
+            "bob signed in, and the client waits for ada: {of_bob}"
+        );
+        assert_eq!(read_query(&of_bob, "code"), None);
+        assert_eq!(read_query(&of_bob, "state").as_deref(), Some("st&te"));
+        let again = sign_in_with_hint("ada");
+        assert!(read_query(&again, "code").is_some(), "{again}");
+    }
+
+    #[test]
+    fn a_hint_given_to_another_client_is_refused() {
+        let (app, _storage, _clock, secret) = start(false);
+        let (_, scope) =
+            complete(crate::tenancy::resolve::resolve_realm(&app, "acme")).expect("the realm");
+        let other_callback = "https://other.example.org/callback";
+        complete(create_application(
+            &app,
+            scope,
+            "other",
+            other_callback,
+            true,
+        ));
+        let (location, ticket) = sign_in_through_the_flow(&app);
+        let code = read_query(&location, "code").expect("a code");
+        let of_webapp = exchange(&app, &code, secret.as_ref(), VERIFIER, CALLBACK)
+            .expect("tokens")
+            .id_token
+            .expect("an identity token");
+        let challenge = challenge();
+        let parameters = AuthorizationParameters {
+            client_id: Some("other"),
+            redirect_uri: Some(other_callback),
+            scope: Some("openid"),
+            prompt: Some("none"),
+            id_token_hint: Some(&of_webapp),
+            ..ask(&challenge)
+        };
+
+        let refused = complete(begin_authorization(&app, "acme", parameters, Some(&ticket)));
+
+        let Err(AuthorizationRefusal::Returned { location }) = refused else {
+            panic!("returned to the client: {refused:?}");
+        };
+        assert!(location.starts_with(other_callback), "{location}");
+        assert_eq!(
+            read_query(&location, "error").as_deref(),
+            Some("invalid_request")
         );
     }
 

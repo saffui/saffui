@@ -205,18 +205,21 @@ impl CodeStore for PgUnitOfWork {
         now: OffsetDateTime,
     ) -> Result<Option<ReplayedCode>, StorageError> {
         let (tenant, realm) = self.scope_keys();
+        // Constant SQL: of two replays at once, the second waits for the
+        // first, then finds the code marked and matches no row.
         let rows = self
             .read_raw(
-                "UPDATE authorization_codes SET replayed_at = COALESCE(replayed_at, $5)
+                "UPDATE authorization_codes SET replayed_at = $5
                  WHERE tenant_id = $1 AND realm_id = $2 AND code_digest = $3
-                   AND client_id = $4 AND spent_at IS NOT NULL
-                 RETURNING person_id, family",
+                   AND client_id = $4 AND spent_at IS NOT NULL AND replayed_at IS NULL
+                 RETURNING person_id, session_id, family",
                 &[&tenant, &realm, &code_digest, &client_id, &now],
             )
             .await?;
         Ok(rows.first().map(|row| ReplayedCode {
             person: row.get(0),
-            family: row.get(1),
+            session: row.get(1),
+            family: row.get(2),
         }))
     }
 }

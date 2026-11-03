@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use super::MemoryUnitOfWork;
 use crate::ports::storage::StorageError;
-use crate::tokens::store::{RefreshStore, RefreshToken, StoredRefreshToken};
+use crate::tokens::store::{EndedFamily, RefreshStore, RefreshToken, StoredRefreshToken};
 
 impl MemoryUnitOfWork {
     fn refresh_tokens_of_the_realm(&mut self) -> &mut Vec<StoredRefreshToken> {
@@ -31,16 +31,18 @@ impl MemoryUnitOfWork {
         families
     }
 
+    /// Revokes the live tokens `concerned` names, and returns them as they
+    /// were before.
     fn revoke_refresh_tokens_where(
         &mut self,
         now: OffsetDateTime,
         concerned: impl Fn(&RefreshToken) -> bool,
-    ) -> u64 {
-        let mut revoked = 0;
+    ) -> Vec<StoredRefreshToken> {
+        let mut revoked = Vec::new();
         for stored in self.refresh_tokens_of_the_realm() {
             if stored.revoked_at.is_none() && concerned(&stored.token) {
+                revoked.push(stored.clone());
                 stored.revoked_at = Some(now);
-                revoked += 1;
             }
         }
         revoked
@@ -105,10 +107,16 @@ impl RefreshStore for MemoryUnitOfWork {
         &mut self,
         family: Uuid,
         now: OffsetDateTime,
-    ) -> Result<u64, StorageError> {
+    ) -> Result<Option<EndedFamily>, StorageError> {
         let outcome = self.refuse_in_snapshot();
         self.record_refusal(outcome)?;
-        Ok(self.revoke_refresh_tokens_where(now, |token| token.family == family))
+        let revoked = self.revoke_refresh_tokens_where(now, |token| token.family == family);
+        let last_issued_at = revoked.iter().map(|stored| stored.token.issued_at).max();
+        Ok(last_issued_at.map(|last_issued_at| EndedFamily {
+            tokens: u64::try_from(revoked.len()).unwrap_or(u64::MAX),
+            last_issued_at,
+            last_used_at: revoked.iter().filter_map(|stored| stored.used_at).max(),
+        }))
     }
 
     async fn revoke_refresh_tokens_of_session(
@@ -118,6 +126,7 @@ impl RefreshStore for MemoryUnitOfWork {
     ) -> Result<u64, StorageError> {
         let outcome = self.refuse_in_snapshot();
         self.record_refusal(outcome)?;
-        Ok(self.revoke_refresh_tokens_where(now, |token| token.session == session))
+        let revoked = self.revoke_refresh_tokens_where(now, |token| token.session == session);
+        Ok(u64::try_from(revoked.len()).unwrap_or(u64::MAX))
     }
 }

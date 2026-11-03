@@ -325,12 +325,14 @@ impl CodeStore for MemoryUnitOfWork {
         let Some(kept) = self.find_code(code_digest) else {
             return Ok(None);
         };
-        if kept.spent_at.is_none() || kept.code.client_id != client_id {
+        if kept.spent_at.is_none() || kept.replayed_at.is_some() || kept.code.client_id != client_id
+        {
             return Ok(None);
         }
-        kept.replayed_at.get_or_insert(now);
+        kept.replayed_at = Some(now);
         Ok(Some(ReplayedCode {
             person: kept.code.person,
+            session: kept.code.session,
             family: kept.family,
         }))
     }

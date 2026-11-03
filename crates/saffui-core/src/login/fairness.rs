@@ -127,10 +127,19 @@ mod tests {
             "another realm is not held up"
         );
 
-        assert!(!shares.has_free_share(flooded, None));
-        assert!(shares.has_free_share(other, None));
+        assert!(
+            !shares.has_free_share(flooded, None),
+            "looking at a realm that holds its half finds no share"
+        );
+        assert!(
+            shares.has_free_share(other, None),
+            "the other realm still finds one"
+        );
         drop(first);
-        assert!(shares.has_free_share(flooded, None));
+        assert!(
+            shares.has_free_share(flooded, None),
+            "a share given back is free again"
+        );
         let third = shares
             .take(flooded, None)
             .expect("a share given back is taken again");

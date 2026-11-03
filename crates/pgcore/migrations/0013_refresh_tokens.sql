@@ -19,7 +19,10 @@ CREATE TABLE refresh_tokens (
     FOREIGN KEY (tenant_id, realm_id, session_id) REFERENCES sessions ON DELETE CASCADE
 );
 
-CREATE INDEX refresh_tokens_family ON refresh_tokens (tenant_id, realm_id, family_id);
+-- A revocation reads what is live of a family, and nothing of a family
+-- revoked already.
+CREATE INDEX refresh_tokens_live_family ON refresh_tokens (tenant_id, realm_id, family_id)
+    WHERE revoked_at IS NULL;
 -- Whether a family was revoked is asked at each use. A family that was not
 -- has no entry here, however many tokens it grew.
 CREATE INDEX refresh_tokens_revoked_family ON refresh_tokens (tenant_id, realm_id, family_id)

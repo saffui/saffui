@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use saffui_core::ports::storage::StorageError;
-use saffui_core::tokens::store::{RefreshStore, RefreshToken, StoredRefreshToken};
+use saffui_core::tokens::store::{EndedFamily, RefreshStore, RefreshToken, StoredRefreshToken};
 use time::OffsetDateTime;
 use tokio_postgres::Row;
 use uuid::Uuid;
@@ -40,6 +40,15 @@ const READ_TOKEN: &str = "
                  AND kin.family_id = token.family_id AND kin.revoked_at IS NOT NULL))
     FROM refresh_tokens AS token
     WHERE tenant_id = $1 AND realm_id = $2 AND token_digest = $3";
+
+/// Constant SQL: what is live of a family is found by the index of live
+/// tokens alone, revoked, and summed up in the same statement.
+const REVOKE_FAMILY: &str = "
+    WITH revoked AS (
+        UPDATE refresh_tokens SET revoked_at = $4
+        WHERE tenant_id = $1 AND realm_id = $2 AND family_id = $3 AND revoked_at IS NULL
+        RETURNING issued_at, used_at)
+    SELECT count(*), max(issued_at), max(used_at) FROM revoked";
 
 /// Reads a token from the first eight columns of a row: what it is, then
 /// what became of it follows.
@@ -111,17 +120,22 @@ impl RefreshStore for PgUnitOfWork {
         &mut self,
         family: Uuid,
         now: OffsetDateTime,
-    ) -> Result<u64, StorageError> {
-        let update = Update::table(
-            refresh_tokens::TABLE,
-            vec![col(refresh_tokens::REVOKED_AT, &now)],
-            Criteria::new()
-                .where_equal(refresh_tokens::FAMILY_ID, &family)
-                .where_null(refresh_tokens::REVOKED_AT),
-        )
-        .build()
-        .map_err(|_| StorageError::Failed)?;
-        self.execute(&update).await
+    ) -> Result<Option<EndedFamily>, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        let rows = self
+            .read_raw(REVOKE_FAMILY, &[&tenant, &realm, &family, &now])
+            .await?;
+        let Some(row) = rows.first() else {
+            return Ok(None);
+        };
+        let tokens = u64::try_from(row.get::<_, i64>(0)).map_err(|_| StorageError::Failed)?;
+        Ok(row
+            .get::<_, Option<OffsetDateTime>>(1)
+            .map(|last_issued_at| EndedFamily {
+                tokens,
+                last_issued_at,
+                last_used_at: row.get(2),
+            }))
     }
 
     async fn revoke_refresh_tokens_of_session(
@@ -149,11 +163,12 @@ mod tests {
     use time::OffsetDateTime;
     use uuid::Uuid;
 
-    use super::{READ_TOKEN, SPEND_TOKEN};
+    use super::{READ_TOKEN, REVOKE_FAMILY, SPEND_TOKEN};
 
     /// A realm whose families were revoked by the hundred, and one family
     /// that grew a thousand tokens long and never was: whether it was is read
-    /// from the revoked tokens alone, not from the length of the family.
+    /// from the revoked tokens alone, not from the length of the family, and
+    /// a revocation reads the live tokens alone.
     #[tokio::test]
     async fn whether_a_family_was_revoked_is_read_from_its_revoked_tokens_alone() {
         let database = TestDatabase::create(EMBEDDED).await;
@@ -213,13 +228,23 @@ mod tests {
             .query(&explain(READ_TOKEN), &[&tenant, &realm, &digest])
             .await
             .expect("the plan of a reading");
+        let revoke = owner
+            .query(
+                &explain(REVOKE_FAMILY),
+                &[&tenant, &realm, &tenant, &OffsetDateTime::now_utc()],
+            )
+            .await
+            .expect("the plan of a revocation");
 
-        for (statement, plan) in [("spend", spend), ("read", read)] {
+        for (statement, plan, index) in [
+            ("spend", spend, "refresh_tokens_revoked_family"),
+            ("read", read, "refresh_tokens_revoked_family"),
+            ("revoke", revoke, "refresh_tokens_live_family"),
+        ] {
             let plan: Vec<String> = plan.iter().map(|row| row.get(0)).collect();
             assert!(
-                plan.iter()
-                    .any(|line| line.contains("refresh_tokens_revoked_family")),
-                "{statement}: {plan:#?}"
+                plan.iter().any(|line| line.contains(index)),
+                "{statement} reads {index}: {plan:#?}"
             );
         }
     }

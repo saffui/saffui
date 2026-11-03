@@ -41,6 +41,17 @@ impl StoredRefreshToken {
     }
 }
 
+/// What the tokens a revocation took back still tell. A family revoked for
+/// the first time is revoked whole: this is then the whole family.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EndedFamily {
+    /// One for the grant, and one for each rotation.
+    pub tokens: u64,
+    pub last_issued_at: OffsetDateTime,
+    /// `None` when none of them was ever spent.
+    pub last_used_at: Option<OffsetDateTime>,
+}
+
 #[async_trait]
 pub trait RefreshStore {
     async fn insert_refresh_token(&mut self, token: &RefreshToken) -> Result<(), StorageError>;
@@ -61,14 +72,15 @@ pub trait RefreshStore {
         token_digest: &[u8],
     ) -> Result<Option<StoredRefreshToken>, StorageError>;
 
-    /// Revokes every token of a family that is not revoked yet, used or not.
-    /// Returns how many. A token a rotation writes while this runs is not
-    /// counted, and is refused all the same: its family has revoked tokens.
+    /// Revokes every token of a family that is not revoked yet, used or not,
+    /// and says what they tell, or `None` when none was left. A token a
+    /// rotation writes while this runs is not counted, and is refused all the
+    /// same: its family has revoked tokens.
     async fn revoke_refresh_family(
         &mut self,
         family: Uuid,
         now: OffsetDateTime,
-    ) -> Result<u64, StorageError>;
+    ) -> Result<Option<EndedFamily>, StorageError>;
 
     /// Revokes every token of a session that is not revoked yet. Returns how many.
     async fn revoke_refresh_tokens_of_session(

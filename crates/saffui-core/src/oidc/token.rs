@@ -8,7 +8,7 @@ use serde_json::json;
 use super::discovery::name_issuer;
 use super::errors::OAuthFailure;
 use super::pkce::matches_challenge;
-use super::refresh::rotate_refresh_token;
+use super::refresh::{describe_family_end, rotate_refresh_token};
 use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
@@ -257,9 +257,11 @@ async fn exchange_code(
     let response = answer_for_person(app, work.as_mut(), granted).await?;
     let told = json!({
         "client_id": client.client_id,
+        "family": family.to_string(),
         "grant": "authorization_code",
         "person_id": person.id.to_string(),
         "scope": response.scope,
+        "session_id": session.id.to_string(),
     });
     record_event(app, work.as_mut(), EventKind::TokenIssued, told).await?;
     work.commit().await.map_err(Failure::from)?;
@@ -283,14 +285,15 @@ async fn take_back_what_a_code_obtained(
     let Some(family) = replayed.family else {
         return Ok(());
     };
-    let revoked = work.revoke_refresh_family(family, now).await?;
-    if revoked > 0 {
-        let told = json!({
-            "client_id": client_id,
-            "family": family.to_string(),
-            "person_id": replayed.person.to_string(),
-            "reason": "code_replayed",
-        });
+    if let Some(ended) = work.revoke_refresh_family(family, now).await? {
+        let told = describe_family_end(
+            client_id,
+            family,
+            replayed.person,
+            replayed.session,
+            "code_replayed",
+            &ended,
+        );
         record_event(app, work, EventKind::TokenRevoked, told).await?;
     }
     Ok(())

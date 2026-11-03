@@ -129,6 +129,46 @@ fn a_node_given_the_retention_role_purges_what_expired_and_one_without_it_still_
     }
 }
 
+#[test]
+fn a_node_says_at_warn_a_table_its_pass_could_not_purge() {
+    let database = database::create_database(EMBEDDED);
+    bootstrap(&database);
+    plant_an_expired_request(&database);
+    // Every removal of a pending request fails, as a statement that times out would.
+    run(async {
+        database
+            .plan(OWNER)
+            .connect_directly()
+            .await
+            .expect("a connection")
+            .batch_execute(
+                "CREATE FUNCTION saffui_test_refuse() RETURNS trigger LANGUAGE plpgsql
+                     AS $$ BEGIN RAISE EXCEPTION 'refused'; END $$;
+                 CREATE TRIGGER saffui_test_refuse BEFORE DELETE ON authorization_requests
+                     FOR EACH ROW EXECUTE FUNCTION saffui_test_refuse();",
+            )
+            .await
+            .expect("a refusing trigger");
+    });
+    let mut with_retention = support::saffui_command();
+    with_retention.env("SAFFUI_RETENTION", "on").env(
+        "SAFFUI_RETENTION_DATABASE_URL",
+        database.connection_string(RETENTION_ROLE),
+    );
+
+    let node = node::Node::start(with_retention, &database);
+
+    let said = node.wait_for_journal_line(
+        &["WARN", "pending_requests", "retention failed on a table"],
+        Duration::from_secs(10),
+    );
+    assert!(
+        said.is_some(),
+        "the node did not say the table it could not purge"
+    );
+    assert_eq!(count_pending_requests(&database), 1, "the request stays");
+}
+
 /// Starts `serve` with these settings, and returns its exit code and what
 /// it wrote, for a node that refuses before it serves.
 fn refuse_to_serve(database: &TestDatabase, settings: &[(&str, String)]) -> (Option<i32>, String) {

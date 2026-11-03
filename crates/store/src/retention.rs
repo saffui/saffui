@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use pgcore::connect::ConnectionPlan;
 use saffui_core::ports::storage::{StorageError, StorageUnavailable};
-use saffui_core::retention::{PurgeCutoffs, PurgeReport, Retention};
+use saffui_core::retention::{PurgeCutoffs, PurgeOutcome, PurgeReport, Retention, TablePurge};
 use time::OffsetDateTime;
 use tokio_postgres::Client;
 
@@ -73,12 +73,15 @@ impl PgRetention {
 }
 
 /// Whether the role of the session may purge and do nothing else: bypass
-/// row security, read and remove the rows of each purged table, and hold no
-/// other attribute, membership or right. A membership is refused whatever it
-/// is: a role that belongs to none inherits nothing and can become no other.
+/// row security, reach the schema, read and remove the rows of each purged
+/// table, and hold no other attribute, membership or right. A membership is
+/// refused whatever it is: a role that belongs to none inherits nothing and
+/// can become no other. Grants are read as written, to the role or to all:
+/// a right not named here, or one it may grant on, is a right more.
 const RETENTION_FITNESS: &str = "
     SELECT role.rolname::text,
            role.rolbypassrls
+       AND has_schema_privilege(role.oid, 'public', 'USAGE')
        AND (SELECT count(*) FROM pg_class AS class
             JOIN pg_namespace AS space ON space.oid = class.relnamespace
             WHERE space.nspname = 'public' AND class.relname = ANY ($1)
@@ -90,22 +93,23 @@ const RETENTION_FITNESS: &str = "
        AND NOT EXISTS (
            SELECT 1 FROM pg_class AS class
            JOIN pg_namespace AS space ON space.oid = class.relnamespace
+           CROSS JOIN LATERAL aclexplode(coalesce(class.relacl, acldefault(
+               CASE class.relkind WHEN 'S' THEN 's'::\"char\" ELSE 'r'::\"char\" END,
+               class.relowner))) AS granted
            WHERE space.nspname NOT IN ('pg_catalog', 'information_schema')
              AND space.nspname NOT LIKE 'pg\\_toast%'
              AND class.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
-             AND CASE
-                 WHEN class.relkind = 'S'
-                     THEN has_sequence_privilege(role.oid, class.oid, 'USAGE, SELECT, UPDATE')
-                 WHEN space.nspname = 'public' AND class.relname = ANY ($1)
-                     THEN has_table_privilege(role.oid, class.oid,
-                              'INSERT, UPDATE, TRUNCATE, REFERENCES, TRIGGER')
-                       OR has_any_column_privilege(role.oid, class.oid,
-                              'INSERT, UPDATE, REFERENCES')
-                 ELSE has_table_privilege(role.oid, class.oid,
-                          'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')
-                   OR has_any_column_privilege(role.oid, class.oid,
-                          'SELECT, INSERT, UPDATE, REFERENCES')
-             END)
+             AND granted.grantee IN (role.oid, 0::oid)
+             AND (granted.is_grantable
+                  OR granted.privilege_type NOT IN ('SELECT', 'DELETE')
+                  OR space.nspname <> 'public' OR class.relname <> ALL ($1)))
+       AND NOT EXISTS (
+           SELECT 1 FROM pg_attribute AS attribute
+           JOIN pg_class AS class ON class.oid = attribute.attrelid
+           JOIN pg_namespace AS space ON space.oid = class.relnamespace
+           CROSS JOIN LATERAL aclexplode(attribute.attacl) AS granted
+           WHERE space.nspname NOT IN ('pg_catalog', 'information_schema')
+             AND granted.grantee IN (role.oid, 0::oid))
        AND NOT has_database_privilege(role.oid, current_database(), 'CREATE')
        AND NOT EXISTS (
            SELECT 1 FROM pg_namespace AS space
@@ -146,52 +150,90 @@ fn report_failure(error: &tokio_postgres::Error) -> StorageError {
 /// time of a thousand rows, never of a table.
 const BATCH_ROWS: i64 = 1_000;
 
-/// How a table comes out of a pass.
-enum Purged {
-    /// Its last batch came back short: nothing the pass removes is left.
-    Emptied(u64),
-    /// The pass spent its time, or a batch failed: the rest waits.
-    RowsLeft(u64),
-}
-
-impl Purged {
-    fn count_removed(&self) -> u64 {
-        match self {
-            Self::Emptied(removed) | Self::RowsLeft(removed) => *removed,
-        }
-    }
-}
+/// Constant SQL, across realms on purpose, one statement for each purged
+/// table and in its order. Each names what has no use left, and nothing else,
+/// finds it by an index, and asks again of each row it removes whether it
+/// still has none: a row made to live longer meanwhile stays. Names are
+/// qualified: the link sets no search path.
+const PURGES: [&str; 6] = [
+    "DELETE FROM public.authorization_requests
+     WHERE ctid = ANY (ARRAY(SELECT ctid FROM public.authorization_requests
+                             WHERE expires_at < $1 LIMIT $2))
+       AND expires_at < $1",
+    "DELETE FROM public.authorization_codes
+     WHERE ctid = ANY (ARRAY(SELECT ctid FROM public.authorization_codes
+                             WHERE expires_at < $1 LIMIT $2))
+       AND expires_at < $1",
+    "DELETE FROM public.refresh_tokens
+     WHERE ctid = ANY (ARRAY(SELECT ctid FROM public.refresh_tokens
+                             WHERE expires_at < $1 LIMIT $2))
+       AND expires_at < $1",
+    // A session takes its refresh tokens along in the statement that removes
+    // it: one that still has some waits for them to go, so that no batch
+    // removes more than its rows.
+    "DELETE FROM public.sessions
+     WHERE ctid = ANY (ARRAY(
+               SELECT ctid FROM public.sessions AS session
+               WHERE expires_at < $1
+                 AND NOT EXISTS (SELECT 1 FROM public.refresh_tokens AS token
+                                 WHERE token.tenant_id = session.tenant_id
+                                   AND token.realm_id = session.realm_id
+                                   AND token.session_id = session.session_id)
+               LIMIT $2))
+       AND expires_at < $1",
+    "DELETE FROM public.known_browsers
+     WHERE ctid = ANY (ARRAY(SELECT ctid FROM public.known_browsers
+                             WHERE expires_at < $1 LIMIT $2))
+       AND expires_at < $1",
+    "DELETE FROM public.login_failures
+     WHERE ctid = ANY (ARRAY(SELECT ctid FROM public.login_failures
+                             WHERE bucket_start < $1 LIMIT $2))
+       AND bucket_start < $1",
+];
 
 /// Removes the rows a statement finds, a batch at a time, as long as the
-/// batches come back full and the pass has time left. Each batch is a
+/// batches come back full and `share` is not spent. Each batch is a
 /// transaction of its own: a batch that fails keeps what the others removed.
 async fn purge_table(
     client: &Client,
     table: &str,
     statement: &str,
     before: OffsetDateTime,
-    started: Instant,
-    budget: Duration,
-) -> Purged {
+    share: Duration,
+) -> TablePurge {
+    let started = Instant::now();
+    let failed = |removed| TablePurge {
+        removed,
+        outcome: PurgeOutcome::Failed,
+    };
+    // The text of the database goes to the journal and stops there.
+    let statement = match client.prepare(statement).await {
+        Ok(statement) => statement,
+        Err(error) => {
+            tracing::error!(%error, table, "a retention statement cannot be prepared");
+            return failed(0);
+        }
+    };
     let mut removed = 0;
     loop {
-        match client.execute(statement, &[&before, &BATCH_ROWS]).await {
+        match client.execute(&statement, &[&before, &BATCH_ROWS]).await {
             Ok(batch) if batch < BATCH_ROWS.unsigned_abs() => {
-                return Purged::Emptied(removed + batch);
+                return TablePurge {
+                    removed: removed + batch,
+                    outcome: PurgeOutcome::Done,
+                };
             }
             Ok(batch) => removed += batch,
             Err(error) => {
-                // The text of the database goes to the journal and stops there.
                 tracing::error!(%error, table, "a retention batch failed");
-                return Purged::RowsLeft(removed);
+                return failed(removed);
             }
         }
-        if started.elapsed() >= budget {
-            tracing::warn!(
-                table,
-                "a retention pass spent its time: the next one goes on"
-            );
-            return Purged::RowsLeft(removed);
+        if started.elapsed() >= share {
+            return TablePurge {
+                removed,
+                outcome: PurgeOutcome::RowsLeft,
+            };
         }
     }
 }
@@ -219,85 +261,51 @@ impl Retention for PgRetention {
         if !held {
             return Ok(None);
         }
-        let started = Instant::now();
-        // Constant SQL, across realms on purpose: each statement names what
-        // has no use left, and nothing else, and finds it by an index. Each
-        // table gets a batch at least, so that none waits on the others.
-        let pending_requests = purge_table(
-            &client,
-            "authorization_requests",
-            "DELETE FROM authorization_requests WHERE ctid = ANY (ARRAY(
-                 SELECT ctid FROM authorization_requests WHERE expires_at < $1 LIMIT $2))",
+        let cutoff_of_each = [
             cutoffs.expired_before,
-            started,
-            budget,
-        )
-        .await;
-        let codes = purge_table(
-            &client,
-            "authorization_codes",
-            "DELETE FROM authorization_codes WHERE ctid = ANY (ARRAY(
-                 SELECT ctid FROM authorization_codes WHERE expires_at < $1 LIMIT $2))",
             cutoffs.codes_before,
-            started,
-            budget,
-        )
-        .await;
-        let refresh_tokens = purge_table(
-            &client,
-            "refresh_tokens",
-            "DELETE FROM refresh_tokens WHERE ctid = ANY (ARRAY(
-                 SELECT ctid FROM refresh_tokens WHERE expires_at < $1 LIMIT $2))",
             cutoffs.expired_before,
-            started,
-            budget,
-        )
-        .await;
-        // A session takes its refresh tokens along in the statement that
-        // removes it. None outlives its session: once the expired tokens are
-        // gone, a batch of sessions takes no more. Until then, sessions wait.
-        let sessions = match refresh_tokens {
-            Purged::Emptied(_) => {
-                purge_table(
-                    &client,
-                    "sessions",
-                    "DELETE FROM sessions WHERE ctid = ANY (ARRAY(
-                         SELECT ctid FROM sessions WHERE expires_at < $1 LIMIT $2))",
-                    cutoffs.expired_before,
-                    started,
-                    budget,
-                )
-                .await
-            }
-            Purged::RowsLeft(_) => Purged::RowsLeft(0),
-        };
-        let known_browsers = purge_table(
-            &client,
-            "known_browsers",
-            "DELETE FROM known_browsers WHERE ctid = ANY (ARRAY(
-                 SELECT ctid FROM known_browsers WHERE expires_at < $1 LIMIT $2))",
             cutoffs.expired_before,
-            started,
-            budget,
-        )
-        .await;
-        let failure_counters = purge_table(
-            &client,
-            "login_failures",
-            "DELETE FROM login_failures WHERE ctid = ANY (ARRAY(
-                 SELECT ctid FROM login_failures WHERE bucket_start < $1 LIMIT $2))",
+            cutoffs.expired_before,
             cutoffs.counters_before,
-            started,
-            budget,
-        )
-        .await;
+        ];
+        let started = Instant::now();
+        let mut purged = [TablePurge::default(); 6];
+        // Each table is given an equal part of what is left: one that anybody
+        // can fill spends its own part only, and one done early leaves its
+        // part to the tables after it. Each gets a batch at least.
+        let mut tables_left = 6_u32;
+        let tables = PURGED_TABLES.into_iter().zip(PURGES).zip(cutoff_of_each);
+        for (slot, ((table, statement), before)) in purged.iter_mut().zip(tables) {
+            let share = budget.saturating_sub(started.elapsed()) / tables_left;
+            tables_left -= 1;
+            *slot = purge_table(&client, table, statement, before, share).await;
+            if slot.outcome == PurgeOutcome::Failed && client.is_closed() {
+                tracing::error!(table, "the retention link closed during a pass");
+                return Err(StorageError::Unavailable(StorageUnavailable::Unreachable));
+            }
+        }
+        if purged
+            .iter()
+            .all(|table| table.outcome == PurgeOutcome::Failed)
+        {
+            return Err(StorageError::Failed);
+        }
+        let [
+            pending_requests,
+            codes,
+            refresh_tokens,
+            sessions,
+            known_browsers,
+            failure_counters,
+        ] = purged;
         Ok(Some(PurgeReport {
-            pending_requests: pending_requests.count_removed(),
-            codes: codes.count_removed(),
-            refresh_tokens: refresh_tokens.count_removed(),
-            sessions: sessions.count_removed(),
-            known_browsers: known_browsers.count_removed(),
-            failure_counters: failure_counters.count_removed(),
+            pending_requests,
+            codes,
+            refresh_tokens,
+            sessions,
+            known_browsers,
+            failure_counters,
         }))
     }
 }

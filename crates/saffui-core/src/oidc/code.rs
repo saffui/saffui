@@ -45,6 +45,7 @@ pub struct AuthorizationCode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplayedCode {
     pub person: Uuid,
+    pub session: Uuid,
     /// The refresh tokens the first exchange started. `None` while it has
     /// not finished: it then finds the code replayed and issues nothing.
     pub family: Option<Uuid>,
@@ -98,8 +99,9 @@ pub trait CodeStore {
     ) -> Result<bool, StorageError>;
 
     /// Marks a spent code of `client_id` as presented again, and says what
-    /// its exchange obtained. A code that is unknown, not spent, or of
-    /// another client is left as it was and not returned.
+    /// its exchange obtained, once: the replay that marks it takes that back,
+    /// and nothing is bound to it after. A code that is unknown, not spent,
+    /// of another client, or marked already is left as it was and not returned.
     async fn mark_code_replayed(
         &mut self,
         code_digest: &[u8],

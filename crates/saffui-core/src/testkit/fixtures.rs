@@ -207,6 +207,8 @@ pub struct CodeFlow<'a> {
 pub struct SignedInApplication {
     pub tokens: crate::oidc::token::TokenResponse,
     pub ticket: crate::login::session::SessionTicket,
+    /// The code the exchange spent, for a test that presents it again.
+    pub code: String,
 }
 
 /// Runs a whole code flow: the authorization request, the sign-in, and the
@@ -279,5 +281,6 @@ pub async fn run_code_flow(app: &App, flow: CodeFlow<'_>) -> SignedInApplication
     SignedInApplication {
         tokens,
         ticket: signed_in.ticket,
+        code,
     }
 }

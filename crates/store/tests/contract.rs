@@ -132,8 +132,11 @@ async fn a_token_written_while_its_family_was_revoked_is_not_spent() {
     );
     rotation.commit().await.expect("a commit");
     assert_eq!(
-        revocation.await.expect("the revocation"),
-        Ok(1),
+        revocation
+            .await
+            .expect("the revocation")
+            .map(|ended| ended.map(|ended| ended.tokens)),
+        Ok(Some(1)),
         "the revocation sees only the token it waited on"
     );
 
@@ -194,4 +197,117 @@ async fn of_two_endings_of_one_session_at_once_one_ends_it() {
     first.commit().await.expect("a commit");
 
     assert_eq!(second.await.expect("the second ending"), Ok(false));
+}
+
+const CALLBACK: &str = "https://app.example.org/callback";
+
+async fn refresh_as_webapp(
+    app: &saffui_core::app::App,
+    token: &str,
+) -> Result<(), saffui_core::oidc::errors::OAuthError> {
+    use saffui_core::oidc::token::{TokenRequest, grant_token};
+
+    let request = TokenRequest {
+        grant_type: Some("refresh_token"),
+        client_id: Some("webapp"),
+        refresh_token: Some(token),
+        ..TokenRequest::default()
+    };
+    grant_token(app, "acme", request)
+        .await
+        .map(|_| ())
+        .map_err(|failure| failure.error)
+}
+
+async fn exchange_as_webapp(
+    app: &saffui_core::app::App,
+    code: &str,
+) -> Result<(), saffui_core::oidc::errors::OAuthError> {
+    use saffui_core::oidc::token::{TokenRequest, grant_token};
+
+    let request = TokenRequest {
+        grant_type: Some("authorization_code"),
+        client_id: Some("webapp"),
+        code: Some(code),
+        redirect_uri: Some(CALLBACK),
+        code_verifier: Some("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+        ..TokenRequest::default()
+    };
+    grant_token(app, "acme", request)
+        .await
+        .map(|_| ())
+        .map_err(|failure| failure.error)
+}
+
+/// A family taken back is written no more. Its code or a used token that
+/// comes back, or a revocation asked again, reads it revoked and stops: a
+/// client that sends them in a loop holds no row and no connection for long.
+#[tokio::test]
+async fn a_family_taken_back_is_not_written_again_however_often_it_comes_back() {
+    use saffui_core::oidc::errors::OAuthError;
+    use saffui_core::oidc::revoke::revoke_token;
+    use saffui_core::testkit::fixtures::{
+        Application, CodeFlow, create_person, create_realm, register_application, run_code_flow,
+    };
+
+    let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let scope = create_realm(&app, "acme").await;
+    create_person(&app, scope, "ada", "correct horse battery").await;
+    let webapp = Application {
+        client_id: "webapp",
+        redirect_uri: CALLBACK,
+        post_logout_redirect_uri: None,
+        public: true,
+    };
+    register_application(&app, scope, webapp).await;
+    let flow = CodeFlow {
+        realm: "acme",
+        client_id: "webapp",
+        client_secret: None,
+        redirect_uri: CALLBACK,
+        scope: "openid",
+        username: "ada",
+        password: "correct horse battery",
+    };
+    let signed_in = run_code_flow(&app, flow).await;
+    let first = signed_in.tokens.refresh_token.expect("a refresh token");
+    assert_eq!(refresh_as_webapp(&app, &first).await, Ok(()), "a rotation");
+    assert_eq!(
+        exchange_as_webapp(&app, &signed_in.code).await,
+        Err(OAuthError::InvalidGrant),
+        "the code presented again takes its family back"
+    );
+
+    // From now on, a statement that revokes a refresh token fails.
+    database
+        .plan("saffui_owner")
+        .connect_directly()
+        .await
+        .expect("a connection")
+        .batch_execute(
+            "CREATE FUNCTION saffui_test_refuse() RETURNS trigger LANGUAGE plpgsql
+                 AS $$ BEGIN RAISE EXCEPTION 'refused'; END $$;
+             CREATE TRIGGER saffui_test_refuse BEFORE UPDATE OF revoked_at ON refresh_tokens
+                 FOR EACH STATEMENT EXECUTE FUNCTION saffui_test_refuse();",
+        )
+        .await
+        .expect("a trigger that refuses every revocation");
+
+    assert_eq!(
+        exchange_as_webapp(&app, &signed_in.code).await,
+        Err(OAuthError::InvalidGrant),
+        "the code presented once more"
+    );
+    assert_eq!(
+        refresh_as_webapp(&app, &first).await,
+        Err(OAuthError::InvalidGrant),
+        "the used token presented again"
+    );
+    assert_eq!(
+        revoke_token(&app, "acme", Some("webapp"), None, Some(&first))
+            .await
+            .map_err(|failure| failure.error),
+        Ok(()),
+        "a revocation asked again"
+    );
 }

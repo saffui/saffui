@@ -1,9 +1,8 @@
 //! Token revocation (RFC 7009).
 
-use serde_json::json;
-
 use super::discovery::name_issuer;
 use super::errors::OAuthFailure;
+use super::refresh::describe_family_end;
 use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
@@ -44,18 +43,24 @@ pub async fn revoke_token(
         .map_err(Failure::from)?
         .filter(|stored| stored.token.client_id == client.client_id);
     if let Some(stored) = owned {
-        let family = stored.token.family;
-        let revoked = work
-            .revoke_refresh_family(family, app.now())
+        // Revoked already: asking again writes nothing.
+        if stored.revoked_at.is_some() {
+            return Ok(());
+        }
+        let token = &stored.token;
+        let ended = work
+            .revoke_refresh_family(token.family, app.now())
             .await
             .map_err(Failure::from)?;
-        if revoked > 0 {
-            let told = json!({
-                "client_id": client.client_id,
-                "family": family.to_string(),
-                "person_id": stored.token.person.to_string(),
-                "reason": "asked",
-            });
+        if let Some(ended) = ended {
+            let told = describe_family_end(
+                &client.client_id,
+                token.family,
+                token.person,
+                token.session,
+                "asked",
+                &ended,
+            );
             record_event(app, work.as_mut(), EventKind::TokenRevoked, told).await?;
         }
         work.commit().await.map_err(Failure::from)?;
@@ -95,11 +100,8 @@ mod tests {
     #[test]
     fn a_revoked_refresh_token_is_gone_with_everything_that_descends_from_the_same_grant() {
         let scenario = Scenario::start();
-        let first = scenario
-            .sign_in("openid")
-            .tokens
-            .refresh_token
-            .expect("a refresh token");
+        let signed_in = scenario.sign_in("openid");
+        let first = signed_in.tokens.refresh_token.expect("a refresh token");
         let second = scenario
             .refresh(&first)
             .expect("new tokens")
@@ -113,10 +115,19 @@ mod tests {
             scenario.refresh(&second).map(|tokens| tokens.scope),
             Err(OAuthError::InvalidGrant)
         );
+        let envelopes = scenario
+            .storage
+            .read_audit_envelopes(scenario.scope.realm());
+        let revoked = envelopes.last().expect("an event");
+        assert_eq!(revoked["kind"], "token.revoked");
+        let told = &revoked["payload"];
+        assert_eq!(told["reason"], "asked", "{revoked}");
         assert_eq!(
-            scenario.read_event_kinds().last().map(String::as_str),
-            Some("token.revoked")
+            told["session_id"],
+            signed_in.ticket.session.to_string(),
+            "{revoked}"
         );
+        assert_eq!(told["tokens"], 2, "the grant and its rotation: {revoked}");
         assert_eq!(
             revoke(&scenario, "webapp", &first),
             Ok(()),
@@ -128,7 +139,8 @@ mod tests {
                 .iter()
                 .filter(|kind| *kind == "token.revoked")
                 .count(),
-            1
+            1,
+            "the family is said revoked once"
         );
     }
 

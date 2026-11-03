@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use saffui_core::ports::clock::Clock;
-use saffui_core::retention::{Retention, run_retention_pass};
-use tracing::{error, info};
+use saffui_core::retention::{PurgeOutcome, PurgeReport, Retention, run_retention_pass};
+use tracing::{error, info, warn};
 
 /// How often a node offers to run the retention pass. Every node offers;
 /// one of them does it.
@@ -36,24 +36,47 @@ fn start_retention_every(retention: Arc<dyn Retention>, clock: Arc<dyn Clock>, p
                 })
             };
             match pass.await {
-                Ok(Ok(Some(report))) => info!(
-                    pending_requests = report.pending_requests,
-                    codes = report.codes,
-                    refresh_tokens = report.refresh_tokens,
-                    sessions = report.sessions,
-                    known_browsers = report.known_browsers,
-                    failure_counters = report.failure_counters,
-                    "retention pass done"
-                ),
+                Ok(Ok(Some(report))) => {
+                    info!(
+                        pending_requests = report.pending_requests.removed,
+                        codes = report.codes.removed,
+                        refresh_tokens = report.refresh_tokens.removed,
+                        sessions = report.sessions.removed,
+                        known_browsers = report.known_browsers.removed,
+                        failure_counters = report.failure_counters.removed,
+                        "retention pass done"
+                    );
+                    warn_unfinished_tables(&report);
+                }
                 // Another node holds the lock: the work is being done.
                 Ok(Ok(None)) => {}
-                // Said and tried again at the next tick: what a failed pass
-                // removed stays removed, and serving does not depend on it.
+                // The pass could not start, lost its link, or failed on every
+                // table. Tried again at the next tick: serving does not wait on it.
                 Ok(Err(_)) => error!("retention pass failed"),
                 Err(_) => error!("retention pass panicked"),
             }
         }
     });
+}
+
+/// Says each table a pass left unfinished: one that fails at every pass, or
+/// never catches up, would otherwise grow unseen.
+fn warn_unfinished_tables(report: &PurgeReport) {
+    for (table, purged) in report.list_tables() {
+        match purged.outcome {
+            PurgeOutcome::Done => {}
+            PurgeOutcome::RowsLeft => warn!(
+                table,
+                removed = purged.removed,
+                "retention left rows to the next pass"
+            ),
+            PurgeOutcome::Failed => warn!(
+                table,
+                removed = purged.removed,
+                "retention failed on a table"
+            ),
+        }
+    }
 }
 
 #[cfg(test)]

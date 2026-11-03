@@ -47,23 +47,58 @@ impl PurgeCutoffs {
     }
 }
 
-/// How many rows one pass removed.
+/// How a table came out of a pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PurgeOutcome {
+    /// Its last batch came back short: what the pass may remove is gone.
+    #[default]
+    Done,
+    /// It spent its part of the pass with rows left: the next pass goes on.
+    RowsLeft,
+    /// A batch failed. The batches before it stay removed.
+    Failed,
+}
+
+/// What a pass did to one table.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TablePurge {
+    pub removed: u64,
+    pub outcome: PurgeOutcome,
+}
+
+/// What one pass did, table by table.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PurgeReport {
-    pub pending_requests: u64,
-    pub codes: u64,
-    pub refresh_tokens: u64,
-    pub sessions: u64,
-    pub known_browsers: u64,
-    pub failure_counters: u64,
+    pub pending_requests: TablePurge,
+    pub codes: TablePurge,
+    pub refresh_tokens: TablePurge,
+    pub sessions: TablePurge,
+    pub known_browsers: TablePurge,
+    pub failure_counters: TablePurge,
+}
+
+impl PurgeReport {
+    /// Each table under the name the journal gives it, in the order of a pass.
+    #[must_use]
+    pub fn list_tables(&self) -> [(&'static str, TablePurge); 6] {
+        [
+            ("pending_requests", self.pending_requests),
+            ("codes", self.codes),
+            ("refresh_tokens", self.refresh_tokens),
+            ("sessions", self.sessions),
+            ("known_browsers", self.known_browsers),
+            ("failure_counters", self.failure_counters),
+        ]
+    }
 }
 
 #[async_trait]
 pub trait Retention: Send + Sync {
     /// Removes, in every realm, what is older than `cutoffs` says, in
     /// bounded batches, as long as they come back full and `budget` is not
-    /// spent: what one pass leaves, the next removes. Returns `None` when
-    /// another node is doing it: the work is done once.
+    /// spent: what one pass leaves, the next removes. A table that fails or
+    /// is left with rows is said in the report. Returns `None` when another
+    /// node is doing it: the work is done once.
     async fn purge_expired(
         &self,
         cutoffs: PurgeCutoffs,
@@ -75,8 +110,9 @@ pub trait Retention: Send + Sync {
 ///
 /// # Errors
 ///
-/// Returns the storage failure. The batches removed before it stay removed:
-/// each was of no use, and the next pass goes on from there.
+/// Returns the storage failure when the pass cannot start, when its link
+/// closes on the way, or when every table fails. The batches removed before
+/// stay removed: each was of no use, and the next pass goes on from there.
 pub async fn run_retention_pass(
     retention: &dyn Retention,
     now: OffsetDateTime,

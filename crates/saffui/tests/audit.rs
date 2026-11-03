@@ -198,14 +198,38 @@ async fn a_realm_with_a_history_is_not_deleted_with_it() {
     );
 }
 
-/// The exchange of a code holds the head of the chain for its commit alone:
-/// it binds the code before it writes, and writes the event last. While it
-/// waits on the head another writer holds, its code is bound already, so a
-/// hand on the code waits on it, and nothing waits on it for the chain.
+/// Waits until `waiters` sessions of the database wait on a lock, ten seconds
+/// at most or until `task` is done, and says whether they did.
+async fn wait_for_lock_waiters<T>(
+    observer: &tokio_postgres::Client,
+    waiters: i64,
+    task: &tokio::task::JoinHandle<T>,
+) -> bool {
+    use std::time::{Duration, Instant};
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !task.is_finished() && Instant::now() < deadline {
+        let waiting: i64 = observer
+            .query_one(
+                "SELECT count(*) FROM pg_stat_activity
+                 WHERE datname = current_database() AND wait_event_type = 'Lock'",
+                &[],
+            )
+            .await
+            .expect("a count")
+            .get(0);
+        if waiting >= waiters {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    false
+}
+
+/// An exchange binds its code before it waits on the head of the chain: a
+/// hand on the code then waits on the exchange, and never the other way.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_exchange_binds_its_code_before_it_waits_on_the_head_of_the_chain() {
-    use std::time::Duration;
-
     use base64::Engine as _;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use saffui_core::oidc::authorize::{
@@ -217,7 +241,9 @@ async fn an_exchange_binds_its_code_before_it_waits_on_the_head_of_the_chain() {
 
     const CALLBACK: &str = "https://app.example.test/callback";
     const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
-    let (app, _database) = wire_on_postgres().await;
+    let (app, database) = wire_on_postgres().await;
+    // Of the same role as the product: it sees what its sessions wait on.
+    let observer = connect_as(&database, APP_ROLE).await;
     let scope = create_realm(&app, "exchange").await;
     create_person(&app, scope, "ada", "correct horse battery").await;
     create_application(&app, scope, "webapp", CALLBACK, true).await;
@@ -274,8 +300,10 @@ async fn an_exchange_binds_its_code_before_it_waits_on_the_head_of_the_chain() {
             grant_token(&app, "exchange", exchanged).await
         }
     });
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert!(!exchange.is_finished(), "the exchange waits on the head");
+    assert!(
+        wait_for_lock_waiters(&observer, 1, &exchange).await,
+        "the exchange waits on the head"
+    );
     let hand_on_the_code = tokio::spawn({
         let app = app.clone();
         async move {
@@ -283,14 +311,16 @@ async fn an_exchange_binds_its_code_before_it_waits_on_the_head_of_the_chain() {
             work.mark_code_replayed(&digest, "webapp", app.now()).await
         }
     });
-    tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(
-        !hand_on_the_code.is_finished(),
+        wait_for_lock_waiters(&observer, 2, &hand_on_the_code).await,
         "the code was bound before the exchange waited on the head"
     );
 
     drop(holder);
-    assert!(exchange.await.expect("the exchange").is_ok());
+    assert!(
+        exchange.await.expect("the exchange").is_ok(),
+        "the exchange finishes once the head is free"
+    );
     let replayed = hand_on_the_code
         .await
         .expect("the hand on the code")

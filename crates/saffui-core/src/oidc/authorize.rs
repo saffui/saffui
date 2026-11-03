@@ -824,7 +824,7 @@ mod tests {
     #[test]
     fn a_code_presented_again_is_refused_and_takes_back_the_refresh_token_it_obtained() {
         let (app, storage, _clock, secret) = start(false);
-        let (location, _ticket) = sign_in_through_the_flow(&app);
+        let (location, ticket) = sign_in_through_the_flow(&app);
         let code = read_query(&location, "code").expect("a code");
         let first = exchange(&app, &code, secret.as_ref(), VERIFIER, CALLBACK).expect("tokens");
         let refresh_token = first.refresh_token.expect("a refresh token");
@@ -844,8 +844,26 @@ mod tests {
         );
         let revocations = read_revocations(&app, &storage);
         assert_eq!(revocations.len(), 1, "taken back once: {revocations:?}");
-        assert_eq!(revocations[0]["payload"]["reason"], "code_replayed");
-        assert_eq!(revocations[0]["payload"]["client_id"], "webapp");
+        let told = &revocations[0]["payload"];
+        assert_eq!(told["reason"], "code_replayed");
+        assert_eq!(told["client_id"], "webapp");
+        assert_eq!(told["session_id"], ticket.session.to_string(), "{told}");
+        assert_eq!(told["tokens"], 1, "{told}");
+        assert_eq!(told["last_used_at"], Value::Null, "never spent: {told}");
+        // The exchange named the family it started, and in which session: a
+        // stolen token is traced from one event to the other.
+        let (_, scope) =
+            complete(crate::tenancy::resolve::resolve_realm(&app, "acme")).expect("the realm");
+        let issued = storage
+            .read_audit_envelopes(scope.realm())
+            .into_iter()
+            .find(|event| event["kind"] == "token.issued")
+            .expect("the exchange");
+        assert_eq!(issued["payload"]["family"], told["family"], "{issued}");
+        assert_eq!(
+            issued["payload"]["session_id"], told["session_id"],
+            "{issued}"
+        );
     }
 
     #[test]

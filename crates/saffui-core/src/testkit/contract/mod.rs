@@ -828,8 +828,8 @@ async fn check_that_a_code_is_spent_once(
     check_what_a_replayed_code_finds(app, scope, other, &code, session).await;
 }
 
-/// A spent code tells what it obtained, to its own client and in its realm
-/// only. Once marked as presented again, it binds nothing more.
+/// A spent code tells what it obtained, to its own client, in its realm, and
+/// once. Once marked as presented again, it binds nothing more.
 async fn check_what_a_replayed_code_finds(
     app: &App,
     scope: RealmScope,
@@ -866,14 +866,14 @@ async fn check_what_a_replayed_code_finds(
             .await,
         Ok(None)
     );
-    let replayed = Some(ReplayedCode {
-        person: session.person,
-        family: Some(family),
-    });
     assert_eq!(
         work.mark_code_replayed(&code.code_digest, "webapp", now)
             .await,
-        Ok(replayed.clone())
+        Ok(Some(ReplayedCode {
+            person: session.person,
+            session: session.id,
+            family: Some(family),
+        }))
     );
     assert_eq!(
         work.bind_code_family(&code.code_digest, family).await,
@@ -883,8 +883,8 @@ async fn check_what_a_replayed_code_finds(
     assert_eq!(
         work.mark_code_replayed(&code.code_digest, "webapp", now)
             .await,
-        Ok(replayed),
-        "a second replay finds the same"
+        Ok(None),
+        "a second replay finds nothing left to take back"
     );
     work.commit().await.expect("a commit");
 
@@ -906,6 +906,7 @@ async fn check_what_a_replayed_code_finds(
             .await,
         Ok(Some(ReplayedCode {
             person: session.person,
+            session: session.id,
             family: None,
         }))
     );
@@ -931,7 +932,7 @@ pub async fn check_refresh_contract(app: &App) {
 
     use crate::login::session::{Session, SessionState};
     use crate::testkit::fixtures::{create_person, create_realm};
-    use crate::tokens::store::RefreshToken;
+    use crate::tokens::store::{EndedFamily, RefreshToken};
 
     let scope = create_realm(app, "contract-refresh").await;
     let other = create_realm(app, "contract-refresh-other").await;
@@ -959,7 +960,10 @@ pub async fn check_refresh_contract(app: &App) {
     let family = mint_id(app).expect("an identifier");
     let other_family = mint_id(app).expect("an identifier");
     let first = mint(1, family, &first_session, Duration::minutes(30));
-    let second = mint(2, family, &first_session, Duration::minutes(30));
+    let second = RefreshToken {
+        issued_at: now + Duration::minutes(1),
+        ..mint(2, family, &first_session, Duration::minutes(30))
+    };
     let stale = mint(3, other_family, &second_session, Duration::seconds(-1));
     let apart = mint(4, other_family, &second_session, Duration::minutes(30));
 
@@ -987,7 +991,7 @@ pub async fn check_refresh_contract(app: &App) {
             .await,
         Ok(None)
     );
-    assert_eq!(elsewhere.revoke_refresh_family(family, now).await, Ok(0));
+    assert_eq!(elsewhere.revoke_refresh_family(family, now).await, Ok(None));
     drop(elsewhere);
 
     // Read back equal and unused. Not spent by another client, nor once expired.
@@ -1032,8 +1036,20 @@ pub async fn check_refresh_contract(app: &App) {
     assert!(!used.is_live(now));
 
     // A family is revoked whole, used tokens included, and once.
-    assert_eq!(work.revoke_refresh_family(family, now).await, Ok(2));
-    assert_eq!(work.revoke_refresh_family(family, now).await, Ok(0));
+    assert_eq!(
+        work.revoke_refresh_family(family, now).await,
+        Ok(Some(EndedFamily {
+            tokens: 2,
+            last_issued_at: second.issued_at,
+            last_used_at: Some(now),
+        })),
+        "how many, the latest issued and the latest used"
+    );
+    assert_eq!(
+        work.revoke_refresh_family(family, now).await,
+        Ok(None),
+        "nothing is left to revoke"
+    );
     assert_eq!(
         work.spend_refresh_token(&second.token_digest, "webapp", now)
             .await,

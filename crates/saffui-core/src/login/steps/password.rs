@@ -700,6 +700,42 @@ mod tests {
     }
 
     #[test]
+    fn a_network_that_runs_its_share_is_refused_before_the_attempt_of_the_address_is_counted() {
+        use crate::login::throttle::MAX_RECENT_ATTEMPTS_PER_ADDRESS;
+
+        let (app, storage) = MemoryStorage::wire();
+        let scope = complete(create_realm(&app, "acme"));
+        let other = complete(create_realm(&app, "globex"));
+        complete(create_person(&app, scope, "ada", PASSWORD));
+        // Four hashers: the one a /48 may hold is taken, from another realm.
+        let held = app
+            .hashing_shares
+            .take(other.realm(), Some("2001:db8:7::/48".to_owned()))
+            .expect("a share");
+        let units_before = storage.count_units_of_work();
+
+        for _ in 0..=MAX_RECENT_ATTEMPTS_PER_ADDRESS {
+            assert_eq!(
+                attempt_from(&app, scope, "2001:db8:7:ffff::1", "ada", PASSWORD),
+                Err(ErrorCode::HashingBusy),
+                "the /48 runs its share already"
+            );
+        }
+
+        assert_eq!(
+            storage.count_units_of_work(),
+            units_before,
+            "nothing was read, nothing was counted"
+        );
+        drop(held);
+        assert_eq!(
+            attempt_from(&app, scope, "2001:db8:7:ffff::1", "ada", PASSWORD),
+            Ok("ada".to_owned()),
+            "the address kept every attempt it may make"
+        );
+    }
+
+    #[test]
     fn guesses_spread_over_many_addresses_lock_the_name_for_everyone_in_the_end() {
         let (app, _storage) = MemoryStorage::wire();
         let scope = complete(create_realm(&app, "acme"));
@@ -844,6 +880,41 @@ mod tests {
                 .map(|_| ()),
             Err(ErrorCode::SignInFailed),
             "a mark made for another name is no mark"
+        );
+    }
+
+    #[test]
+    fn a_mark_made_for_the_name_on_a_browser_kept_for_another_person_passes_no_lock() {
+        use crate::login::device::issue_device_mark;
+
+        let (app, _storage) = MemoryStorage::wire();
+        let scope = complete(create_realm(&app, "acme"));
+        complete(create_person(&app, scope, "ada", PASSWORD));
+        complete(create_person(&app, scope, "bob", PASSWORD));
+        let ours = attempt_with_mark(&app, scope, "198.51.100.9", "ada", PASSWORD, None)
+            .expect("a sign-in of ada")
+            .device_mark;
+        let bobs = attempt_with_mark(&app, scope, "198.51.100.10", "bob", PASSWORD, None)
+            .expect("a sign-in of bob")
+            .device_mark;
+        // Its MAC holds for the name typed, but the realm keeps its browser for bob.
+        let borrowed = issue_device_mark(&app, scope, "ada", Some(bobs.device)).expect("a mark");
+        let there = "192.0.2.9";
+        for _ in 0..5 {
+            assert_eq!(
+                attempt_with_mark(&app, scope, there, "ada", "a guess", None).map(|_| ()),
+                Err(ErrorCode::SignInFailed)
+            );
+        }
+
+        assert_eq!(
+            attempt_with_mark(&app, scope, there, "ada", PASSWORD, Some(&borrowed)).map(|_| ()),
+            Err(ErrorCode::SignInFailed),
+            "a browser kept for bob answers for bob only"
+        );
+        assert!(
+            attempt_with_mark(&app, scope, there, "ada", PASSWORD, Some(&ours)).is_ok(),
+            "the browser kept for ada passes the same lock"
         );
     }
 

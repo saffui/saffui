@@ -1,7 +1,8 @@
 //! The refresh grant: a refresh token is spent for new tokens and for the
 //! refresh token that follows it.
 
-use serde_json::json;
+use serde_json::{Value, json};
+use uuid::Uuid;
 
 use super::discovery::name_issuer;
 use super::errors::OAuthFailure;
@@ -11,9 +12,33 @@ use crate::audit::EventKind;
 use crate::audit::append::record_event;
 use crate::clients::authenticate::identify_client;
 use crate::error::{ErrorCode, Failure};
+use crate::instant::write_instant;
 use crate::login::session::read_live_subject;
 use crate::tenancy::{RealmName, RealmScope};
 use crate::tokens::mint::RefreshGrant;
+use crate::tokens::store::EndedFamily;
+
+/// The event of a family taken back. It names the session, and keeps what
+/// the tokens told: they go with their session, and a theft is traced later.
+pub(super) fn describe_family_end(
+    client_id: &str,
+    family: Uuid,
+    person: Uuid,
+    session: Uuid,
+    reason: &str,
+    ended: &EndedFamily,
+) -> Value {
+    json!({
+        "client_id": client_id,
+        "family": family.to_string(),
+        "last_issued_at": write_instant(ended.last_issued_at),
+        "last_used_at": ended.last_used_at.map(write_instant),
+        "person_id": person.to_string(),
+        "reason": reason,
+        "session_id": session.to_string(),
+        "tokens": ended.tokens,
+    })
+}
 
 pub(super) async fn rotate_refresh_token(
     app: &App,
@@ -43,25 +68,32 @@ pub(super) async fn rotate_refresh_token(
     let Some(spent) = spent else {
         // A token presented after it was used is a token someone copied.
         // Which of the two holders is the thief cannot be told: neither keeps
-        // what descends from it.
+        // what descends from it. A family revoked already is written no more,
+        // however often its tokens come back.
         let replayed = work
             .read_refresh_token(&digest)
             .await
             .map_err(Failure::from)?
-            .filter(|known| known.used_at.is_some() && known.token.client_id == client.client_id);
+            .filter(|known| {
+                known.used_at.is_some()
+                    && known.revoked_at.is_none()
+                    && known.token.client_id == client.client_id
+            });
         if let Some(replayed) = replayed {
-            let family = replayed.token.family;
-            let revoked = work
-                .revoke_refresh_family(family, now)
+            let token = &replayed.token;
+            let ended = work
+                .revoke_refresh_family(token.family, now)
                 .await
                 .map_err(Failure::from)?;
-            if revoked > 0 {
-                let told = json!({
-                    "client_id": client.client_id,
-                    "family": family.to_string(),
-                    "person_id": replayed.token.person.to_string(),
-                    "reason": "replayed",
-                });
+            if let Some(ended) = ended {
+                let told = describe_family_end(
+                    &client.client_id,
+                    token.family,
+                    token.person,
+                    token.session,
+                    "replayed",
+                    &ended,
+                );
                 record_event(app, work.as_mut(), EventKind::TokenRevoked, told).await?;
             }
             work.commit().await.map_err(Failure::from)?;
@@ -109,6 +141,7 @@ mod tests {
     use serde_json::Value;
     use uuid::Uuid;
 
+    use crate::instant::write_instant;
     use crate::oidc::errors::OAuthError;
     use crate::oidc::scenario::Scenario;
     use crate::ports::crypto::{CryptoFailure, SealPlace, Sealer, WrappedDataKey};
@@ -177,7 +210,11 @@ mod tests {
             .expect("the next refresh token");
         scenario.refresh(&next).expect("new tokens again");
 
-        assert_eq!(scenario.read_event_kinds(), before);
+        assert_eq!(
+            scenario.read_event_kinds(),
+            before,
+            "two rotations add nothing to the chain"
+        );
     }
 
     /// A sealer that counts how often a sealed value is opened.
@@ -238,7 +275,11 @@ mod tests {
         let answer = scenario.refresh(&presented).expect("new tokens");
 
         assert!(answer.id_token.is_some(), "an access and an identity token");
-        assert_eq!(sealer.0.load(Ordering::Relaxed) - opened_before, 1);
+        assert_eq!(
+            sealer.0.load(Ordering::Relaxed) - opened_before,
+            1,
+            "the key of the realm is opened once for every token of the answer"
+        );
     }
 
     #[test]
@@ -275,22 +316,28 @@ mod tests {
     #[test]
     fn a_refresh_token_presented_twice_takes_everything_that_descends_from_it() {
         let scenario = Scenario::start();
-        let first = scenario
-            .sign_in("openid")
-            .tokens
-            .refresh_token
-            .expect("a refresh token");
+        let signed_in = scenario.sign_in("openid");
+        let first = signed_in.tokens.refresh_token.expect("a refresh token");
+        scenario.clock.advance(Duration::from_mins(1));
         let second = scenario
             .refresh(&first)
             .expect("new tokens")
             .refresh_token
             .expect("the next refresh token");
+        scenario.clock.advance(Duration::from_mins(1));
+        let last_rotation = scenario.app.now();
+        let third = scenario
+            .refresh(&second)
+            .expect("new tokens again")
+            .refresh_token
+            .expect("the third refresh token");
+        scenario.clock.advance(Duration::from_mins(1));
 
         let replayed = scenario.refresh(&first).map(|tokens| tokens.scope);
 
         assert_eq!(replayed, Err(OAuthError::InvalidGrant));
         assert_eq!(
-            scenario.refresh(&second).map(|tokens| tokens.scope),
+            scenario.refresh(&third).map(|tokens| tokens.scope),
             Err(OAuthError::InvalidGrant),
             "the token that descends from the replayed one is gone too"
         );
@@ -306,7 +353,18 @@ mod tests {
             .into_iter()
             .find(|event| event["kind"] == "token.revoked")
             .expect("the revocation");
-        assert_eq!(revoked["payload"]["reason"], "replayed", "{revoked}");
+        // What the rows of the family knew, kept once they are gone.
+        let told = &revoked["payload"];
+        assert_eq!(told["reason"], "replayed", "{revoked}");
+        assert_eq!(
+            told["session_id"],
+            signed_in.ticket.session.to_string(),
+            "{revoked}"
+        );
+        assert_eq!(told["tokens"], 3, "{revoked}");
+        let last = write_instant(last_rotation);
+        assert_eq!(told["last_issued_at"], last.as_str(), "{revoked}");
+        assert_eq!(told["last_used_at"], last.as_str(), "{revoked}");
     }
 
     #[test]

@@ -56,3 +56,42 @@ pub async fn create_service_client(
     work.commit().await.expect("a commit");
     secret
 }
+
+/// Registers a client that may call the administration plane with these
+/// capabilities, and returns a token it was just given.
+///
+/// # Panics
+///
+/// Panics when the client cannot be registered or the token granted.
+pub async fn create_administrator(
+    app: &App,
+    realm: &str,
+    scope: RealmScope,
+    client_id: &str,
+    capabilities: &[crate::authz::capability::Capability],
+) -> String {
+    use crate::oidc::token::{TokenRequest, grant_token};
+
+    let scopes = [crate::authz::admin::ADMIN_SCOPE.to_owned()];
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let wanted = NewServiceClient {
+        client_id,
+        name: "An administrator under test",
+        scopes: &scopes,
+        capabilities,
+    };
+    let (_client, secret) = register_service_client(app, work.as_mut(), wanted)
+        .await
+        .expect("a client");
+    work.commit().await.expect("a commit");
+    let request = TokenRequest {
+        grant_type: Some("client_credentials"),
+        scope: None,
+        client_id: Some(client_id),
+        client_secret: Some(secret),
+    };
+    grant_token(app, realm, request)
+        .await
+        .expect("a token")
+        .access_token
+}

@@ -6,12 +6,12 @@ use async_trait::async_trait;
 use pgcore::connect::ConnectionPlan;
 use pgcore::role::{Privilege, read_role_facts};
 use saffui_core::ports::storage::{StorageError, StorageUnavailable};
-use saffui_core::retention::{PurgeReport, Retention};
+use saffui_core::retention::{PurgeCutoffs, PurgeReport, Retention};
 use time::OffsetDateTime;
-use tokio_postgres::{Client, Transaction};
+use tokio_postgres::Client;
 
-/// The transaction lock of the pass. Held by one node at a time: it spares
-/// the others the same work, and guards nothing.
+/// The lock of the pass, held by one node at a time for the session of its
+/// link: it spares the others the same work, and guards nothing.
 pub const RETENTION_LOCK: i64 = 0x7361_6666_7569_0003;
 
 pub struct PgRetention {
@@ -76,32 +76,50 @@ fn report_failure(error: &tokio_postgres::Error) -> StorageError {
     StorageError::Failed
 }
 
-async fn remove_expired(
-    transaction: &Transaction<'_>,
+/// How many rows one statement removes: a statement holds its locks for the
+/// time of a thousand rows, never of a table.
+const BATCH_ROWS: i64 = 1_000;
+/// How many statements a pass gives one table. What is left waits for the
+/// next pass.
+const BATCHES_PER_TABLE: u32 = 50;
+
+/// Removes the rows a statement finds, a batch at a time. Each batch is a
+/// transaction of its own: a pass that fails keeps what it removed.
+async fn remove_in_batches(
+    client: &Client,
     statement: &str,
     before: OffsetDateTime,
 ) -> Result<u64, StorageError> {
-    transaction
-        .execute(statement, &[&before])
-        .await
-        .map_err(|error| report_failure(&error))
+    let mut removed = 0;
+    for _ in 0..BATCHES_PER_TABLE {
+        let batch = client
+            .execute(statement, &[&before, &BATCH_ROWS])
+            .await
+            .map_err(|error| report_failure(&error))?;
+        removed += batch;
+        if batch < BATCH_ROWS.unsigned_abs() {
+            break;
+        }
+    }
+    Ok(removed)
 }
 
 #[async_trait]
 impl Retention for PgRetention {
     async fn purge_expired(
         &self,
-        expired_before: OffsetDateTime,
-        counters_before: OffsetDateTime,
+        cutoffs: PurgeCutoffs,
     ) -> Result<Option<PurgeReport>, StorageError> {
-        let mut client = self.connect_as_maintenance().await?;
-
-        let transaction = client
-            .transaction()
+        let client = self.connect_as_maintenance().await?;
+        // A statement that runs longer than this is given up: the pass
+        // fails, and serving never waits on it.
+        client
+            .batch_execute("SET statement_timeout = '10s'")
             .await
             .map_err(|error| report_failure(&error))?;
-        let held: bool = transaction
-            .query_one("SELECT pg_try_advisory_xact_lock($1)", &[&RETENTION_LOCK])
+        // Held for the session of this link, released when it closes.
+        let held: bool = client
+            .query_one("SELECT pg_try_advisory_lock($1)", &[&RETENTION_LOCK])
             .await
             .map_err(|error| report_failure(&error))?
             .get(0);
@@ -109,31 +127,44 @@ impl Retention for PgRetention {
             return Ok(None);
         }
         // Constant SQL, across realms on purpose: each statement names what
-        // has no use left, and nothing else.
+        // has no use left, and nothing else, and finds it by an index.
         let report = PurgeReport {
-            pending_requests: remove_expired(
-                &transaction,
-                "DELETE FROM authorization_requests WHERE expires_at < $1",
-                expired_before,
+            pending_requests: remove_in_batches(
+                &client,
+                "DELETE FROM authorization_requests WHERE ctid = ANY (ARRAY(
+                     SELECT ctid FROM authorization_requests WHERE expires_at < $1 LIMIT $2))",
+                cutoffs.expired_before,
             )
             .await?,
-            codes: remove_expired(
-                &transaction,
-                "DELETE FROM authorization_codes WHERE expires_at < $1",
-                expired_before,
+            codes: remove_in_batches(
+                &client,
+                "DELETE FROM authorization_codes WHERE ctid = ANY (ARRAY(
+                     SELECT ctid FROM authorization_codes WHERE expires_at < $1 LIMIT $2))",
+                cutoffs.codes_before,
             )
             .await?,
-            failure_counters: remove_expired(
-                &transaction,
-                "DELETE FROM login_failures WHERE bucket_start < $1",
-                counters_before,
+            refresh_tokens: remove_in_batches(
+                &client,
+                "DELETE FROM refresh_tokens WHERE ctid = ANY (ARRAY(
+                     SELECT ctid FROM refresh_tokens WHERE expires_at < $1 LIMIT $2))",
+                cutoffs.expired_before,
+            )
+            .await?,
+            sessions: remove_in_batches(
+                &client,
+                "DELETE FROM sessions WHERE ctid = ANY (ARRAY(
+                     SELECT ctid FROM sessions WHERE expires_at < $1 LIMIT $2))",
+                cutoffs.expired_before,
+            )
+            .await?,
+            failure_counters: remove_in_batches(
+                &client,
+                "DELETE FROM login_failures WHERE ctid = ANY (ARRAY(
+                     SELECT ctid FROM login_failures WHERE bucket_start < $1 LIMIT $2))",
+                cutoffs.counters_before,
             )
             .await?,
         };
-        transaction
-            .commit()
-            .await
-            .map_err(|error| report_failure(&error))?;
         Ok(Some(report))
     }
 }

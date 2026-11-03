@@ -12,25 +12,92 @@ use tracing::{error, info};
 const RETENTION_PERIOD: Duration = Duration::from_mins(10);
 
 /// Starts the timer of retention on the runtime of the caller. The first
-/// pass runs at once: a node that restarts often still purges.
+/// pass runs at once: a node that restarts often still purges. Each pass
+/// runs as a task of its own: one that panics is said, and the next tick
+/// runs the next.
 pub(crate) fn start_retention(retention: Arc<dyn Retention>, clock: Arc<dyn Clock>) {
+    start_retention_every(retention, clock, RETENTION_PERIOD);
+}
+
+fn start_retention_every(retention: Arc<dyn Retention>, clock: Arc<dyn Clock>, period: Duration) {
     actix_rt::spawn(async move {
-        let mut timer = actix_rt::time::interval(RETENTION_PERIOD);
+        let mut timer = actix_rt::time::interval(period);
         loop {
             timer.tick().await;
-            match run_retention_pass(retention.as_ref(), clock.now()).await {
-                Ok(Some(report)) => info!(
+            let pass = {
+                let retention = Arc::clone(&retention);
+                let now = clock.now();
+                actix_rt::spawn(async move { run_retention_pass(retention.as_ref(), now).await })
+            };
+            match pass.await {
+                Ok(Ok(Some(report))) => info!(
                     pending_requests = report.pending_requests,
                     codes = report.codes,
+                    refresh_tokens = report.refresh_tokens,
+                    sessions = report.sessions,
                     failure_counters = report.failure_counters,
                     "retention pass done"
                 ),
                 // Another node holds the lock: the work is being done.
-                Ok(None) => {}
-                // Said and tried again at the next tick: a pass that fails
-                // removed nothing, and serving does not depend on it.
-                Err(_) => error!("retention pass failed"),
+                Ok(Ok(None)) => {}
+                // Said and tried again at the next tick: what a failed pass
+                // removed stays removed, and serving does not depend on it.
+                Ok(Err(_)) => error!("retention pass failed"),
+                Err(_) => error!("retention pass panicked"),
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+    use saffui_core::ports::storage::StorageError;
+    use saffui_core::retention::{PurgeCutoffs, PurgeReport, Retention};
+    use saffui_core::testkit::clock::FixedClock;
+
+    use super::start_retention_every;
+
+    /// A retention whose first pass panics.
+    #[derive(Default)]
+    struct PanicsFirst(AtomicU32);
+
+    #[async_trait]
+    impl Retention for PanicsFirst {
+        async fn purge_expired(
+            &self,
+            _cutoffs: PurgeCutoffs,
+        ) -> Result<Option<PurgeReport>, StorageError> {
+            assert!(
+                self.0.fetch_add(1, Ordering::SeqCst) > 0,
+                "a first pass that panics"
+            );
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn a_pass_that_panics_leaves_the_timer_running() {
+        let retention = Arc::new(PanicsFirst::default());
+        let passes = Arc::clone(&retention);
+
+        actix_rt::System::new().block_on(async move {
+            start_retention_every(
+                retention,
+                Arc::new(FixedClock::default()),
+                Duration::from_millis(5),
+            );
+            for _ in 0..400 {
+                if passes.0.load(Ordering::SeqCst) >= 3 {
+                    return;
+                }
+                actix_rt::time::sleep(Duration::from_millis(5)).await;
+            }
+            panic!("the timer stopped after the pass that panicked");
+        });
+    }
 }

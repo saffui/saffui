@@ -78,6 +78,20 @@ pub trait Sealer: Send + Sync {
         place: &SealPlace,
         sealed: &[u8],
     ) -> Result<Secret, CryptoFailure>;
+
+    /// Digests what a person typed as their name, under a key derived from
+    /// the root key and bound to the realm. People type passwords into the
+    /// wrong field: whoever reads the table must not be able to try guesses.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the key cannot be used.
+    fn digest_typed_name(
+        &self,
+        tenant: Uuid,
+        realm: Uuid,
+        typed: &[u8],
+    ) -> Result<Vec<u8>, CryptoFailure>;
 }
 
 /// The signature algorithms of the product. One is listed only once the

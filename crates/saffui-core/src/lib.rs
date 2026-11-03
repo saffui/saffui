@@ -10,6 +10,7 @@ pub mod error;
 pub mod ids;
 pub mod instant;
 pub mod keys;
+pub mod login;
 pub mod oidc;
 pub mod ports;
 pub mod readiness;

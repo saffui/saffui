@@ -1,7 +1,7 @@
 //! The composition root: the one file that knows every crate. It fills the
 //! application once, by hand.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crypto::adapters::digest::ProviderDigester;
 use crypto::adapters::open_provider;
@@ -61,6 +61,8 @@ pub(crate) enum StartupRefusal {
     RoleUnreadable,
     #[error(transparent)]
     Role(#[from] PrivilegedRole),
+    #[error("the password hasher cannot answer")]
+    Hasher,
 }
 
 /// Wires the product on its database, under the root key of the deployment.
@@ -88,6 +90,7 @@ pub(crate) fn wire_product(
             digester: Arc::new(ProviderDigester::new(Arc::clone(&provider))),
             sealer: Arc::new(sealer),
             hasher: Arc::new(hasher),
+            decoy_hash: Arc::new(OnceLock::new()),
             signer: Arc::new(JoseSigner::new(provider)),
         },
         pool,
@@ -113,5 +116,16 @@ impl Wired {
         })?;
         refuse_privileged_role(&facts)?;
         Ok(())
+    }
+
+    /// Makes the hash an unknown name is verified against. Made here and not
+    /// at the first unknown name: that request would take twice the time of
+    /// the others, and tell that its name is unknown.
+    pub(crate) async fn prepare_decoy_hash(&self) -> Result<(), StartupRefusal> {
+        self.app
+            .read_decoy_hash()
+            .await
+            .map(|_| ())
+            .map_err(|_| StartupRefusal::Hasher)
     }
 }

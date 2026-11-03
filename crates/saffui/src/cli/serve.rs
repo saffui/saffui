@@ -171,6 +171,9 @@ fn serve_until_signal(options: &ServeOptions) -> Result<(), ServeError> {
             if let Err(refusal) = wired.refuse_unfit_database().await {
                 return Ok(Err(refusal));
             }
+            if let Err(refusal) = wired.prepare_decoy_hash().await {
+                return Ok(Err(refusal));
+            }
             let shutdown_requested = listen_for_shutdown_signals()?;
             info!(
                 data = %planes.addresses.data,

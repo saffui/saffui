@@ -90,6 +90,24 @@ pub(crate) mod clients {
     ];
 }
 
+pub(crate) mod login_failures {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "login_failures",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// bytea
+    pub(crate) const IDENTIFIER_DIGEST: Column = Column("identifier_digest");
+    /// timestamp with time zone
+    pub(crate) const BUCKET_START: Column = Column("bucket_start");
+    /// integer
+    pub(crate) const FAILURES: Column = Column("failures");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[IDENTIFIER_DIGEST, BUCKET_START, FAILURES];
+}
+
 pub(crate) mod password_credentials {
     use super::{Column, ScopeKeys, Table};
 
@@ -176,6 +194,37 @@ pub(crate) mod realms {
     pub(crate) const ALL: &[Column] = &[NAME, ENABLED, CREATED_AT];
 }
 
+pub(crate) mod sessions {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "sessions",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// uuid
+    pub(crate) const SESSION_ID: Column = Column("session_id");
+    /// uuid
+    pub(crate) const PERSON_ID: Column = Column("person_id");
+    /// bytea
+    pub(crate) const SECRET_DIGEST: Column = Column("secret_digest");
+    /// text
+    pub(crate) const STATE: Column = Column("state");
+    /// timestamp with time zone
+    pub(crate) const AUTHENTICATED_AT: Column = Column("authenticated_at");
+    /// timestamp with time zone
+    pub(crate) const EXPIRES_AT: Column = Column("expires_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[
+        SESSION_ID,
+        PERSON_ID,
+        SECRET_DIGEST,
+        STATE,
+        AUTHENTICATED_AT,
+        EXPIRES_AT,
+    ];
+}
+
 pub(crate) mod signing_keys {
     use super::{Column, ScopeKeys, Table};
 
@@ -228,10 +277,12 @@ pub(crate) const TABLES: &[(Table, &[Column])] = &[
     (audit_chain_heads::TABLE, audit_chain_heads::ALL),
     (audit_events::TABLE, audit_events::ALL),
     (clients::TABLE, clients::ALL),
+    (login_failures::TABLE, login_failures::ALL),
     (password_credentials::TABLE, password_credentials::ALL),
     (persons::TABLE, persons::ALL),
     (realm_data_keys::TABLE, realm_data_keys::ALL),
     (realms::TABLE, realms::ALL),
+    (sessions::TABLE, sessions::ALL),
     (signing_keys::TABLE, signing_keys::ALL),
     (tenants::TABLE, tenants::ALL),
 ];

@@ -584,3 +584,66 @@ pub async fn check_persons_contract(app: &App) {
     let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
     assert_eq!(elsewhere.read_password(ada.id).await, Ok(None));
 }
+
+/// What every storage must answer of sessions and of the counters of the brake.
+///
+/// # Panics
+///
+/// Panics at the first answer the contract does not allow.
+pub async fn check_sign_in_contract(app: &App) {
+    use time::Duration;
+
+    use crate::login::session::{Session, SessionState};
+    use crate::testkit::fixtures::{create_person, create_realm};
+
+    let scope = create_realm(app, "contract-sign-in").await;
+    let other = create_realm(app, "contract-sign-in-other").await;
+    let ada = create_person(app, scope, "ada", "correct horse battery").await;
+    let now = app.now();
+
+    // A session is read back equal, in its realm only.
+    let session = Session {
+        id: mint_id(app).expect("an identifier"),
+        person: ada.id,
+        secret_digest: vec![3; 32],
+        state: SessionState::Active,
+        authenticated_at: now,
+        expires_at: now + Duration::hours(1),
+    };
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.insert_session(&session).await.expect("a session");
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.read_session(session.id).await,
+        Ok(Some(session.clone()))
+    );
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(elsewhere.read_session(session.id).await, Ok(None));
+
+    // The brake: counts add up per digest, and only from the window asked for.
+    let (digest, another) = ([5_u8; 32], [6_u8; 32]);
+    let earlier = now - Duration::minutes(10);
+    work.record_login_failure(&digest, now)
+        .await
+        .expect("a failure");
+    work.record_login_failure(&digest, now)
+        .await
+        .expect("a failure");
+    work.record_login_failure(&digest, earlier)
+        .await
+        .expect("an older failure");
+    work.record_login_failure(&another, now)
+        .await
+        .expect("a failure of another name");
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(work.count_login_failures(&digest, now).await, Ok(2));
+    assert_eq!(work.count_login_failures(&digest, earlier).await, Ok(3));
+    assert_eq!(work.count_login_failures(&[9; 32], earlier).await, Ok(0));
+    assert_eq!(
+        elsewhere.count_login_failures(&digest, earlier).await,
+        Ok(0),
+        "a counter is kept per realm"
+    );
+}

@@ -6,6 +6,8 @@ use super::MemoryUnitOfWork;
 use crate::clients::store::ListWindow;
 use crate::directory::Person;
 use crate::directory::store::PersonStore;
+use crate::login::session::Session;
+use crate::login::store::{SessionStore, ThrottleStore};
 use crate::ports::storage::StorageError;
 
 impl MemoryUnitOfWork {
@@ -107,5 +109,64 @@ impl PersonStore for MemoryUnitOfWork {
         Ok(known
             .then(|| self.working.passwords.get(&person).cloned())
             .flatten())
+    }
+}
+
+#[async_trait]
+impl SessionStore for MemoryUnitOfWork {
+    async fn insert_session(&mut self, session: &Session) -> Result<(), StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        self.working
+            .sessions
+            .entry(self.scope.realm().as_uuid())
+            .or_default()
+            .push(session.clone());
+        Ok(())
+    }
+
+    async fn read_session(&mut self, id: Uuid) -> Result<Option<Session>, StorageError> {
+        Ok(self
+            .working
+            .sessions
+            .get(&self.scope.realm().as_uuid())
+            .and_then(|sessions| sessions.iter().find(|session| session.id == id))
+            .cloned())
+    }
+}
+
+#[async_trait]
+impl ThrottleStore for MemoryUnitOfWork {
+    async fn count_login_failures(
+        &mut self,
+        identifier_digest: &[u8],
+        since: OffsetDateTime,
+    ) -> Result<u32, StorageError> {
+        let realm = self.scope.realm().as_uuid();
+        Ok(self
+            .working
+            .login_failures
+            .iter()
+            .filter(|((owner, digest, bucket), _)| {
+                *owner == realm && digest.as_slice() == identifier_digest && *bucket >= since
+            })
+            .map(|(_, failures)| *failures)
+            .sum())
+    }
+
+    async fn record_login_failure(
+        &mut self,
+        identifier_digest: &[u8],
+        bucket_start: OffsetDateTime,
+    ) -> Result<(), StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        let key = (
+            self.scope.realm().as_uuid(),
+            identifier_digest.to_vec(),
+            bucket_start,
+        );
+        *self.working.login_failures.entry(key).or_default() += 1;
+        Ok(())
     }
 }

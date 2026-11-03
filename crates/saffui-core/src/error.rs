@@ -54,6 +54,7 @@ pub enum ErrorCode {
     CapabilityUnknown = 309,
     AdminAuthenticationFailed = 400,
     CapabilityMissing = 401,
+    SignInFailed = 402,
     HashingBusy = 403,
     TokenInvalid = 500,
     TenantNameInvalid = 600,
@@ -80,7 +81,8 @@ impl ErrorCode {
             Self::RealmNotFound | Self::ClientNotFound => ErrorKind::NotFound,
             Self::ClientAuthenticationFailed
             | Self::TokenInvalid
-            | Self::AdminAuthenticationFailed => ErrorKind::Unauthenticated,
+            | Self::AdminAuthenticationFailed
+            | Self::SignInFailed => ErrorKind::Unauthenticated,
             Self::GrantNotAllowed | Self::CapabilityMissing => ErrorKind::Forbidden,
             Self::RealmNameInvalid
             | Self::TenantNameInvalid
@@ -132,6 +134,7 @@ impl ErrorCode {
             Self::TokenInvalid => "token.invalid",
             Self::AdminAuthenticationFailed => "auth.admin_authentication_failed",
             Self::CapabilityMissing => "auth.capability_missing",
+            Self::SignInFailed => "auth.sign_in_failed",
             Self::HashingBusy => "auth.hashing_busy",
             Self::TenantNameInvalid => "tenant.name_invalid",
         }
@@ -160,6 +163,7 @@ impl ErrorCode {
                 "A display name is at most 120 characters, none of them a control or a format character."
             }
             Self::PasswordUnacceptable => "A password is 8 to 1024 bytes long.",
+            Self::SignInFailed => "The name or the password is wrong.",
             Self::HashingBusy => "The service is busy. Try again in a moment.",
             Self::RequestInvalid => "The request is missing a parameter or carries one it cannot.",
             Self::ClientAuthenticationFailed => "Client authentication failed.",
@@ -247,7 +251,7 @@ mod tests {
 
     use super::ErrorCode;
 
-    const ALL: [ErrorCode; 31] = [
+    const ALL: [ErrorCode; 32] = [
         ErrorCode::Internal,
         ErrorCode::StorageUnavailable,
         ErrorCode::Conflict,
@@ -277,6 +281,7 @@ mod tests {
         ErrorCode::TokenInvalid,
         ErrorCode::AdminAuthenticationFailed,
         ErrorCode::CapabilityMissing,
+        ErrorCode::SignInFailed,
         ErrorCode::HashingBusy,
         ErrorCode::TenantNameInvalid,
     ];

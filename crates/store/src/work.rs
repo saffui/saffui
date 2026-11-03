@@ -91,7 +91,7 @@ impl PgUnitOfWork {
         StorageError::Failed
     }
 
-    fn scope_keys(&self) -> (Uuid, Uuid) {
+    pub(crate) fn scope_keys(&self) -> (Uuid, Uuid) {
         (self.scope.tenant().as_uuid(), self.scope.realm().as_uuid())
     }
 

@@ -1,6 +1,6 @@
 //! An application wired on a database of its own.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use pgcore::APP_ROLE;
 use pgcore::migrate::EMBEDDED;
@@ -30,6 +30,7 @@ pub async fn wire_on_postgres(pool: PoolSettings) -> (App, TestDatabase) {
         sealer: Arc::new(TransparentSealer),
         signer: Arc::new(WeakSigner::default()),
         hasher: Arc::new(InstantHasher),
+        decoy_hash: Arc::new(OnceLock::new()),
     };
     (app, database)
 }

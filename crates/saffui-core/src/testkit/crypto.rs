@@ -69,6 +69,19 @@ impl Sealer for TransparentSealer {
             .map(|plaintext| Secret::new(plaintext.to_vec()))
             .ok_or(CryptoFailure)
     }
+
+    fn digest_typed_name(
+        &self,
+        tenant: Uuid,
+        realm: Uuid,
+        typed: &[u8],
+    ) -> Result<Vec<u8>, CryptoFailure> {
+        let mut written = b"typed-name:".to_vec();
+        written.extend_from_slice(tenant.as_bytes());
+        written.extend_from_slice(realm.as_bytes());
+        written.extend_from_slice(typed);
+        Ok(written)
+    }
 }
 
 /// A signer whose public key is a digest of its private key, and whose

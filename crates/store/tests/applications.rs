@@ -23,6 +23,7 @@ async fn an_application_with_a_capability_a_service_without_a_secret_and_a_flow_
         allows_client_credentials: false,
         allows_authorization_code: true,
         redirect_uris: vec!["https://app.example.org/callback".to_owned()],
+        post_logout_redirect_uris: vec!["https://app.example.org/goodbye".to_owned()],
         scopes: vec!["openid".to_owned()],
         capabilities: Vec::new(),
         enabled: true,
@@ -52,6 +53,13 @@ async fn an_application_with_a_capability_a_service_without_a_secret_and_a_flow_
         },
         Client {
             allows_authorization_code: false,
+            ..application.clone()
+        },
+        Client {
+            allows_authorization_code: false,
+            allows_client_credentials: true,
+            secret_digest: Some(vec![7; 32]),
+            redirect_uris: Vec::new(),
             ..application.clone()
         },
     ] {

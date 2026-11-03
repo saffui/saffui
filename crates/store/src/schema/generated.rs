@@ -171,6 +171,8 @@ pub(crate) mod clients {
     pub(crate) const ALLOWS_AUTHORIZATION_CODE: Column = Column("allows_authorization_code");
     /// ARRAY
     pub(crate) const REDIRECT_URIS: Column = Column("redirect_uris");
+    /// ARRAY
+    pub(crate) const POST_LOGOUT_REDIRECT_URIS: Column = Column("post_logout_redirect_uris");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -185,6 +187,7 @@ pub(crate) mod clients {
         CAPABILITIES,
         ALLOWS_AUTHORIZATION_CODE,
         REDIRECT_URIS,
+        POST_LOGOUT_REDIRECT_URIS,
     ];
 }
 

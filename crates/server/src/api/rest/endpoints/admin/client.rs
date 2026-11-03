@@ -60,6 +60,7 @@ pub async fn create_client(
             scopes: &wanted.scopes,
             capabilities: &capabilities,
             redirect_uris: &wanted.redirect_uris,
+            post_logout_redirect_uris: &wanted.post_logout_redirect_uris,
             public: wanted.public,
             created_by: None,
         };

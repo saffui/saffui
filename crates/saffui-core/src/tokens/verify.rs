@@ -1,7 +1,7 @@
 use uuid::Uuid;
 
-use super::ACCESS_TOKEN_TYPE;
 use super::jws::verify_compact;
+use super::{ACCESS_TOKEN_TYPE, IDENTITY_TOKEN_TYPE};
 use crate::app::App;
 use crate::error::{ErrorCode, Failure};
 use crate::ports::storage::UnitOfWork;
@@ -74,4 +74,46 @@ pub async fn verify_access_token(
             ),
         },
     })
+}
+
+/// What an identity token says when a client presents it back as a hint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IdentityHint {
+    pub client_id: String,
+    pub session: Uuid,
+}
+
+/// Reads an identity token that a client presents back as a hint. Its expiry
+/// is not checked: a hint is presented long after the token was read. A token
+/// this realm did not sign, of another kind or of another issuer is no hint.
+///
+/// # Errors
+///
+/// Returns the storage failure when the keys cannot be read.
+pub async fn read_identity_hint(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    issuer: &str,
+    token: &str,
+) -> Result<Option<IdentityHint>, Failure> {
+    let keys = work.list_signing_keys().await?;
+    let Some(verified) = verify_compact(app.signer.as_ref(), token, &keys) else {
+        return Ok(None);
+    };
+    let claims = &verified.claims;
+    if verified.token_type.as_deref() != Some(IDENTITY_TOKEN_TYPE)
+        || claims["iss"].as_str() != Some(issuer)
+    {
+        return Ok(None);
+    }
+    let session = claims["sid"]
+        .as_str()
+        .and_then(|text| Uuid::parse_str(text).ok());
+    Ok(claims["aud"]
+        .as_str()
+        .zip(session)
+        .map(|(client_id, session)| IdentityHint {
+            client_id: client_id.to_owned(),
+            session,
+        }))
 }

@@ -12,12 +12,13 @@ use crate::tenancy::RealmScope;
 use crate::testkit::clock::FixedClock;
 use crate::testkit::drive::complete;
 use crate::testkit::fixtures::{
-    CodeFlow, SignedInApplication, create_application, create_person, create_realm,
-    create_service_client, run_code_flow,
+    Application, CodeFlow, SignedInApplication, create_person, create_realm, create_service_client,
+    register_application, run_code_flow,
 };
 use crate::testkit::memory::MemoryStorage;
 
 pub(crate) const CALLBACK: &str = "https://app.example.org/callback";
+pub(crate) const GOODBYE: &str = "https://app.example.org/goodbye";
 pub(crate) const PASSWORD: &str = "correct horse battery";
 
 pub(crate) struct Scenario {
@@ -36,7 +37,13 @@ impl Scenario {
         let (app, storage, clock) = MemoryStorage::wire_with_clock();
         let scope = complete(create_realm(&app, "acme"));
         complete(create_person(&app, scope, "ada", PASSWORD));
-        complete(create_application(&app, scope, "webapp", CALLBACK, true));
+        let webapp = Application {
+            client_id: "webapp",
+            redirect_uri: CALLBACK,
+            post_logout_redirect_uri: Some(GOODBYE),
+            public: true,
+        };
+        complete(register_application(&app, scope, webapp));
         let service_secret = complete(create_service_client(
             &app,
             scope,

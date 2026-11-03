@@ -5,6 +5,7 @@ pub mod code;
 pub mod discovery;
 pub mod errors;
 pub mod introspect;
+pub mod logout;
 pub mod pkce;
 mod refresh;
 pub mod revoke;

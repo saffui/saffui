@@ -3,7 +3,9 @@ use actix_web::http::{Method, StatusCode};
 use actix_web::{App, test, web};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use saffui_core::testkit::fixtures::{create_application, create_person, create_realm};
+use saffui_core::testkit::fixtures::{
+    Application, create_person, create_realm, register_application,
+};
 use saffui_core::testkit::memory::MemoryStorage;
 use serde_json::Value;
 use server::api::config::register_data_plane;
@@ -135,7 +137,13 @@ async fn start() -> saffui_core::app::App {
     let (product, _storage) = MemoryStorage::wire();
     let scope = create_realm(&product, "acme").await;
     create_person(&product, scope, "ada", PASSWORD).await;
-    create_application(&product, scope, "portal", REDIRECT, true).await;
+    let portal = Application {
+        client_id: "portal",
+        redirect_uri: REDIRECT,
+        post_logout_redirect_uri: Some("https://app.example.test/goodbye"),
+        public: true,
+    };
+    register_application(&product, scope, portal).await;
     product
 }
 
@@ -650,4 +658,97 @@ async fn the_browser_that_signed_in_before_brings_its_mark_back_through_a_lock()
             .is_some_and(|next| next != mark),
         "a new mark for the next time"
     );
+}
+
+#[actix_web::test]
+async fn a_person_signs_out_at_once_with_the_identity_token_of_the_session_and_is_asked_otherwise()
+{
+    let product = start().await;
+    let signed_in = submit_password(&product, PASSWORD, None).await;
+    let session = signed_in
+        .read_cookie("__Host-saffui_session_acme=")
+        .expect("a session cookie");
+    let code = signed_in.read_location_parameter("code").expect("a code");
+    let exchange = format!(
+        "grant_type=authorization_code&client_id=portal&code={code}\
+         &redirect_uri=https%3A%2F%2Fapp.example.test%2Fcallback&code_verifier={VERIFIER}"
+    );
+    let tokens = post(&product, "/realms/acme/oauth2/token", &[], &exchange).await;
+    let tokens: Value = serde_json::from_str(&tokens.body).expect("JSON");
+    let identity = tokens["id_token"].as_str().expect("an identity token");
+
+    // Without the identity token, the person is asked, on a page that
+    // writes nothing the request carried.
+    let asked = get(
+        &product,
+        "/realms/acme/oauth2/logout?post_logout_redirect_uri=https%3A%2F%2Fevil.example%2F\
+         &state=planted-state",
+        &[(COOKIE.as_str(), &session)],
+    )
+    .await;
+    assert_eq!(asked.status, StatusCode::OK);
+    assert!(
+        asked
+            .body
+            .contains("<form method=\"post\" action=\"/realms/acme/oauth2/logout\">"),
+        "{}",
+        asked.body
+    );
+    assert!(!asked.body.contains("evil.example") && !asked.body.contains("planted"));
+    assert!(asked.cookies.is_empty(), "nothing ends yet");
+
+    // A form another site posts is refused by name.
+    let from_elsewhere = post(
+        &product,
+        "/realms/acme/oauth2/logout",
+        &[
+            (COOKIE.as_str(), &session),
+            (ORIGIN.as_str(), "https://evil.example"),
+        ],
+        "",
+    )
+    .await;
+    assert_eq!(from_elsewhere.status, StatusCode::FORBIDDEN);
+
+    // With it, the session ends at once, and the browser goes back to the
+    // address the application registered.
+    let path = format!(
+        "/realms/acme/oauth2/logout?id_token_hint={identity}\
+         &post_logout_redirect_uri=https%3A%2F%2Fapp.example.test%2Fgoodbye&state=bye"
+    );
+    let out = get(&product, &path, &[(COOKIE.as_str(), &session)]).await;
+    assert_eq!(out.status, StatusCode::SEE_OTHER, "{}", out.body);
+    assert_eq!(
+        out.location.as_deref(),
+        Some("https://app.example.test/goodbye?state=bye")
+    );
+    assert!(
+        out.cookies
+            .iter()
+            .any(|cookie| cookie.starts_with("__Host-saffui_session_acme=;")
+                && cookie.contains("Max-Age=0")),
+        "{:?}",
+        out.cookies
+    );
+    let refresh = format!(
+        "grant_type=refresh_token&client_id=portal&refresh_token={}",
+        tokens["refresh_token"].as_str().expect("a refresh token")
+    );
+    let refused = post(&product, "/realms/acme/oauth2/token", &[], &refresh).await;
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_REQUEST,
+        "the refresh tokens of the session went with it"
+    );
+
+    // Confirmed on the page of the realm, a sign-out ends what is left.
+    let confirmed = post(
+        &product,
+        "/realms/acme/oauth2/logout",
+        &[(COOKIE.as_str(), &session)],
+        "",
+    )
+    .await;
+    assert_eq!(confirmed.status, StatusCode::OK);
+    assert!(confirmed.body.contains("You are signed out."));
 }

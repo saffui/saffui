@@ -405,6 +405,10 @@ pub async fn check_keys_contract(app: &App) {
 /// # Panics
 ///
 /// Panics at the first answer that breaks the contract.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario, read from top to bottom"
+)]
 pub async fn check_clients_contract(app: &App) {
     use crate::clients::Client;
     use crate::tenancy::realm::{NewRealm, provision_first_realm};
@@ -433,6 +437,7 @@ pub async fn check_clients_contract(app: &App) {
         allows_client_credentials: true,
         allows_authorization_code: false,
         redirect_uris: Vec::new(),
+        post_logout_redirect_uris: Vec::new(),
         scopes: vec!["invoices:read".to_owned(), "invoices:write".to_owned()],
         capabilities: vec![
             crate::authz::capability::Capability::ClientRead,
@@ -458,6 +463,7 @@ pub async fn check_clients_contract(app: &App) {
         allows_client_credentials: false,
         allows_authorization_code: true,
         redirect_uris: vec!["https://app.example.org/callback".to_owned()],
+        post_logout_redirect_uris: vec!["https://app.example.org/goodbye".to_owned()],
         capabilities: Vec::new(),
         ..client.clone()
     };

@@ -29,6 +29,8 @@ pub struct Client {
     /// Where a person may be sent back. Compared by exact equality: an empty
     /// list sends nobody anywhere.
     pub redirect_uris: Vec<String>,
+    /// Where a person may be sent after signing out, by exact equality too.
+    pub post_logout_redirect_uris: Vec<String>,
     /// The scopes the client may be given.
     pub scopes: Vec<String>,
     /// What the client may do on the administration plane of its realm.

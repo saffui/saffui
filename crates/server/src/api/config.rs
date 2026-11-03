@@ -42,6 +42,8 @@ pub fn register_data_plane(
                     .service(oidc::userinfo::read)
                     .service(oidc::introspect::introspect)
                     .service(oidc::revoke::revoke)
+                    .service(oidc::logout::begin)
+                    .service(oidc::logout::confirm)
                     .service(oidc::authorize::begin)
                     .service(login::page::show_sign_in)
                     .service(login::page::submit_sign_in)

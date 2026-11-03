@@ -26,6 +26,7 @@ pub enum ErrorCode {
     StorageUnavailable = 2,
     Conflict = 3,
     RandomUnavailable = 4,
+    CryptoUnavailable = 5,
     RealmNotFound = 100,
     RealmNameInvalid = 101,
     RealmNameTaken = 102,
@@ -41,7 +42,9 @@ impl ErrorCode {
     #[must_use]
     pub fn kind(self) -> ErrorKind {
         match self {
-            Self::Internal | Self::RandomUnavailable => ErrorKind::Internal,
+            Self::Internal | Self::RandomUnavailable | Self::CryptoUnavailable => {
+                ErrorKind::Internal
+            }
             Self::StorageUnavailable => ErrorKind::Unavailable,
             Self::Conflict | Self::RealmNameTaken => ErrorKind::Conflict,
             Self::RealmNotFound => ErrorKind::NotFound,
@@ -57,6 +60,7 @@ impl ErrorCode {
             Self::StorageUnavailable => "platform.storage_unavailable",
             Self::Conflict => "platform.conflict",
             Self::RandomUnavailable => "platform.random_unavailable",
+            Self::CryptoUnavailable => "platform.crypto_unavailable",
             Self::RealmNotFound => "realm.not_found",
             Self::RealmNameInvalid => "realm.name_invalid",
             Self::RealmNameTaken => "realm.name_taken",
@@ -67,7 +71,9 @@ impl ErrorCode {
     #[must_use]
     pub fn message(self) -> &'static str {
         match self {
-            Self::Internal | Self::RandomUnavailable => "The request could not be completed.",
+            Self::Internal | Self::RandomUnavailable | Self::CryptoUnavailable => {
+                "The request could not be completed."
+            }
             Self::StorageUnavailable => "The service is temporarily unavailable.",
             Self::Conflict => "The request conflicts with what exists.",
             Self::RealmNotFound => "No such realm.",
@@ -140,11 +146,12 @@ mod tests {
 
     use super::ErrorCode;
 
-    const ALL: [ErrorCode; 8] = [
+    const ALL: [ErrorCode; 9] = [
         ErrorCode::Internal,
         ErrorCode::StorageUnavailable,
         ErrorCode::Conflict,
         ErrorCode::RandomUnavailable,
+        ErrorCode::CryptoUnavailable,
         ErrorCode::RealmNotFound,
         ErrorCode::RealmNameInvalid,
         ErrorCode::RealmNameTaken,

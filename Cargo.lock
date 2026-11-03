@@ -1337,6 +1337,8 @@ dependencies = [
  "bytes",
  "fallible-iterator",
  "postgres-protocol",
+ "serde_core",
+ "serde_json",
  "time",
  "uuid",
 ]
@@ -1745,6 +1747,7 @@ dependencies = [
  "deadpool-postgres",
  "pgcore",
  "saffui-core",
+ "serde_json",
  "tokio",
  "tokio-postgres",
  "tracing",

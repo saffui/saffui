@@ -72,7 +72,7 @@ fn read_as(database: &TestDatabase, role: &str, sql: &str) -> Vec<String> {
 }
 
 #[test]
-fn a_bootstrapped_realm_has_its_creation_as_the_first_event_of_its_chain() {
+fn a_bootstrapped_realm_has_its_creation_and_its_first_key_first_in_its_chain() {
     let database = database::create_database(EMBEDDED);
 
     let created = bootstrap(&database, "Acme", "acme");
@@ -82,17 +82,16 @@ fn a_bootstrapped_realm_has_its_creation_as_the_first_event_of_its_chain() {
     let chain = read_as(
         &database,
         MAINTENANCE_ROLE,
-        "SELECT seq || ' ' || kind || ' ' || (convert_from(envelope, 'UTF8')::jsonb #>> '{payload,name}') \
-         FROM audit_events ORDER BY seq",
+        "SELECT seq || ' ' || kind FROM audit_events ORDER BY seq",
     );
-    assert_eq!(chain, ["1 realm.created acme"]);
+    assert_eq!(chain, ["1 realm.created", "2 key.created"]);
     let head = read_as(
         &database,
         MAINTENANCE_ROLE,
         "SELECT h.seq::text FROM audit_chain_heads h \
          JOIN audit_events e USING (tenant_id, realm_id, seq) WHERE h.hash = e.hash",
     );
-    assert_eq!(head, ["1"], "the head is the event just written");
+    assert_eq!(head, ["2"], "the head is the last event written");
 }
 
 #[test]

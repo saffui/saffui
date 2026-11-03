@@ -1556,6 +1556,7 @@ dependencies = [
  "async-trait",
  "saffui-core",
  "serde",
+ "serde_json",
  "thiserror",
  "time",
  "uuid",

@@ -1536,6 +1536,7 @@ name = "saffui"
 version = "0.1.0"
 dependencies = [
  "actix-rt",
+ "base64 0.23.1",
  "clap",
  "crypto",
  "deadpool-postgres",

@@ -317,6 +317,26 @@ fn one_address_for_both_planes_is_refused_with_code_2_and_both_settings_named() 
 }
 
 #[test]
+fn a_root_key_absent_or_given_as_a_value_is_refused_with_code_2() {
+    for (reference, said) in [
+        (None, "SAFFUI_ROOT_KEY is required"),
+        (Some("c2VjcmV0"), "must start with file:// or env://"),
+    ] {
+        let refused = Serve::spawn(|command| {
+            command.env_remove("SAFFUI_ROOT_KEY");
+            if let Some(reference) = reference {
+                command.env("SAFFUI_ROOT_KEY", reference);
+            }
+        });
+
+        let (code, stderr) = refused.wait_for_exit();
+        assert_eq!(code, Some(2), "stderr was: {stderr}");
+        assert!(stderr.contains(said), "{said:?} is not said: {stderr}");
+        assert!(!stderr.contains("c2VjcmV0"), "the value is not repeated");
+    }
+}
+
+#[test]
 fn an_unreadable_address_is_named_on_stderr_and_exits_with_2() {
     let refused = Serve::spawn(|command| {
         command.env("SAFFUI_OPS_LISTEN", "nowhere");

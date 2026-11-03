@@ -13,6 +13,7 @@ use saffui_core::settings::Settings;
 use saffui_core::tenancy::realm::{NewRealm, Provisioned, provision_first_realm};
 
 use crate::cli::serve::read_variable;
+use crate::config::crypto::{RootKeyError, resolve_root_key};
 use crate::config::database::{
     DATABASE_TLS, DATABASE_URL, DatabaseSettingsError, resolve_connection,
 };
@@ -49,6 +50,8 @@ enum BootstrapError {
     #[error(transparent)]
     Database(#[from] DatabaseSettingsError),
     #[error(transparent)]
+    RootKey(#[from] RootKeyError),
+    #[error(transparent)]
     Wiring(#[from] WiringError),
     #[error("refusing to write: {0}")]
     Refused(#[from] StartupRefusal),
@@ -59,7 +62,7 @@ enum BootstrapError {
 impl BootstrapError {
     fn exit_code(&self) -> ExitCode {
         match self {
-            Self::Origin(_) | Self::Database(_) => ExitCode::from(2),
+            Self::Origin(_) | Self::Database(_) | Self::RootKey(_) => ExitCode::from(2),
             // A name that cannot be used is the caller's to fix, like any argument.
             Self::Failed(failure) if failure.code.kind() == ErrorKind::Invalid => ExitCode::from(2),
             Self::Wiring(_) | Self::Refused(_) | Self::Failed(_) => ExitCode::FAILURE,
@@ -88,6 +91,7 @@ fn provision_from_options(options: &BootstrapOptions) -> Result<String, Bootstra
     let public_origin = resolve_public_origin(options.public_origin.as_deref(), read_variable)?;
     let database =
         resolve_connection(DATABASE_URL, options.database_tls.as_deref(), read_variable)?;
+    let root_key = resolve_root_key(read_variable)?;
     // Started after the settings, as for serve: what a failed write tells the
     // journal is the only account of it.
     telemetry::start_journal();
@@ -95,7 +99,12 @@ fn provision_from_options(options: &BootstrapOptions) -> Result<String, Bootstra
         max_size: 1,
         ..PoolSettings::default()
     };
-    let wired = wire_product(Settings { public_origin }, &database, one_connection)?;
+    let wired = wire_product(
+        Settings { public_origin },
+        &database,
+        one_connection,
+        &root_key,
+    )?;
 
     let provisioned: Provisioned = System::new().block_on(async {
         wired.refuse_unfit_database().await?;

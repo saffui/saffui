@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use crypto::adapters::digest::ProviderDigester;
 use crypto::adapters::open_provider;
+use crypto::adapters::seal::EnvelopeSealer;
 use pgcore::APP_ROLE;
 use pgcore::migrate::EMBEDDED;
 use pgcore::migrate::window::SchemaWindow;
@@ -15,6 +16,7 @@ use saffui_core::app::App;
 use saffui_core::audit::EventKind;
 use saffui_core::audit::append::record_event;
 use saffui_core::audit::verify::{ChainBreak, ChainVerdict, verify_chain};
+use saffui_core::secret::Secret;
 use saffui_core::settings::{PublicOrigin, Settings};
 use saffui_core::tenancy::RealmScope;
 use saffui_core::tenancy::realm::{NewRealm, provision_first_realm};
@@ -26,10 +28,12 @@ use serde_json::json;
 use store::PgStorage;
 use tokio_postgres::error::SqlState;
 
-/// An application on a database of its own, with the digest of the provider.
+/// An application on a database of its own, with the adapters of the provider.
 async fn wire_on_postgres() -> (App, TestDatabase) {
     let database = TestDatabase::create(EMBEDDED).await;
     let pool = build_pool(&database.plan(APP_ROLE), PoolSettings::default()).expect("a pool");
+    let provider = open_provider().expect("a provider");
+    let root_key = Secret::new(vec![7; 32]);
     let app = App {
         settings: Settings {
             public_origin: PublicOrigin::parse("https://id.example.test").expect("an origin"),
@@ -37,7 +41,8 @@ async fn wire_on_postgres() -> (App, TestDatabase) {
         storage: Arc::new(PgStorage::new(pool, SchemaWindow::of_exactly(EMBEDDED))),
         clock: Arc::new(FixedClock::default()),
         random: Arc::new(CountingRandom::default()),
-        digester: Arc::new(ProviderDigester::new(open_provider().expect("a provider"))),
+        digester: Arc::new(ProviderDigester::new(Arc::clone(&provider))),
+        sealer: Arc::new(EnvelopeSealer::new(provider, &root_key).expect("a sealer")),
     };
     (app, database)
 }

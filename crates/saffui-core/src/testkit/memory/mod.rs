@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use super::clock::FixedClock;
-use super::crypto::TransparentSealer;
+use super::crypto::{TransparentSealer, WeakSigner};
 use super::digest::WeakDigester;
 use super::random::CountingRandom;
 use crate::app::App;
@@ -89,6 +89,7 @@ impl MemoryStorage {
             random: Arc::new(CountingRandom::default()),
             digester: Arc::new(WeakDigester),
             sealer: Arc::new(TransparentSealer),
+            signer: Arc::new(WeakSigner::default()),
         };
         (app, storage)
     }

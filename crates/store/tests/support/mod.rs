@@ -10,7 +10,7 @@ use pgcore::testkit::TestDatabase;
 use saffui_core::app::App;
 use saffui_core::settings::{PublicOrigin, Settings};
 use saffui_core::testkit::clock::FixedClock;
-use saffui_core::testkit::crypto::TransparentSealer;
+use saffui_core::testkit::crypto::{TransparentSealer, WeakSigner};
 use saffui_core::testkit::digest::WeakDigester;
 use saffui_core::testkit::random::CountingRandom;
 use store::PgStorage;
@@ -28,6 +28,7 @@ pub async fn wire_on_postgres(pool: PoolSettings) -> (App, TestDatabase) {
         random: Arc::new(CountingRandom::default()),
         digester: Arc::new(WeakDigester),
         sealer: Arc::new(TransparentSealer),
+        signer: Arc::new(WeakSigner::default()),
     };
     (app, database)
 }

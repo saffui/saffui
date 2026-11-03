@@ -78,3 +78,53 @@ pub trait Sealer: Send + Sync {
         sealed: &[u8],
     ) -> Result<Secret, CryptoFailure>;
 }
+
+/// The signature algorithms of the product. One is listed only once the
+/// adapter makes keys of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SignatureAlgorithm {
+    Es256,
+}
+
+impl SignatureAlgorithm {
+    pub const ALL: [Self; 1] = [Self::Es256];
+
+    /// The name the algorithm has in a token header and in a published key.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Es256 => "ES256",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|algorithm| algorithm.name() == name)
+    }
+}
+
+/// A key pair just made: the private half in clear, for as long as it takes
+/// to seal it, and the public half as it is published.
+pub struct GeneratedSigningKey {
+    pub algorithm: SignatureAlgorithm,
+    /// The RFC 7638 thumbprint of the public key, in base64url without padding.
+    pub key_id: String,
+    /// The private key, as PKCS#8 DER.
+    pub private_key: Secret,
+    /// The public key as a JWK carrying `kid`, `use` and `alg`.
+    pub public_jwk: serde_json::Value,
+}
+
+pub trait Signer: Send + Sync {
+    /// Generates a key pair for `algorithm`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the library cannot generate or encode the key.
+    fn generate_key(
+        &self,
+        algorithm: SignatureAlgorithm,
+    ) -> Result<GeneratedSigningKey, CryptoFailure>;
+}

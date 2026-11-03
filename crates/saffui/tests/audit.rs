@@ -7,6 +7,7 @@ use std::sync::Arc;
 use crypto::adapters::digest::ProviderDigester;
 use crypto::adapters::open_provider;
 use crypto::adapters::seal::EnvelopeSealer;
+use crypto::adapters::sign::JoseSigner;
 use pgcore::APP_ROLE;
 use pgcore::migrate::EMBEDDED;
 use pgcore::migrate::window::SchemaWindow;
@@ -42,7 +43,8 @@ async fn wire_on_postgres() -> (App, TestDatabase) {
         clock: Arc::new(FixedClock::default()),
         random: Arc::new(CountingRandom::default()),
         digester: Arc::new(ProviderDigester::new(Arc::clone(&provider))),
-        sealer: Arc::new(EnvelopeSealer::new(provider, &root_key).expect("a sealer")),
+        sealer: Arc::new(EnvelopeSealer::new(Arc::clone(&provider), &root_key).expect("a sealer")),
+        signer: Arc::new(JoseSigner::new(provider)),
     };
     (app, database)
 }

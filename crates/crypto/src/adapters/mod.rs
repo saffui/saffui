@@ -5,6 +5,7 @@
 pub mod digest;
 pub mod random;
 pub mod seal;
+pub mod sign;
 
 use std::sync::Arc;
 

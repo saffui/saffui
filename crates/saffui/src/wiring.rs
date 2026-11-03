@@ -7,6 +7,7 @@ use crypto::adapters::digest::ProviderDigester;
 use crypto::adapters::open_provider;
 use crypto::adapters::random::ProviderRandom;
 use crypto::adapters::seal::EnvelopeSealer;
+use crypto::adapters::sign::JoseSigner;
 use deadpool_postgres::Pool;
 use pgcore::connect::ConnectionPlan;
 use pgcore::migrate::EMBEDDED;
@@ -75,8 +76,9 @@ pub(crate) fn wire_product(
             storage: Arc::new(storage),
             clock: Arc::new(SystemClock),
             random: Arc::new(ProviderRandom::new(Arc::clone(&provider))),
-            digester: Arc::new(ProviderDigester::new(provider)),
+            digester: Arc::new(ProviderDigester::new(Arc::clone(&provider))),
             sealer: Arc::new(sealer),
+            signer: Arc::new(JoseSigner::new(provider)),
         },
         pool,
     })

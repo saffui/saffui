@@ -120,6 +120,7 @@ fn prepare_realm(database: &TestDatabase, node_command: std::process::Command) -
         "client_id": "portal",
         "scopes": ["openid", "profile", "email"],
         "redirect_uris": ["https://app.example.test/callback"],
+        "post_logout_redirect_uris": ["https://app.example.test/goodbye"],
         "public": true,
     });
     let created = http::send_request(
@@ -463,4 +464,117 @@ fn guesses_lock_out_the_address_they_come_from_and_a_header_is_believed_from_a_n
         refused.status, 401,
         "five guesses from one peer lock it out, whatever addresses it claimed"
     );
+}
+
+/// Spends a refresh token of `portal` for the next one.
+fn refresh(node: &node::Node, refresh_token: &str) -> http::Answer {
+    let form = format!("grant_type=refresh_token&client_id=portal&refresh_token={refresh_token}");
+    http::send_request(node.data, "POST", TOKEN, &[FORM], &form).expect("an answer")
+}
+
+/// Signs `ada` in and exchanges the code: the tokens, and the session cookie.
+fn sign_in_for_tokens(node: &node::Node) -> (Value, String) {
+    let (back, session) = sign_in(node, PASSWORD);
+    assert_eq!(back.status, 303, "{}", back.body);
+    let location = read_header(&back, "location").expect("a location");
+    let code = read_parameter(location, "code").expect("a code");
+    let tokens = exchange_code(node, &code, VERIFIER);
+    assert_eq!(tokens.status, 200, "{}", tokens.body);
+    (read_json(&tokens.body), session.expect("a session cookie"))
+}
+
+fn ask_user_info(node: &node::Node, access_token: &str) -> http::Answer {
+    let bearer = format!("Bearer {access_token}");
+    http::send_request(
+        node.data,
+        "GET",
+        "/realms/acme/oauth2/userinfo",
+        &[("Authorization", bearer.as_str())],
+        "",
+    )
+    .expect("an answer")
+}
+
+#[test]
+fn a_session_is_kept_by_its_refresh_tokens_given_back_and_ended_on_the_real_binary() {
+    let database = database::create_database(EMBEDDED);
+    let node = prepare_realm(&database, support::saffui_command());
+
+    // The access token says who signed in, as far as its scopes allow.
+    let (first, _) = sign_in_for_tokens(&node);
+    let told = ask_user_info(&node, first["access_token"].as_str().expect("a token"));
+    assert_eq!(told.status, 200, "{}", told.body);
+    assert_eq!(read_json(&told.body)["email"], "ada@example.org");
+
+    // A refresh token is spent for the next one. Presented again, it takes
+    // its whole family with it.
+    let spent = first["refresh_token"].as_str().expect("a refresh token");
+    let next = refresh(&node, spent);
+    assert_eq!(next.status, 200, "{}", next.body);
+    let next = read_json(&next.body)["refresh_token"]
+        .as_str()
+        .expect("the next refresh token")
+        .to_owned();
+    assert_ne!(next, spent);
+    let replayed = refresh(&node, spent);
+    assert_eq!(replayed.status, 400);
+    assert_eq!(read_json(&replayed.body)["error"], "invalid_grant");
+    assert_eq!(
+        refresh(&node, &next).status,
+        400,
+        "the token that descends from the replayed one is gone too"
+    );
+
+    // Given back by its application, a refresh token is spent no more.
+    let (second, session) = sign_in_for_tokens(&node);
+    let given_back = format!(
+        "client_id=portal&token={}",
+        second["refresh_token"].as_str().expect("a refresh token")
+    );
+    let revoked = http::send_request(
+        node.data,
+        "POST",
+        "/realms/acme/oauth2/revoke",
+        &[FORM],
+        &given_back,
+    )
+    .expect("an answer");
+    assert_eq!(revoked.status, 200, "{}", revoked.body);
+    assert_eq!(
+        refresh(
+            &node,
+            second["refresh_token"].as_str().expect("a refresh token")
+        )
+        .status,
+        400
+    );
+
+    // The identity token of the session ends it at once, and the browser
+    // goes back to the address the application registered.
+    let path = format!(
+        "/realms/acme/oauth2/logout?id_token_hint={}\
+         &post_logout_redirect_uri=https%3A%2F%2Fapp.example.test%2Fgoodbye&state=bye",
+        second["id_token"].as_str().expect("an identity token")
+    );
+    let out = http::send_request(node.data, "GET", &path, &[("Cookie", session.as_str())], "")
+        .expect("an answer");
+    assert_eq!(out.status, 303, "{}", out.body);
+    assert_eq!(
+        read_header(&out, "location"),
+        Some("https://app.example.test/goodbye?state=bye")
+    );
+    let after = ask_user_info(&node, second["access_token"].as_str().expect("a token"));
+    assert_eq!(
+        after.status, 401,
+        "the access token of an ended session tells nothing"
+    );
+
+    let (_, kinds) = read_passwords_and_events(&database);
+    let counted = |kind: &str| kinds.iter().filter(|known| *known == kind).count();
+    assert_eq!(
+        counted("token.revoked"),
+        2,
+        "the replay and the giving back: {kinds:?}"
+    );
+    assert_eq!(counted("session.ended"), 1, "{kinds:?}");
 }

@@ -73,6 +73,48 @@ fn decode_form_component(encoded: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
+/// Who a client says it is, and the secret it presents, if any.
+pub(crate) struct ClientIdentity {
+    pub(crate) client_id: Option<String>,
+    pub(crate) secret: Option<Secret>,
+    /// The client tried the Basic scheme: a refusal names it.
+    pub(crate) asked_with_basic: bool,
+}
+
+/// Why the credentials of a client cannot even be read.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum UnreadableIdentity {
+    /// The header and the form both carry credentials.
+    TwoMethods,
+    /// A header that is not a readable Basic scheme.
+    UnusableHeader,
+}
+
+/// Reads the credentials of a client from the header or from the form. One
+/// method per request: the header, or the form, never the two.
+pub(crate) fn read_client_identity(
+    request: &HttpRequest,
+    form_client_id: Option<String>,
+    form_secret: Option<String>,
+) -> Result<ClientIdentity, UnreadableIdentity> {
+    match read_basic_header(request) {
+        Presented::Credentials(_) | Presented::Unusable if form_secret.is_some() => {
+            Err(UnreadableIdentity::TwoMethods)
+        }
+        Presented::Unusable => Err(UnreadableIdentity::UnusableHeader),
+        Presented::Credentials(credentials) => Ok(ClientIdentity {
+            client_id: Some(credentials.client_id),
+            secret: Some(credentials.secret),
+            asked_with_basic: true,
+        }),
+        Presented::Nothing => Ok(ClientIdentity {
+            client_id: form_client_id,
+            secret: form_secret.map(|secret| Secret::new(secret.into_bytes())),
+            asked_with_basic: false,
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use base64::Engine as _;

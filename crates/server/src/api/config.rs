@@ -40,6 +40,8 @@ pub fn register_data_plane(
                     .service(oidc::certs::serve_key_set)
                     .service(oidc::token::grant)
                     .service(oidc::userinfo::read)
+                    .service(oidc::introspect::introspect)
+                    .service(oidc::revoke::revoke)
                     .service(oidc::authorize::begin)
                     .service(login::page::show_sign_in)
                     .service(login::page::submit_sign_in)

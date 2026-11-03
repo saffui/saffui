@@ -14,6 +14,7 @@ pub enum OAuthError {
     UnsupportedResponseType,
     LoginRequired,
     ConsentRequired,
+    UnsupportedTokenType,
     ServerError,
     TemporarilyUnavailable,
 }
@@ -31,6 +32,7 @@ impl OAuthError {
             Self::UnsupportedResponseType => "unsupported_response_type",
             Self::LoginRequired => "login_required",
             Self::ConsentRequired => "consent_required",
+            Self::UnsupportedTokenType => "unsupported_token_type",
             Self::ServerError => "server_error",
             Self::TemporarilyUnavailable => "temporarily_unavailable",
         }
@@ -53,6 +55,7 @@ impl OAuthError {
             Self::UnsupportedResponseType => "Only the code response type is served.",
             Self::LoginRequired => "The person must sign in.",
             Self::ConsentRequired => "Consent cannot be asked here yet.",
+            Self::UnsupportedTokenType => "A token of this type cannot be revoked.",
             Self::ServerError => "The request could not be completed.",
             Self::TemporarilyUnavailable => "The service is busy. Try again in a moment.",
         }
@@ -78,6 +81,7 @@ impl From<Failure> for OAuthFailure {
             ErrorCode::GrantNotAllowed => OAuthError::UnauthorizedClient,
             ErrorCode::GrantInvalid => OAuthError::InvalidGrant,
             ErrorCode::GrantTypeUnsupported => OAuthError::UnsupportedGrantType,
+            ErrorCode::TokenTypeUnsupported => OAuthError::UnsupportedTokenType,
             other => match other.kind() {
                 ErrorKind::Unavailable => OAuthError::TemporarilyUnavailable,
                 ErrorKind::Internal => OAuthError::ServerError,

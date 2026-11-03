@@ -16,6 +16,7 @@ pub struct AccessTokenClaims {
     pub client_id: String,
     pub scopes: Vec<String>,
     pub token_id: String,
+    pub issued_at: i64,
     pub expires_at: i64,
     /// The session behind the token, when a person is.
     pub session: Option<Uuid>,
@@ -61,6 +62,7 @@ pub async fn verify_access_token(
             .map(str::to_owned)
             .collect(),
         token_id: read_text("jti")?,
+        issued_at,
         expires_at,
         session: match claims.get("sid") {
             None => None,

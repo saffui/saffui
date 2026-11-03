@@ -6,11 +6,10 @@ use saffui_core::app::App as Product;
 use saffui_core::error::ErrorCode;
 use saffui_core::oidc::errors::OAuthFailure;
 use saffui_core::oidc::token::{TokenRequest, grant_token};
-use saffui_core::secret::Secret;
 use serde::Deserialize;
 
 use crate::error::render_protocol_failure;
-use crate::extract::client_credentials::{Presented, read_basic_header};
+use crate::extract::client_credentials::{UnreadableIdentity, read_client_identity};
 
 /// The largest form the token endpoint reads, in bytes.
 const TOKEN_FORM_LIMIT: usize = 8 * 1024;
@@ -47,30 +46,11 @@ pub async fn grant(
     form: web::Form<TokenForm>,
 ) -> HttpResponse {
     let form = form.into_inner();
-    let basic = read_basic_header(&request);
-    let asked_with_basic = !matches!(basic, Presented::Nothing);
-
-    // One method per request: the header, or the form, never the two.
-    let in_form = form.client_secret.is_some();
-    let (client_id, client_secret) = match basic {
-        Presented::Credentials(_) | Presented::Unusable if in_form => {
-            return refuse(&ErrorCode::RequestInvalid.into(), asked_with_basic);
-        }
-        Presented::Unusable => {
-            return refuse(
-                &ErrorCode::ClientAuthenticationFailed.into(),
-                asked_with_basic,
-            );
-        }
-        Presented::Credentials(credentials) => {
-            (Some(credentials.client_id), Some(credentials.secret))
-        }
-        Presented::Nothing => (
-            form.client_id,
-            form.client_secret
-                .map(|secret| Secret::new(secret.into_bytes())),
-        ),
+    let identity = match read_client_identity(&request, form.client_id, form.client_secret) {
+        Ok(identity) => identity,
+        Err(unreadable) => return refuse_unreadable_identity(&unreadable),
     };
+    let asked_with_basic = identity.asked_with_basic;
 
     let granted = grant_token(
         &product,
@@ -78,8 +58,8 @@ pub async fn grant(
         TokenRequest {
             grant_type: form.grant_type.as_deref(),
             scope: form.scope.as_deref(),
-            client_id: client_id.as_deref(),
-            client_secret,
+            client_id: identity.client_id.as_deref(),
+            client_secret: identity.secret,
             code: form.code.as_deref(),
             redirect_uri: form.redirect_uri.as_deref(),
             code_verifier: form.code_verifier.as_deref(),
@@ -98,4 +78,14 @@ pub async fn grant(
 
 fn refuse(failure: &OAuthFailure, asked_with_basic: bool) -> HttpResponse {
     render_protocol_failure(failure, asked_with_basic)
+}
+
+/// Refuses credentials that cannot be read, in the dialect of the protocol.
+pub(crate) fn refuse_unreadable_identity(unreadable: &UnreadableIdentity) -> HttpResponse {
+    match unreadable {
+        UnreadableIdentity::TwoMethods => refuse(&ErrorCode::RequestInvalid.into(), true),
+        UnreadableIdentity::UnusableHeader => {
+            refuse(&ErrorCode::ClientAuthenticationFailed.into(), true)
+        }
+    }
 }

@@ -19,6 +19,8 @@ pub struct ProviderMetadata {
     pub userinfo_endpoint: String,
     /// Where the public keys of the realm are published.
     pub jwks_uri: String,
+    pub introspection_endpoint: String,
+    pub revocation_endpoint: String,
     pub response_types_supported: Vec<&'static str>,
     pub grant_types_supported: Vec<&'static str>,
     pub subject_types_supported: Vec<&'static str>,
@@ -49,6 +51,8 @@ pub fn describe_provider(settings: &Settings, realm: &RealmName) -> ProviderMeta
         token_endpoint: format!("{issuer}/oauth2/token"),
         userinfo_endpoint: format!("{issuer}/oauth2/userinfo"),
         jwks_uri: format!("{issuer}/oauth2/jwks"),
+        introspection_endpoint: format!("{issuer}/oauth2/introspect"),
+        revocation_endpoint: format!("{issuer}/oauth2/revoke"),
         response_types_supported: vec!["code"],
         grant_types_supported: vec!["authorization_code", "client_credentials", "refresh_token"],
         subject_types_supported: vec!["public"],

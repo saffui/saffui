@@ -1,7 +1,9 @@
 use async_trait::async_trait;
+use saffui_core::authz::capability::Capability;
 use saffui_core::clients::Client;
 use saffui_core::clients::store::ClientStore;
 use saffui_core::ports::storage::StorageError;
+use tokio_postgres::Row;
 
 use crate::query::bind::col;
 use crate::query::criteria::Criteria;
@@ -18,13 +20,39 @@ const CLIENT: &[Column] = &[
     clients::SECRET_DIGEST,
     clients::ALLOWS_CLIENT_CREDENTIALS,
     clients::SCOPES,
+    clients::CAPABILITIES,
     clients::ENABLED,
     clients::CREATED_AT,
 ];
 
+fn read_client_row(row: &Row) -> Result<Client, StorageError> {
+    let capabilities: Vec<String> = row.get(6);
+    Ok(Client {
+        id: row.get(0),
+        client_id: row.get(1),
+        name: row.get(2),
+        secret_digest: row.get(3),
+        allows_client_credentials: row.get(4),
+        scopes: row.get(5),
+        // The schema holds the same list: a name unknown here was not
+        // written by this binary.
+        capabilities: capabilities
+            .iter()
+            .map(|name| Capability::parse(name).ok_or(StorageError::Failed))
+            .collect::<Result<_, _>>()?,
+        enabled: row.get(7),
+        created_at: row.get(8),
+    })
+}
+
 #[async_trait]
 impl ClientStore for PgUnitOfWork {
     async fn insert_client(&mut self, client: &Client) -> Result<(), StorageError> {
+        let capabilities: Vec<&str> = client
+            .capabilities
+            .iter()
+            .map(|granted| granted.name())
+            .collect();
         let insert = Insert::into(
             clients::TABLE,
             vec![
@@ -37,6 +65,7 @@ impl ClientStore for PgUnitOfWork {
                     &client.allows_client_credentials,
                 ),
                 col(clients::SCOPES, &client.scopes),
+                col(clients::CAPABILITIES, &capabilities),
                 col(clients::ENABLED, &client.enabled),
                 col(clients::CREATED_AT, &client.created_at),
             ],
@@ -49,15 +78,10 @@ impl ClientStore for PgUnitOfWork {
         let select = Select::from(clients::TABLE, CLIENT)
             .filter(Criteria::new().where_equal(clients::CLIENT_ID, &client_id))
             .build();
-        Ok(self.read_one(&select).await?.map(|row| Client {
-            id: row.get(0),
-            client_id: row.get(1),
-            name: row.get(2),
-            secret_digest: row.get(3),
-            allows_client_credentials: row.get(4),
-            scopes: row.get(5),
-            enabled: row.get(6),
-            created_at: row.get(7),
-        }))
+        self.read_one(&select)
+            .await?
+            .as_ref()
+            .map(read_client_row)
+            .transpose()
     }
 }

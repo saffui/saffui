@@ -73,6 +73,8 @@ pub(crate) mod clients {
     pub(crate) const ENABLED: Column = Column("enabled");
     /// timestamp with time zone
     pub(crate) const CREATED_AT: Column = Column("created_at");
+    /// ARRAY
+    pub(crate) const CAPABILITIES: Column = Column("capabilities");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -84,6 +86,7 @@ pub(crate) mod clients {
         SCOPES,
         ENABLED,
         CREATED_AT,
+        CAPABILITIES,
     ];
 }
 

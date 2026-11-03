@@ -48,6 +48,7 @@ pub async fn create_service_client(
             client_id,
             name: "A service under test",
             scopes: &scopes,
+            capabilities: &[],
         },
     )
     .await

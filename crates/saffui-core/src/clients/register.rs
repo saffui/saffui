@@ -6,6 +6,7 @@ use super::{Client, check_client_identifier, check_scope_token};
 use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
+use crate::authz::capability::Capability;
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
 use crate::ports::storage::{StorageError, UnitOfWork};
@@ -15,6 +16,7 @@ pub struct NewServiceClient<'a> {
     pub client_id: &'a str,
     pub name: &'a str,
     pub scopes: &'a [String],
+    pub capabilities: &'a [Capability],
 }
 
 /// Registers a client that authenticates as itself, and returns the secret
@@ -54,6 +56,7 @@ pub async fn register_service_client(
         secret_digest: app.digester.sha256(secret.expose()).to_vec(),
         allows_client_credentials: true,
         scopes: wanted.scopes.to_vec(),
+        capabilities: wanted.capabilities.to_vec(),
         enabled: true,
         created_at: app.now(),
     };
@@ -65,7 +68,16 @@ pub async fn register_service_client(
             }
             other => other.into(),
         })?;
-    let created = json!({ "client_id": client.client_id, "scopes": client.scopes });
+    let capabilities: Vec<&str> = client
+        .capabilities
+        .iter()
+        .map(|granted| granted.name())
+        .collect();
+    let created = json!({
+        "client_id": client.client_id,
+        "scopes": client.scopes,
+        "capabilities": capabilities,
+    });
     record_event(app, work, EventKind::ClientCreated, created).await?;
     Ok((client, secret))
 }
@@ -94,6 +106,7 @@ mod tests {
                 client_id: "billing",
                 name: "Billing",
                 scopes: &scopes,
+                capabilities: &[],
             },
         ))
         .expect("a client");
@@ -123,6 +136,7 @@ mod tests {
                     client_id,
                     name,
                     scopes: &[],
+                    capabilities: &[],
                 },
             ))
             .map(|_| ())

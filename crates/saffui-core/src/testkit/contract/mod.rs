@@ -432,6 +432,10 @@ pub async fn check_clients_contract(app: &App) {
         secret_digest: vec![7; 32],
         allows_client_credentials: true,
         scopes: vec!["invoices:read".to_owned(), "invoices:write".to_owned()],
+        capabilities: vec![
+            crate::authz::capability::Capability::ClientRead,
+            crate::authz::capability::Capability::AuditRead,
+        ],
         enabled: true,
         created_at: app.now(),
     };

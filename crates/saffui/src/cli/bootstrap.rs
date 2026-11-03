@@ -120,6 +120,7 @@ fn provision_from_options(options: &BootstrapOptions) -> Result<String, Bootstra
     let first_client = options.client.as_deref().map(|client_id| FirstClient {
         client_id,
         scopes: &options.scopes,
+        capabilities: &[],
     });
     let (provisioned, secret): (Provisioned, Option<Secret>) = System::new().block_on(async {
         wired.refuse_unfit_database().await?;

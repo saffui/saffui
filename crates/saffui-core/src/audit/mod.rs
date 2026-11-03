@@ -17,6 +17,7 @@ pub enum EventKind {
     RealmCreated,
     SigningKeyCreated,
     ClientCreated,
+    TokenIssued,
 }
 
 impl EventKind {
@@ -26,6 +27,7 @@ impl EventKind {
             Self::RealmCreated => "realm.created",
             Self::SigningKeyCreated => "key.created",
             Self::ClientCreated => "client.created",
+            Self::TokenIssued => "token.issued",
         }
     }
 }

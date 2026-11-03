@@ -18,6 +18,7 @@ fn choose_status(kind: ErrorKind) -> StatusCode {
     match kind {
         ErrorKind::Invalid => StatusCode::BAD_REQUEST,
         ErrorKind::Unauthenticated => StatusCode::UNAUTHORIZED,
+        ErrorKind::Forbidden => StatusCode::FORBIDDEN,
         ErrorKind::NotFound => StatusCode::NOT_FOUND,
         ErrorKind::Conflict => StatusCode::CONFLICT,
         // A database that is down is never the caller's fault.

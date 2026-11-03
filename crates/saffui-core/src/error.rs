@@ -13,6 +13,8 @@ pub enum ErrorKind {
     Invalid,
     /// The caller did not prove who it is.
     Unauthenticated,
+    /// The caller proved who it is, and is not allowed this.
+    Forbidden,
     NotFound,
     Conflict,
     Unavailable,
@@ -29,6 +31,7 @@ pub enum ErrorCode {
     Conflict = 3,
     RandomUnavailable = 4,
     CryptoUnavailable = 5,
+    RequestInvalid = 6,
     RealmNotFound = 100,
     RealmNameInvalid = 101,
     RealmNameTaken = 102,
@@ -37,6 +40,10 @@ pub enum ErrorCode {
     ClientIdentifierTaken = 302,
     ClientNameInvalid = 303,
     ScopeInvalid = 304,
+    ScopeNotAllowed = 305,
+    GrantNotAllowed = 306,
+    GrantTypeUnsupported = 307,
+    TokenInvalid = 500,
     TenantNameInvalid = 600,
 }
 
@@ -57,12 +64,16 @@ impl ErrorCode {
                 ErrorKind::Conflict
             }
             Self::RealmNotFound => ErrorKind::NotFound,
-            Self::ClientAuthenticationFailed => ErrorKind::Unauthenticated,
+            Self::ClientAuthenticationFailed | Self::TokenInvalid => ErrorKind::Unauthenticated,
+            Self::GrantNotAllowed => ErrorKind::Forbidden,
             Self::RealmNameInvalid
             | Self::TenantNameInvalid
             | Self::ClientIdentifierInvalid
             | Self::ClientNameInvalid
-            | Self::ScopeInvalid => ErrorKind::Invalid,
+            | Self::ScopeInvalid
+            | Self::RequestInvalid
+            | Self::ScopeNotAllowed
+            | Self::GrantTypeUnsupported => ErrorKind::Invalid,
         }
     }
 
@@ -75,6 +86,7 @@ impl ErrorCode {
             Self::Conflict => "platform.conflict",
             Self::RandomUnavailable => "platform.random_unavailable",
             Self::CryptoUnavailable => "platform.crypto_unavailable",
+            Self::RequestInvalid => "platform.request_invalid",
             Self::RealmNotFound => "realm.not_found",
             Self::RealmNameInvalid => "realm.name_invalid",
             Self::RealmNameTaken => "realm.name_taken",
@@ -83,6 +95,10 @@ impl ErrorCode {
             Self::ClientIdentifierTaken => "client.identifier_taken",
             Self::ClientNameInvalid => "client.name_invalid",
             Self::ScopeInvalid => "client.scope_invalid",
+            Self::ScopeNotAllowed => "client.scope_not_allowed",
+            Self::GrantNotAllowed => "client.grant_not_allowed",
+            Self::GrantTypeUnsupported => "client.grant_type_unsupported",
+            Self::TokenInvalid => "token.invalid",
             Self::TenantNameInvalid => "tenant.name_invalid",
         }
     }
@@ -100,7 +116,12 @@ impl ErrorCode {
                 "A realm name is 1 to 63 lowercase letters, digits or hyphens, and neither starts nor ends with a hyphen."
             }
             Self::RealmNameTaken => "This realm name is already taken.",
+            Self::RequestInvalid => "The request is missing a parameter or carries one it cannot.",
             Self::ClientAuthenticationFailed => "Client authentication failed.",
+            Self::ScopeNotAllowed => "The client is not allowed a scope it asked for.",
+            Self::GrantNotAllowed => "The client is not allowed this grant.",
+            Self::GrantTypeUnsupported => "This grant type is not supported.",
+            Self::TokenInvalid => "The token is not valid.",
             Self::ClientIdentifierInvalid => {
                 "A client identifier is 1 to 64 letters, digits, hyphens, dots or underscores."
             }
@@ -176,12 +197,13 @@ mod tests {
 
     use super::ErrorCode;
 
-    const ALL: [ErrorCode; 14] = [
+    const ALL: [ErrorCode; 19] = [
         ErrorCode::Internal,
         ErrorCode::StorageUnavailable,
         ErrorCode::Conflict,
         ErrorCode::RandomUnavailable,
         ErrorCode::CryptoUnavailable,
+        ErrorCode::RequestInvalid,
         ErrorCode::RealmNotFound,
         ErrorCode::RealmNameInvalid,
         ErrorCode::RealmNameTaken,
@@ -190,6 +212,10 @@ mod tests {
         ErrorCode::ClientIdentifierTaken,
         ErrorCode::ClientNameInvalid,
         ErrorCode::ScopeInvalid,
+        ErrorCode::ScopeNotAllowed,
+        ErrorCode::GrantNotAllowed,
+        ErrorCode::GrantTypeUnsupported,
+        ErrorCode::TokenInvalid,
         ErrorCode::TenantNameInvalid,
     ];
 
@@ -209,6 +235,7 @@ mod tests {
                 0..100 => "platform.",
                 100..200 => "realm.",
                 300..400 => "client.",
+                500..600 => "token.",
                 600..700 => "tenant.",
                 other => panic!("no domain is written for {other}"),
             };

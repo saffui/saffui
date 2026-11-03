@@ -9,3 +9,4 @@ mod refresh;
 #[cfg(test)]
 mod scenario;
 pub mod token;
+pub mod userinfo;

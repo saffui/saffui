@@ -62,6 +62,7 @@ pub enum ErrorCode {
     SignInRequestsTooFrequent = 405,
     TokenInvalid = 500,
     GrantInvalid = 501,
+    TokenScopeInsufficient = 502,
     TenantNameInvalid = 600,
 }
 
@@ -90,7 +91,9 @@ impl ErrorCode {
             | Self::TokenInvalid
             | Self::AdminAuthenticationFailed
             | Self::SignInFailed => ErrorKind::Unauthenticated,
-            Self::GrantNotAllowed | Self::CapabilityMissing => ErrorKind::Forbidden,
+            Self::GrantNotAllowed | Self::CapabilityMissing | Self::TokenScopeInsufficient => {
+                ErrorKind::Forbidden
+            }
             Self::RealmNameInvalid
             | Self::TenantNameInvalid
             | Self::ClientIdentifierInvalid
@@ -146,6 +149,7 @@ impl ErrorCode {
             Self::RedirectUriMismatch => "client.redirect_uri_mismatch",
             Self::TokenInvalid => "token.invalid",
             Self::GrantInvalid => "token.grant_invalid",
+            Self::TokenScopeInsufficient => "token.scope_insufficient",
             Self::AdminAuthenticationFailed => "auth.admin_authentication_failed",
             Self::CapabilityMissing => "auth.capability_missing",
             Self::SignInFailed => "auth.sign_in_failed",
@@ -201,6 +205,7 @@ impl ErrorCode {
             }
             Self::TokenInvalid => "The token is not valid.",
             Self::GrantInvalid => "The grant is invalid, expired, or was already used.",
+            Self::TokenScopeInsufficient => "The token was not granted what this asks.",
             Self::AdminAuthenticationFailed => "Authentication is required.",
             Self::CapabilityMissing => "The caller is not allowed to do this.",
             Self::ClientIdentifierInvalid => {
@@ -278,7 +283,7 @@ mod tests {
 
     use super::ErrorCode;
 
-    const ALL: [ErrorCode; 37] = [
+    const ALL: [ErrorCode; 38] = [
         ErrorCode::Internal,
         ErrorCode::StorageUnavailable,
         ErrorCode::Conflict,
@@ -309,6 +314,7 @@ mod tests {
         ErrorCode::RedirectUriMismatch,
         ErrorCode::TokenInvalid,
         ErrorCode::GrantInvalid,
+        ErrorCode::TokenScopeInsufficient,
         ErrorCode::AdminAuthenticationFailed,
         ErrorCode::CapabilityMissing,
         ErrorCode::SignInFailed,

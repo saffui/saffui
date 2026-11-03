@@ -16,6 +16,7 @@ pub struct ProviderMetadata {
     pub issuer: String,
     pub authorization_endpoint: String,
     pub token_endpoint: String,
+    pub userinfo_endpoint: String,
     /// Where the public keys of the realm are published.
     pub jwks_uri: String,
     pub response_types_supported: Vec<&'static str>,
@@ -46,6 +47,7 @@ pub fn describe_provider(settings: &Settings, realm: &RealmName) -> ProviderMeta
     ProviderMetadata {
         authorization_endpoint: format!("{issuer}/oauth2/authorize"),
         token_endpoint: format!("{issuer}/oauth2/token"),
+        userinfo_endpoint: format!("{issuer}/oauth2/userinfo"),
         jwks_uri: format!("{issuer}/oauth2/jwks"),
         response_types_supported: vec!["code"],
         grant_types_supported: vec!["authorization_code", "client_credentials", "refresh_token"],
@@ -109,6 +111,10 @@ mod tests {
         assert_eq!(
             document.authorization_endpoint,
             "https://id.example.org/realms/acme/oauth2/authorize"
+        );
+        assert_eq!(
+            document.userinfo_endpoint,
+            "https://id.example.org/realms/acme/oauth2/userinfo"
         );
         assert_eq!(
             document.grant_types_supported,

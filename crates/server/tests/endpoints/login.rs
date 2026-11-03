@@ -274,6 +274,38 @@ async fn a_person_signs_in_and_the_application_exchanges_the_code_for_tokens() {
     assert!(tokens["access_token"].is_string());
     assert!(tokens["id_token"].is_string());
 
+    // The access token tells the application who signed in, and a request
+    // that presents none, or a wrong one, is challenged.
+    let bearer = format!(
+        "Bearer {}",
+        tokens["access_token"].as_str().expect("a token")
+    );
+    let told = get(
+        &product,
+        "/realms/acme/oauth2/userinfo",
+        &[("authorization", &bearer)],
+    )
+    .await;
+    assert_eq!(told.status, StatusCode::OK, "{}", told.body);
+    assert_eq!(told.read_header("cache-control"), Some("no-store"));
+    let told: Value = serde_json::from_str(&told.body).expect("JSON");
+    assert_eq!(told["preferred_username"], "ada");
+    assert!(told.get("email").is_none(), "{told}");
+    let unasked = get(&product, "/realms/acme/oauth2/userinfo", &[]).await;
+    assert_eq!(unasked.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(unasked.read_header("www-authenticate"), Some("Bearer"));
+    let wrong = get(
+        &product,
+        "/realms/acme/oauth2/userinfo",
+        &[("authorization", "Bearer not.a.token")],
+    )
+    .await;
+    assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        wrong.read_header("www-authenticate"),
+        Some("Bearer error=\"invalid_token\"")
+    );
+
     // The refresh token is spent for the next one, through the same form.
     let presented = tokens["refresh_token"].as_str().expect("a refresh token");
     let refresh = format!("grant_type=refresh_token&client_id=portal&refresh_token={presented}");

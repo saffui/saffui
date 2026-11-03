@@ -116,7 +116,7 @@ pub async fn mint_identity_token(
 }
 
 /// Writes what the granted scopes allow to be said of a person, and nothing more.
-fn write_person_claims(claims: &mut Value, person: &Person, scopes: &[String]) {
+pub(crate) fn write_person_claims(claims: &mut Value, person: &Person, scopes: &[String]) {
     let granted = |scope: &str| scopes.iter().any(|known| known == scope);
     if granted("profile") {
         claims["preferred_username"] = Value::String(person.username.clone());

@@ -214,6 +214,7 @@ fn a_bootstrapped_realm_is_published_by_a_node_on_its_data_plane_only() {
             r#"{"issuer":"http://localhost:8080/realms/acme","#,
             r#""authorization_endpoint":"http://localhost:8080/realms/acme/oauth2/authorize","#,
             r#""token_endpoint":"http://localhost:8080/realms/acme/oauth2/token","#,
+            r#""userinfo_endpoint":"http://localhost:8080/realms/acme/oauth2/userinfo","#,
             r#""jwks_uri":"http://localhost:8080/realms/acme/oauth2/jwks","#,
             r#""response_types_supported":["code"],"#,
             r#""grant_types_supported":["authorization_code","client_credentials","refresh_token"],"#,

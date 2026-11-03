@@ -6,6 +6,8 @@ use std::sync::Arc;
 use super::errors::OAuthError;
 use super::token::{TokenRequest, TokenResponse, grant_token};
 use crate::app::App;
+use crate::login::session::{SessionTicket, close_session};
+use crate::secret::Secret;
 use crate::tenancy::RealmScope;
 use crate::testkit::clock::FixedClock;
 use crate::testkit::drive::complete;
@@ -23,6 +25,8 @@ pub(crate) struct Scenario {
     pub(crate) storage: Arc<MemoryStorage>,
     pub(crate) clock: Arc<FixedClock>,
     pub(crate) scope: RealmScope,
+    /// The secret of the service `billing`.
+    pub(crate) service_secret: Secret,
 }
 
 impl Scenario {
@@ -33,7 +37,7 @@ impl Scenario {
         let scope = complete(create_realm(&app, "acme"));
         complete(create_person(&app, scope, "ada", PASSWORD));
         complete(create_application(&app, scope, "webapp", CALLBACK, true));
-        complete(create_service_client(
+        let service_secret = complete(create_service_client(
             &app,
             scope,
             "billing",
@@ -44,6 +48,7 @@ impl Scenario {
             storage,
             clock,
             scope,
+            service_secret,
         }
     }
 
@@ -59,6 +64,20 @@ impl Scenario {
             password: PASSWORD,
         };
         complete(run_code_flow(&self.app, flow))
+    }
+
+    pub(crate) fn copy_service_secret(&self) -> Secret {
+        Secret::new(self.service_secret.expose().to_vec())
+    }
+
+    /// Ends the session of `ticket`, as a sign-out does.
+    pub(crate) fn end_session(&self, ticket: &SessionTicket) {
+        let mut work = complete(self.app.storage.begin(self.scope)).expect("a unit of work");
+        let session = complete(work.read_session(ticket.session))
+            .expect("a read")
+            .expect("the session");
+        complete(close_session(&self.app, work.as_mut(), &session)).expect("an ended session");
+        complete(work.commit()).expect("a commit");
     }
 
     /// Presents a refresh token as `client_id`, which is public.

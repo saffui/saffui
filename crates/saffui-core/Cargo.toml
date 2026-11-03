@@ -19,6 +19,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 time.workspace = true
 uuid.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 saffui-core = { path = ".", features = ["testkit"]}

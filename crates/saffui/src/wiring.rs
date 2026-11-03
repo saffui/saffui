@@ -63,6 +63,10 @@ pub(crate) enum StartupRefusal {
     Role(#[from] PrivilegedRole),
     #[error("the password hasher cannot answer")]
     Hasher,
+    #[error(
+        "the maintenance link cannot purge: it must reach the database under the maintenance role, which bypasses row security and is no superuser"
+    )]
+    MaintenanceRole,
 }
 
 /// Wires the product on its database, under the root key of the deployment.

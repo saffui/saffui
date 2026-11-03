@@ -14,6 +14,7 @@ pub mod login;
 pub mod oidc;
 pub mod ports;
 pub mod readiness;
+pub mod retention;
 pub mod secret;
 pub mod settings;
 pub mod tenancy;

@@ -169,9 +169,11 @@ fn read_journal_lines(journal: &str) -> Vec<&str> {
 }
 
 /// What a whole run stopped by `signal` writes: these lines and no other.
-fn tell_whole_run(data: SocketAddr, ops: SocketAddr, signal: &str) -> [String; 3] {
+fn tell_whole_run(data: SocketAddr, ops: SocketAddr, signal: &str) -> [String; 4] {
     [
         format!("INFO saffui::cli::serve: listening data={data} ops={ops}"),
+        // These nodes are told not to purge: they say what that costs.
+        "WARN saffui::cli::serve: SAFFUI_RETENTION is off: expired rows are not purged".to_owned(),
         format!("INFO saffui::cli::serve: shutdown requested signal=\"{signal}\""),
         "INFO saffui::cli::serve: shutdown complete".to_owned(),
     ]

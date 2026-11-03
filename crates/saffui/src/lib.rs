@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 
 mod cli;
 mod config;
+mod jobs;
 mod telemetry;
 mod wiring;
 

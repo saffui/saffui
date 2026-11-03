@@ -13,6 +13,11 @@ use crate::config::serving::{Setting, Unreadable, resolve_setting};
 pub(crate) const DATABASE_URL: &str = "SAFFUI_DATABASE_URL";
 /// The connection string of the role that owns the schema, for `migrate`.
 pub(crate) const MIGRATION_DATABASE_URL: &str = "SAFFUI_MIGRATION_DATABASE_URL";
+/// The connection of the maintenance role, for the rare works across
+/// tenants: the purge of what expired.
+pub(crate) const MAINTENANCE_DATABASE_URL: &str = "SAFFUI_MAINTENANCE_DATABASE_URL";
+/// `off` to serve without purging, said once and on purpose.
+pub(crate) const RETENTION: &str = "SAFFUI_RETENTION";
 pub(crate) const DATABASE_TLS_OPTION: &str = "--database-tls";
 pub(crate) const DATABASE_TLS: &str = "SAFFUI_DATABASE_TLS";
 pub(crate) const DATABASE_CA_FILE: &str = "SAFFUI_DATABASE_CA_FILE";
@@ -82,6 +87,46 @@ pub(crate) fn resolve_pool_settings(
     })
 }
 
+/// Whether a node purges what expired, and under which link.
+#[derive(Debug)]
+pub(crate) enum RetentionPlan {
+    Purge(Box<ConnectionPlan>),
+    Off,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RetentionSettingError {
+    #[error(
+        "{MAINTENANCE_DATABASE_URL} is required: a node purges what expired under the maintenance role. {RETENTION}=off serves without purging"
+    )]
+    Missing,
+    #[error("{RETENTION}: expected on or off")]
+    Unreadable,
+    #[error(transparent)]
+    Database(DatabaseSettingsError),
+}
+
+/// Reads whether a node purges. Unsaid, it must: a node that purges nothing
+/// lets anyone fill the database with requests that never go. Off is said
+/// in so many words, and wins over a link that is also given.
+pub(crate) fn resolve_retention(
+    tls_option: Option<&str>,
+    read_variable: impl Fn(&str) -> Option<String>,
+) -> Result<RetentionPlan, RetentionSettingError> {
+    match read_variable(RETENTION).as_deref() {
+        Some("off") => Ok(RetentionPlan::Off),
+        Some("on") | None => {
+            if read_variable(MAINTENANCE_DATABASE_URL).is_none() {
+                return Err(RetentionSettingError::Missing);
+            }
+            resolve_connection(MAINTENANCE_DATABASE_URL, tls_option, read_variable)
+                .map(|plan| RetentionPlan::Purge(Box::new(plan)))
+                .map_err(RetentionSettingError::Database)
+        }
+        Some(_) => Err(RetentionSettingError::Unreadable),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{DATABASE_URL, DatabaseSettingsError, resolve_connection, resolve_pool_settings};
@@ -134,5 +179,38 @@ mod tests {
                 .ok(),
             Some(20)
         );
+    }
+
+    #[test]
+    fn a_node_purges_unless_told_off_in_so_many_words() {
+        use super::{
+            MAINTENANCE_DATABASE_URL, RETENTION, RetentionPlan, RetentionSettingError,
+            resolve_retention,
+        };
+
+        let read = |retention: Option<&'static str>, link: Option<&'static str>| {
+            resolve_retention(None, move |name| match name {
+                RETENTION => retention.map(str::to_owned),
+                MAINTENANCE_DATABASE_URL => link.map(str::to_owned),
+                _ => None,
+            })
+        };
+        let link = Some("host=127.0.0.1 user=saffui_maintenance dbname=saffui");
+
+        assert!(matches!(
+            read(None, None),
+            Err(RetentionSettingError::Missing)
+        ));
+        assert!(matches!(
+            read(Some("on"), None),
+            Err(RetentionSettingError::Missing)
+        ));
+        assert!(matches!(read(None, link), Ok(RetentionPlan::Purge(_))));
+        assert!(matches!(read(Some("off"), None), Ok(RetentionPlan::Off)));
+        assert!(matches!(read(Some("off"), link), Ok(RetentionPlan::Off)));
+        assert!(matches!(
+            read(Some("no"), link),
+            Err(RetentionSettingError::Unreadable)
+        ));
     }
 }

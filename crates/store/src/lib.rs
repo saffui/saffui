@@ -2,6 +2,7 @@
 //! decides nothing and never commits on its own.
 
 mod query;
+pub mod retention;
 mod schema;
 mod stores;
 mod work;

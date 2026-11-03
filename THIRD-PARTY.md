@@ -304,9 +304,10 @@ Code meant for the whole crate goes into a module of its own rather than into
     to `envelope`: the root key wraps one data key per realm and generation,
     and a data key seals each value for its place. `adapters::sign` makes the
     signing keys of a realm with the JOSE layer, each named by the RFC 7638
-    thumbprint of `thumbprint`. `adapters::open_provider` opens the OpenSSL
-    provider and refuses one that does not answer a known digest. The crate
-    now depends on `saffui-core`, for those interfaces.
+    thumbprint of `thumbprint`, and signs and verifies with them.
+    `adapters::open_provider` opens the OpenSSL provider and refuses one that
+    does not answer a known digest. The crate now depends on `saffui-core`,
+    for those interfaces.
 
 ## Before vendoring anything
 

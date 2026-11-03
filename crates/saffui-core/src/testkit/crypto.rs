@@ -70,7 +70,9 @@ impl Sealer for TransparentSealer {
     }
 }
 
-/// A signer whose public key is a digest of its private key.
+/// A signer whose public key is a digest of its private key, and whose
+/// signature is a digest of that public key and the message: anyone can
+/// forge it. It only keeps the shape of a signature.
 #[derive(Debug, Default)]
 pub struct WeakSigner {
     generated: AtomicU64,
@@ -81,6 +83,14 @@ fn to_hex(bytes: &[u8]) -> String {
         let _ = write!(hex, "{byte:02x}");
         hex
     })
+}
+
+fn sign_weakly(public: &str, message: &[u8]) -> Vec<u8> {
+    let mut signed = public.as_bytes().to_vec();
+    signed.push(0);
+    signed.extend_from_slice(message);
+    let half = WeakDigester.sha256(&signed);
+    [half, half].concat()
 }
 
 impl Signer for WeakSigner {
@@ -106,5 +116,26 @@ impl Signer for WeakSigner {
             }),
             private_key: Secret::new(private),
         })
+    }
+
+    fn sign(
+        &self,
+        _algorithm: SignatureAlgorithm,
+        private_key: &Secret,
+        message: &[u8],
+    ) -> Result<Vec<u8>, CryptoFailure> {
+        let public = to_hex(&WeakDigester.sha256(private_key.expose()));
+        Ok(sign_weakly(&public, message))
+    }
+
+    fn verify(
+        &self,
+        _algorithm: SignatureAlgorithm,
+        public_jwk: &serde_json::Value,
+        message: &[u8],
+        signature: &[u8],
+    ) -> Result<bool, CryptoFailure> {
+        let public = public_jwk["x"].as_str().ok_or(CryptoFailure)?;
+        Ok(sign_weakly(public, message) == signature)
     }
 }

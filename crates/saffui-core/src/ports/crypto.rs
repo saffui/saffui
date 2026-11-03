@@ -80,7 +80,7 @@ pub trait Sealer: Send + Sync {
 }
 
 /// The signature algorithms of the product. One is listed only once the
-/// adapter makes keys of it.
+/// adapter generates, signs and verifies with it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SignatureAlgorithm {
     Es256,
@@ -127,4 +127,31 @@ pub trait Signer: Send + Sync {
         &self,
         algorithm: SignatureAlgorithm,
     ) -> Result<GeneratedSigningKey, CryptoFailure>;
+
+    /// Signs `message`. The signature is in the form a JWS carries: for
+    /// ES256, the 64 bytes of `r` then `s`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the private key cannot be read or is not of this algorithm.
+    fn sign(
+        &self,
+        algorithm: SignatureAlgorithm,
+        private_key: &Secret,
+        message: &[u8],
+    ) -> Result<Vec<u8>, CryptoFailure>;
+
+    /// Tells whether `signature` is the one of `message` under the public
+    /// key. A signature that does not verify is `Ok(false)`.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a key that cannot be read or that is not of this algorithm.
+    fn verify(
+        &self,
+        algorithm: SignatureAlgorithm,
+        public_jwk: &serde_json::Value,
+        message: &[u8],
+        signature: &[u8],
+    ) -> Result<bool, CryptoFailure>;
 }

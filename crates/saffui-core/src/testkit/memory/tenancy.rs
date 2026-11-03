@@ -7,6 +7,7 @@ use crate::tenancy::{Realm, Tenant};
 
 impl MemoryUnitOfWork {
     fn keep_tenant(&mut self, tenant: &Tenant) -> Result<(), StorageError> {
+        self.refuse_in_snapshot()?;
         if tenant.id != self.scope.tenant()
             || self.working.tenants.contains_key(&tenant.id.as_uuid())
         {
@@ -19,6 +20,7 @@ impl MemoryUnitOfWork {
     }
 
     fn keep_realm(&mut self, realm: &Realm) -> Result<(), StorageError> {
+        self.refuse_in_snapshot()?;
         let in_scope = realm.tenant == self.scope.tenant() && realm.id == self.scope.realm();
         if !in_scope
             || !self.working.tenants.contains_key(&realm.tenant.as_uuid())

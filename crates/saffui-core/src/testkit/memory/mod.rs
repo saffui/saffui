@@ -5,6 +5,7 @@
 //! The double serializes nothing and enforces no row security: a property
 //! held by SQL is proven on Postgres, never here.
 
+mod audit;
 mod tenancy;
 
 use std::collections::HashMap;
@@ -18,14 +19,17 @@ use super::clock::FixedClock;
 use super::digest::WeakDigester;
 use super::random::CountingRandom;
 use crate::app::App;
+use crate::audit::store::ChainedEvent;
 use crate::ports::storage::{RealmLocation, Storage, StorageError, StorageUnavailable, UnitOfWork};
 use crate::settings::{PublicOrigin, Settings};
-use crate::tenancy::{Realm, RealmName, RealmScope, Tenant};
+use crate::tenancy::{Realm, RealmId, RealmName, RealmScope, Tenant};
 
 #[derive(Clone, Default)]
 pub(crate) struct State {
     pub(crate) tenants: HashMap<Uuid, Tenant>,
     pub(crate) realms: HashMap<Uuid, Realm>,
+    /// The chain of each realm, by realm.
+    pub(crate) audit: HashMap<Uuid, Vec<ChainedEvent>>,
 }
 
 #[derive(Default)]
@@ -43,9 +47,19 @@ pub struct MemoryUnitOfWork {
     /// As on a database, a refused statement ends the transaction: nothing
     /// that follows is kept.
     failed: bool,
+    /// Opened as a snapshot: every write is refused.
+    read_only: bool,
 }
 
 impl MemoryUnitOfWork {
+    /// As a read-only transaction does: a write in a snapshot is refused.
+    pub(crate) fn refuse_in_snapshot(&self) -> Result<(), StorageError> {
+        if self.read_only {
+            return Err(StorageError::Failed);
+        }
+        Ok(())
+    }
+
     pub(crate) fn record_refusal<T>(
         &mut self,
         outcome: Result<T, StorageError>,
@@ -111,6 +125,51 @@ impl MemoryStorage {
         }
     }
 
+    /// The envelopes of the chain of a realm, in order, as JSON.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a stored envelope is not JSON, which the double never writes.
+    #[must_use]
+    pub fn read_audit_envelopes(&self, realm: RealmId) -> Vec<serde_json::Value> {
+        lock(&self.state)
+            .audit
+            .get(&realm.as_uuid())
+            .map(|chain| {
+                chain
+                    .iter()
+                    .map(|event| serde_json::from_slice(&event.envelope).expect("a JSON envelope"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Changes the chain of a realm behind the back of the product, as
+    /// someone with a hand in the database would.
+    pub fn tamper_with_audit_chain(
+        &self,
+        realm: RealmId,
+        tamper: impl FnOnce(&mut Vec<ChainedEvent>),
+    ) {
+        tamper(lock(&self.state).audit.entry(realm.as_uuid()).or_default());
+    }
+
+    fn open(
+        &self,
+        scope: RealmScope,
+        read_only: bool,
+    ) -> Result<Box<dyn UnitOfWork>, StorageError> {
+        self.check_reachable()?;
+        self.units_of_work.fetch_add(1, Ordering::Relaxed);
+        Ok(Box::new(MemoryUnitOfWork {
+            scope,
+            working: lock(&self.state).clone(),
+            shared: Arc::clone(&self.state),
+            failed: false,
+            read_only,
+        }))
+    }
+
     fn check_reachable(&self) -> Result<(), StorageUnavailable> {
         match *lock(&self.outage) {
             Some(reason) => Err(reason),
@@ -146,14 +205,12 @@ impl Storage for MemoryStorage {
     }
 
     async fn begin(&self, scope: RealmScope) -> Result<Box<dyn UnitOfWork>, StorageError> {
-        self.check_reachable()?;
-        self.units_of_work.fetch_add(1, Ordering::Relaxed);
-        Ok(Box::new(MemoryUnitOfWork {
-            scope,
-            working: lock(&self.state).clone(),
-            shared: Arc::clone(&self.state),
-            failed: false,
-        }))
+        self.open(scope, false)
+    }
+
+    async fn begin_snapshot(&self, scope: RealmScope) -> Result<Box<dyn UnitOfWork>, StorageError> {
+        // The copy a unit of work starts from is a snapshot already.
+        self.open(scope, true)
     }
 }
 
@@ -175,12 +232,18 @@ impl UnitOfWork for MemoryUnitOfWork {
 #[cfg(test)]
 mod tests {
     use super::MemoryStorage;
-    use crate::testkit::contract::check_tenancy_contract;
+    use crate::testkit::contract::{check_audit_contract, check_tenancy_contract};
     use crate::testkit::drive::complete;
 
     #[test]
     fn the_double_passes_the_tenancy_contract() {
         let (app, _storage) = MemoryStorage::wire();
         complete(check_tenancy_contract(&app));
+    }
+
+    #[test]
+    fn the_double_passes_the_audit_contract() {
+        let (app, _storage) = MemoryStorage::wire();
+        complete(check_audit_contract(&app));
     }
 }

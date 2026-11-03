@@ -19,7 +19,7 @@ use saffui_core::ports::storage::{
 };
 use saffui_core::tenancy::{RealmId, RealmName, RealmScope, TenantId};
 
-use crate::work::PgUnitOfWork;
+use crate::work::{Mode, PgUnitOfWork};
 
 /// How long a probe waits for a connection and for its answer. Short: a
 /// probe that hangs tells the orchestrator nothing.
@@ -87,6 +87,14 @@ impl Storage for PgStorage {
     }
 
     async fn begin(&self, scope: RealmScope) -> Result<Box<dyn UnitOfWork>, StorageError> {
-        Ok(Box::new(PgUnitOfWork::open(&self.pool, scope).await?))
+        Ok(Box::new(
+            PgUnitOfWork::open(&self.pool, scope, Mode::Normal).await?,
+        ))
+    }
+
+    async fn begin_snapshot(&self, scope: RealmScope) -> Result<Box<dyn UnitOfWork>, StorageError> {
+        Ok(Box::new(
+            PgUnitOfWork::open(&self.pool, scope, Mode::Snapshot).await?,
+        ))
     }
 }

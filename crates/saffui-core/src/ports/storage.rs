@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 
+use crate::audit::store::AuditStore;
 use crate::tenancy::store::RealmStore;
 use crate::tenancy::{RealmId, RealmName, RealmScope, TenantId};
 
@@ -14,6 +15,11 @@ pub trait Storage: Send + Sync {
 
     /// Opens a unit of work bound to one tenant and one realm.
     async fn begin(&self, scope: RealmScope) -> Result<Box<dyn UnitOfWork>, StorageError>;
+
+    /// Opens a unit of work that reads its scope as it stood at one instant,
+    /// whatever commits meanwhile, and refuses every write. For a read that
+    /// must agree with itself across several statements, as a verification.
+    async fn begin_snapshot(&self, scope: RealmScope) -> Result<Box<dyn UnitOfWork>, StorageError>;
 }
 
 /// Where a realm is, as the directory of realm names tells it.
@@ -27,7 +33,7 @@ pub struct RealmLocation {
 /// One transaction, bound to its scope, that reaches nothing outside it.
 /// Abandoned, it leaves nothing: only `commit` keeps what was written.
 #[async_trait]
-pub trait UnitOfWork: RealmStore + Send {
+pub trait UnitOfWork: RealmStore + AuditStore + Send {
     fn scope(&self) -> RealmScope;
 
     /// Keeps everything written since the unit of work was opened.

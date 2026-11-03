@@ -331,14 +331,13 @@ async fn an_abandoned_unit_of_work_gives_its_connection_back() {
 }
 
 #[tokio::test]
-async fn a_statement_that_waits_for_a_lock_past_its_bound_is_told_busy() {
-    // The pool bounds a lock at a minute here: only the bound of the unit of
-    // work gives up before the test does.
-    let patient_pool = PoolSettings {
-        wait_timeout: Duration::from_mins(1),
+async fn a_statement_waits_for_a_lock_as_long_as_the_pool_waits_then_is_told_busy() {
+    // The bound of a lock is the patience of the pool, not a figure of its own.
+    let short_pool = PoolSettings {
+        wait_timeout: Duration::from_secs(2),
         ..PoolSettings::default()
     };
-    let (app, database) = support::wire_on_postgres(patient_pool).await;
+    let (app, database) = support::wire_on_postgres(short_pool).await;
     provision(&app, "Acme", "acme").await;
     let (_name, scope) = saffui_core::tenancy::resolve::resolve_realm(&app, "acme")
         .await
@@ -350,10 +349,12 @@ async fn a_statement_that_waits_for_a_lock_past_its_bound_is_told_busy() {
         .expect("a lock held");
 
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let started = std::time::Instant::now();
     // Bounded here too: without a bound, the read would wait forever.
     let read = tokio::time::timeout(Duration::from_secs(20), work.read_realm())
         .await
         .expect("the read gave up the lock before 20 s");
+    let waited = started.elapsed();
     drop(work);
     owner
         .batch_execute("ROLLBACK")
@@ -364,6 +365,10 @@ async fn a_statement_that_waits_for_a_lock_past_its_bound_is_told_busy() {
         read,
         Err(StorageError::Unavailable(StorageUnavailable::TimedOut)),
         "busy, not failed"
+    );
+    assert!(
+        waited >= Duration::from_secs(2) && waited < Duration::from_secs(4),
+        "the lock was waited for as long as the pool waits: {waited:?}"
     );
 }
 

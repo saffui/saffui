@@ -10,12 +10,15 @@ use crate::audit::append::record_event;
 use crate::directory::create::translate_hashing_failure;
 use crate::directory::{PASSWORD_MAX_BYTES, Person, normalize_username};
 use crate::error::{ErrorCode, Failure};
-use crate::login::device::{DeviceMark, issue_device_mark, recognize_device_mark};
+use crate::login::device::{
+    DeviceMark, MOST_BROWSERS_PER_PERSON, MOST_MARKS, issue_device_mark, recognize_device_mark,
+};
 use crate::login::session::{SessionTicket, open_session};
+use crate::login::store::KnownBrowser;
 use crate::login::throttle::{
     MAX_DAILY_FAILURES, MAX_DAILY_FAILURES_PER_BROWSER, MAX_RECENT_ATTEMPTS_PER_ADDRESS,
-    MAX_RECENT_FAILURES_PER_NAME, is_locked, start_bucket, start_long_bucket, start_long_window,
-    start_window, write_address_bucket, write_network_bucket,
+    MAX_RECENT_ATTEMPTS_PER_BROWSER, MAX_RECENT_FAILURES_PER_NAME, is_locked, start_bucket,
+    start_long_bucket, start_long_window, start_window, write_address_bucket, write_network_bucket,
 };
 use crate::ports::storage::UnitOfWork;
 use crate::secret::Secret;
@@ -42,6 +45,8 @@ struct Counters {
 /// The keys of a browser that signed in with this name before: its own
 /// count, apart from the guesses made on the name from elsewhere.
 struct DeviceCounters {
+    device: Uuid,
+    attempts: Vec<u8>,
     recent: Vec<u8>,
     today: Vec<u8>,
 }
@@ -112,6 +117,8 @@ fn device_counters(
 ) -> Result<DeviceCounters, Failure> {
     let parts: [&[u8]; 2] = [device.as_bytes(), typed.as_bytes()];
     Ok(DeviceCounters {
+        device,
+        attempts: digest_counter(app, scope, 10, &[device.as_bytes()])?,
         recent: digest_counter(app, scope, 6, &parts)?,
         today: digest_counter(app, scope, 7, &parts)?,
     })
@@ -119,25 +126,81 @@ fn device_counters(
 
 /// Counts an attempt against its address, or refuses it once the address
 /// tried too often in the window: a hash is ours to pay, whatever name is
-/// typed.
+/// typed. A browser the realm knows is counted under its mark instead: an
+/// address it shares does not hold it.
 async fn admit_attempt(
     work: &mut dyn UnitOfWork,
     counters: &Counters,
+    device: Option<&DeviceCounters>,
     now: OffsetDateTime,
 ) -> Result<(), Failure> {
-    let Some(counter) = &counters.address else {
+    let (counter, most) = match device {
+        Some(device) => (Some(&device.attempts), MAX_RECENT_ATTEMPTS_PER_BROWSER),
+        None => (counters.address.as_ref(), MAX_RECENT_ATTEMPTS_PER_ADDRESS),
+    };
+    let Some(counter) = counter else {
         return Ok(());
     };
     if work
         .count_login_failures(counter, start_window(now))
         .await?
-        >= MAX_RECENT_ATTEMPTS_PER_ADDRESS
+        >= most
     {
         return Err(Failure::new(ErrorCode::HashingBusy));
     }
     work.record_login_failure(counter, start_bucket(now))
         .await?;
     Ok(())
+}
+
+/// Tells whether the name is locked for this attempt. A known browser
+/// answers for its own failures, and only for them.
+async fn is_name_locked(
+    work: &mut dyn UnitOfWork,
+    counters: &Counters,
+    device: Option<&DeviceCounters>,
+    now: OffsetDateTime,
+) -> Result<bool, Failure> {
+    let (window, day) = (start_window(now), start_long_window(now));
+    if let Some(device) = device {
+        return Ok(
+            is_locked(work.count_login_failures(&device.recent, window).await?)
+                || work.count_login_failures(&device.today, day).await?
+                    >= MAX_DAILY_FAILURES_PER_BROWSER,
+        );
+    }
+    let failed_for_the_name = work.count_login_failures(&counters.name, window).await?;
+    let failed_today = work.count_login_failures(&counters.name_today, day).await?;
+    let recently = match &counters.address_and_name {
+        // Known addresses are held to a few guesses each. The name alone is
+        // held to a bound that guesses spread over many addresses reach.
+        Some(by_both) => {
+            is_locked(work.count_login_failures(by_both, window).await?)
+                || failed_for_the_name >= MAX_RECENT_FAILURES_PER_NAME
+        }
+        None => is_locked(failed_for_the_name),
+    };
+    Ok(recently || failed_today >= MAX_DAILY_FAILURES)
+}
+
+/// The browser among `proven` that the realm keeps for this very person,
+/// and has not let expire.
+async fn find_known_browser(
+    work: &mut dyn UnitOfWork,
+    proven: &[Uuid],
+    person: Option<&Person>,
+    now: OffsetDateTime,
+) -> Result<Option<Uuid>, Failure> {
+    let Some(person) = person else {
+        return Ok(None);
+    };
+    for device in proven {
+        let kept = work.read_known_browser(*device).await?;
+        if kept.is_some_and(|kept| kept.person == person.id && kept.expires_at > now) {
+            return Ok(Some(*device));
+        }
+    }
+    Ok(None)
 }
 
 /// Signs a person in with a username and a password.
@@ -148,9 +211,11 @@ async fn admit_attempt(
 /// anything is hashed, and so is an address that spent what it may attempt.
 /// No transaction is held while the password is hashed.
 ///
-/// A browser that brings the mark of an earlier sign-in with this name is
-/// counted apart: guesses made on the name from elsewhere do not lock it
-/// out, and its own failures do not lock the name for anyone else.
+/// A browser that brings the mark of an earlier sign-in with this name, and
+/// that the realm still keeps for this person, is counted apart: guesses
+/// made on the name from elsewhere do not lock it out, an address it shares
+/// does not hold it, and its own failures do not lock the name for anyone
+/// else. A cookie may carry the marks of a few people.
 ///
 /// # Errors
 ///
@@ -164,7 +229,7 @@ pub async fn sign_in(
     typed_name: &str,
     password: Secret,
     caller: Option<IpAddr>,
-    known_browser: Option<&DeviceMark>,
+    known_browsers: &[DeviceMark],
 ) -> Result<SignedIn, Failure> {
     let refused = || Failure::new(ErrorCode::SignInFailed);
     let username = normalize_username(typed_name).ok();
@@ -179,42 +244,31 @@ pub async fn sign_in(
     let typed = typed_name.trim().to_lowercase();
     let counters = name_counters(app, scope, &typed, caller)?;
     let now = app.now();
-    let (window, day) = (start_window(now), start_long_window(now));
-    let device = match known_browser {
-        Some(mark) if recognize_device_mark(app, scope, mark, &typed, now)? => {
-            Some(device_counters(app, scope, &typed, mark.device)?)
+    // The marks made for the name typed: their MAC proves them before
+    // anything is read.
+    let mut proven = Vec::new();
+    for mark in known_browsers.iter().take(MOST_MARKS) {
+        if recognize_device_mark(app, scope, mark, &typed, now)? {
+            proven.push(mark.device);
         }
-        _ => None,
-    };
+    }
 
     // One unit of work reads the counters and counts this attempt against
     // its address. It commits before anything is hashed: attempts made
     // together are each counted, and none holds a transaction meanwhile.
     let mut work = app.storage.begin(scope).await?;
-    admit_attempt(work.as_mut(), &counters, now).await?;
-    // A known browser answers for its own failures, and only for them.
-    let locked = if let Some(device) = &device {
-        is_locked(work.count_login_failures(&device.recent, window).await?)
-            || work.count_login_failures(&device.today, day).await?
-                >= MAX_DAILY_FAILURES_PER_BROWSER
-    } else {
-        let failed_for_the_name = work.count_login_failures(&counters.name, window).await?;
-        let failed_today = work.count_login_failures(&counters.name_today, day).await?;
-        let recently = match &counters.address_and_name {
-            // Known addresses are held to a few guesses each. The name alone
-            // is held to a bound that guesses spread over many addresses reach.
-            Some(by_both) => {
-                is_locked(work.count_login_failures(by_both, window).await?)
-                    || failed_for_the_name >= MAX_RECENT_FAILURES_PER_NAME
-            }
-            None => is_locked(failed_for_the_name),
-        };
-        recently || failed_today >= MAX_DAILY_FAILURES
+    // Read whether or not the name is locked: both paths read as much.
+    let person = match &username {
+        Some(username) => work.read_person_by_username(username).await?,
+        None => None,
     };
-    let person = match (&username, locked) {
-        (Some(username), false) => work.read_person_by_username(username).await?,
-        _ => None,
-    };
+    let device = find_known_browser(work.as_mut(), &proven, person.as_ref(), now)
+        .await?
+        .map(|device| device_counters(app, scope, &typed, device))
+        .transpose()?;
+    admit_attempt(work.as_mut(), &counters, device.as_ref(), now).await?;
+    let locked = is_name_locked(work.as_mut(), &counters, device.as_ref(), now).await?;
+    let person = person.filter(|_| !locked);
     // Read for an unknown name too, under an identifier no person has: the
     // two paths make as many trips to the storage, and take as long.
     let reading_for = person.as_ref().map_or(Uuid::nil(), |person| person.id);
@@ -266,6 +320,15 @@ pub async fn sign_in(
         work.forget_login_failures(&device.recent).await?;
         work.forget_login_failures(&device.today).await?;
     }
+    let device_mark = issue_device_mark(app, scope, &typed, device.map(|device| device.device))?;
+    let browser = KnownBrowser {
+        device: device_mark.device,
+        person: person.id,
+        expires_at: OffsetDateTime::from_unix_timestamp(device_mark.expires_at)
+            .map_err(|_| Failure::new(ErrorCode::Internal))?,
+    };
+    work.remember_browser(&browser, MOST_BROWSERS_PER_PERSON)
+        .await?;
     let (session, ticket) = open_session(app, work.as_mut(), person.id).await?;
     let opened =
         json!({ "person_id": person.id.to_string(), "session_id": session.id.to_string() });
@@ -275,7 +338,7 @@ pub async fn sign_in(
         person,
         session: session.id,
         ticket,
-        device_mark: issue_device_mark(app, scope, &typed)?,
+        device_mark,
     })
 }
 
@@ -308,7 +371,7 @@ mod tests {
             name,
             Secret::new(password.as_bytes().to_vec()),
             None,
-            None,
+            &[],
         ))
         .map(|signed_in| signed_in.person.username)
         .map_err(|failure| failure.code)
@@ -427,7 +490,7 @@ mod tests {
             name,
             Secret::new(password.as_bytes().to_vec()),
             caller,
-            None,
+            &[],
         ))
         .map(|signed_in| signed_in.person.username)
         .map_err(|failure| failure.code)
@@ -625,7 +688,7 @@ mod tests {
             name,
             Secret::new(password.as_bytes().to_vec()),
             caller,
-            mark,
+            mark.map_or(&[][..], std::slice::from_ref),
         ))
         .map_err(|failure| failure.code)
     }
@@ -789,6 +852,75 @@ mod tests {
                 .map(|_| ()),
             Err(ErrorCode::SignInFailed),
             "a mark left on a shared machine buys twenty guesses a day, no more"
+        );
+    }
+
+    #[test]
+    fn a_known_browser_behind_an_address_that_spent_its_attempts_still_signs_in() {
+        let (app, _storage) = MemoryStorage::wire();
+        let scope = complete(create_realm(&app, "acme"));
+        complete(create_person(&app, scope, "ada", PASSWORD));
+        let shared = "203.0.113.7";
+        let mark = attempt_with_mark(&app, scope, shared, "ada", PASSWORD, None)
+            .expect("a first sign-in")
+            .device_mark;
+        // Others behind the same address spend what it may attempt.
+        for round in 0..30 {
+            let name = format!("nobody-{round}");
+            let _ = attempt_with_mark(&app, scope, shared, &name, "a guess", None);
+        }
+
+        assert_eq!(
+            attempt_with_mark(&app, scope, shared, "ada", PASSWORD, None).map(|_| ()),
+            Err(ErrorCode::HashingBusy),
+            "a browser the realm does not know is held with its address"
+        );
+        assert!(
+            attempt_with_mark(&app, scope, shared, "ada", PASSWORD, Some(&mark)).is_ok(),
+            "the known browser is counted under its mark, not its address"
+        );
+    }
+
+    #[test]
+    fn a_mark_whose_browser_the_realm_no_longer_keeps_passes_no_lock() {
+        let (app, _storage, clock) = MemoryStorage::wire_with_clock();
+        let scope = complete(create_realm(&app, "acme"));
+        complete(create_person(&app, scope, "ada", PASSWORD));
+        let mut marks = Vec::new();
+        // Eleven browsers, a second apart: the realm keeps the ten that
+        // expire last, and forgets the first.
+        for browser in 0..11 {
+            let address = format!("198.51.100.{}", browser + 1);
+            marks.push(
+                attempt_with_mark(&app, scope, &address, "ada", PASSWORD, None)
+                    .expect("a sign-in")
+                    .device_mark,
+            );
+            clock.advance(Duration::from_secs(1));
+        }
+        // Five guesses from one address lock the name there, for every
+        // browser the realm does not know.
+        let there = "192.0.2.9";
+        for _ in 0..5 {
+            assert_eq!(
+                attempt_with_mark(&app, scope, there, "ada", "a guess", None).map(|_| ()),
+                Err(ErrorCode::SignInFailed)
+            );
+        }
+        assert_eq!(
+            attempt_with_mark(&app, scope, there, "ada", PASSWORD, None).map(|_| ()),
+            Err(ErrorCode::SignInFailed)
+        );
+
+        assert!(
+            attempt_with_mark(&app, scope, "192.0.2.9", "ada", PASSWORD, Some(&marks[10])).is_ok(),
+            "a browser the realm keeps passes the lock"
+        );
+        assert_eq!(
+            attempt_with_mark(&app, scope, "192.0.2.9", "ada", PASSWORD, Some(&marks[0]))
+                .map(|_| ()),
+            Err(ErrorCode::SignInFailed),
+            "its MAC still holds, but the realm forgot the browser"
         );
     }
 }

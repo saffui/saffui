@@ -1,6 +1,7 @@
 //! One file per storage interface of the core.
 
 mod audit;
+mod browsers;
 mod clients;
 mod codes;
 mod keys;

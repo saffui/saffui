@@ -3,8 +3,9 @@
 
 use pgcore::pool::PoolSettings;
 use saffui_core::testkit::contract::{
-    check_clients_contract, check_codes_contract, check_keys_contract, check_persons_contract,
-    check_refresh_contract, check_sign_in_contract, check_tenancy_contract,
+    check_clients_contract, check_codes_contract, check_keys_contract,
+    check_known_browsers_contract, check_persons_contract, check_refresh_contract,
+    check_sign_in_contract, check_tenancy_contract,
 };
 
 mod support;
@@ -56,6 +57,13 @@ async fn postgres_passes_the_refresh_contract() {
     let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
 
     check_refresh_contract(&app).await;
+}
+
+#[tokio::test]
+async fn postgres_passes_the_known_browsers_contract() {
+    let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
+
+    check_known_browsers_contract(&app).await;
 }
 
 /// A rotation still in flight when its family is revoked writes a token the

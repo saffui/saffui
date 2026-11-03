@@ -638,10 +638,19 @@ async fn submit_password(
     password: &str,
     browser: Option<&str>,
 ) -> Answer {
+    submit_password_as(product, "ada", password, browser).await
+}
+
+async fn submit_password_as(
+    product: &saffui_core::app::App,
+    name: &str,
+    password: &str,
+    browser: Option<&str>,
+) -> Answer {
     let (request, flow) = start_sign_in(product).await;
     let cookies = browser.map_or_else(|| flow.clone(), |more| format!("{flow}; {more}"));
     let form = format!(
-        "request={request}&username=ada&password={}",
+        "request={request}&username={name}&password={}",
         password.replace(' ', "+")
     );
     post(
@@ -677,12 +686,51 @@ async fn the_browser_that_signed_in_before_brings_its_mark_back_through_a_lock()
 
     let through = submit_password(&product, PASSWORD, Some(&mark)).await;
     assert_eq!(through.status, StatusCode::SEE_OTHER, "{}", through.body);
-    assert!(
-        through
-            .read_cookie("__Host-saffui_mark_acme=")
-            .is_some_and(|next| next != mark),
-        "a new mark for the next time"
+    let renewed = through
+        .read_cookie("__Host-saffui_mark_acme=")
+        .expect("the mark, renewed");
+    assert_eq!(
+        renewed.split('.').nth(1),
+        mark.split('.').nth(1),
+        "the browser keeps its device"
     );
+}
+
+#[actix_web::test]
+async fn a_browser_two_people_sign_in_on_keeps_a_mark_for_each() {
+    let product = start().await;
+    let (_, scope) = saffui_core::tenancy::resolve::resolve_realm(&product, "acme")
+        .await
+        .expect("the realm");
+    create_person(&product, scope, "bob", PASSWORD).await;
+    let of_ada = submit_password(&product, PASSWORD, None)
+        .await
+        .read_cookie("__Host-saffui_mark_acme=")
+        .expect("the mark of ada");
+    let of_both = submit_password_as(&product, "bob", PASSWORD, Some(&of_ada))
+        .await
+        .read_cookie("__Host-saffui_mark_acme=")
+        .expect("the marks of both");
+    let ada_alone = of_ada.trim_start_matches("__Host-saffui_mark_acme=");
+    assert!(
+        of_both.ends_with(&format!("~{ada_alone}")),
+        "the mark of bob first, then the one of ada: {of_both}"
+    );
+
+    // Each name locked from elsewhere, the browser passes for both.
+    for name in ["ada", "bob"] {
+        for _ in 0..5 {
+            let refused = submit_password_as(&product, name, "a guess", None).await;
+            assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+        }
+        let through = submit_password_as(&product, name, PASSWORD, Some(&of_both)).await;
+        assert_eq!(
+            through.status,
+            StatusCode::SEE_OTHER,
+            "{name}: {}",
+            through.body
+        );
+    }
 }
 
 #[actix_web::test]

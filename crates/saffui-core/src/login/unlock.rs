@@ -75,7 +75,7 @@ mod tests {
             "ada",
             Secret::new(password.as_bytes().to_vec()),
             Some(address.parse().expect("an address")),
-            None,
+            &[],
         ))
         .map(|_| ())
         .map_err(|failure| failure.code)

@@ -251,7 +251,7 @@ pub async fn run_code_flow(app: &App, flow: CodeFlow<'_>) -> SignedInApplication
         name: flow.username,
         password: Secret::new(flow.password.as_bytes().to_vec()),
         caller: None,
-        known_browser: None,
+        known_browsers: &[],
     };
     let signed_in = finish_sign_in(app, flow.realm, request, &browser_secret, typed)
         .await

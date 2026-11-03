@@ -8,6 +8,7 @@ use saffui_core::app::App;
 use saffui_core::directory::Person;
 use saffui_core::ids::mint_id;
 use saffui_core::login::session::{Session, SessionState};
+use saffui_core::login::store::KnownBrowser;
 use saffui_core::oidc::code::{AuthorizationCode, PendingAuthorization};
 use saffui_core::ports::storage::StorageError;
 use saffui_core::retention::{PurgeReport, run_retention_pass};
@@ -21,7 +22,7 @@ use tokio_postgres::Client;
 mod support;
 
 /// Writes, in one realm, a row past its keeping and a row still of use in
-/// each of the five tables retention reads.
+/// each of the six tables retention reads.
 async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
     let identify = || mint_id(app).expect("an identifier");
     let person = Person {
@@ -52,6 +53,16 @@ async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
             expires_at,
         };
         work.insert_session(&session).await.expect("a session");
+        work.remember_browser(
+            &KnownBrowser {
+                device: identify(),
+                person: person.id,
+                expires_at,
+            },
+            10,
+        )
+        .await
+        .expect("a known browser");
         work.insert_refresh_token(&RefreshToken {
             token_digest: vec![digest; 32],
             family: identify(),
@@ -103,16 +114,17 @@ async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
     work.commit().await.expect("a commit");
 }
 
-const TABLES: [&str; 5] = [
+const TABLES: [&str; 6] = [
     "authorization_requests",
     "authorization_codes",
     "refresh_tokens",
     "sessions",
+    "known_browsers",
     "login_failures",
 ];
 
-async fn count_rows(client: &Client) -> [i64; 5] {
-    let mut counted = [0; 5];
+async fn count_rows(client: &Client) -> [i64; 6] {
+    let mut counted = [0; 6];
     for (slot, table) in TABLES.into_iter().enumerate() {
         counted[slot] = client
             .query_one(&format!("SELECT count(*) FROM {table}"), &[])
@@ -136,7 +148,7 @@ async fn a_pass_removes_what_expired_in_every_realm_and_leaves_what_is_still_of_
         .connect_directly()
         .await
         .expect("a connection");
-    assert_eq!(count_rows(&maintenance).await, [4; 5]);
+    assert_eq!(count_rows(&maintenance).await, [4; 6]);
     let retention = PgRetention::new(database.plan(RETENTION_ROLE));
 
     let first = run_retention_pass(&retention, now).await;
@@ -146,12 +158,13 @@ async fn a_pass_removes_what_expired_in_every_realm_and_leaves_what_is_still_of_
         codes: 2,
         refresh_tokens: 2,
         sessions: 2,
+        known_browsers: 2,
         failure_counters: 2,
     };
     assert_eq!(first, Ok(Some(two_of_each)));
     assert_eq!(
         count_rows(&maintenance).await,
-        [2; 5],
+        [2; 6],
         "what is still of use stays, in both realms"
     );
     assert_eq!(
@@ -177,7 +190,7 @@ async fn a_pass_under_the_role_that_serves_is_refused_and_removes_nothing() {
         .connect_directly()
         .await
         .expect("a connection");
-    assert_eq!(count_rows(&maintenance).await, [2; 5]);
+    assert_eq!(count_rows(&maintenance).await, [2; 6]);
 }
 
 #[tokio::test]
@@ -202,7 +215,7 @@ async fn a_pass_under_a_role_that_may_do_more_than_purge_is_refused_and_removes_
         .connect_directly()
         .await
         .expect("a connection");
-    assert_eq!(count_rows(&maintenance).await, [2; 5]);
+    assert_eq!(count_rows(&maintenance).await, [2; 6]);
     let under_retention = PgRetention::new(database.plan(RETENTION_ROLE));
     assert_eq!(under_retention.verify_role().await, Ok(()));
 }
@@ -216,7 +229,7 @@ async fn a_retention_role_with_any_right_beyond_purging_is_refused() {
         .await
         .expect("a connection");
     let purged = "authorization_requests, authorization_codes, refresh_tokens, sessions, \
-                  login_failures";
+                  known_browsers, login_failures";
     // Each bypasses row security as retention does, and holds one thing more.
     for role in [
         "saffui_test_retention_reads_all",
@@ -330,5 +343,5 @@ async fn a_pass_removes_more_than_one_batch_and_still_leaves_what_is_of_use() {
         .connect_directly()
         .await
         .expect("a connection");
-    assert_eq!(count_rows(&maintenance).await[4], 1);
+    assert_eq!(count_rows(&maintenance).await[5], 1);
 }

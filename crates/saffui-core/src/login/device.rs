@@ -23,6 +23,14 @@ pub const DEVICE_MARK_LIFETIME: Duration = Duration::days(90);
 /// The kind of what is digested for a mark, apart from every counter of the brake.
 const MARK_KIND: u8 = 8;
 
+/// How many marks one cookie carries: one per person who signs in on a
+/// shared browser, the latest first.
+pub const MOST_MARKS: usize = 4;
+
+/// How many browsers the realm keeps for one person: the ones that expire
+/// last. A mark whose browser is no longer kept is believed no more.
+pub const MOST_BROWSERS_PER_PERSON: u32 = 10;
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct DeviceMark {
     pub device: Uuid,
@@ -93,7 +101,46 @@ fn compute_mark_mac(
         .map_err(|_| Failure::new(ErrorCode::CryptoUnavailable))
 }
 
-/// Makes the mark of a browser that just signed in with this name.
+/// Reads the marks of a cookie, the latest first. What is not a mark is
+/// left out; past the first few, nothing is read.
+#[must_use]
+pub fn read_device_marks(cookie: &str) -> Vec<DeviceMark> {
+    cookie
+        .split('~')
+        .take(MOST_MARKS)
+        .filter_map(DeviceMark::parse)
+        .collect()
+}
+
+/// The value of a cookie that carries these marks.
+#[must_use]
+pub fn write_device_marks(marks: &[DeviceMark]) -> String {
+    marks
+        .iter()
+        .map(DeviceMark::write)
+        .collect::<Vec<_>>()
+        .join("~")
+}
+
+/// What a browser keeps after a sign-in: the new mark first, then the marks
+/// it brought that are of other browsers and still live, a few at most.
+#[must_use]
+pub fn keep_device_marks(
+    new: DeviceMark,
+    presented: &[DeviceMark],
+    now: OffsetDateTime,
+) -> Vec<DeviceMark> {
+    let replaced = new.device;
+    let others = presented
+        .iter()
+        .filter(move |mark| mark.device != replaced && mark.expires_at > now.unix_timestamp())
+        .take(MOST_MARKS - 1)
+        .cloned();
+    std::iter::once(new).chain(others).collect()
+}
+
+/// Makes the mark of a browser that just signed in with this name. A
+/// browser the realm knew keeps its device: its count stays its own.
 ///
 /// # Errors
 ///
@@ -102,8 +149,12 @@ pub(crate) fn issue_device_mark(
     app: &App,
     scope: RealmScope,
     typed: &str,
+    known: Option<Uuid>,
 ) -> Result<DeviceMark, Failure> {
-    let device = mint_id(app)?;
+    let device = match known {
+        Some(device) => device,
+        None => mint_id(app)?,
+    };
     let expires_at = (app.now() + DEVICE_MARK_LIFETIME).unix_timestamp();
     let mac = compute_mark_mac(app, scope, typed, device, expires_at)?;
     Ok(DeviceMark {
@@ -136,7 +187,10 @@ mod tests {
     use time::Duration;
     use uuid::Uuid;
 
-    use super::{DeviceMark, issue_device_mark, recognize_device_mark};
+    use super::{
+        DeviceMark, issue_device_mark, keep_device_marks, read_device_marks, recognize_device_mark,
+        write_device_marks,
+    };
     use crate::testkit::drive::complete;
     use crate::testkit::fixtures::create_realm;
     use crate::testkit::memory::MemoryStorage;
@@ -145,7 +199,7 @@ mod tests {
     fn a_mark_is_read_back_from_the_cookie_it_wrote() {
         let (app, _storage) = MemoryStorage::wire();
         let scope = complete(create_realm(&app, "acme"));
-        let mark = issue_device_mark(&app, scope, "ada").expect("a mark");
+        let mark = issue_device_mark(&app, scope, "ada", None).expect("a mark");
 
         assert_eq!(DeviceMark::parse(&mark.write()), Some(mark));
         for cookie in [
@@ -165,7 +219,7 @@ mod tests {
         let (app, _storage, clock) = MemoryStorage::wire_with_clock();
         let scope = complete(create_realm(&app, "acme"));
         let other = complete(create_realm(&app, "globex"));
-        let mark = issue_device_mark(&app, scope, "ada").expect("a mark");
+        let mark = issue_device_mark(&app, scope, "ada", None).expect("a mark");
         let known = |mark: &DeviceMark, scope, typed| {
             recognize_device_mark(&app, scope, mark, typed, app.now()).expect("a verdict")
         };
@@ -194,5 +248,47 @@ mod tests {
                 .expect("a duration"),
         ));
         assert!(!known(&mark, scope, "ada"), "expired");
+    }
+
+    #[test]
+    fn a_cookie_carries_a_few_marks_the_latest_first_and_drops_what_is_spent() {
+        let (app, _storage) = MemoryStorage::wire();
+        let scope = complete(create_realm(&app, "acme"));
+        let marks: Vec<DeviceMark> = ["ada", "bob", "eve", "joe", "max"]
+            .into_iter()
+            .map(|name| issue_device_mark(&app, scope, name, None).expect("a mark"))
+            .collect();
+
+        let cookie = write_device_marks(&marks);
+        assert_eq!(
+            read_device_marks(&cookie),
+            marks[..4],
+            "four are read, no more"
+        );
+        assert_eq!(
+            read_device_marks(&format!("junk~{}", marks[0].write())),
+            [marks[0].clone()]
+        );
+
+        let again = issue_device_mark(&app, scope, "bob", Some(marks[1].device)).expect("a mark");
+        assert_eq!(
+            again.device, marks[1].device,
+            "a known browser keeps its device"
+        );
+        let expired = DeviceMark {
+            expires_at: app.now().unix_timestamp(),
+            ..marks[2].clone()
+        };
+        let presented = [
+            marks[0].clone(),
+            marks[1].clone(),
+            expired,
+            marks[3].clone(),
+        ];
+        assert_eq!(
+            keep_device_marks(again.clone(), &presented, app.now()),
+            [again, marks[0].clone(), marks[3].clone()],
+            "the new mark first, the one it replaces and the spent one gone"
+        );
     }
 }

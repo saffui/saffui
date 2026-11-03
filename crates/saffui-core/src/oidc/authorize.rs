@@ -58,6 +58,9 @@ pub struct AuthorizationParameters<'a> {
     /// The address of the browser, as a believed proxy said: the sign-ins
     /// it leaves waiting are counted under it.
     pub caller: Option<IpAddr>,
+    /// The marks the browser keeps: a browser the realm knows leaves its
+    /// sign-ins waiting under its device, not under the address.
+    pub known_browsers: &'a [DeviceMark],
 }
 
 pub enum Authorization {
@@ -363,6 +366,36 @@ async fn hold_session_to_hint(
     ))
 }
 
+/// Keeps a request no session answered until a person signs in for it, and
+/// gives back its id and the secret only the browser that asked holds.
+async fn keep_pending_authorization(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    trusted: TrustedRequest,
+    expected_person: Option<Uuid>,
+) -> Result<(Uuid, Vec<u8>), Failure> {
+    let mut browser_secret = vec![0_u8; 32];
+    app.random
+        .fill(&mut browser_secret)
+        .map_err(|_| Failure::new(ErrorCode::RandomUnavailable))?;
+    let pending = PendingAuthorization {
+        id: mint_id(app)?,
+        browser_digest: app.digester.sha256(&browser_secret).to_vec(),
+        client_id: trusted.client.client_id,
+        redirect_uri: trusted.redirect_uri,
+        scopes: trusted.scopes,
+        state: trusted.state,
+        nonce: trusted.nonce,
+        code_challenge: trusted.code_challenge,
+        expires_at: app.now() + PENDING_LIFETIME,
+        expected_person,
+    };
+    work.insert_pending_authorization(&pending)
+        .await
+        .map_err(Failure::from)?;
+    Ok((pending.id, browser_secret))
+}
+
 /// Handles a request to the authorization endpoint.
 ///
 /// # Errors
@@ -443,26 +476,15 @@ pub async fn begin_authorization(
         return Ok(Authorization::Granted { location });
     }
 
-    admit_pending_sign_in(app, work.as_mut(), parameters.caller).await?;
-    let mut browser_secret = vec![0_u8; 32];
-    app.random
-        .fill(&mut browser_secret)
-        .map_err(|_| Failure::new(ErrorCode::RandomUnavailable))?;
-    let pending = PendingAuthorization {
-        id: mint_id(app)?,
-        browser_digest: app.digester.sha256(&browser_secret).to_vec(),
-        client_id: trusted.client.client_id,
-        redirect_uri: trusted.redirect_uri,
-        scopes: trusted.scopes,
-        state: trusted.state,
-        nonce: trusted.nonce,
-        code_challenge: trusted.code_challenge,
-        expires_at: app.now() + PENDING_LIFETIME,
-        expected_person,
-    };
-    work.insert_pending_authorization(&pending)
-        .await
-        .map_err(Failure::from)?;
+    admit_pending_sign_in(
+        app,
+        work.as_mut(),
+        parameters.caller,
+        parameters.known_browsers,
+    )
+    .await?;
+    let (request, browser_secret) =
+        keep_pending_authorization(app, work.as_mut(), trusted, expected_person).await?;
     work_slot
         .take()
         .ok_or(Failure::new(ErrorCode::Internal))?
@@ -470,7 +492,7 @@ pub async fn begin_authorization(
         .await
         .map_err(Failure::from)?;
     Ok(Authorization::SignInRequired {
-        request: pending.id,
+        request,
         browser_secret: Secret::new(browser_secret),
     })
 }
@@ -490,8 +512,8 @@ pub struct TypedSignIn<'a> {
     pub password: Secret,
     /// The address of the browser, as a believed proxy said.
     pub caller: Option<IpAddr>,
-    /// The mark of an earlier sign-in, when the browser brings one.
-    pub known_browser: Option<&'a DeviceMark>,
+    /// The marks of earlier sign-ins the browser brings, the latest first.
+    pub known_browsers: &'a [DeviceMark],
 }
 
 // Written by hand: the location carries the code.
@@ -542,7 +564,7 @@ pub async fn finish_sign_in(
         typed.name,
         typed.password,
         typed.caller,
-        typed.known_browser,
+        typed.known_browsers,
     )
     .await?;
 
@@ -615,6 +637,7 @@ mod tests {
     };
     use crate::app::App;
     use crate::error::ErrorCode;
+    use crate::login::device::DeviceMark;
     use crate::login::session::SessionTicket;
     use crate::oidc::errors::OAuthError;
     use crate::oidc::token::{TokenRequest, TokenResponse, grant_token};
@@ -647,6 +670,7 @@ mod tests {
             max_age: None,
             id_token_hint: None,
             caller: None,
+            known_browsers: &[],
         }
     }
 
@@ -704,7 +728,7 @@ mod tests {
                 name,
                 password: Secret::new(PASSWORD.as_bytes().to_vec()),
                 caller: None,
-                known_browser: None,
+                known_browsers: &[],
             },
         ))
         .expect("a signed-in person");
@@ -1076,7 +1100,7 @@ mod tests {
                     name: "ada",
                     password: Secret::new(password.as_bytes().to_vec()),
                     caller: None,
-                    known_browser: None,
+                    known_browsers: &[],
                 },
             ))
             .map(|_| ())
@@ -1120,7 +1144,7 @@ mod tests {
                 name: "ada",
                 password: Secret::new(PASSWORD.as_bytes().to_vec()),
                 caller: None,
-                known_browser: None,
+                known_browsers: &[],
             },
         ));
         assert_eq!(
@@ -1194,6 +1218,75 @@ mod tests {
         assert_eq!(ask_from("203.0.113.7"), Ok(()), "another address");
         clock.advance(Duration::from_mins(11));
         assert_eq!(ask_from("2001:db8:1:2::9"), Ok(()), "a window later");
+    }
+
+    #[test]
+    fn a_known_browser_leaves_its_sign_ins_waiting_under_its_device_not_its_address() {
+        use crate::login::throttle::MAX_PENDING_SIGN_INS_PER_ADDRESS;
+
+        let (app, _storage, _clock, _secret) = start(true);
+        let challenge = challenge();
+        let begun = complete(begin_authorization(&app, "acme", ask(&challenge), None))
+            .expect("a pending request");
+        let Authorization::SignInRequired {
+            request,
+            browser_secret,
+        } = begun
+        else {
+            panic!("a person without a session must sign in");
+        };
+        let known = complete(finish_sign_in(
+            &app,
+            "acme",
+            request,
+            &browser_secret,
+            TypedSignIn {
+                name: "ada",
+                password: Secret::new(PASSWORD.as_bytes().to_vec()),
+                caller: None,
+                known_browsers: &[],
+            },
+        ))
+        .expect("a signed-in person")
+        .device_mark;
+        let written = known.write();
+        let device = written.split('.').nth(1).expect("a device");
+        let unknown = DeviceMark::parse(&written.replace(device, &Uuid::nil().to_string()))
+            .expect("a mark of no kept browser");
+        let ask_with = |marks: &[DeviceMark]| {
+            let parameters = AuthorizationParameters {
+                caller: Some("198.51.100.7".parse().expect("an address")),
+                known_browsers: marks,
+                ..ask(&challenge)
+            };
+            match complete(begin_authorization(&app, "acme", parameters, None)) {
+                Ok(Authorization::SignInRequired { .. }) => Ok(()),
+                Err(AuthorizationRefusal::Shown(failure)) => Err(failure.code),
+                _ => panic!("neither a sign-in nor a refusal shown"),
+            }
+        };
+        for _ in 0..MAX_PENDING_SIGN_INS_PER_ADDRESS {
+            assert_eq!(ask_with(&[]), Ok(()));
+        }
+        assert_eq!(ask_with(&[]), Err(ErrorCode::SignInRequestsTooFrequent));
+        assert_eq!(
+            ask_with(std::slice::from_ref(&unknown)),
+            Err(ErrorCode::SignInRequestsTooFrequent),
+            "a device the realm does not keep counts for nothing"
+        );
+        assert_eq!(
+            ask_with(&[unknown, known.clone()]),
+            Ok(()),
+            "the browser the realm keeps is held by the address no longer"
+        );
+        for _ in 1..MAX_PENDING_SIGN_INS_PER_ADDRESS {
+            assert_eq!(ask_with(std::slice::from_ref(&known)), Ok(()));
+        }
+        assert_eq!(
+            ask_with(std::slice::from_ref(&known)),
+            Err(ErrorCode::SignInRequestsTooFrequent),
+            "and it is bounded as an address is"
+        );
     }
 
     #[test]
@@ -1329,7 +1422,7 @@ mod tests {
                     name,
                     password: Secret::new(PASSWORD.as_bytes().to_vec()),
                     caller: None,
-                    known_browser: None,
+                    known_browsers: &[],
                 },
             ))
             .expect("a signed-in person")

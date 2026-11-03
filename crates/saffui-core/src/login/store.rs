@@ -37,3 +37,28 @@ pub trait ThrottleStore {
     async fn forget_login_failures(&mut self, identifier_digest: &[u8])
     -> Result<(), StorageError>;
 }
+
+/// A browser a person signed in from, as the realm keeps it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KnownBrowser {
+    pub device: Uuid,
+    pub person: Uuid,
+    pub expires_at: OffsetDateTime,
+}
+
+#[async_trait]
+pub trait KnownBrowserStore {
+    /// Keeps a browser, or makes a kept one live longer. A browser kept for
+    /// another person is left as it was. Of the browsers of the person, all
+    /// but the `keep` that expire last are forgotten.
+    async fn remember_browser(
+        &mut self,
+        browser: &KnownBrowser,
+        keep: u32,
+    ) -> Result<(), StorageError>;
+
+    async fn read_known_browser(
+        &mut self,
+        device: Uuid,
+    ) -> Result<Option<KnownBrowser>, StorageError>;
+}

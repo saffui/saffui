@@ -14,11 +14,12 @@ use tokio_postgres::Client;
 pub const RETENTION_LOCK: i64 = 0x7361_6666_7569_0003;
 
 /// The tables a pass removes from, and the only ones its role may.
-const PURGED_TABLES: [&str; 5] = [
+const PURGED_TABLES: [&str; 6] = [
     "authorization_requests",
     "authorization_codes",
     "refresh_tokens",
     "sessions",
+    "known_browsers",
     "login_failures",
 ];
 
@@ -212,6 +213,13 @@ impl Retention for PgRetention {
                 &client,
                 "DELETE FROM sessions WHERE ctid = ANY (ARRAY(
                      SELECT ctid FROM sessions WHERE expires_at < $1 LIMIT $2))",
+                cutoffs.expired_before,
+            )
+            .await?,
+            known_browsers: remove_in_batches(
+                &client,
+                "DELETE FROM known_browsers WHERE ctid = ANY (ARRAY(
+                     SELECT ctid FROM known_browsers WHERE expires_at < $1 LIMIT $2))",
                 cutoffs.expired_before,
             )
             .await?,

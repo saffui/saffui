@@ -1,6 +1,7 @@
 //! Retention: what has no use left is removed. A pending request past its
 //! expiry can never be finished, a session past its expiry answers nothing,
-//! nor do its refresh tokens, and a counter of the brake older than every
+//! nor do its refresh tokens, a browser kept past its mark proves nothing,
+//! and a counter of the brake older than every
 //! window that reads it counts for nothing. A spent code is kept while what
 //! it obtained could still be taken back.
 //!
@@ -26,7 +27,8 @@ pub const CODES_KEPT: Duration = SESSION_LIFETIME;
 /// Where each table of a pass stops: rows older than these go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PurgeCutoffs {
-    /// Pending requests, sessions and refresh tokens that expired before this.
+    /// Pending requests, sessions, refresh tokens and known browsers that
+    /// expired before this.
     pub expired_before: OffsetDateTime,
     /// Codes that expired before this.
     pub codes_before: OffsetDateTime,
@@ -52,6 +54,7 @@ pub struct PurgeReport {
     pub codes: u64,
     pub refresh_tokens: u64,
     pub sessions: u64,
+    pub known_browsers: u64,
     pub failure_counters: u64,
 }
 

@@ -194,6 +194,24 @@ pub(crate) mod clients {
     ];
 }
 
+pub(crate) mod known_browsers {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "known_browsers",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// uuid
+    pub(crate) const DEVICE_ID: Column = Column("device_id");
+    /// uuid
+    pub(crate) const PERSON_ID: Column = Column("person_id");
+    /// timestamp with time zone
+    pub(crate) const EXPIRES_AT: Column = Column("expires_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[DEVICE_ID, PERSON_ID, EXPIRES_AT];
+}
+
 pub(crate) mod login_failures {
     use super::{Column, ScopeKeys, Table};
 
@@ -426,6 +444,7 @@ pub(crate) const TABLES: &[(Table, &[Column])] = &[
     (authorization_codes::TABLE, authorization_codes::ALL),
     (authorization_requests::TABLE, authorization_requests::ALL),
     (clients::TABLE, clients::ALL),
+    (known_browsers::TABLE, known_browsers::ALL),
     (login_failures::TABLE, login_failures::ALL),
     (password_credentials::TABLE, password_credentials::ALL),
     (persons::TABLE, persons::ALL),

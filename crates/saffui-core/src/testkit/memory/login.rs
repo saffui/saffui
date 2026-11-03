@@ -7,7 +7,7 @@ use crate::clients::store::ListWindow;
 use crate::directory::Person;
 use crate::directory::store::PersonStore;
 use crate::login::session::{Session, SessionState};
-use crate::login::store::{SessionStore, ThrottleStore};
+use crate::login::store::{KnownBrowser, KnownBrowserStore, SessionStore, ThrottleStore};
 use crate::oidc::code::{AuthorizationCode, CodeStore, PendingAuthorization, ReplayedCode};
 use crate::ports::storage::StorageError;
 
@@ -335,5 +335,54 @@ impl MemoryUnitOfWork {
             .get_mut(&self.scope.realm().as_uuid())?
             .iter_mut()
             .find(|kept| kept.code.code_digest == code_digest)
+    }
+}
+
+#[async_trait]
+impl KnownBrowserStore for MemoryUnitOfWork {
+    async fn remember_browser(
+        &mut self,
+        browser: &KnownBrowser,
+        keep: u32,
+    ) -> Result<(), StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        let kept = self
+            .working
+            .known_browsers
+            .entry(self.scope.realm().as_uuid())
+            .or_default();
+        match kept.iter_mut().find(|known| known.device == browser.device) {
+            Some(known) if known.person == browser.person => known.expires_at = browser.expires_at,
+            Some(_) => {}
+            None => kept.push(browser.clone()),
+        }
+        let mut of_the_person: Vec<(OffsetDateTime, Uuid)> = kept
+            .iter()
+            .filter(|known| known.person == browser.person)
+            .map(|known| (known.expires_at, known.device))
+            .collect();
+        // The order of the statement on Postgres: latest expiry first, then the device.
+        of_the_person.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.cmp(&right.1)));
+        let limit = usize::try_from(keep).unwrap_or(usize::MAX);
+        let forgotten: Vec<Uuid> = of_the_person
+            .into_iter()
+            .skip(limit)
+            .map(|(_, device)| device)
+            .collect();
+        kept.retain(|known| !forgotten.contains(&known.device));
+        Ok(())
+    }
+
+    async fn read_known_browser(
+        &mut self,
+        device: Uuid,
+    ) -> Result<Option<KnownBrowser>, StorageError> {
+        Ok(self
+            .working
+            .known_browsers
+            .get(&self.scope.realm().as_uuid())
+            .and_then(|kept| kept.iter().find(|known| known.device == device))
+            .cloned())
     }
 }

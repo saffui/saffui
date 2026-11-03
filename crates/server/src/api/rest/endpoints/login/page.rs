@@ -7,7 +7,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use saffui_core::app::App as Product;
 use saffui_core::error::{ErrorCode, ErrorKind, Failure};
-use saffui_core::login::device::{DEVICE_MARK_LIFETIME, DeviceMark};
+use saffui_core::login::device::{
+    DEVICE_MARK_LIFETIME, keep_device_marks, read_device_marks, write_device_marks,
+};
 use saffui_core::oidc::authorize::{TypedSignIn, finish_sign_in};
 use saffui_core::secret::Secret;
 use serde::Deserialize;
@@ -169,13 +171,14 @@ pub async fn submit_sign_in(
     };
 
     let device_cookie = name_device_cookie(&realm, secure);
-    let known_browser =
-        read_cookie(&http, &device_cookie).and_then(|value| DeviceMark::parse(&value));
+    let known_browsers = read_cookie(&http, &device_cookie)
+        .map(|value| read_device_marks(&value))
+        .unwrap_or_default();
     let typed = TypedSignIn {
         name: &form.username,
         password: Secret::new(form.password.into_bytes()),
         caller: read_caller_address(&product, &http),
-        known_browser: known_browser.as_ref(),
+        known_browsers: &known_browsers,
     };
     let signed_in = finish_sign_in(&product, &realm, request, &browser_secret, typed).await;
     match signed_in {
@@ -194,12 +197,17 @@ pub async fn submit_sign_in(
                 ),
             ))
             // Kept past the session: it only lets this browser be counted
-            // apart at its next sign-in.
+            // apart at its next sign-in, beside the marks of the others who
+            // sign in on it.
             .append_header((
                 SET_COOKIE,
                 write_cookie(
                     &device_cookie,
-                    &signed_in.device_mark.write(),
+                    &write_device_marks(&keep_device_marks(
+                        signed_in.device_mark,
+                        &known_browsers,
+                        product.now(),
+                    )),
                     Some(DEVICE_MARK_LIFETIME.whole_seconds()),
                     secure,
                 ),

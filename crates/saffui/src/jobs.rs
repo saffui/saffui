@@ -35,6 +35,7 @@ fn start_retention_every(retention: Arc<dyn Retention>, clock: Arc<dyn Clock>, p
                     codes = report.codes,
                     refresh_tokens = report.refresh_tokens,
                     sessions = report.sessions,
+                    known_browsers = report.known_browsers,
                     failure_counters = report.failure_counters,
                     "retention pass done"
                 ),

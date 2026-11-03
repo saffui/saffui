@@ -61,6 +61,8 @@ pub(crate) struct State {
     pub(crate) pending_authorizations: HashMap<Uuid, Vec<PendingAuthorization>>,
     /// The codes of each realm, with what became of them.
     pub(crate) authorization_codes: HashMap<Uuid, Vec<KeptCode>>,
+    /// The browsers people signed in from, by realm.
+    pub(crate) known_browsers: HashMap<Uuid, Vec<crate::login::store::KnownBrowser>>,
     /// The refresh tokens of each realm, with what became of them.
     pub(crate) refresh_tokens: HashMap<Uuid, Vec<StoredRefreshToken>>,
 }
@@ -322,8 +324,8 @@ mod tests {
     use super::MemoryStorage;
     use crate::testkit::contract::{
         check_audit_contract, check_clients_contract, check_codes_contract, check_keys_contract,
-        check_persons_contract, check_refresh_contract, check_sign_in_contract,
-        check_tenancy_contract,
+        check_known_browsers_contract, check_persons_contract, check_refresh_contract,
+        check_sign_in_contract, check_tenancy_contract,
     };
     use crate::testkit::drive::complete;
 
@@ -367,6 +369,12 @@ mod tests {
     fn the_double_passes_the_codes_contract() {
         let (app, _storage) = MemoryStorage::wire();
         complete(check_codes_contract(&app));
+    }
+
+    #[test]
+    fn the_double_passes_the_known_browsers_contract() {
+        let (app, _storage) = MemoryStorage::wire();
+        complete(check_known_browsers_contract(&app));
     }
 
     #[test]

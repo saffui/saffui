@@ -1097,3 +1097,70 @@ pub async fn check_refresh_contract(app: &App) {
         Ok(Some(again))
     );
 }
+
+/// What any storage owes to the browsers people signed in from: one is read
+/// back in its realm only, lives longer when kept again, never changes hands,
+/// and a person keeps the few that expire last.
+///
+/// # Panics
+///
+/// Panics when the storage breaks the contract.
+pub async fn check_known_browsers_contract(app: &App) {
+    use time::Duration;
+
+    use crate::login::store::KnownBrowser;
+    use crate::testkit::fixtures::{create_person, create_realm};
+
+    let scope = create_realm(app, "contract-browsers").await;
+    let other = create_realm(app, "contract-browsers-other").await;
+    let ada = create_person(app, scope, "ada", "correct horse battery").await;
+    let bob = create_person(app, scope, "bob", "correct horse battery").await;
+    let now = app.now();
+    let browser = |device: u128, person: Uuid, days: i64| KnownBrowser {
+        device: Uuid::from_u128(device),
+        person,
+        expires_at: now + Duration::days(days),
+    };
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.remember_browser(&browser(1, ada.id, 10), 2)
+        .await
+        .expect("a browser");
+    work.commit().await.expect("a commit");
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(
+        elsewhere.read_known_browser(Uuid::from_u128(1)).await,
+        Ok(None)
+    );
+    drop(elsewhere);
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.read_known_browser(Uuid::from_u128(1)).await,
+        Ok(Some(browser(1, ada.id, 10)))
+    );
+    // Kept again, it lives longer. Kept for someone else, it does not move.
+    work.remember_browser(&browser(1, ada.id, 20), 2)
+        .await
+        .expect("a browser kept again");
+    work.remember_browser(&browser(1, bob.id, 30), 2)
+        .await
+        .expect("a claim that changes nothing");
+    assert_eq!(
+        work.read_known_browser(Uuid::from_u128(1)).await,
+        Ok(Some(browser(1, ada.id, 20)))
+    );
+    // Of three browsers of ada, the one that expires first is forgotten.
+    work.remember_browser(&browser(2, ada.id, 5), 2)
+        .await
+        .expect("a second browser");
+    work.remember_browser(&browser(3, ada.id, 15), 2)
+        .await
+        .expect("a third browser");
+    assert_eq!(work.read_known_browser(Uuid::from_u128(2)).await, Ok(None));
+    assert!(matches!(
+        work.read_known_browser(Uuid::from_u128(3)).await,
+        Ok(Some(_))
+    ));
+    work.commit().await.expect("a commit");
+}

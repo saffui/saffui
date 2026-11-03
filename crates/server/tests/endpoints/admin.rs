@@ -406,3 +406,38 @@ async fn reading_people_does_not_let_one_create_them_and_a_field_nobody_reads_is
     assert_eq!(weak.status, StatusCode::BAD_REQUEST);
     assert_eq!(weak.body["code"], "user.password_unacceptable");
 }
+
+#[actix_web::test]
+async fn an_administrator_registers_an_application_that_holds_no_secret_and_no_capability() {
+    let (product, token) = start(&[Capability::ClientRead, Capability::ClientWrite]).await;
+    let path = "/admin/v1/realms/acme/clients";
+    let wanted = json!({
+        "client_id": "webapp",
+        "scopes": ["openid"],
+        "redirect_uris": ["https://app.example.org/callback"],
+        "public": true,
+    })
+    .to_string();
+
+    let created = call(&product, Method::POST, path, Some(&token), Some(&wanted)).await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(created.body["client"]["public"], true);
+    assert_eq!(
+        created.body["client"]["redirect_uris"],
+        json!(["https://app.example.org/callback"])
+    );
+    assert!(
+        created.body.get("client_secret").is_none(),
+        "a public application is given no secret: {}",
+        created.body
+    );
+
+    let lending = json!({
+        "client_id": "portal",
+        "redirect_uris": ["https://portal.example.org/callback"],
+        "capabilities": ["client:read"],
+    })
+    .to_string();
+    let refused = call(&product, Method::POST, path, Some(&token), Some(&lending)).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+}

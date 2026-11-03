@@ -52,6 +52,7 @@ pub enum ErrorCode {
     GrantTypeUnsupported = 307,
     ClientNotFound = 308,
     CapabilityUnknown = 309,
+    RedirectUriInvalid = 310,
     AdminAuthenticationFailed = 400,
     CapabilityMissing = 401,
     SignInFailed = 402,
@@ -97,7 +98,8 @@ impl ErrorCode {
             | Self::UsernameInvalid
             | Self::EmailInvalid
             | Self::DisplayNameInvalid
-            | Self::PasswordUnacceptable => ErrorKind::Invalid,
+            | Self::PasswordUnacceptable
+            | Self::RedirectUriInvalid => ErrorKind::Invalid,
         }
     }
 
@@ -131,6 +133,7 @@ impl ErrorCode {
             Self::GrantTypeUnsupported => "client.grant_type_unsupported",
             Self::ClientNotFound => "client.not_found",
             Self::CapabilityUnknown => "client.capability_unknown",
+            Self::RedirectUriInvalid => "client.redirect_uri_invalid",
             Self::TokenInvalid => "token.invalid",
             Self::AdminAuthenticationFailed => "auth.admin_authentication_failed",
             Self::CapabilityMissing => "auth.capability_missing",
@@ -173,6 +176,9 @@ impl ErrorCode {
             Self::ListOffsetTooLarge => "A list starts at 100000 at the latest: narrow it instead.",
             Self::ClientNotFound => "No such client.",
             Self::CapabilityUnknown => "A capability that was asked for does not exist.",
+            Self::RedirectUriInvalid => {
+                "A redirect URI is an https URL, or an http URL of this machine, without a fragment."
+            }
             Self::TokenInvalid => "The token is not valid.",
             Self::AdminAuthenticationFailed => "Authentication is required.",
             Self::CapabilityMissing => "The caller is not allowed to do this.",
@@ -251,7 +257,7 @@ mod tests {
 
     use super::ErrorCode;
 
-    const ALL: [ErrorCode; 32] = [
+    const ALL: [ErrorCode; 33] = [
         ErrorCode::Internal,
         ErrorCode::StorageUnavailable,
         ErrorCode::Conflict,
@@ -278,6 +284,7 @@ mod tests {
         ErrorCode::GrantTypeUnsupported,
         ErrorCode::ClientNotFound,
         ErrorCode::CapabilityUnknown,
+        ErrorCode::RedirectUriInvalid,
         ErrorCode::TokenInvalid,
         ErrorCode::AdminAuthenticationFailed,
         ErrorCode::CapabilityMissing,

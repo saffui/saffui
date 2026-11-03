@@ -429,8 +429,10 @@ pub async fn check_clients_contract(app: &App) {
         id: mint_id(app).expect("an identifier"),
         client_id: "billing".to_owned(),
         name: "Billing".to_owned(),
-        secret_digest: vec![7; 32],
+        secret_digest: Some(vec![7; 32]),
         allows_client_credentials: true,
+        allows_authorization_code: false,
+        redirect_uris: Vec::new(),
         scopes: vec!["invoices:read".to_owned(), "invoices:write".to_owned()],
         capabilities: vec![
             crate::authz::capability::Capability::ClientRead,
@@ -447,6 +449,25 @@ pub async fn check_clients_contract(app: &App) {
     let mut work = app.storage.begin(scopes[0]).await.expect("a unit of work");
     assert_eq!(work.read_client("billing").await, Ok(Some(client.clone())));
     assert_eq!(work.read_client("nobody").await, Ok(None));
+
+    // An application without a secret is read back as it was written too.
+    let application = Client {
+        id: mint_id(app).expect("an identifier"),
+        client_id: "webapp".to_owned(),
+        secret_digest: None,
+        allows_client_credentials: false,
+        allows_authorization_code: true,
+        redirect_uris: vec!["https://app.example.org/callback".to_owned()],
+        capabilities: Vec::new(),
+        ..client.clone()
+    };
+    work.insert_client(&application)
+        .await
+        .expect("an application");
+    assert_eq!(
+        work.read_client("webapp").await,
+        Ok(Some(application.clone()))
+    );
 
     // An identifier is taken once in its realm, and free in every other.
     let again = Client {

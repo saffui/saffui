@@ -4,7 +4,8 @@ use crate::error::{ErrorCode, Failure};
 use crate::ports::storage::UnitOfWork;
 use crate::secret::Secret;
 
-/// Authenticates a client by the secret it presents.
+/// Authenticates a client by the secret it presents. A public application
+/// has none to present: it is compared against a digest nothing matches.
 ///
 /// # Errors
 ///
@@ -23,7 +24,8 @@ pub async fn authenticate_client(
     // the answer does not come sooner for a client that does not exist.
     let expected = client
         .as_ref()
-        .map_or(&[0_u8; 32][..], |known| known.secret_digest.as_slice());
+        .and_then(|known| known.secret_digest.as_deref())
+        .unwrap_or(&[0_u8; 32][..]);
     let matches = app
         .digester
         .equal_in_constant_time(&presented_digest, expected);

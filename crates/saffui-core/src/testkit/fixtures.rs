@@ -118,3 +118,40 @@ pub async fn create_person(
     };
     create(app, scope, wanted).await.expect("a person")
 }
+
+/// Registers an application that sends people back to `callback`, and
+/// returns its secret unless it is public.
+///
+/// # Panics
+///
+/// Panics when the application cannot be registered.
+pub async fn create_application(
+    app: &App,
+    scope: RealmScope,
+    client_id: &str,
+    callback: &str,
+    public: bool,
+) -> Option<Secret> {
+    use crate::clients::register::{NewClient, register_client};
+
+    let scopes = ["openid", "profile", "email"].map(str::to_owned);
+    let callbacks = [callback.to_owned()];
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let (_client, secret) = register_client(
+        app,
+        work.as_mut(),
+        NewClient {
+            client_id,
+            name: client_id,
+            scopes: &scopes,
+            capabilities: &[],
+            redirect_uris: &callbacks,
+            public,
+            created_by: None,
+        },
+    )
+    .await
+    .expect("an application");
+    work.commit().await.expect("a commit");
+    secret
+}

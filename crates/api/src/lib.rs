@@ -30,6 +30,9 @@ pub struct RealmView {
 pub struct ClientView {
     pub client_id: String,
     pub name: String,
+    /// Without a secret: an application that runs where none can be kept.
+    pub public: bool,
+    pub redirect_uris: Vec<String>,
     pub scopes: Vec<String>,
     pub capabilities: Vec<String>,
     pub enabled: bool,
@@ -48,13 +51,22 @@ pub struct NewClient {
     pub scopes: Vec<String>,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// Where people may be sent back. Given, the client is an application
+    /// that signs people in, and holds no capability.
+    #[serde(default)]
+    pub redirect_uris: Vec<String>,
+    /// An application that runs where no secret can be kept: it gets none.
+    #[serde(default)]
+    pub public: bool,
 }
 
 /// A client that was just created, with the one showing of its secret.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreatedClient {
     pub client: ClientView,
-    pub client_secret: String,
+    /// Absent for a public application.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
 }
 
 // Written by hand: a derived `Debug` would print the secret.
@@ -130,12 +142,14 @@ mod tests {
             client: ClientView {
                 client_id: "billing".to_owned(),
                 name: "Billing".to_owned(),
+                public: false,
+                redirect_uris: Vec::new(),
                 scopes: Vec::new(),
                 capabilities: Vec::new(),
                 enabled: true,
                 created_at: "2026-10-31T00:00:00Z".to_owned(),
             },
-            client_secret: "hunter2".to_owned(),
+            client_secret: Some("hunter2".to_owned()),
         };
 
         let printed = format!("{created:?}");

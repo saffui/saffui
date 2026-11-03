@@ -23,6 +23,8 @@ pub(super) fn show_client(client: &Client) -> ClientView {
     ClientView {
         client_id: client.client_id.clone(),
         name: client.name.clone(),
+        public: client.secret_digest.is_none(),
+        redirect_uris: client.redirect_uris.clone(),
         scopes: client.scopes.clone(),
         capabilities: client
             .capabilities

@@ -63,7 +63,7 @@ pub(crate) mod clients {
     pub(crate) const CLIENT_ID: Column = Column("client_id");
     /// text
     pub(crate) const NAME: Column = Column("name");
-    /// bytea
+    /// bytea, nullable
     pub(crate) const SECRET_DIGEST: Column = Column("secret_digest");
     /// boolean
     pub(crate) const ALLOWS_CLIENT_CREDENTIALS: Column = Column("allows_client_credentials");
@@ -75,6 +75,10 @@ pub(crate) mod clients {
     pub(crate) const CREATED_AT: Column = Column("created_at");
     /// ARRAY
     pub(crate) const CAPABILITIES: Column = Column("capabilities");
+    /// boolean
+    pub(crate) const ALLOWS_AUTHORIZATION_CODE: Column = Column("allows_authorization_code");
+    /// ARRAY
+    pub(crate) const REDIRECT_URIS: Column = Column("redirect_uris");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -87,6 +91,8 @@ pub(crate) mod clients {
         ENABLED,
         CREATED_AT,
         CAPABILITIES,
+        ALLOWS_AUTHORIZATION_CODE,
+        REDIRECT_URIS,
     ];
 }
 

@@ -20,10 +20,15 @@ pub struct Client {
     pub client_id: String,
     pub name: String,
     /// The digest of the secret the realm generated. The secret itself is
-    /// shown once, when it is made, and kept nowhere.
-    pub secret_digest: Vec<u8>,
+    /// shown once, when it is made, and kept nowhere. A public application,
+    /// which can keep no secret, has none.
+    pub secret_digest: Option<Vec<u8>>,
     /// A grant that is not written here is refused.
     pub allows_client_credentials: bool,
+    pub allows_authorization_code: bool,
+    /// Where a person may be sent back. Compared by exact equality: an empty
+    /// list sends nobody anywhere.
+    pub redirect_uris: Vec<String>,
     /// The scopes the client may be given.
     pub scopes: Vec<String>,
     /// What the client may do on the administration plane of its realm.
@@ -62,6 +67,39 @@ pub fn check_scope_token(text: &str) -> Result<(), Failure> {
         Ok(())
     } else {
         Err(Failure::new(ErrorCode::ScopeInvalid))
+    }
+}
+
+/// Checks a redirect URI at registration: an https URL, or an http URL of
+/// this machine, with a host, without a fragment or credentials.
+///
+/// # Errors
+///
+/// Returns [`ErrorCode::RedirectUriInvalid`].
+pub fn check_redirect_uri(text: &str) -> Result<(), Failure> {
+    let invalid = || Failure::new(ErrorCode::RedirectUriInvalid);
+    let plain = text.len() <= 2000
+        && !text.contains('#')
+        && !text
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control());
+    let (secure, rest) = if let Some(rest) = text.strip_prefix("https://") {
+        (true, rest)
+    } else if let Some(rest) = text.strip_prefix("http://") {
+        (false, rest)
+    } else {
+        return Err(invalid());
+    };
+    let authority = rest.split(['/', '?']).next().unwrap_or_default();
+    let host = match authority.rsplit_once(']') {
+        Some((address, _port)) => address.trim_start_matches('['),
+        None => authority.split(':').next().unwrap_or_default(),
+    };
+    let local = matches!(host, "localhost" | "127.0.0.1" | "::1");
+    if plain && !host.is_empty() && !authority.contains('@') && (secure || local) {
+        Ok(())
+    } else {
+        Err(invalid())
     }
 }
 
@@ -116,7 +154,35 @@ pub async fn read_named_client(
 
 #[cfg(test)]
 mod tests {
-    use super::{check_client_identifier, check_scope_token, is_unshowable};
+    use super::{check_client_identifier, check_redirect_uri, check_scope_token, is_unshowable};
+
+    #[test]
+    fn an_https_url_and_an_http_url_of_this_machine_may_be_registered() {
+        for uri in [
+            "https://app.example.org/callback",
+            "https://app.example.org/callback?tenant=a",
+            "http://localhost:3000/callback",
+            "http://127.0.0.1/callback",
+            "http://[::1]:8080/cb",
+        ] {
+            assert!(check_redirect_uri(uri).is_ok(), "{uri}");
+        }
+    }
+
+    #[test]
+    fn a_fragment_a_clear_remote_host_another_scheme_or_credentials_are_refused() {
+        for uri in [
+            "https://app.example.org/callback#fragment",
+            "http://app.example.org/callback",
+            "myapp://callback",
+            "https://user@app.example.org/callback",
+            "https:///callback",
+            "https://app.example.org/a b",
+            "",
+        ] {
+            assert!(check_redirect_uri(uri).is_err(), "{uri:?}");
+        }
+    }
 
     #[test]
     fn a_name_that_holds_a_control_a_change_of_direction_or_an_invisible_character_is_unshowable() {

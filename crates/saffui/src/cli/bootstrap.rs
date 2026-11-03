@@ -1,6 +1,8 @@
-//! The `bootstrap` command: create a tenant and its first realm. What an
-//! operator runs once per customer, against a migrated database.
+//! The `bootstrap` command: create a tenant, its first realm, and the first
+//! client of the realm. What an operator runs once per customer, against a
+//! migrated database.
 
+use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::process::ExitCode;
 
@@ -9,8 +11,11 @@ use clap::Args;
 use pgcore::pool::PoolSettings;
 use saffui_core::error::{ErrorKind, Failure};
 use saffui_core::oidc::discovery::name_issuer;
+use saffui_core::secret::Secret;
 use saffui_core::settings::Settings;
-use saffui_core::tenancy::realm::{NewRealm, Provisioned, provision_first_realm};
+use saffui_core::tenancy::realm::{
+    FirstClient, NewRealm, Provisioned, provision_realm_with_client,
+};
 
 use crate::cli::serve::read_variable;
 use crate::config::crypto::{RootKeyError, resolve_root_key};
@@ -29,6 +34,12 @@ pub(crate) struct BootstrapOptions {
     /// The name of the realm, as it will appear in its URLs and its issuer.
     #[arg(long, value_name = "NAME")]
     realm: String,
+    /// The identifier of a first client. Its secret is printed once, here.
+    #[arg(long, value_name = "IDENTIFIER")]
+    client: Option<String>,
+    /// A scope the first client may be given. Repeat it for each scope.
+    #[arg(long = "scope", value_name = "SCOPE", requires = "client")]
+    scopes: Vec<String>,
     #[arg(
         long,
         value_name = "ORIGIN",
@@ -106,23 +117,37 @@ fn provision_from_options(options: &BootstrapOptions) -> Result<String, Bootstra
         &root_key,
     )?;
 
-    let provisioned: Provisioned = System::new().block_on(async {
+    let first_client = options.client.as_deref().map(|client_id| FirstClient {
+        client_id,
+        scopes: &options.scopes,
+    });
+    let (provisioned, secret): (Provisioned, Option<Secret>) = System::new().block_on(async {
         wired.refuse_unfit_database().await?;
-        provision_first_realm(
+        provision_realm_with_client(
             &wired.app,
             NewRealm {
                 tenant_name: &options.tenant,
                 realm_name: &options.realm,
             },
+            first_client,
         )
         .await
         .map_err(BootstrapError::Failed)
     })?;
 
-    Ok(format!(
+    let mut told = format!(
         "tenant {}\nrealm {}\nissuer {}\n",
         provisioned.tenant.id.as_uuid(),
         provisioned.realm.id.as_uuid(),
         name_issuer(&wired.app.settings, &provisioned.realm.name)
-    ))
+    );
+    if let (Some(client_id), Some(secret)) = (&options.client, secret) {
+        // Shown here and never again: only its digest is kept.
+        let _ = write!(
+            told,
+            "client {client_id}\nclient_secret {}\n",
+            String::from_utf8_lossy(secret.expose())
+        );
+    }
+    Ok(told)
 }

@@ -95,6 +95,70 @@ fn a_bootstrapped_realm_has_its_creation_and_its_first_key_first_in_its_chain() 
 }
 
 #[test]
+fn a_first_client_is_told_with_its_secret_once_and_only_its_digest_is_kept() {
+    let database = database::create_database(EMBEDDED);
+
+    let created = support::saffui_command()
+        .args(["bootstrap", "--tenant", "Acme", "--realm", "acme"])
+        .args(["--client", "billing", "--scope", "invoices:read"])
+        .env("SAFFUI_DATABASE_URL", database.connection_string(APP_ROLE))
+        .env("SAFFUI_PUBLIC_ORIGIN", node::PUBLIC_ORIGIN)
+        .output()
+        .expect("the saffui binary starts");
+    assert_eq!(
+        created.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&created.stdout);
+    assert!(stdout.contains("client billing\n"), "{stdout}");
+    let secret = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("client_secret "))
+        .expect("the secret is told");
+    assert_eq!(secret.len(), 43, "256 bits in base64url");
+
+    let kept = read_as(
+        &database,
+        MAINTENANCE_ROLE,
+        "SELECT client_id || ' ' || length(secret_digest) || ' ' || array_to_string(scopes, ',') \
+         FROM clients",
+    );
+    assert_eq!(kept, ["billing 32 invoices:read"]);
+    let in_clear = read_as(
+        &database,
+        MAINTENANCE_ROLE,
+        &format!(
+            "SELECT client_id FROM clients WHERE position('{secret}'::bytea in secret_digest) > 0"
+        ),
+    );
+    assert!(in_clear.is_empty(), "the secret is kept nowhere");
+}
+
+#[test]
+fn a_scope_without_a_client_is_a_usage_error() {
+    let database = database::create_database(EMBEDDED);
+
+    let refused = support::saffui_command()
+        .args([
+            "bootstrap",
+            "--tenant",
+            "Acme",
+            "--realm",
+            "acme",
+            "--scope",
+            "x",
+        ])
+        .env("SAFFUI_DATABASE_URL", database.connection_string(APP_ROLE))
+        .env("SAFFUI_PUBLIC_ORIGIN", node::PUBLIC_ORIGIN)
+        .output()
+        .expect("the saffui binary starts");
+
+    assert_eq!(refused.status.code(), Some(2));
+}
+
+#[test]
 fn a_bootstrapped_realm_is_published_by_a_node_on_its_data_plane_only() {
     let database = database::create_database(EMBEDDED);
 
@@ -126,7 +190,13 @@ fn a_bootstrapped_realm_is_published_by_a_node_on_its_data_plane_only() {
     );
     assert_eq!(
         published.body,
-        r#"{"issuer":"http://localhost:8080/realms/acme","jwks_uri":"http://localhost:8080/realms/acme/oauth2/jwks"}"#
+        concat!(
+            r#"{"issuer":"http://localhost:8080/realms/acme","#,
+            r#""token_endpoint":"http://localhost:8080/realms/acme/oauth2/token","#,
+            r#""jwks_uri":"http://localhost:8080/realms/acme/oauth2/jwks","#,
+            r#""grant_types_supported":["client_credentials"],"#,
+            r#""token_endpoint_auth_methods_supported":["client_secret_basic","client_secret_post"]}"#
+        )
     );
 
     // The key set holds the public half of the first key, and nothing private.

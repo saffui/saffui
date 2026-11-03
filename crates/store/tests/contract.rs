@@ -2,7 +2,9 @@
 //! the double does.
 
 use pgcore::pool::PoolSettings;
-use saffui_core::testkit::contract::{check_keys_contract, check_tenancy_contract};
+use saffui_core::testkit::contract::{
+    check_clients_contract, check_keys_contract, check_tenancy_contract,
+};
 
 mod support;
 
@@ -18,4 +20,11 @@ async fn postgres_passes_the_keys_contract() {
     let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
 
     check_keys_contract(&app).await;
+}
+
+#[tokio::test]
+async fn postgres_passes_the_clients_contract() {
+    let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
+
+    check_clients_contract(&app).await;
 }

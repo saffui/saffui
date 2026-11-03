@@ -1560,6 +1560,7 @@ name = "saffui-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.23.1",
  "saffui-core",
  "serde",
  "serde_json",
@@ -1650,6 +1651,7 @@ name = "server"
 version = "0.1.0"
 dependencies = [
  "actix-web",
+ "base64 0.23.1",
  "futures-util",
  "saffui-core",
  "serde",

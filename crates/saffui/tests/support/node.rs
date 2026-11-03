@@ -1,5 +1,8 @@
 //! A serving node on a database a test owns, killed when the test ends.
 
+// Each crate of tests that includes this module uses a part of it.
+#![allow(dead_code)]
+
 use std::io::{BufRead, BufReader};
 use std::net::SocketAddr;
 use std::process::{Child, Command, Stdio};

@@ -6,6 +6,7 @@
 //! held by SQL is proven on Postgres, never here.
 
 mod audit;
+mod clients;
 mod keys;
 mod tenancy;
 
@@ -22,6 +23,7 @@ use super::digest::WeakDigester;
 use super::random::CountingRandom;
 use crate::app::App;
 use crate::audit::store::ChainedEvent;
+use crate::clients::Client;
 use crate::keys::SigningKey;
 use crate::ports::crypto::WrappedDataKey;
 use crate::ports::storage::{RealmLocation, Storage, StorageError, StorageUnavailable, UnitOfWork};
@@ -38,6 +40,8 @@ pub(crate) struct State {
     pub(crate) data_keys: HashMap<Uuid, WrappedDataKey>,
     /// The signing keys of each realm, oldest first, by realm.
     pub(crate) signing_keys: HashMap<Uuid, Vec<SigningKey>>,
+    /// The clients of each realm, by realm.
+    pub(crate) clients: HashMap<Uuid, Vec<Client>>,
 }
 
 #[derive(Default)]
@@ -85,20 +89,41 @@ impl MemoryStorage {
     /// Never: the origin it parses is a constant.
     #[must_use]
     pub fn wire() -> (App, Arc<Self>) {
+        let (app, storage, _clock) = Self::wire_with_clock();
+        (app, storage)
+    }
+
+    /// As [`Self::wire`], with the clock the application reads, to move it.
+    ///
+    /// # Panics
+    ///
+    /// Never: the origin it parses is a constant.
+    #[must_use]
+    pub fn wire_with_clock() -> (App, Arc<Self>, Arc<FixedClock>) {
         let storage = Arc::new(Self::default());
+        let clock = Arc::new(FixedClock::default());
         let app = App {
             settings: Settings {
                 public_origin: PublicOrigin::parse("https://id.example.test")
                     .expect("a well-formed origin"),
             },
             storage: storage.clone(),
-            clock: Arc::new(FixedClock::default()),
+            clock: clock.clone(),
             random: Arc::new(CountingRandom::default()),
             digester: Arc::new(WeakDigester),
             sealer: Arc::new(TransparentSealer),
             signer: Arc::new(WeakSigner::default()),
         };
-        (app, storage)
+        (app, storage, clock)
+    }
+
+    /// Disables the client of that identifier in every realm, as an operator would.
+    pub fn disable_client(&self, client_id: &str) {
+        for client in lock(&self.state).clients.values_mut().flatten() {
+            if client.client_id == client_id {
+                client.enabled = false;
+            }
+        }
     }
 
     /// Makes the storage refuse everything with `reason`, as a database that is down.
@@ -243,7 +268,7 @@ impl UnitOfWork for MemoryUnitOfWork {
 mod tests {
     use super::MemoryStorage;
     use crate::testkit::contract::{
-        check_audit_contract, check_keys_contract, check_tenancy_contract,
+        check_audit_contract, check_clients_contract, check_keys_contract, check_tenancy_contract,
     };
     use crate::testkit::drive::complete;
 
@@ -263,5 +288,11 @@ mod tests {
     fn the_double_passes_the_keys_contract() {
         let (app, _storage) = MemoryStorage::wire();
         complete(check_keys_contract(&app));
+    }
+
+    #[test]
+    fn the_double_passes_the_clients_contract() {
+        let (app, _storage) = MemoryStorage::wire();
+        complete(check_clients_contract(&app));
     }
 }

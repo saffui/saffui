@@ -399,3 +399,65 @@ pub async fn check_keys_contract(app: &App) {
         .expect("a second generation");
     assert_eq!(work.read_data_key().await, Ok(Some(newer)));
 }
+
+/// Plays the clients contract on the storage `app` is wired on.
+///
+/// # Panics
+///
+/// Panics at the first answer that breaks the contract.
+pub async fn check_clients_contract(app: &App) {
+    use crate::clients::Client;
+    use crate::tenancy::realm::{NewRealm, provision_first_realm};
+
+    let mut scopes = Vec::new();
+    for realm_name in ["contract-clients", "contract-clients-2"] {
+        let provisioned = provision_first_realm(
+            app,
+            NewRealm {
+                tenant_name: "Clients",
+                realm_name,
+            },
+        )
+        .await
+        .expect("a realm");
+        scopes.push(RealmScope::bind(
+            provisioned.tenant.id,
+            provisioned.realm.id,
+        ));
+    }
+    let client = Client {
+        id: mint_id(app).expect("an identifier"),
+        client_id: "billing".to_owned(),
+        name: "Billing".to_owned(),
+        secret_digest: vec![7; 32],
+        allows_client_credentials: true,
+        scopes: vec!["invoices:read".to_owned(), "invoices:write".to_owned()],
+        enabled: true,
+        created_at: app.now(),
+    };
+
+    // A client is read back as it was written, by its identifier.
+    let mut work = app.storage.begin(scopes[0]).await.expect("a unit of work");
+    work.insert_client(&client).await.expect("a client");
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scopes[0]).await.expect("a unit of work");
+    assert_eq!(work.read_client("billing").await, Ok(Some(client.clone())));
+    assert_eq!(work.read_client("nobody").await, Ok(None));
+
+    // An identifier is taken once in its realm, and free in every other.
+    let again = Client {
+        id: mint_id(app).expect("an identifier"),
+        ..client.clone()
+    };
+    assert_eq!(
+        work.insert_client(&again).await,
+        Err(StorageError::Taken("client identifier"))
+    );
+    drop(work);
+    let mut work = app.storage.begin(scopes[1]).await.expect("a unit of work");
+    assert_eq!(work.read_client("billing").await, Ok(None));
+    work.insert_client(&again)
+        .await
+        .expect("the same identifier in another realm");
+    work.commit().await.expect("a commit");
+}

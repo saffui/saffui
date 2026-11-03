@@ -3,6 +3,7 @@
 
 pub mod app;
 pub mod audit;
+pub mod clients;
 pub mod error;
 pub mod ids;
 pub mod keys;
@@ -14,3 +15,4 @@ pub mod settings;
 pub mod tenancy;
 #[cfg(feature = "testkit")]
 pub mod testkit;
+pub mod tokens;

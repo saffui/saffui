@@ -6,6 +6,7 @@ use super::bind::Value;
 use super::ident::Column;
 
 enum Test<'a> {
+    Equal(Value<'a>),
     Greater(Value<'a>),
 }
 
@@ -18,6 +19,12 @@ pub(crate) struct Criteria<'a> {
 impl<'a> Criteria<'a> {
     pub(crate) fn new() -> Self {
         Self { tests: Vec::new() }
+    }
+
+    /// Keeps the rows where the column holds the value.
+    pub(crate) fn where_equal(mut self, column: Column, value: Value<'a>) -> Self {
+        self.tests.push((column, Test::Equal(value)));
+        self
     }
 
     /// Keeps the rows where the column holds more than the value.
@@ -34,6 +41,7 @@ impl<'a> Criteria<'a> {
             sql.push_str(" AND ");
             sql.push_str(column.0);
             let (operator, value) = match test {
+                Test::Equal(value) => (" = $", value),
                 Test::Greater(value) => (" > $", value),
             };
             sql.push_str(operator);
@@ -51,17 +59,19 @@ mod tests {
 
     const SEQ: Column = Column("seq");
     const EXPIRES_AT: Column = Column("expires_at");
+    const CLIENT_ID: Column = Column("client_id");
 
     #[test]
     fn each_test_takes_the_next_placeholder_after_the_scope() {
         let mut sql = String::new();
         let criteria = Criteria::new()
             .where_greater(SEQ, &3_i64)
+            .where_equal(CLIENT_ID, &"billing")
             .where_greater(EXPIRES_AT, &7_i64);
 
         let bound = criteria.write(&mut sql, 3);
 
-        assert_eq!(sql, " AND seq > $3 AND expires_at > $4");
-        assert_eq!(bound.len(), 2);
+        assert_eq!(sql, " AND seq > $3 AND client_id = $4 AND expires_at > $5");
+        assert_eq!(bound.len(), 3);
     }
 }

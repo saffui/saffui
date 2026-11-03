@@ -1,13 +1,14 @@
 //! The brake on guesses, checked before any password is hashed.
 //!
-//! Three counters, kept per realm in buckets of five minutes. What one
-//! address may attempt, whatever names it types: a hash is ours to pay, and
-//! an address that types a new name each time would otherwise never be
-//! slowed. What one address failed for one name: a few guesses, then that
-//! address is locked out of that name, and nobody else is. What one name
-//! failed from everywhere: a much higher bound, against guesses spread over
-//! many addresses. A counter is kept by a keyed digest, whether or not the
-//! name is someone's: a locked name tells nothing about who exists.
+//! Counters kept per realm, by a keyed digest, whether or not the name is
+//! someone's: a locked name tells nothing about who exists. In buckets of
+//! five minutes, over ten: what one address may attempt, whatever names it
+//! types, since a hash is ours to pay; what one address failed for one name,
+//! a few guesses before that address is locked out of that name and nobody
+//! else is; what one name failed from everywhere, a much higher bound. In
+//! buckets of an hour, over a day: what one name failed, which no window
+//! resets. A browser where the person signed in before is counted apart, by
+//! its mark, and the counts of the name do not lock it out.
 
 use std::net::IpAddr;
 
@@ -30,6 +31,19 @@ pub const MAX_RECENT_ATTEMPTS_PER_ADDRESS: u32 = 30;
 /// How many failures a name may gather from every address together.
 pub const MAX_RECENT_FAILURES_PER_NAME: u32 = 50;
 
+/// The long horizon is counted in buckets of an hour, over a day.
+const LONG_BUCKET_SECONDS: i64 = 3_600;
+const LONG_WINDOW_BUCKETS: i64 = 24;
+
+/// How many failures a name may gather in a day, whatever the windows: the
+/// short window alone would let guesses resume every ten minutes. Nothing
+/// resets it but time: a sign-in that did would give the guesses back.
+pub const MAX_DAILY_FAILURES: u32 = 100;
+
+/// How many failures a browser that signed in before may make in a day,
+/// apart from the name. Its mark can be left on a shared machine.
+pub const MAX_DAILY_FAILURES_PER_BROWSER: u32 = 20;
+
 /// How many sign-ins one address may leave waiting in a realm in the
 /// window, before any session: each keeps a row for ten minutes, and asking
 /// for one takes nothing but a request.
@@ -40,6 +54,20 @@ pub const MAX_PENDING_SIGN_INS_PER_ADDRESS: u32 = 60;
 pub fn start_bucket(now: OffsetDateTime) -> OffsetDateTime {
     let seconds = now.unix_timestamp();
     OffsetDateTime::from_unix_timestamp(seconds - seconds.rem_euclid(BUCKET_SECONDS)).unwrap_or(now)
+}
+
+/// The start of the hour an instant falls in, for the long horizon.
+#[must_use]
+pub fn start_long_bucket(now: OffsetDateTime) -> OffsetDateTime {
+    let seconds = now.unix_timestamp();
+    OffsetDateTime::from_unix_timestamp(seconds - seconds.rem_euclid(LONG_BUCKET_SECONDS))
+        .unwrap_or(now)
+}
+
+/// The start of the oldest hour that still counts at `now`: a day of them.
+#[must_use]
+pub fn start_long_window(now: OffsetDateTime) -> OffsetDateTime {
+    start_long_bucket(now) - Duration::seconds(LONG_BUCKET_SECONDS * (LONG_WINDOW_BUCKETS - 1))
 }
 
 /// The start of the oldest bucket that still counts at `now`.

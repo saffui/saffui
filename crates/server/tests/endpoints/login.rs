@@ -242,6 +242,16 @@ async fn a_person_signs_in_and_the_application_exchanges_the_code_for_tokens() {
         !session_attributes.contains("Max-Age"),
         "{session_attributes}"
     );
+    // The browser is marked, past the session, to be counted apart next time.
+    let device_attributes = signed_in
+        .cookies
+        .iter()
+        .find(|cookie| cookie.starts_with("__Host-saffui_mark_acme="))
+        .expect("the mark of the browser");
+    assert!(
+        device_attributes.ends_with("; Path=/; Max-Age=7776000; HttpOnly; SameSite=Lax; Secure"),
+        "{device_attributes}"
+    );
     // The flow is over: its cookie is taken back.
     assert!(
         signed_in.cookies.iter().any(|cookie| cookie
@@ -539,5 +549,59 @@ async fn a_session_cookie_sent_twice_is_believed_for_neither_value() {
             .is_some_and(|location| location.starts_with("/realms/acme/login?request=")),
         "the person signs in again: {:?}",
         with_two.location
+    );
+}
+
+/// Signs `ada` in on a new pending request, with the cookies of the
+/// browser beside the cookie of the flow.
+async fn submit_password(
+    product: &saffui_core::app::App,
+    password: &str,
+    browser: Option<&str>,
+) -> Answer {
+    let (request, flow) = start_sign_in(product).await;
+    let cookies = browser.map_or_else(|| flow.clone(), |more| format!("{flow}; {more}"));
+    let form = format!(
+        "request={request}&username=ada&password={}",
+        password.replace(' ', "+")
+    );
+    post(
+        product,
+        "/realms/acme/login",
+        &[(COOKIE.as_str(), &cookies)],
+        &form,
+    )
+    .await
+}
+
+#[actix_web::test]
+async fn the_browser_that_signed_in_before_brings_its_mark_back_through_a_lock() {
+    let product = start().await;
+    let first = submit_password(&product, PASSWORD, None).await;
+    assert_eq!(first.status, StatusCode::SEE_OTHER, "{}", first.body);
+    let mark = first
+        .read_cookie("__Host-saffui_mark_acme=")
+        .expect("the mark of the browser");
+
+    // Five guesses from elsewhere lock the name: the tests have no address,
+    // so the name alone is counted.
+    for _ in 0..5 {
+        let refused = submit_password(&product, "a guess", None).await;
+        assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+    }
+    let held = submit_password(&product, PASSWORD, None).await;
+    assert_eq!(
+        held.status,
+        StatusCode::UNAUTHORIZED,
+        "a browser without the mark is held"
+    );
+
+    let through = submit_password(&product, PASSWORD, Some(&mark)).await;
+    assert_eq!(through.status, StatusCode::SEE_OTHER, "{}", through.body);
+    assert!(
+        through
+            .read_cookie("__Host-saffui_mark_acme=")
+            .is_some_and(|next| next != mark),
+        "a new mark for the next time"
     );
 }

@@ -76,11 +76,12 @@ impl Sealer for TransparentSealer {
         realm: Uuid,
         typed: &[u8],
     ) -> Result<Vec<u8>, CryptoFailure> {
+        // 32 bytes, as a MAC is: what reads it may hold it to its length.
         let mut written = b"typed-name:".to_vec();
         written.extend_from_slice(tenant.as_bytes());
         written.extend_from_slice(realm.as_bytes());
         written.extend_from_slice(typed);
-        Ok(written)
+        Ok(WeakDigester.sha256(&written).to_vec())
     }
 }
 

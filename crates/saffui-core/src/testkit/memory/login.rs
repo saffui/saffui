@@ -181,6 +181,19 @@ impl ThrottleStore for MemoryUnitOfWork {
         *self.working.login_failures.entry(key).or_default() += 1;
         Ok(())
     }
+
+    async fn forget_login_failures(
+        &mut self,
+        identifier_digest: &[u8],
+    ) -> Result<(), StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        let realm = self.scope.realm().as_uuid();
+        self.working.login_failures.retain(|(owner, digest, _), _| {
+            *owner != realm || digest.as_slice() != identifier_digest
+        });
+        Ok(())
+    }
 }
 
 #[async_trait]

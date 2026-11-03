@@ -21,6 +21,7 @@ use crate::app::App;
 use crate::clients::{Client, check_scope_token, read_named_client};
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
+use crate::login::device::DeviceMark;
 use crate::login::session::{SessionTicket, close_session, find_live_session};
 use crate::login::steps::password::sign_in;
 use crate::login::throttle::admit_pending_sign_in;
@@ -433,6 +434,18 @@ pub struct SignedInForRequest {
     /// Where the browser goes next: back to the client, with a code.
     pub location: String,
     pub ticket: SessionTicket,
+    /// What the browser keeps, to be counted apart at its next sign-in.
+    pub device_mark: DeviceMark,
+}
+
+/// What a person typed on the sign-in page, and where it comes from.
+pub struct TypedSignIn<'a> {
+    pub name: &'a str,
+    pub password: Secret,
+    /// The address of the browser, as a believed proxy said.
+    pub caller: Option<IpAddr>,
+    /// The mark of an earlier sign-in, when the browser brings one.
+    pub known_browser: Option<&'a DeviceMark>,
 }
 
 // Written by hand: the location carries the code.
@@ -442,6 +455,7 @@ impl fmt::Debug for SignedInForRequest {
             .debug_struct("SignedInForRequest")
             .field("location", &"..")
             .field("ticket", &self.ticket)
+            .field("device_mark", &"..")
             .finish()
     }
 }
@@ -459,9 +473,7 @@ pub async fn finish_sign_in(
     realm: &str,
     request: Uuid,
     browser_secret: &Secret,
-    typed_name: &str,
-    password: Secret,
-    caller: Option<IpAddr>,
+    typed: TypedSignIn<'_>,
 ) -> Result<SignedInForRequest, Failure> {
     let (realm, scope) = resolve_realm(app, realm).await?;
     let expired = || Failure::new(ErrorCode::AuthorizationRequestExpired);
@@ -478,7 +490,15 @@ pub async fn finish_sign_in(
         return Err(expired());
     }
 
-    let signed_in = sign_in(app, scope, typed_name, password, caller).await?;
+    let signed_in = sign_in(
+        app,
+        scope,
+        typed.name,
+        typed.password,
+        typed.caller,
+        typed.known_browser,
+    )
+    .await?;
 
     let mut work = app.storage.begin(scope).await?;
     // Taken, not read: of two submissions of one page, one finishes the
@@ -511,6 +531,7 @@ pub async fn finish_sign_in(
     Ok(SignedInForRequest {
         location,
         ticket: signed_in.ticket,
+        device_mark: signed_in.device_mark,
     })
 }
 
@@ -524,8 +545,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        Authorization, AuthorizationParameters, AuthorizationRefusal, begin_authorization,
-        finish_sign_in,
+        Authorization, AuthorizationParameters, AuthorizationRefusal, TypedSignIn,
+        begin_authorization, finish_sign_in,
     };
     use crate::app::App;
     use crate::error::ErrorCode;
@@ -609,9 +630,12 @@ mod tests {
             "acme",
             request,
             &browser_secret,
-            "ada",
-            Secret::new(PASSWORD.as_bytes().to_vec()),
-            None,
+            TypedSignIn {
+                name: "ada",
+                password: Secret::new(PASSWORD.as_bytes().to_vec()),
+                caller: None,
+                known_browser: None,
+            },
         ))
         .expect("a signed-in person");
         (signed_in.location, signed_in.ticket)
@@ -907,9 +931,12 @@ mod tests {
                 "acme",
                 request,
                 browser,
-                "ada",
-                Secret::new(password.as_bytes().to_vec()),
-                None,
+                TypedSignIn {
+                    name: "ada",
+                    password: Secret::new(password.as_bytes().to_vec()),
+                    caller: None,
+                    known_browser: None,
+                },
             ))
             .map(|_| ())
             .map_err(|failure| failure.code)
@@ -948,9 +975,12 @@ mod tests {
             "acme",
             request,
             &browser_secret,
-            "ada",
-            Secret::new(PASSWORD.as_bytes().to_vec()),
-            None,
+            TypedSignIn {
+                name: "ada",
+                password: Secret::new(PASSWORD.as_bytes().to_vec()),
+                caller: None,
+                known_browser: None,
+            },
         ));
         assert_eq!(
             late.map(|_| ()).map_err(|failure| failure.code),

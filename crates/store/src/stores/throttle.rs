@@ -1,5 +1,5 @@
-//! The counters of the brake on guesses. Both statements are constant SQL:
-//! one sums over buckets, the other adds to a bucket or opens it.
+//! The counters of the brake on guesses, in constant SQL: one statement sums
+//! over buckets, one adds to a bucket or opens it, one forgets a counter.
 
 use async_trait::async_trait;
 use saffui_core::login::store::ThrottleStore;
@@ -42,6 +42,20 @@ impl ThrottleStore for PgUnitOfWork {
              ON CONFLICT (tenant_id, realm_id, identifier_digest, bucket_start)
              DO UPDATE SET failures = login_failures.failures + 1",
             &[&tenant, &realm, &identifier_digest, &bucket_start],
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn forget_login_failures(
+        &mut self,
+        identifier_digest: &[u8],
+    ) -> Result<(), StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        self.execute_raw(
+            "DELETE FROM login_failures
+             WHERE tenant_id = $1 AND realm_id = $2 AND identifier_digest = $3",
+            &[&tenant, &realm, &identifier_digest],
         )
         .await
         .map(|_| ())

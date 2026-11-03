@@ -31,4 +31,9 @@ pub trait ThrottleStore {
         identifier_digest: &[u8],
         bucket_start: OffsetDateTime,
     ) -> Result<(), StorageError>;
+
+    /// Forgets every bucket of a counter: what was proven need not be
+    /// counted against any more.
+    async fn forget_login_failures(&mut self, identifier_digest: &[u8])
+    -> Result<(), StorageError>;
 }

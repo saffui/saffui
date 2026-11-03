@@ -7,13 +7,15 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use saffui_core::app::App as Product;
 use saffui_core::error::{ErrorCode, ErrorKind, Failure};
-use saffui_core::oidc::authorize::finish_sign_in;
+use saffui_core::login::device::{DEVICE_MARK_LIFETIME, DeviceMark};
+use saffui_core::oidc::authorize::{TypedSignIn, finish_sign_in};
 use saffui_core::secret::Secret;
 use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::extract::cookies::{
-    is_served_over_tls, name_flow_cookie, name_session_cookie, read_cookie, write_cookie,
+    is_served_over_tls, name_device_cookie, name_flow_cookie, name_session_cookie, read_cookie,
+    write_cookie,
 };
 use crate::middleware::caller_address::read_caller_address;
 
@@ -166,16 +168,16 @@ pub async fn submit_sign_in(
         return expired();
     };
 
-    let signed_in = finish_sign_in(
-        &product,
-        &realm,
-        request,
-        &browser_secret,
-        &form.username,
-        Secret::new(form.password.into_bytes()),
-        read_caller_address(&product, &http),
-    )
-    .await;
+    let device_cookie = name_device_cookie(&realm, secure);
+    let known_browser =
+        read_cookie(&http, &device_cookie).and_then(|value| DeviceMark::parse(&value));
+    let typed = TypedSignIn {
+        name: &form.username,
+        password: Secret::new(form.password.into_bytes()),
+        caller: read_caller_address(&product, &http),
+        known_browser: known_browser.as_ref(),
+    };
+    let signed_in = finish_sign_in(&product, &realm, request, &browser_secret, typed).await;
     match signed_in {
         Ok(signed_in) => HttpResponse::SeeOther()
             .insert_header((LOCATION, signed_in.location))
@@ -188,6 +190,17 @@ pub async fn submit_sign_in(
                     // The session ends with the browser; the server ends it
                     // at its lifetime whatever the cookie says.
                     None,
+                    secure,
+                ),
+            ))
+            // Kept past the session: it only lets this browser be counted
+            // apart at its next sign-in.
+            .append_header((
+                SET_COOKIE,
+                write_cookie(
+                    &device_cookie,
+                    &signed_in.device_mark.write(),
+                    Some(DEVICE_MARK_LIFETIME.whole_seconds()),
                     secure,
                 ),
             ))

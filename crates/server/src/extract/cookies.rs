@@ -34,6 +34,12 @@ pub(crate) fn name_flow_cookie(request: uuid::Uuid, secure: bool) -> String {
     format!("{}saffui_flow_{request}", choose_prefix(secure))
 }
 
+/// The name of the cookie that marks a browser where a person signed in to
+/// a realm: it is counted apart at its next sign-in.
+pub(crate) fn name_device_cookie(realm: &str, secure: bool) -> String {
+    format!("{}saffui_mark_{realm}", choose_prefix(secure))
+}
+
 /// Reads the value of one cookie of a request. A name sent twice is a name
 /// someone else also wrote: neither value is believed.
 pub(crate) fn read_cookie(request: &HttpRequest, name: &str) -> Option<String> {

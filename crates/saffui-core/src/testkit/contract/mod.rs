@@ -667,6 +667,15 @@ pub async fn check_sign_in_contract(app: &App) {
         Ok(0),
         "a counter is kept per realm"
     );
+
+    // A counter is forgotten whole, and only that one.
+    work.forget_login_failures(&digest)
+        .await
+        .expect("a forgotten counter");
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(work.count_login_failures(&digest, earlier).await, Ok(0));
+    assert_eq!(work.count_login_failures(&another, earlier).await, Ok(1));
 }
 
 /// What every storage must answer of the authorization code flow: requests

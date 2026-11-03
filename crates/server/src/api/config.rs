@@ -16,8 +16,11 @@ pub fn register_data_plane(
     move |config| {
         config
             .app_data(product.clone())
+            // The only form of the plane: its limit and its refusals are the token's.
+            .app_data(oidc::token::limit_form())
             .service(oidc::discovery::serve_provider_metadata)
-            .service(oidc::certs::serve_key_set);
+            .service(oidc::certs::serve_key_set)
+            .service(oidc::token::grant);
     }
 }
 

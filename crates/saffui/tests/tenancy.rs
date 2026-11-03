@@ -126,7 +126,13 @@ fn a_bootstrapped_realm_is_published_by_a_node_on_its_data_plane_only() {
     );
     assert_eq!(
         published.body,
-        r#"{"issuer":"http://localhost:8080/realms/acme","jwks_uri":"http://localhost:8080/realms/acme/oauth2/jwks"}"#
+        concat!(
+            r#"{"issuer":"http://localhost:8080/realms/acme","#,
+            r#""token_endpoint":"http://localhost:8080/realms/acme/oauth2/token","#,
+            r#""jwks_uri":"http://localhost:8080/realms/acme/oauth2/jwks","#,
+            r#""grant_types_supported":["client_credentials"],"#,
+            r#""token_endpoint_auth_methods_supported":["client_secret_basic","client_secret_post"]}"#
+        )
     );
 
     // The key set holds the public half of the first key, and nothing private.

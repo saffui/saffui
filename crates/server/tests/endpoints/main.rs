@@ -4,3 +4,4 @@
 mod certs;
 mod discovery;
 mod health;
+mod token;

@@ -233,7 +233,8 @@ async fn an_exchange_binds_its_code_before_it_waits_on_the_head_of_the_chain() {
     use base64::Engine as _;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use saffui_core::oidc::authorize::{
-        Authorization, AuthorizationParameters, TypedSignIn, begin_authorization, finish_sign_in,
+        Authorization, AuthorizationParameters, SignInAnswer, TypedSignIn, begin_authorization,
+        finish_sign_in,
     };
     use saffui_core::oidc::token::{TokenRequest, grant_token};
     use saffui_core::secret::Secret;
@@ -265,14 +266,18 @@ async fn an_exchange_binds_its_code_before_it_waits_on_the_head_of_the_chain() {
         panic!("a person without a session must sign in");
     };
     let typed = TypedSignIn {
-        name: "ada",
-        password: Secret::new(b"correct horse battery".to_vec()),
+        answer: SignInAnswer::Password {
+            name: "ada",
+            password: Secret::new(b"correct horse battery".to_vec()),
+        },
         caller: None,
         known_browsers: &[],
     };
     let signed_in = finish_sign_in(&app, "exchange", request, &browser_secret, typed)
         .await
-        .expect("a signed-in person");
+        .expect("a signed-in person")
+        .into_finished()
+        .expect("a person who owes no code");
     let code = signed_in
         .location
         .split_once("code=")
@@ -327,4 +332,216 @@ async fn an_exchange_binds_its_code_before_it_waits_on_the_head_of_the_chain() {
         .expect("a read")
         .expect("the code, spent");
     assert!(replayed.family.is_some(), "and its family is bound");
+}
+
+const PASSWORD: &str = "correct horse battery";
+
+/// The realm `realm` with `ada`, signed in through an application, and her
+/// session.
+async fn start_signed_in(
+    app: &App,
+    realm: &str,
+) -> (RealmScope, saffui_core::login::session::SessionTicket) {
+    use saffui_core::testkit::fixtures::{
+        CodeFlow, create_application, create_person, run_code_flow,
+    };
+
+    const CALLBACK: &str = "https://app.example.test/callback";
+    let scope = create_realm(app, realm).await;
+    create_person(app, scope, "ada", PASSWORD).await;
+    create_application(app, scope, "webapp", CALLBACK, true).await;
+    let flow = CodeFlow {
+        realm,
+        client_id: "webapp",
+        client_secret: None,
+        redirect_uri: CALLBACK,
+        scope: "openid",
+        username: "ada",
+        password: PASSWORD,
+    };
+    (scope, run_code_flow(app, flow).await.ticket)
+}
+
+/// Gives the password of `ada`, and returns what she owes.
+async fn owe_second_factor(app: &App, scope: RealmScope) -> saffui_core::login::flow::SecondFactor {
+    use saffui_core::login::flow::{FirstStep, sign_in_with_password};
+    use saffui_core::secret::Secret;
+
+    let step = sign_in_with_password(
+        app,
+        scope,
+        "ada",
+        Secret::new(PASSWORD.as_bytes().to_vec()),
+        None,
+        &[],
+    )
+    .await
+    .expect("a right password");
+    let FirstStep::SecondFactorRequired(owed) = step else {
+        panic!("ada set up a second factor: she owes it");
+    };
+    owed
+}
+
+/// An address of its own for each guess: the name and the person count
+/// them, and no address locks.
+fn name_address(last: u8) -> std::net::IpAddr {
+    std::net::IpAddr::from([192, 0, 2, last])
+}
+
+/// Runs `refused` while another writer holds the head of the chain, and
+/// tells whether it counted its failure under the name before it waited
+/// there: a wrong password for the same name then waits on that count. The
+/// opening of a session takes the counters, then the head: the other way
+/// round, two requests of one browser would wait on each other.
+async fn hold_the_head_while(
+    app: &App,
+    database: &pgcore::testkit::TestDatabase,
+    scope: RealmScope,
+    refused: impl Future<Output = Result<(), saffui_core::error::ErrorCode>> + Send + 'static,
+) -> (bool, Result<(), saffui_core::error::ErrorCode>) {
+    use saffui_core::login::flow::sign_in_with_password;
+    use saffui_core::secret::Secret;
+
+    let observer = connect_as(database, APP_ROLE).await;
+    let mut holder = app.storage.begin(scope).await.expect("a unit of work");
+    record_event(app, holder.as_mut(), EventKind::RealmCreated, json!({}))
+        .await
+        .expect("an event");
+    let refused = tokio::spawn(refused);
+    assert!(
+        wait_for_lock_waiters(&observer, 1, &refused).await,
+        "the refused answer waits on the head"
+    );
+    let guess = tokio::spawn({
+        let app = app.clone();
+        async move {
+            let wrong = Secret::new(b"not the password".to_vec());
+            sign_in_with_password(&app, scope, "ada", wrong, Some(name_address(200)), &[])
+                .await
+                .map(|_| ())
+                .map_err(|failure| failure.code)
+        }
+    });
+    let counted_first = wait_for_lock_waiters(&observer, 2, &guess).await;
+
+    drop(holder);
+    let answered = refused.await.expect("the refused answer");
+    assert_eq!(
+        guess.await.expect("the guess"),
+        Err(saffui_core::error::ErrorCode::SignInFailed)
+    );
+    (counted_first, answered)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_code_that_suspends_the_codes_counts_its_failure_before_it_waits_on_the_head() {
+    use std::sync::Arc;
+
+    use saffui_core::error::ErrorCode;
+    use saffui_core::login::enroll::{begin_totp_enrollment, confirm_totp_enrollment};
+    use saffui_core::login::flow::finish_sign_in_with_code;
+    use saffui_core::secret::Secret;
+    use saffui_core::testkit::crypto::PredictableCodes;
+
+    let (mut app, database) = wire_on_postgres().await;
+    app.one_time_codes = Arc::new(PredictableCodes::default());
+    let (scope, ticket) = start_signed_in(&app, "codes").await;
+    let offered = begin_totp_enrollment(&app, "codes", Some(&ticket))
+        .await
+        .expect("a secret to enroll");
+    let seconds = u64::try_from(app.now().unix_timestamp()).expect("after 1970");
+    let code = PredictableCodes::compute_from_text(&offered.typed_secret, seconds);
+    confirm_totp_enrollment(
+        &app,
+        "codes",
+        Some(&ticket),
+        Secret::new(PASSWORD.as_bytes().to_vec()),
+        &code,
+        None,
+        &[],
+    )
+    .await
+    .expect("a confirmed authenticator");
+    let person = owe_second_factor(&app, scope).await.person.id;
+    let guess_code = |last: u8| {
+        let app = app.clone();
+        async move {
+            finish_sign_in_with_code(&app, scope, person, "000000", Some(name_address(last)), &[])
+                .await
+                .map(|_| ())
+                .map_err(|failure| failure.code)
+        }
+    };
+    for last in 1..10 {
+        assert_eq!(guess_code(last).await, Err(ErrorCode::CodeRejected));
+    }
+
+    let (counted_first, answered) =
+        hold_the_head_while(&app, &database, scope, guess_code(10)).await;
+
+    assert_eq!(answered, Err(ErrorCode::CodeRejected));
+    assert!(
+        counted_first,
+        "the tenth wrong code counted its failure before it waited on the head"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_copy_of_a_key_counts_its_failure_before_it_waits_on_the_head() {
+    use std::sync::Arc;
+
+    use saffui_core::error::ErrorCode;
+    use saffui_core::login::enroll::{begin_key_enrollment, finish_key_enrollment};
+    use saffui_core::login::flow::finish_sign_in_with_key;
+    use saffui_core::secret::Secret;
+    use saffui_core::testkit::crypto::TrustingKeys;
+
+    let (mut app, database) = wire_on_postgres().await;
+    app.security_keys = Arc::new(TrustingKeys::default());
+    let (scope, ticket) = start_signed_in(&app, "keys").await;
+    let options = begin_key_enrollment(
+        &app,
+        "keys",
+        Some(&ticket),
+        Secret::new(PASSWORD.as_bytes().to_vec()),
+        None,
+        &[],
+    )
+    .await
+    .expect("a started enrollment");
+    finish_key_enrollment(
+        &app,
+        "keys",
+        Some(&ticket),
+        &TrustingKeys::answer_enrollment(&options, "k1"),
+    )
+    .await
+    .expect("an enrolled key");
+    let owed = owe_second_factor(&app, scope).await;
+    let person = owed.person.id;
+    let answer_key = |counter: u64, asked: saffui_core::ports::crypto::KeyCeremony| {
+        let app = app.clone();
+        async move {
+            let answer = TrustingKeys::answer_proof(&asked.options, "k1", counter);
+            finish_sign_in_with_key(&app, scope, person, &asked.state, &answer, None, &[])
+                .await
+                .map(|_| ())
+                .map_err(|failure| failure.code)
+        }
+    };
+    assert_eq!(
+        answer_key(3, owed.key.expect("a started proof")).await,
+        Ok(())
+    );
+    let asked = owe_second_factor(&app, scope).await.key;
+
+    let copy = answer_key(3, asked.expect("a started proof"));
+    let (counted_first, answered) = hold_the_head_while(&app, &database, scope, copy).await;
+
+    assert_eq!(answered, Err(ErrorCode::KeyRejected));
+    assert!(
+        counted_first,
+        "the copy counted its failure before it waited on the head"
+    );
 }

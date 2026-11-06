@@ -129,6 +129,12 @@ pub(crate) mod authorization_requests {
     pub(crate) const EXPIRES_AT: Column = Column("expires_at");
     /// uuid, nullable
     pub(crate) const EXPECTED_PERSON: Column = Column("expected_person");
+    /// uuid, nullable
+    pub(crate) const FIRST_FACTOR_PERSON_ID: Column = Column("first_factor_person_id");
+    /// bytea, nullable
+    pub(crate) const KEY_PROOF_STATE: Column = Column("key_proof_state");
+    /// jsonb, nullable
+    pub(crate) const KEY_PROOF_OPTIONS: Column = Column("key_proof_options");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -142,6 +148,9 @@ pub(crate) mod authorization_requests {
         CODE_CHALLENGE,
         EXPIRES_AT,
         EXPECTED_PERSON,
+        FIRST_FACTOR_PERSON_ID,
+        KEY_PROOF_STATE,
+        KEY_PROOF_OPTIONS,
     ];
 }
 
@@ -192,6 +201,24 @@ pub(crate) mod clients {
         REDIRECT_URIS,
         POST_LOGOUT_REDIRECT_URIS,
     ];
+}
+
+pub(crate) mod code_attempts {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "code_attempts",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// uuid
+    pub(crate) const PERSON_ID: Column = Column("person_id");
+    /// integer
+    pub(crate) const ATTEMPTS: Column = Column("attempts");
+    /// timestamp with time zone
+    pub(crate) const LAST_AT: Column = Column("last_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[PERSON_ID, ATTEMPTS, LAST_AT];
 }
 
 pub(crate) mod known_browsers {
@@ -359,6 +386,46 @@ pub(crate) mod refresh_tokens {
     ];
 }
 
+pub(crate) mod security_key_enrollments {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "security_key_enrollments",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// uuid
+    pub(crate) const PERSON_ID: Column = Column("person_id");
+    /// bytea
+    pub(crate) const STATE: Column = Column("state");
+    /// timestamp with time zone
+    pub(crate) const EXPIRES_AT: Column = Column("expires_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[PERSON_ID, STATE, EXPIRES_AT];
+}
+
+pub(crate) mod security_keys {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "security_keys",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// bytea
+    pub(crate) const CREDENTIAL_ID: Column = Column("credential_id");
+    /// uuid
+    pub(crate) const PERSON_ID: Column = Column("person_id");
+    /// bytea
+    pub(crate) const RECORD: Column = Column("record");
+    /// timestamp with time zone
+    pub(crate) const CREATED_AT: Column = Column("created_at");
+    /// timestamp with time zone, nullable
+    pub(crate) const LAST_USED_AT: Column = Column("last_used_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[CREDENTIAL_ID, PERSON_ID, RECORD, CREATED_AT, LAST_USED_AT];
+}
+
 pub(crate) mod sessions {
     use super::{Column, ScopeKeys, Table};
 
@@ -378,6 +445,8 @@ pub(crate) mod sessions {
     pub(crate) const AUTHENTICATED_AT: Column = Column("authenticated_at");
     /// timestamp with time zone
     pub(crate) const EXPIRES_AT: Column = Column("expires_at");
+    /// ARRAY
+    pub(crate) const METHODS: Column = Column("methods");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -387,6 +456,7 @@ pub(crate) mod sessions {
         STATE,
         AUTHENTICATED_AT,
         EXPIRES_AT,
+        METHODS,
     ];
 }
 
@@ -437,6 +507,34 @@ pub(crate) mod tenants {
     pub(crate) const ALL: &[Column] = &[NAME, CREATED_AT];
 }
 
+pub(crate) mod totp_authenticators {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "totp_authenticators",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// uuid
+    pub(crate) const PERSON_ID: Column = Column("person_id");
+    /// bytea
+    pub(crate) const SEALED_SECRET: Column = Column("sealed_secret");
+    /// timestamp with time zone, nullable
+    pub(crate) const CONFIRMED_AT: Column = Column("confirmed_at");
+    /// bigint, nullable
+    pub(crate) const LAST_STEP: Column = Column("last_step");
+    /// timestamp with time zone
+    pub(crate) const CREATED_AT: Column = Column("created_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[
+        PERSON_ID,
+        SEALED_SECRET,
+        CONFIRMED_AT,
+        LAST_STEP,
+        CREATED_AT,
+    ];
+}
+
 /// Every table a statement of the builder can reach.
 pub(crate) const TABLES: &[(Table, &[Column])] = &[
     (audit_chain_heads::TABLE, audit_chain_heads::ALL),
@@ -444,6 +542,7 @@ pub(crate) const TABLES: &[(Table, &[Column])] = &[
     (authorization_codes::TABLE, authorization_codes::ALL),
     (authorization_requests::TABLE, authorization_requests::ALL),
     (clients::TABLE, clients::ALL),
+    (code_attempts::TABLE, code_attempts::ALL),
     (known_browsers::TABLE, known_browsers::ALL),
     (login_failures::TABLE, login_failures::ALL),
     (password_credentials::TABLE, password_credentials::ALL),
@@ -451,9 +550,15 @@ pub(crate) const TABLES: &[(Table, &[Column])] = &[
     (realm_data_keys::TABLE, realm_data_keys::ALL),
     (realms::TABLE, realms::ALL),
     (refresh_tokens::TABLE, refresh_tokens::ALL),
+    (
+        security_key_enrollments::TABLE,
+        security_key_enrollments::ALL,
+    ),
+    (security_keys::TABLE, security_keys::ALL),
     (sessions::TABLE, sessions::ALL),
     (signing_keys::TABLE, signing_keys::ALL),
     (tenants::TABLE, tenants::ALL),
+    (totp_authenticators::TABLE, totp_authenticators::ALL),
 ];
 
 // Without row security or a scope key, and so without a constant: realm_directory, schema_migrations.

@@ -154,6 +154,21 @@ impl RefreshStore for PgUnitOfWork {
         .map_err(|_| StorageError::Failed)?;
         self.execute(&update).await
     }
+
+    async fn revoke_refresh_tokens_of_sessions(
+        &mut self,
+        sessions: &[Uuid],
+        now: OffsetDateTime,
+    ) -> Result<u64, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        self.execute_raw(
+            "UPDATE refresh_tokens SET revoked_at = $3
+             WHERE tenant_id = $1 AND realm_id = $2
+               AND session_id = ANY($4) AND revoked_at IS NULL",
+            &[&tenant, &realm, &now, &sessions],
+        )
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -189,7 +204,8 @@ mod tests {
                                       enabled, created_at)
                      VALUES ('{tenant}', '{realm}', '{realm}', 'ada', false, true, now());
                  INSERT INTO sessions VALUES ('{tenant}', '{realm}', '{realm}', '{realm}', '\\x00',
-                                              'active', now(), now() + interval '1 hour');
+                                              'active', now(), now() + interval '1 hour',
+                                              '{{pwd}}');
                  INSERT INTO refresh_tokens
                      SELECT '{tenant}', '{realm}', int4send(n), uuid_in(md5((n % 1000)::text)::cstring),
                             'webapp', '{realm}', '{realm}', '{{openid}}', now(),

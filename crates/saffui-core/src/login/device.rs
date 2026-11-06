@@ -13,8 +13,10 @@ use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::app::App;
+use crate::directory::Person;
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
+use crate::ports::storage::UnitOfWork;
 use crate::tenancy::RealmScope;
 
 /// How long a browser stays known after its last sign-in.
@@ -180,6 +182,53 @@ pub(crate) fn recognize_device_mark(
     let expected = compute_mark_mac(app, scope, typed, mark.device, mark.expires_at)?;
     let proven = app.digester.equal_in_constant_time(&mark.mac, &expected);
     Ok(proven && mark.expires_at > now.unix_timestamp())
+}
+
+/// The devices of the marks made for the name typed: their MAC proves them
+/// before anything is read. Past the first few, nothing is read.
+///
+/// # Errors
+///
+/// Returns [`ErrorCode::CryptoUnavailable`].
+pub(crate) fn prove_device_marks(
+    app: &App,
+    scope: RealmScope,
+    marks: &[DeviceMark],
+    typed: &str,
+    now: OffsetDateTime,
+) -> Result<Vec<Uuid>, Failure> {
+    let mut proven = Vec::new();
+    for mark in marks.iter().take(MOST_MARKS) {
+        if recognize_device_mark(app, scope, mark, typed, now)? {
+            proven.push(mark.device);
+        }
+    }
+    Ok(proven)
+}
+
+/// The browser among `proven` that the realm keeps for this very person,
+/// and has not let expire.
+///
+/// # Errors
+///
+/// Returns the storage failure.
+pub(crate) async fn find_known_browser(
+    work: &mut dyn UnitOfWork,
+    proven: &[Uuid],
+    person: Option<&Person>,
+    now: OffsetDateTime,
+) -> Result<Option<Uuid>, Failure> {
+    let Some(person) = person else {
+        return Ok(None);
+    };
+    if proven.is_empty() {
+        return Ok(None);
+    }
+    let live = work.read_live_browsers(proven, now).await?;
+    Ok(proven.iter().copied().find(|device| {
+        live.iter()
+            .any(|kept| kept.device == *device && kept.person == person.id)
+    }))
 }
 
 #[cfg(test)]

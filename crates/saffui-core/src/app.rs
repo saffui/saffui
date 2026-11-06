@@ -7,7 +7,7 @@ use time::OffsetDateTime;
 use crate::error::{ErrorCode, Failure};
 use crate::login::fairness::HashingShares;
 use crate::ports::clock::Clock;
-use crate::ports::crypto::{Digester, PasswordHasher, Sealer, Signer};
+use crate::ports::crypto::{Digester, OneTimeCodes, PasswordHasher, Sealer, SecurityKeys, Signer};
 use crate::ports::random::Random;
 use crate::ports::storage::Storage;
 use crate::secret::Secret;
@@ -24,6 +24,8 @@ pub struct App {
     pub sealer: Arc<dyn Sealer>,
     pub signer: Arc<dyn Signer>,
     pub hasher: Arc<dyn PasswordHasher>,
+    pub one_time_codes: Arc<dyn OneTimeCodes>,
+    pub security_keys: Arc<dyn SecurityKeys>,
     /// What each realm may take of the hashers at once.
     pub hashing_shares: Arc<HashingShares>,
     /// A hash nobody's password matches, made once per process. Start it empty.

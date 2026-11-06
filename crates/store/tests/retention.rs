@@ -7,7 +7,7 @@ use pgcore::{APP_ROLE, MAINTENANCE_ROLE, RETENTION_ROLE};
 use saffui_core::app::App;
 use saffui_core::directory::Person;
 use saffui_core::ids::mint_id;
-use saffui_core::login::session::{Session, SessionState};
+use saffui_core::login::session::{AuthenticationMethod, Session, SessionState};
 use saffui_core::login::store::KnownBrowser;
 use saffui_core::oidc::code::{AuthorizationCode, PendingAuthorization};
 use saffui_core::ports::storage::{StorageError, StorageUnavailable};
@@ -25,7 +25,7 @@ mod support;
 const TIME_ENOUGH: std::time::Duration = std::time::Duration::from_mins(1);
 
 /// Writes, in one realm, a row past its keeping and a row still of use in
-/// each of the six tables retention reads.
+/// each of the seven tables retention reads.
 async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
     let identify = || mint_id(app).expect("an identifier");
     let person = Person {
@@ -37,8 +37,15 @@ async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
         enabled: true,
         created_at: now,
     };
+    // An enrollment is kept per person: the second one is of another person.
+    let other = Person {
+        id: identify(),
+        username: "bob".to_owned(),
+        ..person.clone()
+    };
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
     work.insert_person(&person).await.expect("a person");
+    work.insert_person(&other).await.expect("a person");
     // Expired a minute ago, or still of use for five minutes. A code is kept
     // the length of a session past its expiry.
     let lifetimes = [
@@ -52,10 +59,15 @@ async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
             person: person.id,
             secret_digest: vec![digest; 32],
             state: SessionState::Active,
+            methods: vec![AuthenticationMethod::Password],
             authenticated_at: now - Duration::hours(12),
             expires_at,
         };
         work.insert_session(&session).await.expect("a session");
+        let enrolling = if digest == 1 { person.id } else { other.id };
+        work.write_key_enrollment(enrolling, &[digest; 8], expires_at)
+            .await
+            .expect("an enrollment");
         work.remember_browser(
             &KnownBrowser {
                 device: identify(),
@@ -89,6 +101,8 @@ async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
             code_challenge: "c".repeat(43),
             expires_at,
             expected_person: None,
+            first_factor: None,
+            key_proof: None,
         })
         .await
         .expect("a pending request");
@@ -117,20 +131,21 @@ async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
     work.commit().await.expect("a commit");
 }
 
-const TABLES: [&str; 6] = [
+const TABLES: [&str; 7] = [
     "authorization_requests",
     "authorization_codes",
     "refresh_tokens",
     "sessions",
     "known_browsers",
     "login_failures",
+    "security_key_enrollments",
 ];
 
 /// What a pass removed from each table and how each came out, in the order
 /// of `TABLES`.
 fn summarize(
     report: Result<Option<PurgeReport>, StorageError>,
-) -> Result<Option<[(u64, PurgeOutcome); 6]>, StorageError> {
+) -> Result<Option<[(u64, PurgeOutcome); 7]>, StorageError> {
     report.map(|report| {
         report.map(|report| {
             report
@@ -142,8 +157,8 @@ fn summarize(
 
 const DONE: PurgeOutcome = PurgeOutcome::Done;
 
-async fn count_rows(client: &Client) -> [i64; 6] {
-    let mut counted = [0; 6];
+async fn count_rows(client: &Client) -> [i64; 7] {
+    let mut counted = [0; 7];
     for (slot, table) in TABLES.into_iter().enumerate() {
         counted[slot] = client
             .query_one(&format!("SELECT count(*) FROM {table}"), &[])
@@ -167,19 +182,19 @@ async fn a_pass_removes_what_expired_in_every_realm_and_leaves_what_is_still_of_
         .connect_directly()
         .await
         .expect("a connection");
-    assert_eq!(count_rows(&maintenance).await, [4; 6]);
+    assert_eq!(count_rows(&maintenance).await, [4; 7]);
     let retention = PgRetention::new(database.plan(RETENTION_ROLE));
 
     let first = run_retention_pass(&retention, now, TIME_ENOUGH).await;
 
     assert_eq!(
         summarize(first),
-        Ok(Some([(2, DONE); 6])),
+        Ok(Some([(2, DONE); 7])),
         "two of each, one in each realm"
     );
     assert_eq!(
         count_rows(&maintenance).await,
-        [2; 6],
+        [2; 7],
         "what is still of use stays, in both realms"
     );
     assert_eq!(
@@ -205,7 +220,7 @@ async fn a_pass_under_the_role_that_serves_is_refused_and_removes_nothing() {
         .connect_directly()
         .await
         .expect("a connection");
-    assert_eq!(count_rows(&maintenance).await, [2; 6]);
+    assert_eq!(count_rows(&maintenance).await, [2; 7]);
 }
 
 #[tokio::test]
@@ -230,7 +245,7 @@ async fn a_pass_under_a_role_that_may_do_more_than_purge_is_refused_and_removes_
         .connect_directly()
         .await
         .expect("a connection");
-    assert_eq!(count_rows(&maintenance).await, [2; 6]);
+    assert_eq!(count_rows(&maintenance).await, [2; 7]);
     let under_retention = PgRetention::new(database.plan(RETENTION_ROLE));
     assert_eq!(under_retention.verify_role().await, Ok(()));
 }
@@ -244,7 +259,7 @@ async fn a_retention_role_with_any_right_beyond_purging_is_refused() {
         .await
         .expect("a connection");
     let purged = "authorization_requests, authorization_codes, refresh_tokens, sessions, \
-                  known_browsers, login_failures";
+                  known_browsers, login_failures, security_key_enrollments";
     // Each bypasses row security as retention does, and holds one thing more.
     for role in [
         "saffui_test_retention_reads_all",
@@ -555,7 +570,7 @@ async fn a_table_that_fails_is_reported_and_the_pass_goes_on_with_the_others() {
 
     let report = run_retention_pass(&retention, now, TIME_ENOUGH).await;
 
-    let mut all_but_codes = [(1, DONE); 6];
+    let mut all_but_codes = [(1, DONE); 7];
     all_but_codes[1] = (0, PurgeOutcome::Failed);
     assert_eq!(
         summarize(report),
@@ -569,7 +584,7 @@ async fn a_table_that_fails_is_reported_and_the_pass_goes_on_with_the_others() {
         .expect("a connection");
     assert_eq!(
         count_rows(&maintenance).await,
-        [1, 2, 1, 1, 1, 1],
+        [1, 2, 1, 1, 1, 1, 1],
         "both codes stay"
     );
 }
@@ -598,6 +613,7 @@ async fn plant_expired_sessions(
         person: person.id,
         secret_digest: vec![digest; 32],
         state: SessionState::Active,
+        methods: vec![AuthenticationMethod::Password],
         authenticated_at: now - Duration::hours(13),
         expires_at: now - Duration::hours(1),
     };
@@ -791,7 +807,7 @@ async fn a_table_anybody_can_fill_spends_its_own_part_of_the_pass_and_no_more() 
     assert_eq!(
         report[5],
         (2_001, DONE),
-        "the counters, last, get what is left: {report:?}"
+        "the counters, after the requests, still get their part of what is left: {report:?}"
     );
 }
 
@@ -865,7 +881,7 @@ async fn a_pass_whose_link_closes_is_a_failure_and_stops_there() {
         .expect("a connection");
     assert_eq!(
         count_rows(&maintenance).await,
-        [2; 6],
+        [2; 7],
         "nothing was removed after the link closed"
     );
 }

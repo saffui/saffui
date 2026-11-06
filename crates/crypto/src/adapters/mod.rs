@@ -3,10 +3,14 @@
 //! no cryptography of its own.
 
 pub mod digest;
+pub mod otp;
 pub mod password;
 pub mod random;
 pub mod seal;
 pub mod sign;
+#[cfg(feature = "testkit")]
+pub mod soft_key;
+pub mod webauthn;
 
 use std::sync::Arc;
 

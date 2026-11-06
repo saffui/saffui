@@ -6,9 +6,11 @@ use std::sync::Arc;
 
 use crypto::adapters::digest::ProviderDigester;
 use crypto::adapters::open_provider;
+use crypto::adapters::otp::ProviderOneTimeCodes;
 use crypto::adapters::password::BoundedPasswordHasher;
 use crypto::adapters::seal::EnvelopeSealer;
 use crypto::adapters::sign::JoseSigner;
+use crypto::adapters::webauthn::WebauthnSecurityKeys;
 use pgcore::APP_ROLE;
 use pgcore::migrate::EMBEDDED;
 use pgcore::migrate::window::SchemaWindow;
@@ -41,6 +43,8 @@ pub fn wire_app(database: &TestDatabase, root_key: &Secret) -> App {
         digester: Arc::new(ProviderDigester::new(Arc::clone(&provider))),
         sealer: Arc::new(EnvelopeSealer::new(Arc::clone(&provider), root_key).expect("a sealer")),
         hasher: Arc::new(BoundedPasswordHasher::new(Arc::clone(&provider), 2).expect("a hasher")),
+        one_time_codes: Arc::new(ProviderOneTimeCodes::new(Arc::clone(&provider))),
+        security_keys: Arc::new(WebauthnSecurityKeys::for_origin("https://id.example.test")),
         hashing_shares: Arc::new(saffui_core::login::fairness::HashingShares::new(2)),
         signer: Arc::new(JoseSigner::new(provider)),
         decoy_hash: Arc::new(std::sync::OnceLock::new()),

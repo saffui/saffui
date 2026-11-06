@@ -8,4 +8,5 @@ mod headers;
 mod health;
 mod introspect;
 mod login;
+mod second_factor;
 mod token;

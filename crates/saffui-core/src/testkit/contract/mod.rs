@@ -620,7 +620,7 @@ pub async fn check_persons_contract(app: &App) {
 pub async fn check_sign_in_contract(app: &App) {
     use time::Duration;
 
-    use crate::login::session::{Session, SessionState};
+    use crate::login::session::{AuthenticationMethod, ReadSession, Session, SessionState};
     use crate::testkit::fixtures::{create_person, create_realm};
 
     let scope = create_realm(app, "contract-sign-in").await;
@@ -634,6 +634,7 @@ pub async fn check_sign_in_contract(app: &App) {
         person: ada.id,
         secret_digest: vec![3; 32],
         state: SessionState::Active,
+        methods: vec![AuthenticationMethod::Password],
         authenticated_at: now,
         expires_at: now + Duration::hours(1),
     };
@@ -643,7 +644,10 @@ pub async fn check_sign_in_contract(app: &App) {
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
     assert_eq!(
         work.read_session(session.id).await,
-        Ok(Some(session.clone()))
+        Ok(Some(ReadSession {
+            session: session.clone(),
+            person_holds_factor: false,
+        }))
     );
     let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
     assert_eq!(elsewhere.read_session(session.id).await, Ok(None));
@@ -693,7 +697,7 @@ pub async fn check_sign_in_contract(app: &App) {
 pub async fn check_codes_contract(app: &App) {
     use time::Duration;
 
-    use crate::login::session::{Session, SessionState};
+    use crate::login::session::{AuthenticationMethod, Session, SessionState};
     use crate::oidc::code::PendingAuthorization;
     use crate::testkit::fixtures::{create_person, create_realm};
 
@@ -708,6 +712,7 @@ pub async fn check_codes_contract(app: &App) {
         person: ada.id,
         secret_digest: vec![3; 32],
         state: SessionState::Active,
+        methods: vec![AuthenticationMethod::Password],
         authenticated_at: now,
         expires_at: now + Duration::hours(1),
     };
@@ -726,7 +731,7 @@ pub async fn check_codes_contract(app: &App) {
         .await
         .expect("a read")
         .expect("the session is kept");
-    assert_eq!(ended.state, SessionState::Ended);
+    assert_eq!(ended.session.state, SessionState::Ended);
 
     // A request is read until it expires, and taken once.
     let pending = PendingAuthorization {
@@ -740,6 +745,8 @@ pub async fn check_codes_contract(app: &App) {
         code_challenge: "challenge".to_owned(),
         expires_at: now + Duration::minutes(10),
         expected_person: Some(ada.id),
+        first_factor: None,
+        key_proof: None,
     };
     work.insert_pending_authorization(&pending)
         .await
@@ -750,6 +757,7 @@ pub async fn check_codes_contract(app: &App) {
         work.read_pending_authorization(pending.id, now).await,
         Ok(Some(pending.clone()))
     );
+    let pending = check_that_a_first_factor_is_kept(app, work.as_mut(), pending, ada.id).await;
     let later = now + Duration::minutes(11);
     assert_eq!(
         work.read_pending_authorization(pending.id, later).await,
@@ -776,6 +784,46 @@ pub async fn check_codes_contract(app: &App) {
 
     work.commit().await.expect("a commit");
     check_that_a_code_is_spent_once(app, scope, other, &session).await;
+}
+
+/// Who proved their password is written on a request that still waits,
+/// and on no other. Returns the request as it now reads.
+async fn check_that_a_first_factor_is_kept(
+    app: &App,
+    work: &mut dyn crate::ports::storage::UnitOfWork,
+    pending: crate::oidc::code::PendingAuthorization,
+    person: Uuid,
+) -> crate::oidc::code::PendingAuthorization {
+    let now = app.now();
+    let key_proof = crate::oidc::code::PendingKeyProof {
+        state: vec![5; 12],
+        options: serde_json::json!({ "challenge": "c" }),
+    };
+    assert_eq!(
+        work.mark_first_factor(pending.id, person, None, pending.expires_at)
+            .await,
+        Ok(false)
+    );
+    assert_eq!(
+        work.mark_first_factor(mint_id(app).expect("an identifier"), person, None, now)
+            .await,
+        Ok(false)
+    );
+    assert_eq!(
+        work.mark_first_factor(pending.id, person, Some(&key_proof), now)
+            .await,
+        Ok(true)
+    );
+    let pending = crate::oidc::code::PendingAuthorization {
+        first_factor: Some(person),
+        key_proof: Some(key_proof),
+        ..pending
+    };
+    assert_eq!(
+        work.read_pending_authorization(pending.id, now).await,
+        Ok(Some(pending.clone()))
+    );
+    pending
 }
 
 /// A code is spent once, and not after it expired. A spent code is kept, so
@@ -930,7 +978,7 @@ async fn check_what_a_replayed_code_finds(
 pub async fn check_refresh_contract(app: &App) {
     use time::Duration;
 
-    use crate::login::session::{Session, SessionState};
+    use crate::login::session::{AuthenticationMethod, Session, SessionState};
     use crate::testkit::fixtures::{create_person, create_realm};
     use crate::tokens::store::{EndedFamily, RefreshToken};
 
@@ -943,6 +991,7 @@ pub async fn check_refresh_contract(app: &App) {
         person: ada.id,
         secret_digest: vec![7; 32],
         state: SessionState::Active,
+        methods: vec![AuthenticationMethod::Password],
         authenticated_at: now,
         expires_at: now + Duration::hours(1),
     };
@@ -1190,5 +1239,478 @@ pub async fn check_known_browsers_contract(app: &App) {
         .expect("a read");
     live.sort_by_key(|browser| browser.device);
     assert_eq!(live, [browser(1, ada.id, 20), browser(3, ada.id, 15)]);
+    work.commit().await.expect("a commit");
+}
+
+/// The first accepted step confirms the very secret it was judged against,
+/// and a confirmed one signs in. A step is accepted once, and never one at
+/// or before the last.
+async fn check_that_a_step_is_accepted_once(
+    work: &mut dyn crate::ports::storage::UnitOfWork,
+    person: Uuid,
+    judged: &[u8],
+    now: time::OffsetDateTime,
+) {
+    use time::Duration;
+
+    use crate::login::store::TotpUse;
+
+    let (confirm, sign_in) = (TotpUse::Confirmation, TotpUse::SignIn);
+    assert_eq!(
+        work.accept_totp_step(person, &[1; 24], 10, confirm, now)
+            .await,
+        Ok(false),
+        "the secret was replaced since it was judged"
+    );
+    assert_eq!(
+        work.accept_totp_step(person, judged, 10, sign_in, now)
+            .await,
+        Ok(false),
+        "a secret nobody confirmed signs nobody in"
+    );
+    assert_eq!(
+        work.accept_totp_step(person, judged, 10, confirm, now)
+            .await,
+        Ok(true)
+    );
+    assert_eq!(
+        work.accept_totp_step(person, judged, 11, confirm, now)
+            .await,
+        Ok(false),
+        "a secret is confirmed once"
+    );
+    assert_eq!(
+        work.accept_totp_step(person, judged, 10, sign_in, now)
+            .await,
+        Ok(false)
+    );
+    assert_eq!(
+        work.accept_totp_step(person, judged, 9, sign_in, now).await,
+        Ok(false)
+    );
+    let later = now + Duration::seconds(30);
+    assert_eq!(
+        work.accept_totp_step(person, judged, 11, sign_in, later)
+            .await,
+        Ok(true)
+    );
+}
+
+/// The codes of a person who typed one are forgotten only while they are
+/// fewer than a bound.
+async fn check_that_code_attempts_are_forgotten_below_a_bound(
+    work: &mut dyn crate::ports::storage::UnitOfWork,
+    person: Uuid,
+    now: time::OffsetDateTime,
+) {
+    assert_eq!(work.count_code_attempt(person, now).await, Ok(2));
+    work.clear_code_attempts_below(person, 2)
+        .await
+        .expect("an answer");
+    assert_eq!(
+        work.count_code_attempt(person, now).await,
+        Ok(3),
+        "two codes are not fewer than two: kept"
+    );
+    work.clear_code_attempts_below(person, 4)
+        .await
+        .expect("an answer");
+    assert_eq!(
+        work.count_code_attempt(person, now).await,
+        Ok(1),
+        "three codes are fewer than four: forgotten"
+    );
+}
+
+/// Asks twice whether `person` holds a second factor: alone, and with a
+/// session of theirs written in `work` and read back.
+async fn ask_whether_holder(
+    app: &App,
+    work: &mut dyn crate::ports::storage::UnitOfWork,
+    person: Uuid,
+) -> [bool; 2] {
+    use time::Duration;
+
+    use crate::login::session::{AuthenticationMethod, Session, SessionState};
+
+    let now = app.now();
+    let session = Session {
+        id: mint_id(app).expect("an identifier"),
+        person,
+        secret_digest: vec![8; 32],
+        state: SessionState::Active,
+        methods: vec![AuthenticationMethod::Password],
+        authenticated_at: now,
+        expires_at: now + Duration::hours(1),
+    };
+    work.insert_session(&session).await.expect("a session");
+    let read = work
+        .read_session(session.id)
+        .await
+        .expect("a read")
+        .expect("the session");
+    let alone = work.holds_second_factor(person).await.expect("an answer");
+    [alone, read.person_holds_factor]
+}
+
+/// What any storage owes to the authenticator of a person: a secret that
+/// was never confirmed can be replaced and a confirmed one cannot, a time
+/// step is accepted once and never one before it, it is a second factor
+/// once confirmed, and nothing of it is reachable from another realm.
+///
+/// # Panics
+///
+/// Panics when the storage breaks the contract.
+pub async fn check_authenticators_contract(app: &App) {
+    use crate::login::store::{TotpAuthenticator, TotpUse};
+    use crate::testkit::fixtures::{create_person, create_realm};
+
+    let scope = create_realm(app, "contract-authenticators").await;
+    let other = create_realm(app, "contract-authenticators-other").await;
+    let ada = create_person(app, scope, "ada", "correct horse battery").await;
+    let now = app.now();
+    let offer = |secret: u8| TotpAuthenticator {
+        person: ada.id,
+        sealed_secret: vec![secret; 24],
+        confirmed_at: None,
+        last_step: None,
+        created_at: now,
+    };
+
+    let confirm = TotpUse::Confirmation;
+    let judged = vec![2_u8; 24];
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(work.read_totp(ada.id).await, Ok(None));
+    assert_eq!(
+        work.accept_totp_step(ada.id, &judged, 10, confirm, now)
+            .await,
+        Ok(false)
+    );
+    assert_eq!(work.delete_totp(ada.id).await, Ok(false));
+
+    // A secret nobody confirmed is replaced by the next one.
+    assert_eq!(work.write_pending_totp(&offer(1)).await, Ok(true));
+    assert_eq!(
+        work.write_pending_totp(&offer(2)).await,
+        Ok(true),
+        "a secret in place of one never confirmed"
+    );
+    assert_eq!(work.read_totp(ada.id).await, Ok(Some(offer(2))));
+    assert_eq!(
+        ask_whether_holder(app, work.as_mut(), ada.id).await,
+        [false; 2],
+        "a secret nobody confirmed is no factor"
+    );
+    work.commit().await.expect("a commit");
+
+    // Unknown from another realm.
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(elsewhere.read_totp(ada.id).await, Ok(None));
+    assert_eq!(
+        elsewhere
+            .accept_totp_step(ada.id, &judged, 10, confirm, now)
+            .await,
+        Ok(false)
+    );
+    assert_eq!(elsewhere.delete_totp(ada.id).await, Ok(false));
+    drop(elsewhere);
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    check_that_a_step_is_accepted_once(work.as_mut(), ada.id, &judged, now).await;
+    let confirmed = work
+        .read_totp(ada.id)
+        .await
+        .expect("a read")
+        .expect("the authenticator");
+    assert_eq!(
+        (confirmed.confirmed_at, confirmed.last_step),
+        (Some(now), Some(11)),
+        "the instant of the confirmation is the one of the first code"
+    );
+    assert_eq!(
+        ask_whether_holder(app, work.as_mut(), ada.id).await,
+        [true; 2]
+    );
+
+    // A confirmed authenticator is not replaced.
+    assert_eq!(work.write_pending_totp(&offer(3)).await, Ok(false));
+    assert_eq!(
+        work.read_totp(ada.id)
+            .await
+            .expect("a read")
+            .map(|known| known.sealed_secret),
+        Some(vec![2; 24])
+    );
+    work.commit().await.expect("a commit");
+
+    // Removed, it is gone, and a new one can be offered.
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(work.delete_totp(ada.id).await, Ok(true));
+    assert_eq!(work.read_totp(ada.id).await, Ok(None));
+    assert_eq!(work.write_pending_totp(&offer(4)).await, Ok(true));
+    work.commit().await.expect("a commit");
+
+    // The codes a person typed are counted across units of work, and
+    // forgotten all at once.
+    for expected in 1..=3 {
+        let mut work = app.storage.begin(scope).await.expect("a unit of work");
+        assert_eq!(work.count_code_attempt(ada.id, now).await, Ok(expected));
+        work.commit().await.expect("a commit");
+    }
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.clear_code_attempts(ada.id).await.expect("forgotten");
+    work.clear_code_attempts(ada.id)
+        .await
+        .expect("nothing to forget");
+    assert_eq!(work.count_code_attempt(ada.id, now).await, Ok(1));
+    work.commit().await.expect("a commit");
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    check_that_code_attempts_are_forgotten_below_a_bound(work.as_mut(), ada.id, now).await;
+    work.commit().await.expect("a commit");
+}
+
+/// What any storage owes to the sessions of a person a factor ends: every
+/// active one proven by exactly the methods named ends in one go, but the one
+/// kept, and their refresh tokens with them; no other, nor any of another realm.
+///
+/// # Panics
+///
+/// Panics when the storage breaks the contract.
+pub async fn check_ended_sessions_contract(app: &App) {
+    use time::Duration;
+
+    use crate::login::session::{AuthenticationMethod, Session, SessionState};
+    use crate::testkit::fixtures::{create_person, create_realm};
+    use crate::tokens::store::RefreshToken;
+
+    let scope = create_realm(app, "contract-ended-sessions").await;
+    let other = create_realm(app, "contract-ended-sessions-other").await;
+    let ada = create_person(app, scope, "ada", "correct horse battery").await;
+    let bob = create_person(app, scope, "bob", "correct horse battery").await;
+    let now = app.now();
+    let password = [AuthenticationMethod::Password];
+    let open = |person: Uuid, methods: &[AuthenticationMethod]| Session {
+        id: mint_id(app).expect("an identifier"),
+        person,
+        secret_digest: vec![9; 32],
+        state: SessionState::Active,
+        methods: methods.to_vec(),
+        authenticated_at: now,
+        expires_at: now + Duration::hours(1),
+    };
+    // Many: no number stops the end.
+    let opened: Vec<Session> = (0..120).map(|_| open(ada.id, &password)).collect();
+    let kept = open(ada.id, &password);
+    let proven = open(
+        ada.id,
+        &[
+            AuthenticationMethod::Password,
+            AuthenticationMethod::OneTimeCode,
+        ],
+    );
+    let of_bob = open(bob.id, &password);
+    let mint = |digest: u8, session: &Session| RefreshToken {
+        token_digest: vec![digest; 32],
+        family: mint_id(app).expect("an identifier"),
+        client_id: "webapp".to_owned(),
+        person: session.person,
+        session: session.id,
+        scopes: vec!["openid".to_owned()],
+        issued_at: now,
+        expires_at: now + Duration::minutes(30),
+    };
+    let tokens = [
+        mint(1, &opened[0]),
+        mint(2, &opened[0]),
+        mint(3, &opened[119]),
+        mint(4, &kept),
+        mint(5, &of_bob),
+    ];
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    for session in opened.iter().chain([&kept, &proven, &of_bob]) {
+        work.insert_session(session).await.expect("a session");
+    }
+    for token in &tokens {
+        work.insert_refresh_token(token).await.expect("a token");
+    }
+    work.commit().await.expect("a commit");
+
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(
+        elsewhere
+            .end_sessions_proven_only_by(ada.id, &password, None)
+            .await,
+        Ok(vec![])
+    );
+    drop(elsewhere);
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let mut ended = work
+        .end_sessions_proven_only_by(ada.id, &password, Some(kept.id))
+        .await
+        .expect("an end");
+    ended.sort_unstable();
+    let mut expected: Vec<Uuid> = opened.iter().map(|session| session.id).collect();
+    expected.sort_unstable();
+    assert_eq!(ended, expected);
+    assert_eq!(
+        work.revoke_refresh_tokens_of_sessions(&ended, now).await,
+        Ok(3),
+        "the tokens of the ended sessions, not those of the kept one or of bob"
+    );
+    assert_eq!(
+        work.revoke_refresh_tokens_of_sessions(&ended, now).await,
+        Ok(0)
+    );
+    assert_eq!(
+        work.end_sessions_proven_only_by(ada.id, &password, Some(kept.id))
+            .await,
+        Ok(vec![]),
+        "an ended session is not ended twice"
+    );
+    for (session, state) in [
+        (&opened[7], SessionState::Ended),
+        (&kept, SessionState::Active),
+        (&proven, SessionState::Active),
+        (&of_bob, SessionState::Active),
+    ] {
+        let read = work.read_session(session.id).await.expect("a read");
+        assert_eq!(read.map(|read| read.session.state), Some(state));
+    }
+    work.commit().await.expect("a commit");
+}
+
+async fn check_that_a_key_is_a_factor_of_its_person(
+    app: &App,
+    work: &mut dyn crate::ports::storage::UnitOfWork,
+    holder: Uuid,
+    other: Uuid,
+) {
+    assert_eq!(ask_whether_holder(app, work, holder).await, [true; 2]);
+    assert_eq!(
+        ask_whether_holder(app, work, other).await,
+        [false; 2],
+        "the keys of someone else are no factor"
+    );
+}
+
+/// What any storage owes to the security keys of a person: a key is enrolled
+/// once in a realm and is a second factor of its person only, a use is kept
+/// only against the record it was judged with, an enrollment is taken once
+/// and not after it expired, and nothing of it is reachable from another
+/// realm.
+///
+/// # Panics
+///
+/// Panics when the storage breaks the contract.
+pub async fn check_security_keys_contract(app: &App) {
+    use time::Duration;
+
+    use crate::login::store::SecurityKey;
+    use crate::testkit::fixtures::{create_person, create_realm};
+
+    let scope = create_realm(app, "contract-security-keys").await;
+    let other = create_realm(app, "contract-security-keys-other").await;
+    let ada = create_person(app, scope, "ada", "correct horse battery").await;
+    let bob = create_person(app, scope, "bob", "correct horse battery").await;
+    let now = app.now();
+    let key = |name: u8, person: Uuid, minutes: i64| SecurityKey {
+        credential_id: vec![name; 16],
+        person,
+        record: vec![name, 0],
+        created_at: now + Duration::minutes(minutes),
+        last_used_at: None,
+    };
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(work.insert_security_key(&key(2, ada.id, 1)).await, Ok(true));
+    assert_eq!(work.insert_security_key(&key(1, ada.id, 0)).await, Ok(true));
+    assert_eq!(
+        work.insert_security_key(&key(1, bob.id, 2)).await,
+        Ok(false),
+        "a credential is enrolled once in a realm"
+    );
+    assert_eq!(
+        work.list_security_keys(ada.id).await,
+        Ok(vec![key(1, ada.id, 0), key(2, ada.id, 1)]),
+        "the oldest first"
+    );
+    assert_eq!(work.list_security_keys(bob.id).await, Ok(vec![]));
+    check_that_a_key_is_a_factor_of_its_person(app, work.as_mut(), ada.id, bob.id).await;
+
+    // A use is kept against the key as it was read, once.
+    let moved = [1_u8, 1];
+    let judged = key(1, ada.id, 0);
+    let stale = SecurityKey {
+        record: vec![1, 9],
+        ..judged.clone()
+    };
+    let of_bob = SecurityKey {
+        person: bob.id,
+        ..judged.clone()
+    };
+    assert_eq!(
+        work.record_key_use(&stale, Some(&moved), now).await,
+        Ok(false)
+    );
+    assert_eq!(
+        work.record_key_use(&of_bob, Some(&moved), now).await,
+        Ok(false),
+        "the key of someone else"
+    );
+    assert_eq!(
+        work.record_key_use(&judged, Some(&moved), now).await,
+        Ok(true)
+    );
+    assert_eq!(
+        work.record_key_use(&judged, Some(&moved), now).await,
+        Ok(false),
+        "of two uses judged against one reading, one is kept"
+    );
+    let used = work.list_security_keys(ada.id).await.expect("a list");
+    assert_eq!(
+        (used[0].record.clone(), used[0].last_used_at),
+        (moved.to_vec(), Some(now))
+    );
+    // A key that counts nothing keeps its record: the instant of its last
+    // use still tells two uses apart.
+    let later = now + Duration::minutes(1);
+    let read_once = used[0].clone();
+    assert_eq!(work.record_key_use(&read_once, None, later).await, Ok(true));
+    assert_eq!(
+        work.record_key_use(&read_once, None, later).await,
+        Ok(false),
+        "of two uses of a key that counts nothing, one is kept"
+    );
+    work.commit().await.expect("a commit");
+
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(elsewhere.list_security_keys(ada.id).await, Ok(vec![]));
+    assert_eq!(elsewhere.holds_second_factor(ada.id).await, Ok(false));
+    assert_eq!(elsewhere.delete_security_keys(ada.id).await, Ok(0));
+    drop(elsewhere);
+
+    // An enrollment is replaced by a later start, taken once, and not after
+    // it expired.
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let soon = now + Duration::minutes(5);
+    work.write_key_enrollment(ada.id, b"first", soon)
+        .await
+        .expect("an enrollment");
+    work.write_key_enrollment(ada.id, b"second", soon)
+        .await
+        .expect("a later start");
+    assert_eq!(work.take_key_enrollment(ada.id, soon).await, Ok(None));
+    assert_eq!(
+        work.take_key_enrollment(ada.id, now).await,
+        Ok(Some(b"second".to_vec()))
+    );
+    assert_eq!(work.take_key_enrollment(ada.id, now).await, Ok(None));
+    assert_eq!(work.delete_security_keys(ada.id).await, Ok(2));
+    assert_eq!(work.list_security_keys(ada.id).await, Ok(vec![]));
+    assert_eq!(work.holds_second_factor(ada.id).await, Ok(false));
     work.commit().await.expect("a commit");
 }

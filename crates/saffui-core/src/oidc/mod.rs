@@ -10,6 +10,6 @@ pub mod pkce;
 mod refresh;
 pub mod revoke;
 #[cfg(test)]
-mod scenario;
+pub(crate) mod scenario;
 pub mod token;
 pub mod userinfo;

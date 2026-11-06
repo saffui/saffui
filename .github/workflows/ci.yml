@@ -37,6 +37,8 @@ jobs:
         with:
           persist-credentials: false
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # The workspace leaves this feature off: the crypto crate is checked under it too.
+      - run: cargo clippy -p crypto --features fips-strict --all-targets --locked -- -D warnings
 
   test:
     runs-on: ubuntu-latest
@@ -54,6 +56,7 @@ jobs:
           bin="$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -n 1)"
           SAFFUI_DEV_PG_BIN="${bin}" scripts/dev-postgres.sh start
       - run: cargo test --workspace --locked
+      - run: cargo test -p crypto --features fips-strict --locked
       # The constants of the schema are the ones the migrations build.
       - name: Check the generated schema
         run: SAFFUI_DEV_PG_BIN="$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -n 1)" scripts/dev-postgres.sh gen-schema --check

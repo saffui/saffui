@@ -40,6 +40,13 @@ pub const EMBEDDED: &[Migration] = &[
     embed!(17, "0017_bounded_retention"),
     embed!(18, "0018_retention_role"),
     embed!(19, "0019_known_browsers"),
+    embed!(20, "0020_session_methods"),
+    embed!(21, "0021_authenticators"),
+    embed!(22, "0022_second_step"),
+    embed!(23, "0023_code_attempts"),
+    embed!(24, "0024_sessions_of_person"),
+    embed!(25, "0025_security_keys"),
+    embed!(26, "0026_key_proof"),
 ];
 
 /// One numbered step of the schema, as SQL text.

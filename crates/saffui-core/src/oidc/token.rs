@@ -340,6 +340,7 @@ pub(super) async fn answer_for_person(
             nonce: granted.nonce,
             session: granted.session.id,
             authenticated_at: granted.session.authenticated_at,
+            methods: &granted.session.methods,
         };
         Some(mint_identity_token(app, &key, identity)?)
     } else {

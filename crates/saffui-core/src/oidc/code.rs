@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::ports::storage::StorageError;
 
 /// An authorization request that waits for its person to sign in.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PendingAuthorization {
     pub id: Uuid,
     /// The digest of the secret given to the browser that started the
@@ -23,6 +23,21 @@ pub struct PendingAuthorization {
     /// The person an identity token hint named: anyone else who signs in
     /// for this request gets no code.
     pub expected_person: Option<Uuid>,
+    /// The person who proved their password for this request and owes a
+    /// second factor. Nobody yet, when the request is made.
+    pub first_factor: Option<Uuid>,
+    /// The proof by a security key that person may give next, when they
+    /// hold one.
+    pub key_proof: Option<PendingKeyProof>,
+}
+
+/// A proof by a security key that was started and waits for its answer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingKeyProof {
+    /// What finishes the ceremony. Only the adapter reads it.
+    pub state: Vec<u8>,
+    /// What the page hands to the browser, kept to show the page again.
+    pub options: serde_json::Value,
 }
 
 /// A code, as it is kept: by its digest, with everything the exchange must
@@ -64,6 +79,17 @@ pub trait CodeStore {
         id: Uuid,
         now: OffsetDateTime,
     ) -> Result<Option<PendingAuthorization>, StorageError>;
+
+    /// Writes on a pending request who proved their password for it, and the
+    /// proof by a security key they may give next. Answers whether the
+    /// request was still waiting at `now`.
+    async fn mark_first_factor(
+        &mut self,
+        id: Uuid,
+        person: Uuid,
+        key_proof: Option<&PendingKeyProof>,
+        now: OffsetDateTime,
+    ) -> Result<bool, StorageError>;
 
     /// Takes a pending request: returns it and removes it, in one operation.
     /// Of two submissions of one page, exactly one gets it. A request that

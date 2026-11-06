@@ -17,6 +17,9 @@ allow = [
     # libloading, which the optional PKCS#11 key store loads its module with.
     "ISC",
     "MIT",
+    # Weak file-level copyleft. The webauthn-rs stack ships under it; consumed
+    # unmodified, its obligations stop at those files and reach none of ours.
+    "MPL-2.0",
     "Unicode-3.0",
     "Zlib",
 ]
@@ -31,6 +34,10 @@ skip = [
     { crate = "syn@2", reason = "derive_more, which actix-web builds on, and tracing-attributes still ask for syn 2. It only runs at compile time." },
     { crate = "wasi@0.11", reason = "mio and whoami, which the PostgreSQL driver builds on, ask for two versions of the WASI bindings. Neither is built for a target this product ships on." },
     { crate = "http@0.2", reason = "actix-web 4 is built on http 0.2, and ureq, which the command line talks to a node with, on http 1." },
+    { crate = "base64@0.21", reason = "The webauthn-rs stack, which the crypto crate verifies security keys with, still asks for base64 0.21." },
+    { crate = "thiserror@1", reason = "The webauthn-rs stack and the X.509 parser it reads attestations with still ask for thiserror 1." },
+    { crate = "thiserror-impl@1", reason = "The derive of thiserror 1, for the same crates." },
+    { crate = "synstructure@0.13", reason = "A derive helper of the ASN.1 reader under the webauthn-rs stack. It only runs at compile time." },
     { crate = "base64@0.22", reason = "postgres-protocol still asks for base64 0.22 while bcrypt, which the crypto crate verifies imported passwords with, asks for 0.23." },
 ]
 skip-tree = [
@@ -39,8 +46,9 @@ skip-tree = [
 # A cryptographic library is reached through the crate that owns it, so that
 # one place answers for how it is used.
 deny = [
-    { crate = "openssl", wrappers = ["crypto", "pgcore", "postgres-openssl", "tokio-openssl"], reason = "OpenSSL is used by the crypto crate, and by pgcore for the TLS of the database link." },
-    { crate = "openssl-sys", wrappers = ["crypto", "openssl", "tokio-openssl"], reason = "The C API of OpenSSL is reached by the crypto crate alone." },
+    { crate = "openssl", wrappers = ["crypto", "pgcore", "postgres-openssl", "tokio-openssl", "webauthn-attestation-ca", "webauthn-rs-core"], reason = "OpenSSL is used by the crypto crate, by the WebAuthn library it verifies security keys with, and by pgcore for the TLS of the database link." },
+    { crate = "openssl-sys", wrappers = ["crypto", "openssl", "tokio-openssl", "webauthn-attestation-ca", "webauthn-rs-core"], reason = "The C API of OpenSSL is reached by the crypto crate, and by the WebAuthn library under it." },
+    { crate = "webauthn-rs", wrappers = ["crypto"], reason = "Security keys are verified by the crypto crate alone." },
     { crate = "argon2", wrappers = ["crypto"], reason = "Passwords are hashed by the crypto crate alone." },
     { crate = "bcrypt", wrappers = ["crypto"], reason = "Imported passwords are verified by the crypto crate alone." },
     { crate = "cryptoki", wrappers = ["crypto"], reason = "A PKCS#11 module is loaded by the crypto crate alone." },
@@ -52,7 +60,7 @@ deny = [
     { crate = "blake2", wrappers = ["argon2"], reason = "Only argon2 builds on it." },
     # The edges between the crates of the workspace, as the architecture draws them.
     { crate = "saffui-core", wrappers = ["crypto", "saffui", "saffui-core", "server", "store"], reason = "The adapters, the server and the binary build on the core; pgcore and gen-schema never do." },
-    { crate = "crypto", wrappers = ["saffui"], reason = "Only the binary binds the crypto crate to the ports of the core." },
+    { crate = "crypto", wrappers = ["crypto", "saffui"], reason = "Only the binary binds the crypto crate to the ports of the core; the crate builds its own software key for its tests." },
     { crate = "store", wrappers = ["saffui"], reason = "Only the binary binds the store to the ports of the core." },
     { crate = "server", wrappers = ["saffui"], reason = "Only the binary mounts the server." },
     { crate = "api", wrappers = ["saffui", "server"], reason = "The contract of the administration API is shared by the server that answers and the command line that asks, and by nothing else." },

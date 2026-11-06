@@ -50,14 +50,14 @@ impl Answer {
     }
 }
 
-struct Sent<'a> {
-    method: Method,
-    path: &'a str,
-    head: &'a [(&'a str, &'a str)],
-    form: Option<&'a str>,
+pub(crate) struct Sent<'a> {
+    pub(crate) method: Method,
+    pub(crate) path: &'a str,
+    pub(crate) head: &'a [(&'a str, &'a str)],
+    pub(crate) form: Option<&'a str>,
 }
 
-async fn send(product: &saffui_core::app::App, sent: Sent<'_>) -> Answer {
+pub(crate) async fn send(product: &saffui_core::app::App, sent: Sent<'_>) -> Answer {
     let app = test::init_service(
         App::new().configure(register_data_plane(web::Data::new(product.clone()))),
     )
@@ -475,6 +475,77 @@ async fn a_wrong_password_shows_the_form_again_and_the_same_request_then_succeed
     let right = format!("request={request}&username=ada&password=correct+horse+battery");
     let signed_in = post(&product, "/realms/acme/login", &cookie, &right).await;
     assert_eq!(signed_in.status, StatusCode::SEE_OTHER);
+}
+
+/// Posts `form` as a stream that tells whether anything pulled it. Returns
+/// the status, the body, and whether the form was read.
+async fn post_watched(
+    product: &saffui_core::app::App,
+    path: &str,
+    head: &[(&str, &str)],
+    form: &str,
+) -> (StatusCode, String, bool) {
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use actix_web::dev::Payload;
+    use actix_web::error::PayloadError;
+    use actix_web::web::Bytes;
+    use futures_util::{Stream, stream};
+
+    let app = test::init_service(
+        App::new().configure(register_data_plane(web::Data::new(product.clone()))),
+    )
+    .await;
+    let read = Arc::new(AtomicBool::new(false));
+    let pulled = Arc::clone(&read);
+    let body = Bytes::from(form.to_owned());
+    let watched: Pin<Box<dyn Stream<Item = Result<Bytes, PayloadError>>>> =
+        Box::pin(stream::once(async move {
+            pulled.store(true, Ordering::SeqCst);
+            Ok(body)
+        }));
+    let mut request = test::TestRequest::post()
+        .uri(path)
+        .insert_header((CONTENT_TYPE, "application/x-www-form-urlencoded"));
+    for (name, value) in head {
+        request = request.insert_header((*name, *value));
+    }
+    let (request, _) = request.to_request().replace_payload(Payload::from(watched));
+    let response = test::call_service(&app, request).await;
+    let status = response.status();
+    let body = String::from_utf8_lossy(&test::read_body(response).await).into_owned();
+    (status, body, read.load(Ordering::SeqCst))
+}
+
+#[actix_web::test]
+async fn a_sign_in_form_is_read_after_its_guard_and_within_the_limit_of_the_plane() {
+    let product = start().await;
+    let (request, flow) = start_sign_in(&product).await;
+    // Well formed, and larger than the forms the plane reads.
+    let large = format!(
+        "request={request}&username=ada&password={}",
+        "a".repeat(9 * 1024)
+    );
+    let from_another_site = [
+        (COOKIE.as_str(), flow.as_str()),
+        (ORIGIN.as_str(), "https://evil.example.test"),
+    ];
+    let from_here = [(COOKIE.as_str(), flow.as_str())];
+
+    for (head, read_by_the_page) in [(&from_another_site[..], false), (&from_here[..], true)] {
+        let (status, body, read) = post_watched(&product, "/realms/acme/login", head, &large).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.contains("This sign-in has expired."),
+            "the page answers, not the token endpoint: {body}"
+        );
+        assert_eq!(
+            read, read_by_the_page,
+            "a post from another site is refused before its form is read: {head:?}"
+        );
+    }
 }
 
 #[actix_web::test]

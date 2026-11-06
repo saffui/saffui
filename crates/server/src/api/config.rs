@@ -4,7 +4,7 @@
 //! `tests/mounted.rs` would say so.
 
 use crate::api::rest::endpoints::health::{self, DrainFlag};
-use crate::api::rest::endpoints::{admin, login, oidc};
+use crate::api::rest::endpoints::{account, admin, login, oidc};
 use crate::error::{refuse_unreadable_json, refuse_unreadable_query};
 use crate::middleware::security_headers::protect_answers;
 use actix_web::web;
@@ -22,7 +22,8 @@ pub fn register_data_plane(
     move |config| {
         config
             .app_data(product.clone())
-            // The only form of the plane: its limit and its refusals are the token's.
+            // The forms of the plane: their limit and their refusals are the
+            // token's. The hosted pages read theirs after their guard.
             .app_data(oidc::token::limit_form())
             .app_data(
                 web::JsonConfig::default()
@@ -47,6 +48,12 @@ pub fn register_data_plane(
                     .service(oidc::authorize::begin)
                     .service(login::page::show_sign_in)
                     .service(login::page::submit_sign_in)
+                    .service(account::authenticator::show_authenticator)
+                    .service(account::authenticator::begin_enrollment)
+                    .service(account::authenticator::confirm_enrollment)
+                    .service(account::security_key::show_security_keys)
+                    .service(account::security_key::begin_enrollment)
+                    .service(account::security_key::finish_enrollment)
                     .service(admin::realm::read_realm)
                     .service(admin::client::list_clients)
                     .service(admin::client::create_client)
@@ -54,6 +61,9 @@ pub fn register_data_plane(
                     .service(admin::user::list_users)
                     .service(admin::user::create_user)
                     .service(admin::user::unlock_user)
+                    .service(admin::user::remove_authenticator)
+                    .service(admin::user::resume_person_codes)
+                    .service(admin::user::remove_keys)
                     .service(admin::audit::verify_audit_chain),
             );
     }

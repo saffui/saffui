@@ -44,15 +44,56 @@ impl SessionState {
     }
 }
 
+/// What proved who a person is, named as a token names it (RFC 8176 and
+/// the IANA registry of these names).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthenticationMethod {
+    Password,
+    OneTimeCode,
+    /// Named `pop`, the holding of a key: no attestation is asked, so nothing
+    /// says the key is hardware (`hwk`) rather than synced from an account.
+    SecurityKey,
+}
+
+impl AuthenticationMethod {
+    pub const ALL: [Self; 3] = [Self::Password, Self::OneTimeCode, Self::SecurityKey];
+
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Password => "pwd",
+            Self::OneTimeCode => "otp",
+            Self::SecurityKey => "pop",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|method| method.name() == name)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Session {
     pub id: Uuid,
     pub person: Uuid,
     pub secret_digest: Vec<u8>,
     pub state: SessionState,
+    /// What the person proved themselves with, in the order they did.
+    pub methods: Vec<AuthenticationMethod>,
     /// When the person proved who they are. Never moved by later requests.
     pub authenticated_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
+}
+
+/// A session as it is read, with what its person holds at that instant:
+/// what tells whether a session of the password alone still answers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadSession {
+    pub session: Session,
+    /// A confirmed authenticator application, or a security key. Read with
+    /// the session, in the same statement.
+    pub person_holds_factor: bool,
 }
 
 /// What the browser holds: the identifier of the session and its secret.
@@ -96,6 +137,7 @@ pub async fn open_session(
     app: &App,
     work: &mut dyn UnitOfWork,
     person: Uuid,
+    methods: &[AuthenticationMethod],
 ) -> Result<(Session, SessionTicket), Failure> {
     let mut secret = vec![0_u8; 32];
     app.random
@@ -107,6 +149,7 @@ pub async fn open_session(
         person,
         secret_digest: app.digester.sha256(&secret).to_vec(),
         state: SessionState::Active,
+        methods: methods.to_vec(),
         authenticated_at: now,
         expires_at: now + SESSION_LIFETIME,
     };
@@ -116,6 +159,27 @@ pub async fn open_session(
         secret: Secret::new(secret),
     };
     Ok((session, ticket))
+}
+
+/// As [`find_live_session`], with whether its person holds a factor: what
+/// tells whether the session still answers for them.
+pub(crate) async fn read_proven_session(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    ticket: &SessionTicket,
+) -> Result<Option<ReadSession>, Failure> {
+    let read = work.read_session(ticket.session).await?;
+    let presented = app.digester.sha256(ticket.secret.expose());
+    // Compared even when there is no session, against a digest nothing matches.
+    let expected = read.as_ref().map_or(&[0_u8; 32][..], |known| {
+        known.session.secret_digest.as_slice()
+    });
+    let proven = app.digester.equal_in_constant_time(&presented, expected);
+    Ok(read.filter(|known| {
+        proven
+            && known.session.state == SessionState::Active
+            && known.session.expires_at > app.now()
+    }))
 }
 
 /// Finds the live session a ticket proves, if there is one.
@@ -128,21 +192,47 @@ pub async fn find_live_session(
     work: &mut dyn UnitOfWork,
     ticket: &SessionTicket,
 ) -> Result<Option<Session>, Failure> {
-    let session = work.read_session(ticket.session).await?;
-    let presented = app.digester.sha256(ticket.secret.expose());
-    // Compared even when there is no session, against a digest nothing matches.
-    let expected = session
-        .as_ref()
-        .map_or(&[0_u8; 32][..], |known| known.secret_digest.as_slice());
-    let proven = app.digester.equal_in_constant_time(&presented, expected);
-    Ok(session.filter(|known| {
-        proven && known.state == SessionState::Active && known.expires_at > app.now()
-    }))
+    Ok(read_proven_session(app, work, ticket)
+        .await?
+        .map(|read| read.session))
+}
+
+/// Whether a session was opened with a second factor.
+pub(crate) fn proves_second_factor(session: &Session) -> bool {
+    session
+        .methods
+        .iter()
+        .any(|method| *method != AuthenticationMethod::Password)
+}
+
+/// Whether a session still answers for its person. One the password alone
+/// opened stops answering once the person holds a second factor, whenever
+/// it was opened and whoever kept it: the password alone would not open it
+/// any more.
+pub(crate) fn answers_for_its_person(read: &ReadSession) -> bool {
+    proves_second_factor(&read.session) || !read.person_holds_factor
+}
+
+/// Finds the live session a ticket proves, when it still answers for its
+/// person: what a client may be given a code from.
+///
+/// # Errors
+///
+/// Returns the storage failure.
+pub async fn find_answering_session(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    ticket: &SessionTicket,
+) -> Result<Option<Session>, Failure> {
+    Ok(read_proven_session(app, work, ticket)
+        .await?
+        .filter(answers_for_its_person)
+        .map(|read| read.session))
 }
 
 /// Reads the session a code names and its person, when both still stand:
-/// the session active and not expired, the person enabled. A code whose
-/// session ended gives nothing.
+/// the session active, not expired and answering for its person, the person
+/// enabled. A code whose session ended gives nothing.
 ///
 /// # Errors
 ///
@@ -153,18 +243,18 @@ pub async fn read_live_subject(
     session: Uuid,
 ) -> Result<Option<(Session, Person)>, Failure> {
     let now = app.now();
-    let Some(session) = work
-        .read_session(session)
-        .await?
-        .filter(|known| known.state == SessionState::Active && known.expires_at > now)
-    else {
+    let Some(read) = work.read_session(session).await?.filter(|known| {
+        known.session.state == SessionState::Active
+            && known.session.expires_at > now
+            && answers_for_its_person(known)
+    }) else {
         return Ok(None);
     };
     let person = work
-        .read_person(session.person)
+        .read_person(read.session.person)
         .await?
         .filter(|person| person.enabled);
-    Ok(person.map(|person| (session, person)))
+    Ok(person.map(|person| (read.session, person)))
 }
 
 /// Ends a session, and with it every refresh token it gave. A session

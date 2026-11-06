@@ -235,6 +235,9 @@ fn serve_until_signal(options: &ServeOptions) -> Result<(), ServeError> {
             } else {
                 warn!("{RETENTION} is off: expired rows are not purged");
             }
+            if let Some(refused) = wired.security_keys_refused {
+                warn!("{refused}");
+            }
             planes.run_until(shutdown_requested).await.map(Ok)
         })
         .map_err(ServeError::Serving)?

@@ -23,6 +23,11 @@ pub enum EventKind {
     SessionOpened,
     SessionEnded,
     TokenRevoked,
+    AuthenticatorEnrolled,
+    AuthenticatorRemoved,
+    CodesSuspended,
+    CodesResumed,
+    KeyCopySuspected,
 }
 
 impl EventKind {
@@ -38,6 +43,11 @@ impl EventKind {
             Self::SessionOpened => "session.opened",
             Self::SessionEnded => "session.ended",
             Self::TokenRevoked => "token.revoked",
+            Self::AuthenticatorEnrolled => "authenticator.enrolled",
+            Self::AuthenticatorRemoved => "authenticator.removed",
+            Self::CodesSuspended => "authenticator.codes_suspended",
+            Self::CodesResumed => "authenticator.codes_resumed",
+            Self::KeyCopySuspected => "authenticator.key_copy_suspected",
         }
     }
 }

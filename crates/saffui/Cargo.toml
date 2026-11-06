@@ -29,6 +29,8 @@ zeroize.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
+crypto = { workspace = true, features = ["testkit"] }
+data-encoding.workspace = true
 pgcore = { workspace = true, features = ["testkit"] }
 saffui-core = { workspace = true, features = ["testkit"] }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }

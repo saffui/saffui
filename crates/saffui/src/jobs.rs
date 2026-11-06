@@ -44,6 +44,7 @@ fn start_retention_every(retention: Arc<dyn Retention>, clock: Arc<dyn Clock>, p
                         sessions = report.sessions.removed,
                         known_browsers = report.known_browsers.removed,
                         failure_counters = report.failure_counters.removed,
+                        key_enrollments = report.key_enrollments.removed,
                         "retention pass done"
                     );
                     warn_unfinished_tables(&report);

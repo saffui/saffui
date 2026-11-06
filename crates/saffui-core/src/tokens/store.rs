@@ -88,4 +88,12 @@ pub trait RefreshStore {
         session: Uuid,
         now: OffsetDateTime,
     ) -> Result<u64, StorageError>;
+
+    /// Revokes, in one go, every token of these sessions that is not revoked
+    /// yet. Returns how many.
+    async fn revoke_refresh_tokens_of_sessions(
+        &mut self,
+        sessions: &[Uuid],
+        now: OffsetDateTime,
+    ) -> Result<u64, StorageError>;
 }

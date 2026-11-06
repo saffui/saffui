@@ -1,9 +1,10 @@
 //! Retention: what has no use left is removed. A pending request past its
 //! expiry can never be finished, a session past its expiry answers nothing,
 //! nor do its refresh tokens, a browser kept past its mark proves nothing,
-//! and a counter of the brake older than every
-//! window that reads it counts for nothing. A spent code is kept while what
-//! it obtained could still be taken back.
+//! the enrollment of a key nobody finished in time finishes nothing, and a
+//! counter of the brake older than every window that reads it counts for
+//! nothing. A spent code is kept while what it obtained could still be taken
+//! back.
 //!
 //! This is one of the rare works across tenants. It runs under a role of
 //! its own, never the one that serves, and one node at a time.
@@ -27,8 +28,8 @@ pub const CODES_KEPT: Duration = SESSION_LIFETIME;
 /// Where each table of a pass stops: rows older than these go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PurgeCutoffs {
-    /// Pending requests, sessions, refresh tokens and known browsers that
-    /// expired before this.
+    /// Pending requests, sessions, refresh tokens, known browsers and
+    /// enrollments of keys that expired before this.
     pub expired_before: OffsetDateTime,
     /// Codes that expired before this.
     pub codes_before: OffsetDateTime,
@@ -75,12 +76,13 @@ pub struct PurgeReport {
     pub sessions: TablePurge,
     pub known_browsers: TablePurge,
     pub failure_counters: TablePurge,
+    pub key_enrollments: TablePurge,
 }
 
 impl PurgeReport {
     /// Each table under the name the journal gives it, in the order of a pass.
     #[must_use]
-    pub fn list_tables(&self) -> [(&'static str, TablePurge); 6] {
+    pub fn list_tables(&self) -> [(&'static str, TablePurge); 7] {
         [
             ("pending_requests", self.pending_requests),
             ("codes", self.codes),
@@ -88,6 +90,7 @@ impl PurgeReport {
             ("sessions", self.sessions),
             ("known_browsers", self.known_browsers),
             ("failure_counters", self.failure_counters),
+            ("key_enrollments", self.key_enrollments),
         ]
     }
 }

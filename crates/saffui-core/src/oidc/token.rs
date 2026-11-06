@@ -12,6 +12,7 @@ use super::refresh::{describe_family_end, rotate_refresh_token};
 use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
+use crate::authz::grants::{ROLES_SCOPE, read_role_claims};
 use crate::clients::authenticate::{authenticate_client, identify_client};
 use crate::clients::check_scope_token;
 use crate::directory::Person;
@@ -161,6 +162,7 @@ async fn grant_to_service(
             client_id: &client.client_id,
             scopes: &granted,
             session: None,
+            roles: None,
         },
     )?;
     let told = json!({ "client_id": client.client_id, "grant": "client_credentials", "scope": minted.scope });
@@ -319,6 +321,14 @@ pub(super) async fn answer_for_person(
     granted: Granted<'_>,
 ) -> Result<TokenResponse, Failure> {
     let subject = granted.person.id.to_string();
+    // Read each time a token is made, a refresh included: a role taken away
+    // is gone from the next token.
+    let roles = if granted.scopes.iter().any(|scope| scope == ROLES_SCOPE) {
+        let read = read_role_claims(work, granted.person.id, granted.client_id, app.now()).await?;
+        Some(read)
+    } else {
+        None
+    };
     let key = open_minting_key(app, work).await?;
     let minted = mint_access_token(
         app,
@@ -329,6 +339,7 @@ pub(super) async fn answer_for_person(
             client_id: granted.client_id,
             scopes: granted.scopes,
             session: Some(granted.session.id),
+            roles: roles.as_ref(),
         },
     )?;
     let id_token = if granted.scopes.iter().any(|scope| scope == "openid") {

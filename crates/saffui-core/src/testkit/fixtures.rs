@@ -128,8 +128,8 @@ pub struct Application<'a> {
     pub public: bool,
 }
 
-/// Registers an application allowed the scopes `openid`, `profile` and
-/// `email`, and returns its secret unless it is public.
+/// Registers an application allowed the scopes `openid`, `profile`, `email`
+/// and `roles`, and returns its secret unless it is public.
 ///
 /// # Panics
 ///
@@ -141,7 +141,7 @@ pub async fn register_application(
 ) -> Option<Secret> {
     use crate::clients::register::{NewClient, register_client};
 
-    let scopes = ["openid", "profile", "email"].map(str::to_owned);
+    let scopes = ["openid", "profile", "email", "roles"].map(str::to_owned);
     let callbacks = [wanted.redirect_uri.to_owned()];
     let goodbyes: Vec<String> = wanted
         .post_logout_redirect_uri

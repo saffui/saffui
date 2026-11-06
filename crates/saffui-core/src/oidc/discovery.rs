@@ -68,7 +68,7 @@ pub fn describe_provider(settings: &Settings, realm: &RealmName) -> ProviderMeta
             "none",
         ],
         code_challenge_methods_supported: vec!["S256"],
-        scopes_supported: vec!["openid", "profile", "email"],
+        scopes_supported: vec!["openid", "profile", "email", "roles"],
         authorization_response_iss_parameter_supported: true,
         response_modes_supported: vec!["query"],
         request_parameter_supported: false,

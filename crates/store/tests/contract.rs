@@ -4,9 +4,11 @@
 use pgcore::pool::PoolSettings;
 use saffui_core::testkit::contract::{
     check_authenticators_contract, check_clients_contract, check_codes_contract,
-    check_ended_sessions_contract, check_keys_contract, check_known_browsers_contract,
-    check_persons_contract, check_refresh_contract, check_security_keys_contract,
-    check_sign_in_contract, check_tenancy_contract,
+    check_ended_sessions_contract, check_grants_contract, check_keys_contract,
+    check_known_browsers_contract, check_member_groups_contract, check_persons_contract,
+    check_policies_contract, check_refresh_contract, check_relations_contract,
+    check_roles_contract, check_security_keys_contract, check_sign_in_contract,
+    check_tenancy_contract,
 };
 
 mod support;
@@ -79,6 +81,41 @@ async fn postgres_passes_the_security_keys_contract() {
     let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
 
     check_security_keys_contract(&app).await;
+}
+
+#[tokio::test]
+async fn postgres_passes_the_roles_contract() {
+    let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
+
+    check_roles_contract(&app).await;
+}
+
+#[tokio::test]
+async fn postgres_passes_the_grants_contract() {
+    let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
+
+    check_grants_contract(&app).await;
+}
+
+#[tokio::test]
+async fn postgres_passes_the_relations_contract() {
+    let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
+
+    check_relations_contract(&app).await;
+}
+
+#[tokio::test]
+async fn postgres_passes_the_policies_contract() {
+    let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
+
+    check_policies_contract(&app).await;
+}
+
+#[tokio::test]
+async fn postgres_passes_the_member_groups_contract() {
+    let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
+
+    check_member_groups_contract(&app).await;
 }
 
 #[tokio::test]

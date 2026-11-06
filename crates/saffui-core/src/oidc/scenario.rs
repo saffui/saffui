@@ -6,6 +6,8 @@ use std::sync::Arc;
 use super::errors::OAuthError;
 use super::token::{TokenRequest, TokenResponse, grant_token};
 use crate::app::App;
+use crate::authz::admin::{AdminCaller, authorize_admin_call};
+use crate::authz::capability::Capability;
 use crate::login::enroll::{
     begin_key_enrollment, begin_totp_enrollment, confirm_totp_enrollment, finish_key_enrollment,
 };
@@ -16,8 +18,8 @@ use crate::testkit::clock::FixedClock;
 use crate::testkit::crypto::{PredictableCodes, TrustingKeys};
 use crate::testkit::drive::complete;
 use crate::testkit::fixtures::{
-    Application, CodeFlow, SignedInApplication, create_person, create_realm, create_service_client,
-    register_application, run_code_flow,
+    Application, CodeFlow, SignedInApplication, create_administrator, create_person, create_realm,
+    create_service_client, register_application, run_code_flow,
 };
 use crate::testkit::memory::MemoryStorage;
 
@@ -61,6 +63,25 @@ impl Scenario {
             scope,
             service_secret,
         }
+    }
+
+    /// An administrator of `acme`, the client `operator`, granted these
+    /// capabilities: the first is the one its call is authorized for.
+    pub(crate) fn name_operator(&self, capabilities: &[Capability]) -> AdminCaller {
+        let token = complete(create_administrator(
+            &self.app,
+            "acme",
+            self.scope,
+            "operator",
+            capabilities,
+        ));
+        complete(authorize_admin_call(
+            &self.app,
+            "acme",
+            Some(&token),
+            capabilities[0],
+        ))
+        .expect("an administrator")
     }
 
     /// Signs `ada` in through `webapp`, granted `scope`.

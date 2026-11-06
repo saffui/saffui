@@ -28,6 +28,21 @@ pub enum EventKind {
     CodesSuspended,
     CodesResumed,
     KeyCopySuspected,
+    RoleCreated,
+    RoleDeleted,
+    GroupCreated,
+    GroupDeleted,
+    RoleGranted,
+    RoleRevoked,
+    MemberAdded,
+    MemberRemoved,
+    RelationSchemaWritten,
+    RelationWritten,
+    RelationDeleted,
+    RelationGuardWritten,
+    RelationGuardDeleted,
+    PolicyCreated,
+    PolicyDeleted,
 }
 
 impl EventKind {
@@ -48,6 +63,21 @@ impl EventKind {
             Self::CodesSuspended => "authenticator.codes_suspended",
             Self::CodesResumed => "authenticator.codes_resumed",
             Self::KeyCopySuspected => "authenticator.key_copy_suspected",
+            Self::RoleCreated => "role.created",
+            Self::RoleDeleted => "role.deleted",
+            Self::GroupCreated => "group.created",
+            Self::GroupDeleted => "group.deleted",
+            Self::RoleGranted => "role.granted",
+            Self::RoleRevoked => "role.revoked",
+            Self::MemberAdded => "group.member_added",
+            Self::MemberRemoved => "group.member_removed",
+            Self::RelationSchemaWritten => "relation.schema_written",
+            Self::RelationWritten => "relation.written",
+            Self::RelationDeleted => "relation.deleted",
+            Self::RelationGuardWritten => "relation.guard_written",
+            Self::RelationGuardDeleted => "relation.guard_deleted",
+            Self::PolicyCreated => "policy.created",
+            Self::PolicyDeleted => "policy.deleted",
         }
     }
 }

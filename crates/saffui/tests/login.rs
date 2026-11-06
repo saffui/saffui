@@ -1,6 +1,7 @@
 //! Journeys through the real binary: an operator creates a person and an
 //! application, the person signs in on the hosted page, and the application
-//! exchanges its code for tokens anyone can verify.
+//! exchanges its code for tokens anyone can verify, roles included; a
+//! service asks the point of decision about the person.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -13,6 +14,8 @@ use pgcore::testkit::TestDatabase;
 use pgcore::{APP_ROLE, MAINTENANCE_ROLE};
 use saffui_core::ports::crypto::{Digester, SignatureAlgorithm, Signer};
 use serde_json::{Value, json};
+use time::format_description::well_known::Rfc3339;
+use time::{Duration, OffsetDateTime};
 
 #[path = "support/database.rs"]
 mod database;
@@ -127,7 +130,7 @@ fn prepare_realm_with_operator(
 
     let application = json!({
         "client_id": "portal",
-        "scopes": ["openid", "profile", "email"],
+        "scopes": ["openid", "profile", "email", "roles"],
         "redirect_uris": ["https://app.example.test/callback"],
         "post_logout_redirect_uris": ["https://app.example.test/goodbye"],
         "public": true,
@@ -151,11 +154,16 @@ fn prepare_realm_with_operator(
 }
 
 fn write_authorize_path() -> String {
+    write_authorize_path_asking("openid%20email")
+}
+
+/// Where `portal` sends a browser to ask for `scope`, written for a query.
+fn write_authorize_path_asking(scope: &str) -> String {
     let digester = ProviderDigester::new(open_provider().expect("a provider"));
     let challenge = URL_SAFE_NO_PAD.encode(digester.sha256(VERIFIER.as_bytes()));
     format!(
         "/realms/acme/oauth2/authorize?response_type=code&client_id=portal\
-         &redirect_uri=https%3A%2F%2Fapp.example.test%2Fcallback&scope=openid%20email\
+         &redirect_uri=https%3A%2F%2Fapp.example.test%2Fcallback&scope={scope}\
          &state=xyz&nonce=n-1&code_challenge={challenge}&code_challenge_method=S256"
     )
 }
@@ -172,7 +180,17 @@ fn sign_in_from(
     password: &str,
     forwarded_for: Option<&str>,
 ) -> (http::Answer, Option<String>) {
-    let sent_to_login = http::get(node.data, &write_authorize_path()).expect("an answer");
+    sign_in_through(node, password, forwarded_for, &write_authorize_path())
+}
+
+/// As [`sign_in_from`], sent to the hosted page from `authorize`.
+fn sign_in_through(
+    node: &node::Node,
+    password: &str,
+    forwarded_for: Option<&str>,
+    authorize: &str,
+) -> (http::Answer, Option<String>) {
+    let sent_to_login = http::get(node.data, authorize).expect("an answer");
     assert_eq!(sent_to_login.status, 303, "{}", sent_to_login.body);
     let login = read_header(&sent_to_login, "location")
         .expect("a location")
@@ -1001,4 +1019,337 @@ fn a_person_adds_a_security_key_owes_its_answer_and_an_administrator_takes_it_aw
         back.body
     );
     assert_eq!(read_methods(&node, &back), json!(["pwd"]));
+}
+
+fn send_json(
+    node: &node::Node,
+    method: &str,
+    path: &str,
+    bearer: &str,
+    body: &Value,
+) -> http::Answer {
+    http::send_request(
+        node.data,
+        method,
+        path,
+        &[JSON, ("Authorization", bearer)],
+        &body.to_string(),
+    )
+    .expect("an answer")
+}
+
+fn make(node: &node::Node, path: &str, bearer: &str, body: &Value) -> String {
+    let made = send_json(node, "POST", path, bearer, body);
+    assert_eq!(made.status, 201, "{}", made.body);
+    read_json(&made.body)["id"]
+        .as_str()
+        .expect("an identifier")
+        .to_owned()
+}
+
+fn introspect(node: &node::Node, operator: &str, token: &str) -> Value {
+    let told = http::send_request(
+        node.data,
+        "POST",
+        "/realms/acme/oauth2/introspect",
+        &[("Authorization", operator), FORM],
+        &format!("token={token}"),
+    )
+    .expect("an answer");
+    assert_eq!(told.status, 200, "{}", told.body);
+    read_json(&told.body)
+}
+
+/// A journey through the real binary: an administrator makes a role of the
+/// realm and a role of an application, and gives them to a person, one
+/// through a group and one for two minutes. The application reads both in
+/// the access token, which lives no longer than the first to end. Once the
+/// person leaves the group, a service that introspects learns it at once,
+/// without being told the roles of the application, and the next refresh
+/// says it too.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one journey, read from top to bottom"
+)]
+fn a_person_carries_their_roles_into_the_tokens_of_an_application_for_as_long_as_they_hold_them() {
+    let database = database::create_database(EMBEDDED);
+    let (node, operator) = prepare_realm_with_operator(&database, support::saffui_command());
+    let bearer = ask_operator_token(&node, &operator);
+    let person = find_only_person(&node, &bearer);
+
+    let admin = make(
+        &node,
+        "/admin/v1/realms/acme/roles",
+        &bearer,
+        &json!({ "name": "admin" }),
+    );
+    let editor = make(
+        &node,
+        "/admin/v1/realms/acme/roles",
+        &bearer,
+        &json!({ "name": "editor", "client_id": "portal" }),
+    );
+    let finance = make(
+        &node,
+        "/admin/v1/realms/acme/groups",
+        &bearer,
+        &json!({ "name": "finance" }),
+    );
+    let ends = (OffsetDateTime::now_utc() + Duration::minutes(2))
+        .format(&Rfc3339)
+        .expect("an instant");
+    for (path, terms) in [
+        (
+            format!("/admin/v1/realms/acme/groups/{finance}/roles/{admin}"),
+            json!({}),
+        ),
+        (
+            format!("/admin/v1/realms/acme/groups/{finance}/members/{person}"),
+            json!({ "reason": "joined the team" }),
+        ),
+        (
+            format!("/admin/v1/realms/acme/users/{person}/roles/{editor}"),
+            json!({ "valid_until": ends, "reason": "the review of this release" }),
+        ),
+    ] {
+        let given = send_json(&node, "PUT", &path, &bearer, &terms);
+        assert_eq!(given.status, 200, "{path}: {}", given.body);
+    }
+
+    let (signed_in, _) = sign_in_through(
+        &node,
+        PASSWORD,
+        None,
+        &write_authorize_path_asking("openid%20roles"),
+    );
+    assert_eq!(signed_in.status, 303, "{}", signed_in.body);
+    let location = read_header(&signed_in, "location").expect("a location");
+    let code = read_parameter(location, "code").expect("a code");
+    let exchanged = exchange_code(&node, &code, VERIFIER);
+    assert_eq!(exchanged.status, 200, "{}", exchanged.body);
+    let tokens = read_json(&exchanged.body);
+    let access_token = tokens["access_token"].as_str().expect("an access token");
+    let (_, claims) = verify_with_published_keys(&node, access_token);
+    assert_eq!(claims["realm_access"], json!({ "roles": ["admin"] }));
+    assert_eq!(
+        claims["resource_access"],
+        json!({ "portal": { "roles": ["editor"] } })
+    );
+    let ends_at = OffsetDateTime::parse(&ends, &Rfc3339).expect("an instant");
+    assert!(
+        claims["exp"].as_i64().expect("an expiry") <= ends_at.unix_timestamp(),
+        "the token lives no longer than the editor role: {claims}"
+    );
+    assert!(tokens["expires_in"].as_u64().expect("a lifetime") <= 120);
+
+    let told = introspect(&node, &operator, access_token);
+    assert_eq!(told["active"], true);
+    assert_eq!(told["realm_access"], json!({ "roles": ["admin"] }));
+
+    // The person leaves the group: admin is gone at once for whoever asks.
+    let left = http::send_request(
+        node.data,
+        "DELETE",
+        &format!("/admin/v1/realms/acme/groups/{finance}/members/{person}"),
+        &[JSON, ("Authorization", bearer.as_str())],
+        "",
+    )
+    .expect("an answer");
+    assert_eq!(left.status, 204, "{}", left.body);
+    let told = introspect(&node, &operator, access_token);
+    assert_eq!(told["active"], true, "the token itself still stands");
+    assert_eq!(told["realm_access"], json!({ "roles": [] }));
+    assert_eq!(
+        told["resource_access"],
+        Value::Null,
+        "the roles of portal are told to portal alone, not to the operator"
+    );
+
+    let refreshed = http::send_request(
+        node.data,
+        "POST",
+        TOKEN,
+        &[FORM],
+        &format!(
+            "grant_type=refresh_token&client_id=portal&refresh_token={}",
+            tokens["refresh_token"].as_str().expect("a refresh token")
+        ),
+    )
+    .expect("an answer");
+    assert_eq!(refreshed.status, 200, "{}", refreshed.body);
+    let refreshed = read_json(&refreshed.body);
+    let (_, claims) = verify_with_published_keys(
+        &node,
+        refreshed["access_token"].as_str().expect("an access token"),
+    );
+    assert_eq!(claims["realm_access"], json!({ "roles": [] }));
+    assert_eq!(
+        claims["resource_access"],
+        json!({ "portal": { "roles": ["editor"] } })
+    );
+
+    let held = http::send_request(
+        node.data,
+        "GET",
+        &format!("/admin/v1/realms/acme/users/{person}/roles"),
+        &[JSON, ("Authorization", bearer.as_str())],
+        "",
+    )
+    .expect("an answer");
+    assert_eq!(held.status, 200, "{}", held.body);
+    let held = read_json(&held.body);
+    assert_eq!(held["items"].as_array().map(Vec::len), Some(1));
+    assert_eq!(held["items"][0]["name"], "editor");
+    assert_eq!(held["items"][0]["client_id"], "portal");
+}
+
+/// The schema of relations of the decision journey: a person owns a document.
+const DECISION_SCHEMA: &str = "definition user {}
+definition document {
+  relation owner: user
+  permission read = owner
+}";
+
+/// Asks the point of decision as the service `basic` names.
+fn ask_decision(node: &node::Node, basic: &str, question: &Value) -> Value {
+    let answer = http::send_request(
+        node.data,
+        "POST",
+        "/realms/acme/authz/decide",
+        &[JSON, ("Authorization", basic)],
+        &question.to_string(),
+    )
+    .expect("an answer");
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    read_json(&answer.body)
+}
+
+/// Writes the schema of the documents, makes the person the owner of `q3`,
+/// and `billing` the guard of the documents.
+fn keep_documents(node: &node::Node, bearer: &str, person: &str) {
+    let written = send_json(
+        node,
+        "PUT",
+        "/admin/v1/realms/acme/relations/schema",
+        bearer,
+        &json!({ "source": DECISION_SCHEMA }),
+    );
+    assert_eq!(written.status, 200, "{}", written.body);
+    let owned = send_json(
+        node,
+        "PUT",
+        &format!("/admin/v1/realms/acme/relations/document:q3/owner/user:{person}"),
+        bearer,
+        &json!({}),
+    );
+    assert_eq!(owned.status, 204, "{}", owned.body);
+    let guarded = send_json(
+        node,
+        "PUT",
+        "/admin/v1/realms/acme/relations/types/document/guards/billing",
+        bearer,
+        &json!({}),
+    );
+    assert_eq!(guarded.status, 204, "{}", guarded.body);
+}
+
+/// A journey through the real binary: a service that guards documents and
+/// invoices asks the point of decision about a person, with the token the
+/// person presented to it. Documents are decided by the relations kept,
+/// invoices by the policies of the service, and both read the realm as it
+/// is at the instant of the question.
+#[test]
+fn a_service_asks_whether_a_person_may_read_a_document_or_approve_an_invoice() {
+    let database = database::create_database(EMBEDDED);
+    let (node, operator) = prepare_realm_with_operator(&database, support::saffui_command());
+    let bearer = ask_operator_token(&node, &operator);
+    let person = find_only_person(&node, &bearer);
+
+    let created = send_json(
+        &node,
+        "POST",
+        "/admin/v1/realms/acme/clients",
+        &bearer,
+        &json!({ "client_id": "billing", "scopes": [] }),
+    );
+    assert_eq!(created.status, 201, "{}", created.body);
+    let secret = read_json(&created.body)["client_secret"]
+        .as_str()
+        .expect("the secret is shown once")
+        .to_owned();
+    let billing = format!("Basic {}", STANDARD.encode(format!("billing:{secret}")));
+
+    keep_documents(&node, &bearer, &person);
+    let role = send_json(
+        &node,
+        "POST",
+        "/admin/v1/realms/acme/roles",
+        &bearer,
+        &json!({ "name": "approver" }),
+    );
+    assert_eq!(role.status, 201, "{}", role.body);
+    let role = read_json(&role.body)["id"]
+        .as_str()
+        .expect("an identifier")
+        .to_owned();
+    let policy = send_json(
+        &node,
+        "POST",
+        "/admin/v1/realms/acme/clients/billing/policies",
+        &bearer,
+        &json!({
+            "name": "approvers",
+            "resource_type": "invoice",
+            "action": "approve",
+            "effect": "permit",
+            "conditions": [{ "role": role }],
+        }),
+    );
+    assert_eq!(policy.status, 201, "{}", policy.body);
+
+    let (signed_in, _) = sign_in(&node, PASSWORD);
+    assert_eq!(signed_in.status, 303, "{}", signed_in.body);
+    let location = read_header(&signed_in, "location").expect("a location");
+    let code = read_parameter(location, "code").expect("a code");
+    let tokens = read_json(&exchange_code(&node, &code, VERIFIER).body);
+    let token = tokens["access_token"].as_str().expect("an access token");
+    let question = |action: &str, resource: Value| json!({ "subject_token": token, "action": action, "resource": resource });
+
+    assert_eq!(
+        ask_decision(
+            &node,
+            &billing,
+            &question("read", json!({ "type": "document", "id": "q3" }))
+        ),
+        json!({ "decision": "permit", "reason": "relation" })
+    );
+    assert_eq!(
+        ask_decision(
+            &node,
+            &billing,
+            &question("read", json!({ "type": "document", "id": "q4" }))
+        )["decision"],
+        "deny"
+    );
+    let invoice = json!({ "type": "invoice", "attributes": { "amount": 120 } });
+    assert_eq!(
+        ask_decision(&node, &billing, &question("approve", invoice.clone())),
+        json!({ "decision": "deny", "reason": "no_policy" })
+    );
+
+    // The role is given after the token was made: the decision reads the
+    // realm now, not the token.
+    let granted = send_json(
+        &node,
+        "PUT",
+        &format!("/admin/v1/realms/acme/users/{person}/roles/{role}"),
+        &bearer,
+        &json!({}),
+    );
+    assert_eq!(granted.status, 200, "{}", granted.body);
+    assert_eq!(
+        ask_decision(&node, &billing, &question("approve", invoice)),
+        json!({ "decision": "permit", "reason": "policy", "policy": "approvers" })
+    );
 }

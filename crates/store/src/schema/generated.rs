@@ -154,6 +154,46 @@ pub(crate) mod authorization_requests {
     ];
 }
 
+pub(crate) mod authz_policies {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "authz_policies",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// uuid
+    pub(crate) const POLICY_ID: Column = Column("policy_id");
+    /// text
+    pub(crate) const CLIENT_ID: Column = Column("client_id");
+    /// text
+    pub(crate) const NAME: Column = Column("name");
+    /// text
+    pub(crate) const RESOURCE_TYPE: Column = Column("resource_type");
+    /// text
+    pub(crate) const ACTION: Column = Column("action");
+    /// text
+    pub(crate) const EFFECT: Column = Column("effect");
+    /// text
+    pub(crate) const COMBINE: Column = Column("combine");
+    /// jsonb
+    pub(crate) const CONDITIONS: Column = Column("conditions");
+    /// timestamp with time zone
+    pub(crate) const CREATED_AT: Column = Column("created_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[
+        POLICY_ID,
+        CLIENT_ID,
+        NAME,
+        RESOURCE_TYPE,
+        ACTION,
+        EFFECT,
+        COMBINE,
+        CONDITIONS,
+        CREATED_AT,
+    ];
+}
+
 pub(crate) mod clients {
     use super::{Column, ScopeKeys, Table};
 
@@ -221,6 +261,94 @@ pub(crate) mod code_attempts {
     pub(crate) const ALL: &[Column] = &[PERSON_ID, ATTEMPTS, LAST_AT];
 }
 
+pub(crate) mod group_members {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "group_members",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// uuid
+    pub(crate) const GROUP_ID: Column = Column("group_id");
+    /// uuid
+    pub(crate) const PERSON_ID: Column = Column("person_id");
+    /// timestamp with time zone
+    pub(crate) const VALID_FROM: Column = Column("valid_from");
+    /// timestamp with time zone, nullable
+    pub(crate) const VALID_UNTIL: Column = Column("valid_until");
+    /// text
+    pub(crate) const GRANTED_BY: Column = Column("granted_by");
+    /// text, nullable
+    pub(crate) const REASON: Column = Column("reason");
+    /// timestamp with time zone
+    pub(crate) const GRANTED_AT: Column = Column("granted_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[
+        GROUP_ID,
+        PERSON_ID,
+        VALID_FROM,
+        VALID_UNTIL,
+        GRANTED_BY,
+        REASON,
+        GRANTED_AT,
+    ];
+}
+
+pub(crate) mod group_roles {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "group_roles",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// uuid
+    pub(crate) const GROUP_ID: Column = Column("group_id");
+    /// uuid
+    pub(crate) const ROLE_ID: Column = Column("role_id");
+    /// timestamp with time zone
+    pub(crate) const VALID_FROM: Column = Column("valid_from");
+    /// timestamp with time zone, nullable
+    pub(crate) const VALID_UNTIL: Column = Column("valid_until");
+    /// text
+    pub(crate) const GRANTED_BY: Column = Column("granted_by");
+    /// text, nullable
+    pub(crate) const REASON: Column = Column("reason");
+    /// timestamp with time zone
+    pub(crate) const GRANTED_AT: Column = Column("granted_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[
+        GROUP_ID,
+        ROLE_ID,
+        VALID_FROM,
+        VALID_UNTIL,
+        GRANTED_BY,
+        REASON,
+        GRANTED_AT,
+    ];
+}
+
+pub(crate) mod groups {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "groups",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// uuid
+    pub(crate) const GROUP_ID: Column = Column("group_id");
+    /// text
+    pub(crate) const NAME: Column = Column("name");
+    /// text, nullable
+    pub(crate) const DESCRIPTION: Column = Column("description");
+    /// timestamp with time zone
+    pub(crate) const CREATED_AT: Column = Column("created_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[GROUP_ID, NAME, DESCRIPTION, CREATED_AT];
+}
+
 pub(crate) mod known_browsers {
     use super::{Column, ScopeKeys, Table};
 
@@ -273,6 +401,40 @@ pub(crate) mod password_credentials {
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[PERSON_ID, PHC, CHANGED_AT];
+}
+
+pub(crate) mod person_roles {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "person_roles",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// uuid
+    pub(crate) const PERSON_ID: Column = Column("person_id");
+    /// uuid
+    pub(crate) const ROLE_ID: Column = Column("role_id");
+    /// timestamp with time zone
+    pub(crate) const VALID_FROM: Column = Column("valid_from");
+    /// timestamp with time zone, nullable
+    pub(crate) const VALID_UNTIL: Column = Column("valid_until");
+    /// text
+    pub(crate) const GRANTED_BY: Column = Column("granted_by");
+    /// text, nullable
+    pub(crate) const REASON: Column = Column("reason");
+    /// timestamp with time zone
+    pub(crate) const GRANTED_AT: Column = Column("granted_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[
+        PERSON_ID,
+        ROLE_ID,
+        VALID_FROM,
+        VALID_UNTIL,
+        GRANTED_BY,
+        REASON,
+        GRANTED_AT,
+    ];
 }
 
 pub(crate) mod persons {
@@ -384,6 +546,98 @@ pub(crate) mod refresh_tokens {
         USED_AT,
         REVOKED_AT,
     ];
+}
+
+pub(crate) mod relation_guards {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "relation_guards",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// text
+    pub(crate) const OBJECT_TYPE: Column = Column("object_type");
+    /// text
+    pub(crate) const CLIENT_ID: Column = Column("client_id");
+    /// timestamp with time zone
+    pub(crate) const WRITTEN_AT: Column = Column("written_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[OBJECT_TYPE, CLIENT_ID, WRITTEN_AT];
+}
+
+pub(crate) mod relation_schemas {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "relation_schemas",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// text
+    pub(crate) const SOURCE: Column = Column("source");
+    /// jsonb
+    pub(crate) const COMPILED: Column = Column("compiled");
+    /// timestamp with time zone
+    pub(crate) const WRITTEN_AT: Column = Column("written_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[SOURCE, COMPILED, WRITTEN_AT];
+}
+
+pub(crate) mod relation_tuples {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "relation_tuples",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// text
+    pub(crate) const OBJECT_TYPE: Column = Column("object_type");
+    /// text
+    pub(crate) const OBJECT_ID: Column = Column("object_id");
+    /// text
+    pub(crate) const RELATION: Column = Column("relation");
+    /// text
+    pub(crate) const SUBJECT_TYPE: Column = Column("subject_type");
+    /// text
+    pub(crate) const SUBJECT_ID: Column = Column("subject_id");
+    /// text
+    pub(crate) const SUBJECT_MEMBER: Column = Column("subject_member");
+    /// timestamp with time zone
+    pub(crate) const WRITTEN_AT: Column = Column("written_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[
+        OBJECT_TYPE,
+        OBJECT_ID,
+        RELATION,
+        SUBJECT_TYPE,
+        SUBJECT_ID,
+        SUBJECT_MEMBER,
+        WRITTEN_AT,
+    ];
+}
+
+pub(crate) mod roles {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "roles",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// uuid
+    pub(crate) const ROLE_ID: Column = Column("role_id");
+    /// text, nullable
+    pub(crate) const CLIENT_ID: Column = Column("client_id");
+    /// text
+    pub(crate) const NAME: Column = Column("name");
+    /// text, nullable
+    pub(crate) const DESCRIPTION: Column = Column("description");
+    /// timestamp with time zone
+    pub(crate) const CREATED_AT: Column = Column("created_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[ROLE_ID, CLIENT_ID, NAME, DESCRIPTION, CREATED_AT];
 }
 
 pub(crate) mod security_key_enrollments {
@@ -541,15 +795,24 @@ pub(crate) const TABLES: &[(Table, &[Column])] = &[
     (audit_events::TABLE, audit_events::ALL),
     (authorization_codes::TABLE, authorization_codes::ALL),
     (authorization_requests::TABLE, authorization_requests::ALL),
+    (authz_policies::TABLE, authz_policies::ALL),
     (clients::TABLE, clients::ALL),
     (code_attempts::TABLE, code_attempts::ALL),
+    (group_members::TABLE, group_members::ALL),
+    (group_roles::TABLE, group_roles::ALL),
+    (groups::TABLE, groups::ALL),
     (known_browsers::TABLE, known_browsers::ALL),
     (login_failures::TABLE, login_failures::ALL),
     (password_credentials::TABLE, password_credentials::ALL),
+    (person_roles::TABLE, person_roles::ALL),
     (persons::TABLE, persons::ALL),
     (realm_data_keys::TABLE, realm_data_keys::ALL),
     (realms::TABLE, realms::ALL),
     (refresh_tokens::TABLE, refresh_tokens::ALL),
+    (relation_guards::TABLE, relation_guards::ALL),
+    (relation_schemas::TABLE, relation_schemas::ALL),
+    (relation_tuples::TABLE, relation_tuples::ALL),
+    (roles::TABLE, roles::ALL),
     (
         security_key_enrollments::TABLE,
         security_key_enrollments::ALL,

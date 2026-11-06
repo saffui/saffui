@@ -136,6 +136,129 @@ pub struct ChainReport {
     pub reason: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoleView {
+    pub id: String,
+    pub name: String,
+    /// The client the role is said to. Null for a role of the realm.
+    pub client_id: Option<String>,
+    pub description: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NewRole {
+    pub name: String,
+    /// Absent, the role is a role of the realm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupView {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NewGroup {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// How long a grant or a membership stands, and why. Instants are written in
+/// RFC 3339. Left out, it starts now and stands until it is taken away.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GrantTerms {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_until: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// A grant or a membership as it was kept. A start asked in the past is
+/// the instant it was made.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GrantView {
+    pub valid_from: String,
+    pub valid_until: Option<String>,
+    pub granted_by: String,
+    pub reason: Option<String>,
+    pub granted_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PolicyView {
+    pub id: String,
+    pub client_id: String,
+    pub name: String,
+    pub resource_type: String,
+    pub action: String,
+    /// `permit` or `deny`.
+    pub effect: String,
+    /// `all` or `any`.
+    pub combine: String,
+    pub conditions: serde_json::Value,
+    pub created_at: String,
+}
+
+/// A policy to write for a client that guards resources.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NewPolicy {
+    pub name: String,
+    pub resource_type: String,
+    pub action: String,
+    /// `permit` or `deny`.
+    pub effect: String,
+    /// `all` or `any`. Left out, every condition must hold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub combine: Option<String>,
+    pub conditions: serde_json::Value,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelationSchemaView {
+    pub source: String,
+    pub types: Vec<String>,
+    pub written_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NewRelationSchema {
+    pub source: String,
+}
+
+/// A fault of a schema of relations, at the line it is on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SchemaFaultView {
+    pub line: usize,
+    pub message: String,
+}
+
+/// A role a person holds now, by one way.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldRoleView {
+    pub role_id: String,
+    pub name: String,
+    pub client_id: Option<String>,
+    /// The group it comes through. Null when it was granted to the person.
+    pub through_group: Option<String>,
+    /// When this way ends. Null when it does not.
+    pub until: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ClientView, CreatedClient, NewUser};

@@ -256,6 +256,7 @@ mod tests {
                 client_id: "operator",
                 scopes: &scopes,
                 session: Some(mint_id(&app).expect("an identifier")),
+                roles: None,
             },
         )
         .expect("a token");

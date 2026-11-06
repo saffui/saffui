@@ -157,7 +157,9 @@ fn an_administrator_is_given_every_capability_and_the_admin_scope() {
     );
     assert_eq!(
         kept,
-        ["admin realm:read,client:read,client:write,audit:read,user:read,user:write"]
+        [
+            "admin realm:read,client:read,client:write,audit:read,user:read,user:write,role:read,role:write,policy:read,policy:write"
+        ]
     );
 }
 
@@ -225,7 +227,7 @@ fn a_bootstrapped_realm_is_published_by_a_node_on_its_data_plane_only() {
             r#""id_token_signing_alg_values_supported":["ES256"],"#,
             r#""token_endpoint_auth_methods_supported":["client_secret_basic","client_secret_post","none"],"#,
             r#""code_challenge_methods_supported":["S256"],"#,
-            r#""scopes_supported":["openid","profile","email"],"#,
+            r#""scopes_supported":["openid","profile","email","roles"],"#,
             r#""authorization_response_iss_parameter_supported":true,"#,
             r#""response_modes_supported":["query"],"#,
             r#""request_parameter_supported":false,"#,

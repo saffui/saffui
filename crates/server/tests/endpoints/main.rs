@@ -3,10 +3,12 @@
 
 mod admin;
 mod certs;
+mod decisions;
 mod discovery;
 mod headers;
 mod health;
 mod introspect;
 mod login;
+mod roles;
 mod second_factor;
 mod token;

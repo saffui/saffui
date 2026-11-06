@@ -22,7 +22,8 @@ pub enum ErrorKind {
 }
 
 /// Ranges by domain: platform under 100, realm 100, user 200, client 300,
-/// authentication 400, token 500, tenant 600, organization 700, credential 800.
+/// authentication 400, token 500, tenant 600, organization 700, credential 800,
+/// authorization 900.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum ErrorCode {
@@ -74,6 +75,25 @@ pub enum ErrorCode {
     TokenScopeInsufficient = 502,
     TokenTypeUnsupported = 503,
     TenantNameInvalid = 600,
+    RoleNameInvalid = 900,
+    RoleNameTaken = 901,
+    RoleNotFound = 902,
+    GroupNameInvalid = 903,
+    GroupNameTaken = 904,
+    GroupNotFound = 905,
+    RoleTextInvalid = 906,
+    GrantPeriodInvalid = 907,
+    RoleGrantNotFound = 908,
+    MembershipNotFound = 909,
+    HeldTooMany = 918,
+    RelationSchemaInvalid = 910,
+    RelationInvalid = 911,
+    RelationNotFound = 912,
+    PolicyInvalid = 913,
+    PolicyNameTaken = 914,
+    PolicyNotFound = 915,
+    ResourceTypeTaken = 916,
+    NamedByPolicy = 917,
 }
 
 impl ErrorCode {
@@ -96,12 +116,24 @@ impl ErrorCode {
             | Self::ClientIdentifierTaken
             | Self::UsernameTaken
             | Self::EmailTaken
-            | Self::AuthenticatorAlreadyEnrolled => ErrorKind::Conflict,
+            | Self::AuthenticatorAlreadyEnrolled
+            | Self::RoleNameTaken
+            | Self::GroupNameTaken
+            | Self::HeldTooMany
+            | Self::PolicyNameTaken
+            | Self::ResourceTypeTaken
+            | Self::NamedByPolicy => ErrorKind::Conflict,
             Self::RealmNotFound
             | Self::ClientNotFound
             | Self::PersonNotFound
             | Self::AuthenticatorNotFound
-            | Self::SecurityKeyNotFound => ErrorKind::NotFound,
+            | Self::SecurityKeyNotFound
+            | Self::RoleNotFound
+            | Self::GroupNotFound
+            | Self::RoleGrantNotFound
+            | Self::MembershipNotFound
+            | Self::RelationNotFound
+            | Self::PolicyNotFound => ErrorKind::NotFound,
             Self::ClientAuthenticationFailed
             | Self::TokenInvalid
             | Self::AdminAuthenticationFailed
@@ -116,6 +148,13 @@ impl ErrorCode {
             | Self::SecurityKeysNotServed => ErrorKind::Forbidden,
             Self::RealmNameInvalid
             | Self::TenantNameInvalid
+            | Self::RoleNameInvalid
+            | Self::GroupNameInvalid
+            | Self::RoleTextInvalid
+            | Self::GrantPeriodInvalid
+            | Self::RelationSchemaInvalid
+            | Self::RelationInvalid
+            | Self::PolicyInvalid
             | Self::ClientIdentifierInvalid
             | Self::ClientNameInvalid
             | Self::ScopeInvalid
@@ -188,10 +227,30 @@ impl ErrorCode {
             Self::SecurityKeysNotServed => "auth.security_keys_not_served",
             Self::SecurityKeyNotFound => "user.security_key_not_found",
             Self::TenantNameInvalid => "tenant.name_invalid",
+            Self::RoleNameInvalid => "authz.role_name_invalid",
+            Self::RoleNameTaken => "authz.role_name_taken",
+            Self::RoleNotFound => "authz.role_not_found",
+            Self::GroupNameInvalid => "authz.group_name_invalid",
+            Self::GroupNameTaken => "authz.group_name_taken",
+            Self::GroupNotFound => "authz.group_not_found",
+            Self::RoleTextInvalid => "authz.text_invalid",
+            Self::GrantPeriodInvalid => "authz.grant_period_invalid",
+            Self::RoleGrantNotFound => "authz.grant_not_found",
+            Self::MembershipNotFound => "authz.membership_not_found",
+            Self::HeldTooMany => "authz.held_too_many",
+            Self::RelationSchemaInvalid => "authz.relation_schema_invalid",
+            Self::RelationInvalid => "authz.relation_invalid",
+            Self::RelationNotFound => "authz.relation_not_found",
+            Self::PolicyInvalid => "authz.policy_invalid",
+            Self::PolicyNameTaken => "authz.policy_name_taken",
+            Self::PolicyNotFound => "authz.policy_not_found",
+            Self::ResourceTypeTaken => "authz.resource_type_taken",
+            Self::NamedByPolicy => "authz.named_by_policy",
         }
     }
 
     #[must_use]
+    #[expect(clippy::too_many_lines, reason = "one arm per code of the catalog")]
     pub fn message(self) -> &'static str {
         match self {
             Self::Internal | Self::RandomUnavailable | Self::CryptoUnavailable => {
@@ -268,6 +327,39 @@ impl ErrorCode {
             Self::TenantNameInvalid => {
                 "A tenant name is 1 to 120 characters, none of them a control character."
             }
+            Self::RoleNameInvalid => {
+                "A role name is 1 to 64 letters, digits, dots, colons, hyphens or underscores."
+            }
+            Self::RoleNameTaken => "This role name is already taken.",
+            Self::RoleNotFound => "No such role.",
+            Self::GroupNameInvalid => {
+                "A group name is 1 to 64 letters, digits, dots, colons, hyphens or underscores."
+            }
+            Self::GroupNameTaken => "This group name is already taken.",
+            Self::GroupNotFound => "No such group.",
+            Self::RoleTextInvalid => {
+                "A description or a reason is at most 255 characters, none of them a control or a format character."
+            }
+            Self::GrantPeriodInvalid => {
+                "A grant ends after it starts and after now, at instants written in RFC 3339."
+            }
+            Self::RoleGrantNotFound => "This role is not granted there.",
+            Self::MembershipNotFound => "This person is not a member of this group.",
+            Self::HeldTooMany => {
+                "This person holds more roles or groups than a token or a decision can say."
+            }
+            Self::RelationSchemaInvalid => "The schema of relations has faults.",
+            Self::RelationInvalid => "The schema of the realm does not admit this relation.",
+            Self::RelationNotFound => "No such relation.",
+            Self::PolicyInvalid => {
+                "The policy cannot be read, or names what the realm does not have."
+            }
+            Self::PolicyNameTaken => "This policy name is already taken.",
+            Self::PolicyNotFound => "No such policy.",
+            Self::ResourceTypeTaken => {
+                "A type of resource is decided by the schema of relations or by policies, never by both."
+            }
+            Self::NamedByPolicy => "A policy names this role or group: remove the policy first.",
         }
     }
 }
@@ -330,7 +422,7 @@ mod tests {
 
     use super::ErrorCode;
 
-    const ALL: [ErrorCode; 48] = [
+    const ALL: [ErrorCode; 67] = [
         ErrorCode::Internal,
         ErrorCode::StorageUnavailable,
         ErrorCode::Conflict,
@@ -379,6 +471,25 @@ mod tests {
         ErrorCode::SecurityKeysNotServed,
         ErrorCode::SecurityKeyNotFound,
         ErrorCode::TenantNameInvalid,
+        ErrorCode::RoleNameInvalid,
+        ErrorCode::RoleNameTaken,
+        ErrorCode::RoleNotFound,
+        ErrorCode::GroupNameInvalid,
+        ErrorCode::GroupNameTaken,
+        ErrorCode::GroupNotFound,
+        ErrorCode::RoleTextInvalid,
+        ErrorCode::GrantPeriodInvalid,
+        ErrorCode::RoleGrantNotFound,
+        ErrorCode::MembershipNotFound,
+        ErrorCode::HeldTooMany,
+        ErrorCode::RelationSchemaInvalid,
+        ErrorCode::RelationInvalid,
+        ErrorCode::RelationNotFound,
+        ErrorCode::PolicyInvalid,
+        ErrorCode::PolicyNameTaken,
+        ErrorCode::PolicyNotFound,
+        ErrorCode::ResourceTypeTaken,
+        ErrorCode::NamedByPolicy,
     ];
 
     #[test]
@@ -401,6 +512,7 @@ mod tests {
                 400..500 => "auth.",
                 500..600 => "token.",
                 600..700 => "tenant.",
+                900..1000 => "authz.",
                 other => panic!("no domain is written for {other}"),
             };
             assert!(code.slug().starts_with(domain), "{}", code.slug());

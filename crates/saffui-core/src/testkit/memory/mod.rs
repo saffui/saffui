@@ -10,6 +10,7 @@ mod clients;
 mod keys;
 mod login;
 mod refresh;
+mod roles;
 mod tenancy;
 
 use std::collections::HashMap;
@@ -26,6 +27,10 @@ use super::digest::WeakDigester;
 use super::random::CountingRandom;
 use crate::app::App;
 use crate::audit::store::ChainedEvent;
+use crate::authz::grants::{Membership, RoleGrant};
+use crate::authz::policy::Policy;
+use crate::authz::relations::{RelationTuple, StoredSchema};
+use crate::authz::roles::{Group, Role};
 use crate::clients::Client;
 use crate::directory::Person;
 use crate::keys::SigningKey;
@@ -73,6 +78,22 @@ pub(crate) struct State {
     pub(crate) security_keys: HashMap<Uuid, Vec<crate::login::store::SecurityKey>>,
     /// What finishes an enrollment, and when it expires, by realm then person.
     pub(crate) key_enrollments: HashMap<(Uuid, Uuid), (Vec<u8>, OffsetDateTime)>,
+    /// The roles of each realm and of its clients, by realm.
+    pub(crate) roles: HashMap<Uuid, Vec<Role>>,
+    /// The groups of each realm, by realm.
+    pub(crate) groups: HashMap<Uuid, Vec<Group>>,
+    /// The grants of roles to people and groups, by realm.
+    pub(crate) role_grants: HashMap<Uuid, Vec<RoleGrant>>,
+    /// The members of groups, by realm.
+    pub(crate) memberships: HashMap<Uuid, Vec<Membership>>,
+    /// The schema of relations of each realm, by realm.
+    pub(crate) relation_schemas: HashMap<Uuid, StoredSchema>,
+    /// The relations each realm keeps, by realm.
+    pub(crate) relations: HashMap<Uuid, Vec<RelationTuple>>,
+    /// The clients that guard each type, by realm: (type, client).
+    pub(crate) relation_guards: HashMap<Uuid, Vec<(String, String)>>,
+    /// The policies of the clients of each realm, by realm.
+    pub(crate) policies: HashMap<Uuid, Vec<Policy>>,
 }
 
 /// A code as the double keeps it: spent codes stay, so that a replay is told.
@@ -156,6 +177,7 @@ impl MemoryStorage {
             one_time_codes: Arc::new(PredictableCodes::default()),
             security_keys: Arc::new(TrustingKeys::default()),
             hashing_shares: Arc::new(crate::login::fairness::HashingShares::new(4)),
+            decision_shares: Arc::default(),
             decoy_hash: Arc::new(OnceLock::new()),
         };
         (app, storage, clock)
@@ -334,9 +356,11 @@ mod tests {
     use super::MemoryStorage;
     use crate::testkit::contract::{
         check_audit_contract, check_authenticators_contract, check_clients_contract,
-        check_codes_contract, check_ended_sessions_contract, check_keys_contract,
-        check_known_browsers_contract, check_persons_contract, check_refresh_contract,
-        check_security_keys_contract, check_sign_in_contract, check_tenancy_contract,
+        check_codes_contract, check_ended_sessions_contract, check_grants_contract,
+        check_keys_contract, check_known_browsers_contract, check_member_groups_contract,
+        check_persons_contract, check_policies_contract, check_refresh_contract,
+        check_relations_contract, check_roles_contract, check_security_keys_contract,
+        check_sign_in_contract, check_tenancy_contract,
     };
     use crate::testkit::drive::complete;
 
@@ -404,6 +428,36 @@ mod tests {
     fn the_double_passes_the_security_keys_contract() {
         let (app, _storage) = MemoryStorage::wire();
         complete(check_security_keys_contract(&app));
+    }
+
+    #[test]
+    fn the_double_passes_the_roles_contract() {
+        let (app, _storage) = MemoryStorage::wire();
+        complete(check_roles_contract(&app));
+    }
+
+    #[test]
+    fn the_double_passes_the_grants_contract() {
+        let (app, _storage) = MemoryStorage::wire();
+        complete(check_grants_contract(&app));
+    }
+
+    #[test]
+    fn the_double_passes_the_relations_contract() {
+        let (app, _storage) = MemoryStorage::wire();
+        complete(check_relations_contract(&app));
+    }
+
+    #[test]
+    fn the_double_passes_the_policies_contract() {
+        let (app, _storage) = MemoryStorage::wire();
+        complete(check_policies_contract(&app));
+    }
+
+    #[test]
+    fn the_double_passes_the_member_groups_contract() {
+        let (app, _storage) = MemoryStorage::wire();
+        complete(check_member_groups_contract(&app));
     }
 
     #[test]

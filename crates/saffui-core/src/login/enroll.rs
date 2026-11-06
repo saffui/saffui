@@ -518,7 +518,6 @@ mod tests {
         count_security_keys, describe_enrollment, finish_key_enrollment, remove_security_keys,
         remove_totp,
     };
-    use crate::authz::admin::authorize_admin_call;
     use crate::authz::capability::Capability;
     use crate::error::ErrorCode;
     use crate::login::session::SessionTicket;
@@ -526,7 +525,6 @@ mod tests {
     use crate::secret::Secret;
     use crate::testkit::crypto::TrustingKeys;
     use crate::testkit::drive::complete;
-    use crate::testkit::fixtures::create_administrator;
 
     fn confirm(
         scenario: &Scenario,
@@ -800,20 +798,7 @@ mod tests {
         let scenario = Scenario::start();
         let ticket = scenario.sign_in("openid").ticket;
         scenario.enroll_authenticator(&ticket);
-        let token = complete(create_administrator(
-            &scenario.app,
-            "acme",
-            scenario.scope,
-            "operator",
-            &[Capability::UserWrite],
-        ));
-        let caller = complete(authorize_admin_call(
-            &scenario.app,
-            "acme",
-            Some(&token),
-            Capability::UserWrite,
-        ))
-        .expect("an administrator");
+        let caller = scenario.name_operator(&[Capability::UserWrite]);
         let person = scenario.find_ada();
 
         assert_eq!(
@@ -833,23 +818,6 @@ mod tests {
             complete(remove_totp(&scenario.app, &caller, person)).map_err(|failure| failure.code),
             Err(ErrorCode::AuthenticatorNotFound)
         );
-    }
-
-    fn name_operator(scenario: &Scenario) -> crate::authz::admin::AdminCaller {
-        let token = complete(create_administrator(
-            &scenario.app,
-            "acme",
-            scenario.scope,
-            "operator",
-            &[Capability::UserWrite],
-        ));
-        complete(authorize_admin_call(
-            &scenario.app,
-            "acme",
-            Some(&token),
-            Capability::UserWrite,
-        ))
-        .expect("an administrator")
     }
 
     fn begin_key(
@@ -1070,7 +1038,7 @@ mod tests {
         scenario.enroll_security_key(&ticket, "k1");
         let ticket = scenario.sign_in_with_key("k1", 1);
         scenario.enroll_security_key(&ticket, "k2");
-        let caller = name_operator(&scenario);
+        let caller = scenario.name_operator(&[Capability::UserWrite]);
         let person = scenario.find_ada();
         let remove = || {
             complete(remove_security_keys(&scenario.app, &caller, person))
@@ -1217,7 +1185,7 @@ mod tests {
                 Err(ErrorCode::CodeRejected)
             );
         }
-        let caller = name_operator(&scenario);
+        let caller = scenario.name_operator(&[Capability::UserWrite]);
 
         complete(remove_totp(&scenario.app, &caller, person)).expect("removed");
 

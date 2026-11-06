@@ -890,12 +890,29 @@ async fn a_pass_whose_link_closes_is_a_failure_and_stops_there() {
 /// that found it expired asks again, and leaves it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_row_made_to_live_longer_while_its_batch_waits_stays() {
+    let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
+    keep_a_browser_again_while_its_batch_waits(&app, &database).await;
+}
+
+/// Asking again is what read committed does: the pass says its level.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_row_made_to_live_longer_while_its_batch_waits_stays_under_a_repeatable_read_default() {
+    let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
+    database.default_transactions_to_repeatable_read().await;
+    keep_a_browser_again_while_its_batch_waits(&app, &database).await;
+}
+
+/// Keeps the browser that expired again while the batch of browsers waits
+/// on it, and checks that the pass leaves it.
+async fn keep_a_browser_again_while_its_batch_waits(
+    app: &App,
+    database: &pgcore::testkit::TestDatabase,
+) {
     use std::time::{Duration as Wait, Instant};
 
-    let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
     let now = app.now();
-    let scope = create_realm(&app, "retention-kept-again").await;
-    fill_realm(&app, scope, now).await;
+    let scope = create_realm(app, "retention-kept-again").await;
+    fill_realm(app, scope, now).await;
     // The browser that expired is kept again, in a transaction still open.
     let mut owner = database
         .plan("saffui_owner")

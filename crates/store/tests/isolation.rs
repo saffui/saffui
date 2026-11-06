@@ -388,6 +388,38 @@ async fn a_statement_waits_for_a_lock_as_long_as_the_pool_waits_then_is_told_bus
     );
 }
 
+#[tokio::test]
+async fn a_unit_of_work_reads_what_committed_after_it_began_under_a_repeatable_read_default() {
+    let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
+    // Before the pool opens a session: a session reads the default as it opens.
+    database.default_transactions_to_repeatable_read().await;
+    let acme = provision(&app, "Acme", "acme").await;
+    let (_name, scope) = saffui_core::tenancy::resolve::resolve_realm(&app, "acme")
+        .await
+        .expect("the realm resolves");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let first = work.read_realm().await.expect("a first read");
+
+    connect(&database, MAINTENANCE_ROLE)
+        .await
+        .execute(
+            "UPDATE realms SET enabled = false WHERE realm_id = $1",
+            &[&acme.realm.id.as_uuid()],
+        )
+        .await
+        .expect("the realm disabled meanwhile");
+    let then = work.read_realm().await.expect("a second read");
+
+    assert_eq!(
+        (
+            first.map(|realm| realm.enabled),
+            then.map(|realm| realm.enabled)
+        ),
+        (Some(true), Some(false)),
+        "the second read sees what committed after the first"
+    );
+}
+
 async fn count_open_transactions(observer: &Client) -> i64 {
     observer
         .query_one(

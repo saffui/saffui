@@ -252,9 +252,14 @@ impl Retention for PgRetention {
     ) -> Result<Option<PurgeReport>, StorageError> {
         let client = self.connect_as_retention().await?;
         // A statement that runs longer than this is given up: its table
-        // waits for the next pass, and serving never waits on it.
+        // waits for the next pass, and serving never waits on it. A batch
+        // asks again of a row it waited for whether it expired, which read
+        // committed alone does: under another level, it fails on the row.
         client
-            .batch_execute("SET statement_timeout = '10s'")
+            .batch_execute(
+                "SET statement_timeout = '10s'; \
+                 SET default_transaction_isolation = 'read committed'",
+            )
             .await
             .map_err(|error| report_failure(&error))?;
         // Held for the session of this link, released when it closes.

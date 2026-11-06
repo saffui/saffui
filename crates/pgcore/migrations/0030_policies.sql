@@ -40,9 +40,9 @@ GRANT SELECT ON authz_policies TO saffui_maintenance;
 -- One row per realm, made and removed with the realm. Whoever checks the
 -- definitions of its authorization against what it writes takes the row
 -- first, for update, and keeps it until the end: a writer of policies, of the
--- schema, of the roles and groups a policy names, or of relations. Held in
--- share mode by writers of relations, it would let a stream of them starve
--- the others, since a share is granted past an update that waits.
+-- schema, of the roles and groups a policy names, or of a relation it keeps.
+-- Held in share mode by writers of relations, it would let a stream of them
+-- starve the others, since a share is granted past an update that waits.
 CREATE TABLE authz_definitions (
     tenant_id uuid NOT NULL,
     realm_id uuid NOT NULL,
@@ -79,30 +79,62 @@ CREATE TRIGGER realms_definitions
     AFTER INSERT ON realms
     FOR EACH ROW EXECUTE FUNCTION saffui_make_definitions_row();
 
--- A writer of relations takes the row, then reads the compiled form of the
--- schema, in one call. It waits a second at most: behind a writer of
--- definitions, it gives its connection back rather than hold it as long as
--- the pool waits. The wait of its transaction is restored as it returns.
--- Two statements: the read sees what committed while the first one waited,
--- where a join in the statement that locks would see the schema before it.
-CREATE FUNCTION saffui_take_definitions_to_relate(p_tenant uuid, p_realm uuid)
-    RETURNS TABLE (compiled jsonb)
-    LANGUAGE sql
+-- Answers a writer of relations in one call. A kind the schema refuses, and
+-- a relation the realm keeps already, are answered without the row. Any other
+-- takes it, then has its kind read again by a statement of its own, which sees
+-- what committed while it waited. It waits a second at most for each lock,
+-- behind any holder of the row, writers of relations included: its place among
+-- those who wait, then the holder, about two seconds at worst. It gives its
+-- connection back rather than hold it as long as the pool waits, and the wait
+-- of its transaction is restored as it returns.
+CREATE FUNCTION saffui_admit_relation(
+    p_tenant uuid, p_realm uuid, p_object_type text, p_object_id text, p_relation text,
+    p_subject_type text, p_subject_id text, p_subject_member text
+) RETURNS text
+    LANGUAGE plpgsql
     SET lock_timeout = '1s'
     SET search_path = pg_catalog, public, pg_temp
     AS $$
-    SELECT 1 FROM public.authz_definitions
+DECLARE
+    v_admitted boolean;
+    v_kept boolean;
+BEGIN
+    SELECT EXISTS (
+               SELECT 1 FROM public.relation_kinds
+               WHERE tenant_id = p_tenant AND realm_id = p_realm
+                 AND object_type = p_object_type AND relation = p_relation
+                 AND subject_type = p_subject_type AND subject_member = p_subject_member),
+           EXISTS (
+               SELECT 1 FROM public.relation_tuples
+               WHERE tenant_id = p_tenant AND realm_id = p_realm
+                 AND object_type = p_object_type AND relation = p_relation
+                 AND object_id = p_object_id AND subject_type = p_subject_type
+                 AND subject_id = p_subject_id AND subject_member = p_subject_member)
+    INTO v_admitted, v_kept;
+    IF NOT v_admitted THEN
+        RETURN 'refused';
+    ELSIF v_kept THEN
+        RETURN 'kept';
+    END IF;
+    PERFORM 1 FROM public.authz_definitions
     WHERE tenant_id = p_tenant AND realm_id = p_realm
     FOR UPDATE;
-    SELECT s.compiled
-    FROM public.authz_definitions d
-    LEFT JOIN public.relation_schemas s ON s.tenant_id = d.tenant_id AND s.realm_id = d.realm_id
-    WHERE d.tenant_id = p_tenant AND d.realm_id = p_realm;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'a realm has no row of the definitions of its authorization';
+    END IF;
+    PERFORM 1 FROM public.relation_kinds
+    WHERE tenant_id = p_tenant AND realm_id = p_realm
+      AND object_type = p_object_type AND relation = p_relation
+      AND subject_type = p_subject_type AND subject_member = p_subject_member;
+    RETURN CASE WHEN FOUND THEN 'taken' ELSE 'refused' END;
+END
 $$;
 
 REVOKE ALL ON FUNCTION saffui_make_definitions_row() FROM PUBLIC;
-REVOKE ALL ON FUNCTION saffui_take_definitions_to_relate(uuid, uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION saffui_take_definitions_to_relate(uuid, uuid) TO saffui_app;
+REVOKE ALL ON FUNCTION saffui_admit_relation(uuid, uuid, text, text, text, text, text, text)
+    FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION saffui_admit_relation(uuid, uuid, text, text, text, text, text, text)
+    TO saffui_app;
 
 -- A row lock asks for the right to update one column. Row security keeps
 -- that column where it is: no update can move the row. A role that may

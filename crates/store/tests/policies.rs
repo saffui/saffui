@@ -1,7 +1,7 @@
 //! The definitions of authorization of a realm are checked and written under
-//! the row that stands for them: every writer of them, and every writer of
-//! relations, takes the row in turn, in the order they came, and a writer of
-//! another realm waits for nobody.
+//! the row that stands for them: every writer of them, and every writer of a
+//! relation to keep, takes the row in turn, in the order they came, and a
+//! writer of another realm waits for nobody.
 
 use std::future::Future;
 use std::time::{Duration, Instant};
@@ -14,8 +14,8 @@ use saffui_core::authz::admin::{AdminCaller, authorize_admin_call};
 use saffui_core::authz::capability::Capability;
 use saffui_core::authz::policy::{Combine, Effect, NewPolicy, create_policy, list_policies};
 use saffui_core::authz::relations::{
-    ObjectRef, RelationTuple, SchemaRefusal, SubjectRef, list_relation_subjects, write_relation,
-    write_relation_schema,
+    ObjectRef, RelationAdmission, RelationTuple, SchemaRefusal, SubjectRef, list_relation_subjects,
+    write_relation, write_relation_schema,
 };
 use saffui_core::authz::roles::{
     NewGroup, NewRole, create_group, create_role, delete_group, delete_role,
@@ -125,13 +125,17 @@ async fn two_writers_of_the_definitions_of_one_realm_take_turns() {
 async fn a_writer_of_definitions_waits_for_a_writer_of_relations() {
     let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
     let observer = connect(&database, APP_ROLE).await;
-    let scope = create_realm(&app, "definitions-relating").await;
+    let scope = create_realm(&app, "acme").await;
+    let caller = name_operator(&app, scope).await;
+    write_relation_schema(&app, &caller, READERS)
+        .await
+        .expect("a schema");
 
     let mut relating = app.storage.begin(scope).await.expect("a unit of work");
     assert_eq!(
-        relating.lock_definitions_and_read_schema().await,
-        Ok(None),
-        "the row, and no schema yet"
+        relating.admit_relation(&read_by("ada")).await,
+        Ok(RelationAdmission::Taken),
+        "a relation to keep takes the row"
     );
     let locking = {
         let app = app.clone();
@@ -295,6 +299,19 @@ async fn a_realm_without_its_row_refuses_every_writer_and_keeps_nothing() {
     write_relation_schema(&app, &caller, READERS)
         .await
         .expect("a schema");
+    // A role a policy may name: only the row is missing for one to be kept.
+    let approver = create_role(
+        &app,
+        &caller,
+        NewRole {
+            name: "approver",
+            client_id: None,
+            description: None,
+        },
+    )
+    .await
+    .expect("a role")
+    .id;
     connect(&database, "saffui_owner")
         .await
         .batch_execute(&format!(
@@ -314,7 +331,7 @@ async fn a_realm_without_its_row_refuses_every_writer_and_keeps_nothing() {
     drop(work);
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
     assert_eq!(
-        work.lock_definitions_and_read_schema().await,
+        work.admit_relation(&read_by("ada")).await,
         Err(StorageError::Failed)
     );
     drop(work);
@@ -324,12 +341,7 @@ async fn a_realm_without_its_row_refuses_every_writer_and_keeps_nothing() {
         related.map_err(|failure| failure.code),
         Err(ErrorCode::Internal)
     );
-    let written = write_policy(
-        &app,
-        &caller,
-        "invoice",
-        json!([{ "role": uuid::Uuid::nil() }]),
-    );
+    let written = write_policy(&app, &caller, "invoice", json!([{ "role": approver }]));
     assert_eq!(written.await, Err(ErrorCode::Internal));
     let (readers, _) = list_relation_subjects(&app, scope, &read_by("ada").object, "reader")
         .await
@@ -620,7 +632,8 @@ async fn a_relation_written_while_the_schema_narrows_is_checked_against_the_narr
 /// Six writers of relations, each starting again as soon as it ends, for two
 /// seconds: a writer of the schema that comes in the middle takes its turn
 /// while they still write, not once they stop. Fewer leave gaps between
-/// them, which would let it through in share mode too.
+/// them, which would let it through in share mode too. A writer that waited
+/// past its short wait, behind the others, gave way and is counted apart.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn writers_of_relations_one_after_another_let_a_writer_of_the_schema_through() {
     let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
@@ -630,19 +643,23 @@ async fn writers_of_relations_one_after_another_let_a_writer_of_the_schema_throu
         .await
         .expect("a schema");
     let end = Instant::now() + Duration::from_secs(2);
-    let writers: Vec<JoinHandle<u32>> = (0..6)
+    let writers: Vec<JoinHandle<(u32, u32)>> = (0..6)
         .map(|writer| {
             let (app, caller) = (app.clone(), caller.clone());
             tokio::spawn(async move {
-                let mut written = 0;
+                let (mut written, mut gave_way) = (0, 0);
                 while Instant::now() < end {
-                    let tuple = read_by(&format!("w{writer}-{written}"));
-                    write_relation(&app, &caller, &tuple)
+                    let tuple = read_by(&format!("w{writer}-{}", written + gave_way));
+                    match write_relation(&app, &caller, &tuple)
                         .await
-                        .expect("a relation, in turn");
-                    written += 1;
+                        .map_err(|failure| failure.code)
+                    {
+                        Ok(()) => written += 1,
+                        Err(ErrorCode::StorageUnavailable) => gave_way += 1,
+                        Err(code) => panic!("a relation, in turn: {code:?}"),
+                    }
                 }
-                written
+                (written, gave_way)
             })
         })
         .collect();
@@ -658,8 +675,61 @@ async fn writers_of_relations_one_after_another_let_a_writer_of_the_schema_throu
         ended - end
     );
     for writer in writers {
-        assert!(writer.await.expect("a writer") > 0);
+        let (written, gave_way) = writer.await.expect("a writer");
+        assert!(written > 0, "nothing kept, {gave_way} gave way");
     }
+}
+
+/// Behind a holder of the row, a relation the schema refuses and one the
+/// realm keeps already are answered at once, without it: only a relation to
+/// keep waits for the row, and gives way.
+#[tokio::test]
+async fn only_a_relation_to_keep_waits_behind_a_holder_of_the_row() {
+    let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let scope = create_realm(&app, "acme").await;
+    let caller = name_operator(&app, scope).await;
+    write_relation_schema(&app, &caller, READERS)
+        .await
+        .expect("a schema");
+    write_relation(&app, &caller, &read_by("ada"))
+        .await
+        .expect("a relation");
+    let mut holder = app.storage.begin(scope).await.expect("a unit of work");
+    holder.lock_definitions().await.expect("the lock");
+
+    let timed = |tuple: RelationTuple| {
+        let (app, caller) = (app.clone(), caller.clone());
+        async move {
+            let started = Instant::now();
+            let written = write_relation(&app, &caller, &tuple)
+                .await
+                .map_err(|failure| failure.code);
+            (written, started.elapsed())
+        }
+    };
+    let owned = RelationTuple {
+        relation: "owner".to_owned(),
+        ..read_by("ada")
+    };
+    let (refused, waited) = timed(owned).await;
+    assert_eq!(refused, Err(ErrorCode::RelationInvalid));
+    assert!(
+        waited < Duration::from_millis(500),
+        "refused after {waited:?}"
+    );
+    let (kept, waited) = timed(read_by("ada")).await;
+    assert_eq!(kept, Ok(()), "kept already");
+    assert!(
+        waited < Duration::from_millis(500),
+        "answered after {waited:?}"
+    );
+    let (new, waited) = timed(read_by("bob")).await;
+    assert_eq!(new, Err(ErrorCode::StorageUnavailable));
+    assert!(
+        (Duration::from_millis(900)..Duration::from_secs(3)).contains(&waited),
+        "gave way after {waited:?}"
+    );
+    holder.commit().await.expect("a commit");
 }
 
 /// Behind a writer of definitions, a writer of relations gives up within

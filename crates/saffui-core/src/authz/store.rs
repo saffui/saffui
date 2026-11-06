@@ -5,7 +5,8 @@ use uuid::Uuid;
 use super::grants::{HeldRole, Membership, RoleGrant, RoleHolder};
 use super::policy::Policy;
 use super::relations::{
-    AdmittedRelation, GuardedSchema, ObjectRef, RelationTuple, StoredSchema, SubjectRef,
+    AdmittedRelation, GuardedSchema, ObjectRef, RelationAdmission, RelationTuple, StoredSchema,
+    SubjectRef,
 };
 use super::roles::{Group, Role};
 use crate::clients::store::ListWindow;
@@ -87,8 +88,13 @@ pub trait RoleStore {
 
 #[async_trait]
 pub trait RelationStore {
-    /// Keeps the schema of the realm, in place of the one before.
-    async fn write_relation_schema(&mut self, schema: &StoredSchema) -> Result<(), StorageError>;
+    /// Keeps the schema of the realm, in place of the one before, and the
+    /// kinds of relations it admits, in place of theirs.
+    async fn write_relation_schema(
+        &mut self,
+        schema: &StoredSchema,
+        admitted: &[AdmittedRelation],
+    ) -> Result<(), StorageError>;
 
     async fn read_relation_schema(&mut self) -> Result<Option<StoredSchema>, StorageError>;
 
@@ -99,6 +105,15 @@ pub trait RelationStore {
         object_type: &str,
         client_id: &str,
     ) -> Result<Option<GuardedSchema>, StorageError>;
+
+    /// Reads, without the definitions, whether the schema admits the kind of a
+    /// relation and whether the realm keeps it. A new one of a kind admitted
+    /// takes them, behind any holder, writer of relations or not, a second at
+    /// most per lock awaited, about two at worst, then reads the kind again.
+    async fn admit_relation(
+        &mut self,
+        tuple: &RelationTuple,
+    ) -> Result<RelationAdmission, StorageError>;
 
     /// Keeps a relation. Answers `false` when it was kept already.
     async fn insert_relation(
@@ -183,12 +198,6 @@ pub trait PolicyStore {
     /// policies, its schema of relations, its roles and its groups: any other
     /// unit of work that holds them waits, in the order they came.
     async fn lock_definitions(&mut self) -> Result<(), StorageError>;
-
-    /// Holds the definitions as `lock_definitions` does, waiting a moment at
-    /// most, and reads the compiled form of the schema of relations, if any.
-    async fn lock_definitions_and_read_schema(
-        &mut self,
-    ) -> Result<Option<serde_json::Value>, StorageError>;
 
     /// Whether a policy of any client of the realm guards one of these types.
     async fn has_policy_for_types(&mut self, types: &[String]) -> Result<bool, StorageError>;

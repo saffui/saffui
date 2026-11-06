@@ -894,7 +894,7 @@ mod tests {
                 compiled: json!({ "version": 0, "types": {} }),
                 written_at: started.scenario.app.now(),
             };
-            work.write_relation_schema(&unreadable)
+            work.write_relation_schema(&unreadable, &[])
                 .await
                 .expect("a schema");
             work.commit().await.expect("a commit");
@@ -909,7 +909,8 @@ mod tests {
 
     #[test]
     fn a_compiled_form_another_version_wrote_is_compiled_again_from_its_source() {
-        use crate::authz::relations::StoredSchema;
+        use crate::authz::relations::schema::compile_schema;
+        use crate::authz::relations::{StoredSchema, list_admitted_relations};
 
         let started = Started::open();
         complete(async {
@@ -925,7 +926,11 @@ mod tests {
                 compiled: json!({ "version": 0, "types": {} }),
                 written_at: started.scenario.app.now(),
             };
-            work.write_relation_schema(&older).await.expect("a schema");
+            // The kinds it admits, as the version that wrote it keeps them.
+            let admitted = list_admitted_relations(&compile_schema(SCHEMA).expect("a schema"));
+            work.write_relation_schema(&older, &admitted)
+                .await
+                .expect("a schema");
             work.commit().await.expect("a commit");
         });
         started.guard("document");

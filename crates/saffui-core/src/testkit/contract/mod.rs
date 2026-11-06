@@ -2167,10 +2167,11 @@ pub async fn check_grants_contract(app: &App) {
 }
 
 /// What any storage owes to the schema of relations and to the relations
-/// kept: a schema replaces the one before, a relation is kept once and read
-/// back only for its object and relation, in the order of its subjects, and
-/// nothing of it is reachable from another realm. A relation the product did
-/// not keep goes with the first schema that would admit it.
+/// kept: a schema replaces the one before, and its kinds theirs, a relation
+/// is kept once and read back only for its object and relation, in the order
+/// of its subjects, and nothing of it is reachable from another realm. A
+/// relation the product did not keep goes with the first schema that would
+/// admit it, and a form another version wrote is compiled again.
 ///
 /// # Panics
 ///
@@ -2182,7 +2183,10 @@ pub async fn check_grants_contract(app: &App) {
 pub async fn check_relations_contract(app: &App) {
     use serde_json::json;
 
-    use crate::authz::relations::{ObjectRef, RelationTuple, StoredSchema, SubjectRef};
+    use crate::authz::relations::schema::AllowedSubject;
+    use crate::authz::relations::{
+        AdmittedRelation, ObjectRef, RelationAdmission, RelationTuple, StoredSchema, SubjectRef,
+    };
     use crate::testkit::fixtures::create_realm;
 
     let scope = create_realm(app, "contract-relations").await;
@@ -2217,6 +2221,14 @@ pub async fn check_relations_contract(app: &App) {
         compiled: json!({ "version": 1, "types": {} }),
         written_at: now,
     };
+    let kind = |relation: &str, subject_type: &str, member: Option<&str>| AdmittedRelation {
+        object_type: "document".to_owned(),
+        relation: relation.to_owned(),
+        subject: AllowedSubject {
+            object_type: subject_type.to_owned(),
+            member: member.map(str::to_owned),
+        },
+    };
 
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
     assert_eq!(work.read_relation_schema().await, Ok(None));
@@ -2224,10 +2236,15 @@ pub async fn check_relations_contract(app: &App) {
         work.read_guarded_schema("document", "portal").await,
         Ok(None)
     );
-    work.write_relation_schema(&schema("definition first {}"))
+    let first = [kind("owner", "user", None), kind("reader", "user", None)];
+    work.write_relation_schema(&schema("definition first {}"), &first)
         .await
         .expect("a schema");
-    work.write_relation_schema(&schema("definition second {}"))
+    let second = [
+        kind("owner", "user", None),
+        kind("owner", "team", Some("member")),
+    ];
+    work.write_relation_schema(&schema("definition second {}"), &second)
         .await
         .expect("a schema in place of the first");
     let owner = relate("document:q3", "owner", "user:ada", None);
@@ -2238,6 +2255,31 @@ pub async fn check_relations_contract(app: &App) {
     assert_eq!(work.insert_relation(&team, now).await, Ok(true));
     assert_eq!(work.insert_relation(&reader, now).await, Ok(true));
     work.commit().await.expect("a commit");
+
+    // The kinds follow the schema in place: those of the first went with it.
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.admit_relation(&reader).await,
+        Ok(RelationAdmission::Refused),
+        "a kind the schema no longer admits, kept or not"
+    );
+    assert_eq!(
+        work.admit_relation(&team).await,
+        Ok(RelationAdmission::Kept)
+    );
+    assert_eq!(
+        work.admit_relation(&relate("document:q4", "owner", "user:ada", None))
+            .await,
+        Ok(RelationAdmission::Taken)
+    );
+    drop(work);
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(
+        elsewhere.admit_relation(&owner).await,
+        Ok(RelationAdmission::Refused),
+        "nor the kinds of another realm"
+    );
+    drop(elsewhere);
 
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
     assert_eq!(
@@ -2415,6 +2457,89 @@ pub async fn check_relations_contract(app: &App) {
     work.commit().await.expect("a commit");
 
     check_that_a_schema_sweeps_what_the_product_did_not_keep(app).await;
+    check_that_a_form_another_version_wrote_is_compiled_again(app).await;
+}
+
+/// A compiled form another version wrote, which this one does not read: its
+/// source is compiled again, and serves, where the schema is read and where
+/// a question is decided.
+async fn check_that_a_form_another_version_wrote_is_compiled_again(app: &App) {
+    use serde_json::{Map, json};
+
+    use crate::authz::capability::Capability;
+    use crate::authz::decide::{DecisionRequest, decide};
+    use crate::authz::relations::schema::compile_schema;
+    use crate::authz::relations::{
+        ObjectRef, RelationTuple, StoredSchema, SubjectRef, list_admitted_relations,
+        read_relation_schema,
+    };
+    use crate::testkit::fixtures::{create_administrator, create_realm, create_service_client};
+
+    let realm = "contract-older-form";
+    let scope = create_realm(app, realm).await;
+    let secret = create_service_client(app, scope, "billing", &[]).await;
+    let subject_token =
+        create_administrator(app, realm, scope, "auditor", &[Capability::AuditRead]).await;
+    let source = "definition client {}\ndefinition document {\n  relation reader: client\n}";
+    let older = StoredSchema {
+        source: source.to_owned(),
+        compiled: json!({ "version": 0 }),
+        written_at: app.now(),
+    };
+    let admitted = list_admitted_relations(&compile_schema(source).expect("a schema"));
+    let object = |object_type: &str, object_id: &str| ObjectRef {
+        object_type: object_type.to_owned(),
+        object_id: object_id.to_owned(),
+    };
+    let reader = RelationTuple {
+        object: object("document", "q3"),
+        relation: "reader".to_owned(),
+        subject: SubjectRef {
+            object: object("client", "auditor"),
+            member: None,
+        },
+    };
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.write_relation_schema(&older, &admitted)
+        .await
+        .expect("a form of another version");
+    work.insert_relation_guard("document", "billing", app.now())
+        .await
+        .expect("a guard");
+    assert_eq!(work.insert_relation(&reader, app.now()).await, Ok(true));
+    work.commit().await.expect("a commit");
+
+    let read = read_relation_schema(app, scope)
+        .await
+        .expect("the schema")
+        .and_then(|stored| stored.open());
+    assert_eq!(
+        read.map(|schema| schema.types.into_keys().collect::<Vec<_>>()),
+        Some(vec!["client".to_owned(), "document".to_owned()]),
+        "the schema is read from its source"
+    );
+    let attributes = Map::new();
+    let asked = decide(
+        app,
+        realm,
+        Some("billing"),
+        Some(secret),
+        DecisionRequest {
+            subject_token: Some(&subject_token),
+            action: "reader",
+            resource_type: "document",
+            resource_id: Some("q3"),
+            attributes: &attributes,
+        },
+    )
+    .await;
+    assert_eq!(
+        asked
+            .map(|decision| (decision.decision, decision.reason))
+            .map_err(|failure| failure.error),
+        Ok(("permit", "relation".to_owned())),
+        "the question is decided by the source compiled again"
+    );
 }
 
 /// A relation kept by hand before any schema, then one of a kind a later

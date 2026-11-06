@@ -3,7 +3,8 @@
 
 use async_trait::async_trait;
 use saffui_core::authz::relations::{
-    AdmittedRelation, GuardedSchema, ObjectRef, RelationTuple, StoredSchema, SubjectRef,
+    AdmittedRelation, GuardedSchema, ObjectRef, RelationAdmission, RelationTuple, StoredSchema,
+    SubjectRef,
 };
 use saffui_core::authz::store::RelationStore;
 use saffui_core::ports::storage::StorageError;
@@ -16,12 +17,15 @@ fn write_member(subject: &SubjectRef) -> &str {
     subject.member.as_deref().unwrap_or("")
 }
 
-/// Removes the relations of some kinds, $3 to $6 their four columns. Each
-/// type is read once, whatever the number of its kinds: `IS TRUE` keeps the
-/// kinds a filter, where a join would read a type once for each of them.
+/// Removes the relations of some kinds, $3 to $6 their four columns. The key
+/// is entered once for each type and relation they name, so a relation is
+/// read once whatever the number of its kinds, and `IS TRUE` keeps the kinds
+/// a filter. Planned for any values, `= ANY` on both columns reads the whole
+/// realm: each array counts as ten values, the two as a hundred descents.
 const DELETE_RELATIONS_OF_KINDS: &str = "DELETE FROM relation_tuples kept
+     USING (SELECT DISTINCT * FROM unnest($3::text[], $4::text[])) AS named (object_type, relation)
      WHERE kept.tenant_id = $1 AND kept.realm_id = $2
-       AND kept.object_type = ANY($3::text[])
+       AND kept.object_type = named.object_type AND kept.relation = named.relation
        AND ((kept.object_type, kept.relation, kept.subject_type, kept.subject_member) IN (
            SELECT * FROM unnest($3::text[], $4::text[], $5::text[], $6::text[]))) IS TRUE";
 
@@ -40,7 +44,11 @@ fn split_kinds(kinds: &[AdmittedRelation]) -> [Vec<&str>; 4] {
 
 #[async_trait]
 impl RelationStore for PgUnitOfWork {
-    async fn write_relation_schema(&mut self, schema: &StoredSchema) -> Result<(), StorageError> {
+    async fn write_relation_schema(
+        &mut self,
+        schema: &StoredSchema,
+        admitted: &[AdmittedRelation],
+    ) -> Result<(), StorageError> {
         let (tenant, realm) = self.scope_keys();
         // One statement keeps the schema of the realm, in place of the one before.
         self.execute_raw(
@@ -55,6 +63,29 @@ impl RelationStore for PgUnitOfWork {
                 &schema.source,
                 &schema.compiled,
                 &schema.written_at,
+            ],
+        )
+        .await?;
+        // Its kinds in place of those before, in two statements: within one,
+        // the insert would meet the rows the removal has yet to take.
+        self.execute_raw(
+            "DELETE FROM relation_kinds WHERE tenant_id = $1 AND realm_id = $2",
+            &[&tenant, &realm],
+        )
+        .await?;
+        let [object_types, relations, subject_types, members] = split_kinds(admitted);
+        self.execute_raw(
+            "INSERT INTO relation_kinds (tenant_id, realm_id, object_type, relation, subject_type,
+                 subject_member)
+             SELECT $1::uuid, $2::uuid, *
+             FROM unnest($3::text[], $4::text[], $5::text[], $6::text[])",
+            &[
+                &tenant,
+                &realm,
+                &object_types,
+                &relations,
+                &subject_types,
+                &members,
             ],
         )
         .await
@@ -106,6 +137,35 @@ impl RelationStore for PgUnitOfWork {
                 })
             })
             .transpose()
+    }
+
+    async fn admit_relation(
+        &mut self,
+        tuple: &RelationTuple,
+    ) -> Result<RelationAdmission, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        let rows = self
+            .read_raw(
+                "SELECT saffui_admit_relation($1, $2, $3, $4, $5, $6, $7, $8)",
+                &[
+                    &tenant,
+                    &realm,
+                    &tuple.object.object_type,
+                    &tuple.object.object_id,
+                    &tuple.relation,
+                    &tuple.subject.object.object_type,
+                    &tuple.subject.object.object_id,
+                    &write_member(&tuple.subject),
+                ],
+            )
+            .await?;
+        // An answer this version does not know is a failure, never a guess.
+        match rows.first().and_then(|row| row.try_get::<_, &str>(0).ok()) {
+            Some("refused") => Ok(RelationAdmission::Refused),
+            Some("kept") => Ok(RelationAdmission::Kept),
+            Some("taken") => Ok(RelationAdmission::Taken),
+            _ => Err(StorageError::Failed),
+        }
     }
 
     async fn insert_relation(
@@ -311,11 +371,17 @@ mod tests {
 
     use super::DELETE_RELATIONS_OF_KINDS;
 
-    /// A hundred realms of three types, each of three kinds: a sweep of the
-    /// three kinds of one type and of one kind of another, planned for any
-    /// values, reads each type once, by the primary key.
+    /// A hundred realms of three types, each of three kinds, and in the realm
+    /// swept tens of thousands of relations of other types, or of other
+    /// relations of its types. A sweep of the three kinds of one type and of
+    /// one kind of another, planned for any values, enters the key once for
+    /// each of the three types and relations it names, and reads nothing else.
     #[tokio::test]
-    async fn a_sweep_reads_each_type_once_whatever_the_number_of_its_kinds() {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one scenario, read from top to bottom"
+    )]
+    async fn a_sweep_reads_the_relations_it_names_once_whatever_the_number_of_their_kinds() {
         let database = TestDatabase::create(EMBEDDED).await;
         let owner = database
             .plan("saffui_owner")
@@ -346,6 +412,15 @@ mod tests {
                               (VALUES ('owner', 'user', ''), ('reader', 'user', ''),
                                       ('reader', 'team', 'member')) kind (relation, subject_type, member);
                      END LOOP;
+                     -- Of types the sweep does not name, or of relations it does not.
+                     PERFORM set_config('saffui.realm', '{realm}', true);
+                     INSERT INTO relation_tuples
+                     SELECT '{tenant}', '{realm}', object_type, 'x' || n, relation, 'user', 'u' || n,
+                            '', now()
+                     FROM generate_series(1, 2500) n,
+                          unnest(ARRAY['document', 'folder', 'invoice', 'printer', 'ticket']) object_type,
+                          unnest(ARRAY['approver', 'editor', 'owner', 'reader']) relation
+                     WHERE (object_type IN ('document', 'folder')) = (relation IN ('approver', 'editor'));
                  END $$;
                  COMMIT;
                  ANALYZE relation_tuples;"
@@ -367,7 +442,7 @@ mod tests {
         let plan = owner
             .query(
                 &format!(
-                    "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) EXECUTE sweep (
+                    "EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) EXECUTE sweep (
                          '{tenant}', '{realm}',
                          ARRAY['document', 'document', 'document', 'folder'],
                          ARRAY['owner', 'reader', 'reader', 'owner'],
@@ -388,12 +463,99 @@ mod tests {
         );
         for line in plan
             .iter()
-            .filter(|line| line.contains(" on relation_tuples"))
+            .filter(|line| line.contains("Scan") && line.contains(" on relation_tuples"))
         {
             assert!(
-                !line.contains("Seq Scan") && line.contains(" loops=1)"),
+                line.contains("Index Scan") && line.contains(" loops=3)"),
                 "{line}: {plan:#?}"
             );
         }
+        assert!(
+            plan.iter().any(|line| line.contains("Index Cond:")
+                && line.contains("(object_type = ")
+                && line.contains("(relation = ")),
+            "the key bounds the read to the types and relations named: {plan:#?}"
+        );
+        assert!(
+            !plan.iter().any(|line| line.contains("Rows Removed")),
+            "nothing else is read: {plan:#?}"
+        );
+        // The relation before the object in the key: else the plan reads the
+        // same, but each scan walks every object of its type (312 pages, not 28).
+        let pages: u32 = plan
+            .iter()
+            .skip_while(|line| !line.contains("Index Scan"))
+            .find_map(|line| line.trim().strip_prefix("Buffers: shared "))
+            .map(|counts| {
+                counts
+                    .split(' ')
+                    .filter_map(|count| count.split_once('=')?.1.parse::<u32>().ok())
+                    .sum()
+            })
+            .expect("the pages the scan read");
+        assert!(pages < 100, "{pages} pages read: {plan:#?}");
+        assert!(
+            plan.iter().any(|line| line.contains("hashed SubPlan")),
+            "the kinds are a filter, each relation read once: {plan:#?}"
+        );
+    }
+
+    /// The table refuses a compiled form past twice what the product writes,
+    /// whoever writes it, and keeps one at that bound.
+    #[tokio::test]
+    async fn a_compiled_form_past_its_bound_is_refused_by_the_table() {
+        use tokio_postgres::error::SqlState;
+
+        let database = TestDatabase::create(EMBEDDED).await;
+        let owner = database
+            .plan("saffui_owner")
+            .connect_directly()
+            .await
+            .expect("a connection");
+        let (tenant, realm) = (
+            "00000000-0000-0000-0000-000000000001",
+            "00000000-0000-0000-0000-000000000002",
+        );
+        let scoped = format!(
+            "BEGIN;
+             SELECT set_config('saffui.tenant', '{tenant}', true),
+                    set_config('saffui.realm', '{realm}', true);"
+        );
+        owner
+            .batch_execute(&format!(
+                "{scoped}
+                 INSERT INTO tenants VALUES ('{tenant}', 'acme', now());
+                 INSERT INTO realms VALUES ('{tenant}', '{realm}', 'acme', true, now());
+                 COMMIT"
+            ))
+            .await
+            .expect("a realm");
+        // What jsonb writes around the padding: `{"pad": "", "version": 1}`.
+        let bound = 2 * saffui_core::authz::relations::schema::SCHEMA_COMPILED_MAX_BYTES;
+        let around = r#"{"pad": "", "version": 1}"#.len();
+        let write = |padding: usize| {
+            let scoped = scoped.clone();
+            let owner = &owner;
+            async move {
+                owner.batch_execute(&scoped).await.expect("a scope");
+                let written = owner
+                    .query_one(
+                        "INSERT INTO relation_schemas
+                         VALUES ($1::text::uuid, $2::text::uuid, '',
+                                 jsonb_build_object('version', 1, 'pad', repeat('x', $3)), now())
+                         RETURNING octet_length(compiled::text)",
+                        &[&tenant, &realm, &i32::try_from(padding).expect("a padding")],
+                    )
+                    .await
+                    .map(|row| row.get::<_, i32>(0));
+                owner.batch_execute("ROLLBACK").await.expect("a rollback");
+                written
+            }
+        };
+
+        let at_bound = write(bound - around).await.expect("a form at the bound");
+        assert_eq!(usize::try_from(at_bound).expect("a length"), bound);
+        let refused = write(bound - around + 1).await.expect_err("a form past it");
+        assert_eq!(refused.code(), Some(&SqlState::CHECK_VIOLATION));
     }
 }

@@ -7,8 +7,8 @@ use std::time::Duration;
 use pgcore::pool::PoolSettings;
 use saffui_core::authz::capability::Capability;
 use saffui_core::authz::decide::{DecisionRequest, decide};
-use saffui_core::authz::relations::StoredSchema;
 use saffui_core::authz::relations::schema::compile_schema;
+use saffui_core::authz::relations::{StoredSchema, list_admitted_relations};
 use saffui_core::oidc::errors::OAuthError;
 use saffui_core::testkit::fixtures::{create_administrator, create_realm, create_service_client};
 use serde_json::Map;
@@ -30,13 +30,14 @@ async fn a_walk_the_database_cannot_answer_is_to_be_asked_again() {
     let source = "definition client {}\ndefinition document {\n  relation reader: client\n}";
     let compiled = compile_schema(source).expect("a schema");
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
-    work.write_relation_schema(&StoredSchema {
+    let stored = StoredSchema {
         source: source.to_owned(),
         compiled: serde_json::to_value(&compiled).expect("a compiled form"),
         written_at: app.now(),
-    })
-    .await
-    .expect("a schema");
+    };
+    work.write_relation_schema(&stored, &list_admitted_relations(&compiled))
+        .await
+        .expect("a schema");
     work.insert_relation_guard("document", "billing", app.now())
         .await
         .expect("a guard");

@@ -8,7 +8,8 @@ use super::MemoryUnitOfWork;
 use crate::authz::grants::{HeldRole, Membership, RoleGrant, RoleHolder};
 use crate::authz::policy::Policy;
 use crate::authz::relations::{
-    AdmittedRelation, GuardedSchema, ObjectRef, RelationTuple, StoredSchema, SubjectRef,
+    AdmittedRelation, GuardedSchema, ObjectRef, RelationAdmission, RelationTuple, StoredSchema,
+    SubjectRef,
 };
 use crate::authz::roles::{Group, Role};
 use crate::authz::store::{PolicyStore, RelationStore, RoleStore};
@@ -286,11 +287,16 @@ impl RoleStore for MemoryUnitOfWork {
 
 #[async_trait]
 impl RelationStore for MemoryUnitOfWork {
-    async fn write_relation_schema(&mut self, schema: &StoredSchema) -> Result<(), StorageError> {
+    async fn write_relation_schema(
+        &mut self,
+        schema: &StoredSchema,
+        admitted: &[AdmittedRelation],
+    ) -> Result<(), StorageError> {
         let outcome = self.refuse_in_snapshot();
         self.record_refusal(outcome)?;
         let realm = self.realm();
         self.working.relation_schemas.insert(realm, schema.clone());
+        self.working.relation_kinds.insert(realm, admitted.to_vec());
         Ok(())
     }
 
@@ -315,6 +321,22 @@ impl RelationStore for MemoryUnitOfWork {
                 compiled: stored.compiled.clone(),
                 guarded,
             }))
+    }
+
+    async fn admit_relation(
+        &mut self,
+        tuple: &RelationTuple,
+    ) -> Result<RelationAdmission, StorageError> {
+        // One unit of work at a time: the definitions are never held by another.
+        let realm = self.realm();
+        let admitted = read_realm(&self.working.relation_kinds, realm);
+        Ok(if !is_of_kinds(tuple, admitted) {
+            RelationAdmission::Refused
+        } else if read_realm(&self.working.relations, realm).contains(tuple) {
+            RelationAdmission::Kept
+        } else {
+            RelationAdmission::Taken
+        })
     }
 
     async fn insert_relation(
@@ -494,16 +516,6 @@ impl PolicyStore for MemoryUnitOfWork {
     async fn lock_definitions(&mut self) -> Result<(), StorageError> {
         // One unit of work at a time: nothing else counts meanwhile.
         Ok(())
-    }
-
-    async fn lock_definitions_and_read_schema(
-        &mut self,
-    ) -> Result<Option<serde_json::Value>, StorageError> {
-        Ok(self
-            .working
-            .relation_schemas
-            .get(&self.realm())
-            .map(|stored| stored.compiled.clone()))
     }
 
     async fn has_policy_for_types(&mut self, types: &[String]) -> Result<bool, StorageError> {

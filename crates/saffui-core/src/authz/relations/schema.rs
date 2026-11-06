@@ -16,7 +16,7 @@
 //! member of every object it names. A sum and an intersection do not mix
 //! without parentheses. A line that starts with `//` is a comment.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +28,11 @@ pub const COMPILED_VERSION: u32 = 1;
 
 /// The longest source a realm keeps, in bytes.
 pub const SCHEMA_MAX_BYTES: usize = 64 * 1024;
+
+/// The longest compiled form, in bytes of compact JSON. Four times the
+/// longest source: readable names compile to about twice their length, and
+/// a question reads the form whole.
+pub const SCHEMA_COMPILED_MAX_BYTES: usize = 4 * SCHEMA_MAX_BYTES;
 
 /// How deep parentheses nest in a permission. The parser walks them on the
 /// stack of the thread that compiles: deeper is refused, never walked.
@@ -55,7 +60,7 @@ pub struct AllowedSubject {
     pub member: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Rule {
     /// Another member of the same object.
@@ -490,18 +495,26 @@ impl Compiler<'_> {
                 }
             }
             Expression::Union(terms) => Rule::Union {
-                rules: terms
-                    .iter()
-                    .map(|term| self.compile_expression(definition, term))
-                    .collect(),
+                rules: self.compile_terms(definition, terms),
             },
             Expression::Intersection(terms) => Rule::Intersection {
-                rules: terms
-                    .iter()
-                    .map(|term| self.compile_expression(definition, term))
-                    .collect(),
+                rules: self.compile_terms(definition, terms),
             },
         }
+    }
+
+    /// Each term of a sum or an intersection once, where it first comes:
+    /// both are idempotent, and a term written again only lengthens the form.
+    fn compile_terms(&mut self, definition: &Definition, terms: &[Expression]) -> Vec<Rule> {
+        let mut seen = HashSet::new();
+        let mut rules = Vec::new();
+        for term in terms {
+            let rule = self.compile_expression(definition, term);
+            if seen.insert(rule.clone()) {
+                rules.push(rule);
+            }
+        }
+        rules
     }
 
     fn compile_type(&mut self, definition: &Definition) -> ObjectType {
@@ -606,7 +619,8 @@ impl Compiler<'_> {
 /// # Errors
 ///
 /// Returns the faults of the schema: a syntax fault per definition it
-/// spoils, then every fault of meaning in what could be read.
+/// spoils, then every fault of meaning in what could be read. A schema
+/// without them whose form passes its bound has that fault alone.
 pub fn compile_schema(source: &str) -> Result<CompiledSchema, Vec<SchemaFault>> {
     if source.len() > SCHEMA_MAX_BYTES {
         return Err(vec![SchemaFault {
@@ -653,21 +667,32 @@ pub fn compile_schema(source: &str) -> Result<CompiledSchema, Vec<SchemaFault>> 
             );
         }
     }
-    if compiler.faults.is_empty() {
-        Ok(CompiledSchema {
-            version: COMPILED_VERSION,
-            types,
-        })
-    } else {
+    if !compiler.faults.is_empty() {
         let mut faults = compiler.faults;
         faults.sort_by_key(|fault| fault.line);
-        Err(faults)
+        return Err(faults);
     }
+    let schema = CompiledSchema {
+        version: COMPILED_VERSION,
+        types,
+    };
+    // Distinct terms still compile to some fifteen times their source.
+    let written = serde_json::to_vec(&schema).map_or(usize::MAX, |bytes| bytes.len());
+    if written > SCHEMA_COMPILED_MAX_BYTES {
+        return Err(vec![SchemaFault {
+            line: 1,
+            message: format!("a schema compiles to at most {SCHEMA_COMPILED_MAX_BYTES} bytes"),
+        }]);
+    }
+    Ok(schema)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AllowedSubject, MemberKind, Rule, compile_schema, is_schema_name};
+    use super::{
+        AllowedSubject, MemberKind, Rule, SCHEMA_COMPILED_MAX_BYTES, SCHEMA_MAX_BYTES,
+        compile_schema, is_schema_name,
+    };
 
     const DOCUMENTS: &str = "
         // People, and the teams they are members of.
@@ -873,6 +898,92 @@ definition team {
             ")".repeat(16)
         );
         assert!(compile_schema(&sixteen).is_ok(), "sixteen deep is read");
+    }
+
+    #[test]
+    fn a_term_written_again_is_compiled_once_where_it_first_came() {
+        let computed = |member: &str| Rule::Computed {
+            member: member.to_owned(),
+        };
+        let schema = compile_schema(
+            "definition doc {\n relation a: doc\n relation b: doc\n relation c: doc\n permission p = b + a + b + a\n permission q = (a + b) & c & (a + b)\n}",
+        )
+        .expect("a schema");
+        let Some(MemberKind::Permission(sum)) = schema.find_member("doc", "p") else {
+            panic!("p is a permission of doc");
+        };
+        assert_eq!(
+            sum,
+            &Rule::Union {
+                rules: vec![computed("b"), computed("a")],
+            }
+        );
+        let Some(MemberKind::Permission(both)) = schema.find_member("doc", "q") else {
+            panic!("q is a permission of doc");
+        };
+        assert_eq!(
+            both,
+            &Rule::Intersection {
+                rules: vec![
+                    Rule::Union {
+                        rules: vec![computed("a"), computed("b")],
+                    },
+                    computed("c"),
+                ],
+            }
+        );
+
+        // One term, written again until the source reaches its bound.
+        let (head, tail) = (
+            "definition doc {\n relation a: doc\n permission p = a",
+            "\n}",
+        );
+        let mut source = format!(
+            "{head}{}",
+            "+a".repeat((SCHEMA_MAX_BYTES - head.len() - tail.len()) / 2)
+        );
+        source.push_str(&" ".repeat(SCHEMA_MAX_BYTES - source.len() - tail.len()));
+        source.push_str(tail);
+        assert_eq!(source.len(), SCHEMA_MAX_BYTES);
+        let written = serde_json::to_vec(&compile_schema(&source).expect("a schema"))
+            .expect("a compiled form")
+            .len();
+        assert!(written < 256, "the form takes {written} bytes");
+    }
+
+    #[test]
+    fn a_schema_whose_form_passes_its_bound_is_refused_with_that_fault_alone() {
+        let letters: Vec<char> = ('a'..='z').collect();
+        let mut pairs = Vec::new();
+        for (index, first) in letters.iter().enumerate() {
+            for second in &letters[index + 1..] {
+                pairs.push(format!("({first}+{second})"));
+            }
+        }
+        let relations = letters
+            .iter()
+            .map(|letter| format!(" relation {letter}: doc\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        // Each permission meets every pair of relations: no term is written twice.
+        let source = |permissions: usize| {
+            let permissions = (0..permissions)
+                .map(|index| format!(" permission p{index} = {}\n", pairs.join("&")))
+                .collect::<Vec<_>>()
+                .concat();
+            format!("definition doc {{\n{relations}{permissions}}}")
+        };
+
+        assert!(compile_schema(&source(1)).is_ok());
+        let past = source(20);
+        assert!(past.len() <= SCHEMA_MAX_BYTES);
+        assert_eq!(
+            read_lines(&past),
+            [(
+                1,
+                format!("a schema compiles to at most {SCHEMA_COMPILED_MAX_BYTES} bytes")
+            )]
+        );
     }
 
     #[test]

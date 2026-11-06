@@ -51,11 +51,10 @@ pub async fn read_schema(caller: Caller, product: web::Data<Product>) -> HttpRes
 }
 
 /// The largest body a schema is written in: a source at its bound, each byte
-/// of it escaped to three at most, as `\u00e9` is for a letter of two bytes,
-/// and room for the object around it. A control character but the end of a
-/// line escapes to six, and no schema holds one: a body that needs more room
-/// for them is refused unread.
-const SCHEMA_BODY_LIMIT: usize = 3 * SCHEMA_MAX_BYTES + 1024;
+/// of it escaped to six, as `\u0026` is for `&` by an encoder that escapes
+/// for HTML, the most an escape of JSON takes for one byte, and room for the
+/// object around it.
+const SCHEMA_BODY_LIMIT: usize = 6 * SCHEMA_MAX_BYTES + 1024;
 
 /// Read past the limit of the plane, which a source at its bound outgrows
 /// once escaped: the guard has let the caller through before the body is read.

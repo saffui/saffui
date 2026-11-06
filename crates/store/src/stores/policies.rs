@@ -27,21 +27,6 @@ fn read_policy_row(row: &Row) -> Result<Policy, StorageError> {
     })
 }
 
-impl PgUnitOfWork {
-    /// Takes the row of the definitions of the realm, made with the realm, by
-    /// a statement that locks it, and returns what it read. A realm without
-    /// the row is refused, never let through unlocked.
-    async fn take_definitions_row(&mut self, statement: &str) -> Result<Row, StorageError> {
-        let (tenant, realm) = self.scope_keys();
-        let mut taken = self.read_raw(statement, &[&tenant, &realm]).await?;
-        let row = taken.pop().filter(|_| taken.is_empty());
-        row.ok_or_else(|| {
-            tracing::error!("a realm has no row of the definitions of its authorization");
-            StorageError::Failed
-        })
-    }
-}
-
 #[async_trait]
 impl PolicyStore for PgUnitOfWork {
     async fn insert_policy(&mut self, policy: &Policy) -> Result<bool, StorageError> {
@@ -139,21 +124,21 @@ impl PolicyStore for PgUnitOfWork {
     }
 
     async fn lock_definitions(&mut self) -> Result<(), StorageError> {
-        self.take_definitions_row(
-            "SELECT 1 FROM authz_definitions WHERE tenant_id = $1 AND realm_id = $2 FOR UPDATE",
-        )
-        .await
-        .map(|_| ())
-    }
-
-    async fn lock_definitions_and_read_schema(
-        &mut self,
-    ) -> Result<Option<serde_json::Value>, StorageError> {
-        // The function sets the shorter wait for its own statements alone.
+        let (tenant, realm) = self.scope_keys();
         let taken = self
-            .take_definitions_row("SELECT compiled FROM saffui_take_definitions_to_relate($1, $2)")
+            .read_raw(
+                "SELECT 1 FROM authz_definitions WHERE tenant_id = $1 AND realm_id = $2 FOR UPDATE",
+                &[&tenant, &realm],
+            )
             .await?;
-        taken.try_get(0).map_err(|_| StorageError::Failed)
+        // The row is made with the realm: a realm without it is refused, never
+        // let through unlocked.
+        if taken.len() == 1 {
+            Ok(())
+        } else {
+            tracing::error!("a realm has no row of the definitions of its authorization");
+            Err(StorageError::Failed)
+        }
     }
 
     async fn has_policy_for_types(&mut self, types: &[String]) -> Result<bool, StorageError> {

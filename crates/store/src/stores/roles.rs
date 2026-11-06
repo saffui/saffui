@@ -1,7 +1,7 @@
 //! Roles, groups and who holds them. A name taken, a grant given again, a
-//! removal, the roles held, and a read of several identifiers at once are
-//! answered in constant SQL, the builder having no `= ANY` criterion; a read
-//! of one and a page go through the builder.
+//! removal, the roles held, the groups of a person, and a read of several
+//! identifiers at once are answered in constant SQL, the builder having no
+//! `= ANY` criterion; a read of one and a page go through the builder.
 
 use async_trait::async_trait;
 use saffui_core::authz::grants::{HeldRole, Membership, RoleGrant, RoleHolder};

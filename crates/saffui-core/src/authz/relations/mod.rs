@@ -10,9 +10,7 @@ use serde::Deserialize as _;
 use serde_json::json;
 use time::OffsetDateTime;
 
-use self::schema::{
-    AllowedSubject, COMPILED_VERSION, CompiledSchema, MemberKind, SchemaFault, compile_schema,
-};
+use self::schema::{AllowedSubject, COMPILED_VERSION, CompiledSchema, SchemaFault, compile_schema};
 use super::admin::AdminCaller;
 use super::roles::describe_actor;
 use crate::app::App;
@@ -120,6 +118,18 @@ pub fn read_compiled_schema(compiled: &serde_json::Value) -> Option<CompiledSche
         .filter(|schema| schema.version == COMPILED_VERSION)
 }
 
+/// What the storage finds of a relation about to be kept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RelationAdmission {
+    /// The schema of the realm does not admit its kind, or the realm has none.
+    Refused,
+    /// The realm keeps it already, and the schema admits its kind.
+    Kept,
+    /// It is new, its kind admitted still under the definitions, which stay
+    /// held until the unit of work ends.
+    Taken,
+}
+
 /// What a question reads of the schema of a realm: the compiled form, and
 /// whether the client that asks guards the type asked of.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -207,11 +217,12 @@ impl From<crate::ports::storage::StorageError> for SchemaRefusal {
     }
 }
 
-/// Writes the schema of relations of a realm, in place of the one before.
-/// The relations it no longer admits go with the schema that admitted them:
-/// a later schema that admits them again finds none of them. So do those of
-/// a kind it admits anew, kept behind the product's back. Returns the schema
-/// and how many relations went.
+/// Writes the schema of relations of a realm, in place of the one before,
+/// and the kinds of relations it admits beside it, which a writer of
+/// relations reads instead. The relations it no longer admits go with the
+/// schema that admitted them: a later schema that admits them again finds
+/// none of them. So do those of a kind it admits anew, kept behind the
+/// product's back. Returns the schema and how many relations went.
 ///
 /// # Errors
 ///
@@ -239,7 +250,8 @@ pub async fn write_relation_schema(
     }
     // Read under the lock: what it admitted stands until this one replaces it.
     let before = work.read_relation_schema().await?;
-    work.write_relation_schema(&stored).await?;
+    let admitted = list_admitted_relations(&compiled);
+    work.write_relation_schema(&stored, &admitted).await?;
     let removed = match before.as_ref().map(StoredSchema::open) {
         Some(Some(before)) => {
             let changed = list_changed_relations(&before, &compiled);
@@ -251,10 +263,7 @@ pub async fn write_relation_schema(
         }
         // What the schema before admitted is not known: whatever this one
         // does not admit goes.
-        Some(None) => {
-            work.delete_relations_not_admitted(&list_admitted_relations(&compiled))
-                .await?
-        }
+        Some(None) => work.delete_relations_not_admitted(&admitted).await?,
         // No schema stood, and the product kept no relation: every kind this
         // one admits is new, and whatever it does not admit goes too.
         None => work.delete_relations_not_admitted(&[]).await?,
@@ -287,26 +296,23 @@ pub async fn read_relation_schema(
     Ok(work.read_relation_schema().await?)
 }
 
-/// Refuses a relation the schema of the realm does not admit: an object of
-/// a type it does not have, a member that is not a relation, a subject the
-/// relation does not name.
-fn check_relation(schema: &CompiledSchema, tuple: &RelationTuple) -> Result<(), Failure> {
-    let invalid = || Failure::new(ErrorCode::RelationInvalid);
-    let ids_read =
-        is_object_id(&tuple.object.object_id) && is_object_id(&tuple.subject.object.object_id);
-    let Some(MemberKind::Relation(allowed)) =
-        schema.find_member(&tuple.object.object_type, &tuple.relation)
-    else {
-        return Err(invalid());
-    };
-    let admitted = allowed.iter().any(|subject| {
-        subject.object_type == tuple.subject.object.object_type
-            && subject.member == tuple.subject.member
-    });
-    if ids_read && admitted {
+/// Refuses, before the database is asked, a relation no schema could admit:
+/// a name no type or member may have, an identifier no object may have.
+fn check_relation_names(tuple: &RelationTuple) -> Result<(), Failure> {
+    let named = schema::is_schema_name(&tuple.object.object_type)
+        && is_object_id(&tuple.object.object_id)
+        && schema::is_schema_name(&tuple.relation)
+        && schema::is_schema_name(&tuple.subject.object.object_type)
+        && is_object_id(&tuple.subject.object.object_id)
+        && tuple
+            .subject
+            .member
+            .as_deref()
+            .is_none_or(schema::is_schema_name);
+    if named {
         Ok(())
     } else {
-        Err(invalid())
+        Err(Failure::new(ErrorCode::RelationInvalid))
     }
 }
 
@@ -324,7 +330,8 @@ fn describe_relation(tuple: &RelationTuple) -> serde_json::Value {
 }
 
 /// Keeps a relation the schema of the realm admits. Kept twice, it is kept
-/// once, and the chain says so once.
+/// once, and the chain says so once. Only a relation to keep waits for the
+/// definitions of the realm: a refusal, or one kept already, does not.
 ///
 /// # Errors
 ///
@@ -335,30 +342,22 @@ pub async fn write_relation(
     caller: &AdminCaller,
     tuple: &RelationTuple,
 ) -> Result<(), Failure> {
-    let invalid = || Failure::new(ErrorCode::RelationInvalid);
+    check_relation_names(tuple)?;
     let mut work = app.storage.begin(caller.scope).await?;
-    // Checked and kept while no writer of the schema can replace it: one that
-    // comes after finds this relation, and removes it if it no longer admits it.
-    let compiled = work
-        .lock_definitions_and_read_schema()
-        .await?
-        .ok_or_else(invalid)?;
-    let schema = match read_compiled_schema(&compiled) {
-        Some(schema) => schema,
-        // A form another version wrote: its source is read and compiled again.
-        None => work
-            .read_relation_schema()
-            .await?
-            .and_then(|stored| stored.open())
-            .ok_or_else(invalid)?,
-    };
-    check_relation(&schema, tuple)?;
-    if work.insert_relation(tuple, app.now()).await? {
-        let told = json!({ "actor": describe_actor(caller), "relation": describe_relation(tuple) });
-        record_event(app, work.as_mut(), EventKind::RelationWritten, told).await?;
-        work.commit().await?;
+    match work.admit_relation(tuple).await? {
+        RelationAdmission::Refused => Err(Failure::new(ErrorCode::RelationInvalid)),
+        RelationAdmission::Kept => Ok(()),
+        // Kept while no writer of the schema can replace it: one that comes
+        // after finds this relation, and removes it if it no longer admits it.
+        RelationAdmission::Taken => {
+            if work.insert_relation(tuple, app.now()).await? {
+                let told = json!({ "actor": describe_actor(caller), "relation": describe_relation(tuple) });
+                record_event(app, work.as_mut(), EventKind::RelationWritten, told).await?;
+                work.commit().await?;
+            }
+            Ok(())
+        }
     }
-    Ok(())
 }
 
 /// How many clients guard one type at most, as an administrator lists them.
@@ -705,7 +704,7 @@ mod tests {
                 compiled: serde_json::json!({ "version": 0 }),
                 written_at: scenario.app.now(),
             };
-            work.write_relation_schema(&unreadable)
+            work.write_relation_schema(&unreadable, &[])
                 .await
                 .expect("a schema written by hand");
             work.commit().await.expect("a commit");
@@ -715,6 +714,56 @@ mod tests {
             complete(write_relation_schema(&scenario.app, &caller, schema)).expect("a schema");
         assert_eq!(removed, 1, "what it does not admit");
         assert_eq!((count("q2", "owner"), count("q2", "editor")), (1, 0));
+    }
+
+    #[test]
+    fn a_relation_no_schema_could_name_is_refused_before_the_storage_is_asked() {
+        use super::{ObjectRef, RelationTuple, SubjectRef, list_relation_subjects, write_relation};
+        use crate::error::ErrorCode;
+
+        let scenario = Scenario::start();
+        let caller = scenario.name_operator(&[Capability::PolicyWrite]);
+        let readers = "definition user {}\ndefinition document {\n  relation reader: user\n}";
+        complete(write_relation_schema(&scenario.app, &caller, readers)).expect("a schema");
+        let read_by = |object_id: &str, subject_id: &str| RelationTuple {
+            object: ObjectRef {
+                object_type: "document".to_owned(),
+                object_id: object_id.to_owned(),
+            },
+            relation: "reader".to_owned(),
+            subject: SubjectRef {
+                object: ObjectRef {
+                    object_type: "user".to_owned(),
+                    object_id: subject_id.to_owned(),
+                },
+                member: None,
+            },
+        };
+        // Of a kind the schema admits: only the identifiers are wrong.
+        let long = "a".repeat(129);
+        for tuple in [read_by("q 3", "ada"), read_by("q3", &long)] {
+            assert_eq!(
+                complete(write_relation(&scenario.app, &caller, &tuple))
+                    .map_err(|failure| failure.code),
+                Err(ErrorCode::RelationInvalid),
+                "{tuple:?}"
+            );
+        }
+        let kept = |object_id: &str| {
+            let object = ObjectRef {
+                object_type: "document".to_owned(),
+                object_id: object_id.to_owned(),
+            };
+            complete(list_relation_subjects(
+                &scenario.app,
+                scenario.scope,
+                &object,
+                "reader",
+            ))
+            .expect("a list")
+            .0
+        };
+        assert!(kept("q 3").is_empty() && kept("q3").is_empty());
     }
 
     #[test]

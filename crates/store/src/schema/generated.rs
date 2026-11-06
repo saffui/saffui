@@ -578,6 +578,26 @@ pub(crate) mod relation_guards {
     pub(crate) const ALL: &[Column] = &[OBJECT_TYPE, CLIENT_ID, WRITTEN_AT];
 }
 
+pub(crate) mod relation_kinds {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "relation_kinds",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// text
+    pub(crate) const OBJECT_TYPE: Column = Column("object_type");
+    /// text
+    pub(crate) const RELATION: Column = Column("relation");
+    /// text
+    pub(crate) const SUBJECT_TYPE: Column = Column("subject_type");
+    /// text
+    pub(crate) const SUBJECT_MEMBER: Column = Column("subject_member");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[OBJECT_TYPE, RELATION, SUBJECT_TYPE, SUBJECT_MEMBER];
+}
+
 pub(crate) mod relation_schemas {
     use super::{Column, ScopeKeys, Table};
 
@@ -823,6 +843,7 @@ pub(crate) const TABLES: &[(Table, &[Column])] = &[
     (realms::TABLE, realms::ALL),
     (refresh_tokens::TABLE, refresh_tokens::ALL),
     (relation_guards::TABLE, relation_guards::ALL),
+    (relation_kinds::TABLE, relation_kinds::ALL),
     (relation_schemas::TABLE, relation_schemas::ALL),
     (relation_tuples::TABLE, relation_tuples::ALL),
     (roles::TABLE, roles::ALL),

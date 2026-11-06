@@ -29,7 +29,7 @@ use crate::app::App;
 use crate::audit::store::ChainedEvent;
 use crate::authz::grants::{Membership, RoleGrant};
 use crate::authz::policy::Policy;
-use crate::authz::relations::{RelationTuple, StoredSchema};
+use crate::authz::relations::{AdmittedRelation, RelationTuple, StoredSchema};
 use crate::authz::roles::{Group, Role};
 use crate::clients::Client;
 use crate::directory::Person;
@@ -88,6 +88,8 @@ pub(crate) struct State {
     pub(crate) memberships: HashMap<Uuid, Vec<Membership>>,
     /// The schema of relations of each realm, by realm.
     pub(crate) relation_schemas: HashMap<Uuid, StoredSchema>,
+    /// The kinds of relations the schema of each realm admits, by realm.
+    pub(crate) relation_kinds: HashMap<Uuid, Vec<AdmittedRelation>>,
     /// The relations each realm keeps, by realm.
     pub(crate) relations: HashMap<Uuid, Vec<RelationTuple>>,
     /// The clients that guard each type, by realm: (type, client).

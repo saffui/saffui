@@ -173,31 +173,30 @@ async fn a_schema_at_its_bound_is_read_whole_and_one_past_it_is_told_its_fault()
             .await
         }
     };
-    // A source at its bound in letters of two bytes, sent as an encoder that
-    // escapes all but ASCII sends it: six bytes for each letter.
+    // A source at its bound, each byte of it sent as an escape of six bytes,
+    // as an encoder that escapes for HTML sends `&`, `+` or `=`.
     let head = "definition user {}\n//";
-    let letters = (SCHEMA_MAX_BYTES - head.len()) / 2;
-    let tail = "x".repeat(SCHEMA_MAX_BYTES - head.len() - 2 * letters);
-    let at_bound = format!("{head}{}{tail}", "\u{e9}".repeat(letters));
-    assert_eq!(at_bound.len(), SCHEMA_MAX_BYTES);
-    let body = format!(
-        r#"{{"source":"definition user {{}}\n//{}{tail}"}}"#,
-        r"\u00e9".repeat(letters)
-    );
+    let at_bound = format!("{head}{}", "x".repeat(SCHEMA_MAX_BYTES - head.len()));
+    let escaped = at_bound
+        .bytes()
+        .map(|byte| format!("\\u{byte:04x}"))
+        .collect::<Vec<_>>()
+        .concat();
+    let body = format!(r#"{{"source":"{escaped}"}}"#);
     assert_eq!(
         serde_json::from_str::<Value>(&body).expect("a body that reads")["source"],
         at_bound
     );
     assert!(
-        body.len() > 2 * SCHEMA_MAX_BYTES + 1024,
-        "two bytes for each byte of the source would not hold it"
+        body.len() > 5 * SCHEMA_MAX_BYTES + 1024,
+        "five bytes for each byte of the source would not hold it"
     );
 
     let answer = put(body.clone()).await;
     assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
     assert_eq!(answer.body["types"], json!(["user"]));
     // The limit of the route, reached with blanks after the object, and passed.
-    let limit = 3 * SCHEMA_MAX_BYTES + 1024;
+    let limit = 6 * SCHEMA_MAX_BYTES + 1024;
     let padded = |length: usize| format!("{body}{}", " ".repeat(length - body.len()));
     let answer = put(padded(limit)).await;
     assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);

@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use saffui_core::ports::storage::StorageError;
 use saffui_core::tokens::store::{
-    EndedFamily, RefreshStore, RefreshToken, RevokedFamily, StoredRefreshToken,
+    EndedFamily, RefreshStore, RefreshToken, RevokedFamilies, StoredRefreshToken,
 };
 use time::OffsetDateTime;
 use tokio_postgres::Row;
@@ -53,9 +53,10 @@ const REVOKE_FAMILY: &str = "
     SELECT count(*), max(issued_at), max(used_at) FROM revoked";
 
 /// Constant SQL: the tokens of a person are reached through their sessions,
-/// each by an index, revoked, and summed up by family in the same statement.
-/// The statement reads the table as it stood before it ran: a family with a
-/// token revoked before is revoked again, and not told.
+/// each by an index, revoked, and counted in the same statement, which
+/// answers one row however many families end. It reads the table as it
+/// stood before it ran: a family with a token revoked before is revoked
+/// again, and not counted.
 const REVOKE_FAMILIES_OF_CLIENT: &str = "
     WITH revoked AS (
         UPDATE refresh_tokens SET revoked_at = $5
@@ -64,15 +65,15 @@ const REVOKE_FAMILIES_OF_CLIENT: &str = "
           AND session_id = ANY (ARRAY(
               SELECT session_id FROM sessions
               WHERE tenant_id = $1 AND realm_id = $2 AND person_id = $3))
-        RETURNING family_id, session_id, issued_at, used_at)
-    SELECT family_id, session_id, count(*), max(issued_at), max(used_at)
-    FROM revoked
-    WHERE NOT EXISTS (
-        SELECT 1 FROM refresh_tokens AS kin
-        WHERE kin.tenant_id = $1 AND kin.realm_id = $2
-          AND kin.family_id = revoked.family_id AND kin.revoked_at IS NOT NULL)
-    GROUP BY family_id, session_id
-    ORDER BY family_id";
+        RETURNING family_id),
+    ended AS (
+        SELECT family_id FROM (SELECT DISTINCT family_id FROM revoked) AS touched
+        WHERE NOT EXISTS (
+            SELECT 1 FROM refresh_tokens AS kin
+            WHERE kin.tenant_id = $1 AND kin.realm_id = $2
+              AND kin.family_id = touched.family_id AND kin.revoked_at IS NOT NULL))
+    SELECT (SELECT count(*) FROM ended), (SELECT count(*) FROM revoked),
+           ARRAY(SELECT family_id FROM ended ORDER BY family_id LIMIT $6)";
 
 /// Reads a token from the first eight columns of a row: what it is, then
 /// what became of it follows.
@@ -167,28 +168,24 @@ impl RefreshStore for PgUnitOfWork {
         person: Uuid,
         client_id: &str,
         now: OffsetDateTime,
-    ) -> Result<Vec<RevokedFamily>, StorageError> {
+        most: u32,
+    ) -> Result<RevokedFamilies, StorageError> {
         let (tenant, realm) = self.scope_keys();
         let rows = self
             .read_raw(
                 REVOKE_FAMILIES_OF_CLIENT,
-                &[&tenant, &realm, &person, &client_id, &now],
+                &[&tenant, &realm, &person, &client_id, &now, &i64::from(most)],
             )
             .await?;
-        rows.iter()
-            .map(|row| {
-                Ok(RevokedFamily {
-                    family: row.get(0),
-                    session: row.get(1),
-                    ended: EndedFamily {
-                        tokens: u64::try_from(row.get::<_, i64>(2))
-                            .map_err(|_| StorageError::Failed)?,
-                        last_issued_at: row.get(3),
-                        last_used_at: row.get(4),
-                    },
-                })
-            })
-            .collect()
+        let row = rows.first().ok_or(StorageError::Failed)?;
+        let count = |column: usize| {
+            u64::try_from(row.get::<_, i64>(column)).map_err(|_| StorageError::Failed)
+        };
+        Ok(RevokedFamilies {
+            families: count(0)?,
+            tokens: count(1)?,
+            named: row.get(2),
+        })
     }
 
     async fn revoke_refresh_tokens_of_session(

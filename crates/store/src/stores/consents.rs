@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use saffui_core::consent::store::ConsentStore;
-use saffui_core::consent::{Consent, ListedConsent};
+use saffui_core::consent::{Consent, ConsentTerms, ListedConsent};
 use saffui_core::ports::storage::StorageError;
 use uuid::Uuid;
 
@@ -13,6 +13,22 @@ use crate::schema::consents;
 use crate::work::PgUnitOfWork;
 
 const CONSENT: &[Column] = &[consents::SCOPES, consents::GRANTED_AT];
+
+/// Constant SQL: the row stays locked until the commit. A withdrawal that
+/// comes after waits for it; one that came first leaves no row to lock.
+const HOLD_CONSENT: &str = "
+    SELECT scopes FROM consents
+    WHERE tenant_id = $1 AND realm_id = $2 AND person_id = $3 AND client_id = $4
+    FOR SHARE";
+
+/// Constant SQL: the flag of the client and what the person allowed it, in
+/// one statement, each table under the keys of the scope.
+const READ_CONSENT_TERMS: &str = "
+    SELECT client.requires_consent, consent.scopes
+    FROM clients AS client
+    LEFT JOIN consents AS consent ON consent.tenant_id = $1 AND consent.realm_id = $2
+        AND consent.person_id = $3 AND consent.client_id = client.client_id
+    WHERE client.tenant_id = $1 AND client.realm_id = $2 AND client.client_id = $4";
 
 /// Constant SQL: one statement writes the consent or widens the one kept.
 /// The row stays locked until the commit: a second answer waits for the
@@ -58,6 +74,33 @@ impl ConsentStore for PgUnitOfWork {
             client_id: client_id.to_owned(),
             scopes: row.get(0),
             granted_at: row.get(1),
+        }))
+    }
+
+    async fn hold_consent(
+        &mut self,
+        person: Uuid,
+        client_id: &str,
+    ) -> Result<Option<Vec<String>>, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        let rows = self
+            .read_raw(HOLD_CONSENT, &[&tenant, &realm, &person, &client_id])
+            .await?;
+        Ok(rows.first().map(|row| row.get(0)))
+    }
+
+    async fn read_consent_terms(
+        &mut self,
+        person: Uuid,
+        client_id: &str,
+    ) -> Result<Option<ConsentTerms>, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        let rows = self
+            .read_raw(READ_CONSENT_TERMS, &[&tenant, &realm, &person, &client_id])
+            .await?;
+        Ok(rows.first().map(|row| ConsentTerms {
+            requires_consent: row.get(0),
+            allowed: row.get(1),
         }))
     }
 

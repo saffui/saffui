@@ -20,7 +20,7 @@ use crate::tokens::store::EndedFamily;
 
 /// The event of a family taken back. It names the session, and keeps what
 /// the tokens told: they go with their session, and a theft is traced later.
-pub(crate) fn describe_family_end(
+pub(super) fn describe_family_end(
     client_id: &str,
     family: Uuid,
     person: Uuid,

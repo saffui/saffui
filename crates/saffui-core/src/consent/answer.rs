@@ -40,17 +40,17 @@ fn expire() -> Failure {
     Failure::new(ErrorCode::AuthorizationRequestExpired)
 }
 
-/// Finds the request that waits for a consent, and the session it waits in.
+/// Checks that a request read or taken waits for a consent, from this
+/// browser and in the session of this ticket, and returns that session.
 /// Another browser, another session, or a request that waits for no consent
 /// are answered alike.
-async fn find_waiting_consent(
+async fn check_waiting_consent(
     app: &App,
     work: &mut dyn UnitOfWork,
-    request: Uuid,
+    pending: Option<PendingAuthorization>,
     browser_secret: &Secret,
-    ticket: Option<&SessionTicket>,
+    ticket: &SessionTicket,
 ) -> Result<(PendingAuthorization, Session), Failure> {
-    let pending = work.read_pending_authorization(request, app.now()).await?;
     let presented = app.digester.sha256(browser_secret.expose());
     let expected = pending
         .as_ref()
@@ -58,12 +58,10 @@ async fn find_waiting_consent(
     let same_browser = app.digester.equal_in_constant_time(&presented, expected);
     let pending = pending.filter(|_| same_browser).ok_or_else(expire)?;
     let waiting_in = pending.consent_session.ok_or_else(expire)?;
-    let session = match ticket {
-        Some(ticket) => find_answering_session(app, work, ticket).await?,
-        None => None,
-    }
-    .filter(|session| session.id == waiting_in)
-    .ok_or_else(expire)?;
+    let session = find_answering_session(app, work, ticket)
+        .await?
+        .filter(|session| session.id == waiting_in)
+        .ok_or_else(expire)?;
     Ok((pending, session))
 }
 
@@ -81,10 +79,12 @@ pub async fn describe_consent(
     browser_secret: &Secret,
     ticket: Option<&SessionTicket>,
 ) -> Result<ConsentPrompt, Failure> {
+    let ticket = ticket.ok_or_else(expire)?;
     let (_, scope) = resolve_realm(app, realm).await?;
     let mut work = app.storage.begin(scope).await?;
+    let read = work.read_pending_authorization(request, app.now()).await?;
     let (pending, _) =
-        find_waiting_consent(app, work.as_mut(), request, browser_secret, ticket).await?;
+        check_waiting_consent(app, work.as_mut(), read, browser_secret, ticket).await?;
     let client = read_named_client(work.as_mut(), &pending.client_id)
         .await?
         .filter(|client| client.enabled && client.allows_authorization_code)
@@ -113,15 +113,14 @@ pub async fn answer_consent(
     ticket: Option<&SessionTicket>,
     decision: ConsentDecision,
 ) -> Result<String, Failure> {
+    let ticket = ticket.ok_or_else(expire)?;
     let (realm, scope) = resolve_realm(app, realm).await?;
     let mut work = app.storage.begin(scope).await?;
-    let (_, session) =
-        find_waiting_consent(app, work.as_mut(), request, browser_secret, ticket).await?;
-    // Taken, not read: of two answers to one page, one decides.
-    let pending = work
-        .take_pending_authorization(request, app.now())
-        .await?
-        .ok_or_else(expire)?;
+    // Taken before it is checked: of two answers to one page, one decides. A
+    // refusal abandons the unit of work, and the request waits again.
+    let taken = work.take_pending_authorization(request, app.now()).await?;
+    let (pending, session) =
+        check_waiting_consent(app, work.as_mut(), taken, browser_secret, ticket).await?;
     let location = match decision {
         ConsentDecision::Allow => {
             allow_client(app, work.as_mut(), &realm, &pending, &session).await?
@@ -149,13 +148,17 @@ async fn allow_client(
         .await?
         .filter(|client| client.enabled && client.allows_authorization_code)
         .ok_or(Failure::new(ErrorCode::ClientNotFound))?;
-    work.add_consent(&Consent {
-        person: session.person,
-        client_id: client.client_id.clone(),
-        scopes: pending.scopes.clone(),
-        granted_at: app.now(),
-    })
-    .await?;
+    // Kept only for a client that requires it: to another, `prompt=consent`
+    // asks once, and nothing stands to be withdrawn.
+    if client.requires_consent {
+        work.add_consent(&Consent {
+            person: session.person,
+            client_id: client.client_id.clone(),
+            scopes: pending.scopes.clone(),
+            granted_at: app.now(),
+        })
+        .await?;
+    }
     let location = issue_code(
         app,
         work,
@@ -193,6 +196,7 @@ mod tests {
     use super::{ConsentDecision, ConsentPrompt, answer_consent, describe_consent};
     use crate::authz::capability::Capability;
     use crate::clients::register::{NewClient, register_client};
+    use crate::consent::Consent;
     use crate::consent::manage::{
         list_my_consents, list_person_consents, withdraw_my_consent, withdraw_person_consent,
     };
@@ -360,7 +364,7 @@ mod tests {
             .map(str::to_owned)
     }
 
-    fn exchange(scenario: &Scenario, code: &str) -> TokenResponse {
+    fn try_exchange(scenario: &Scenario, code: &str) -> Result<TokenResponse, OAuthError> {
         let request = TokenRequest {
             grant_type: Some("authorization_code"),
             client_id: Some("partner"),
@@ -369,7 +373,33 @@ mod tests {
             code_verifier: Some(VERIFIER),
             ..TokenRequest::default()
         };
-        complete(grant_token(&scenario.app, "acme", request)).expect("tokens for the code")
+        complete(grant_token(&scenario.app, "acme", request)).map_err(|failure| failure.error)
+    }
+
+    fn exchange(scenario: &Scenario, code: &str) -> TokenResponse {
+        try_exchange(scenario, code).expect("tokens for the code")
+    }
+
+    fn sign_in_again(
+        scenario: &Scenario,
+        request: Uuid,
+        browser_secret: &Secret,
+    ) -> Result<SignInStep, ErrorCode> {
+        complete(finish_sign_in(
+            &scenario.app,
+            "acme",
+            request,
+            browser_secret,
+            TypedSignIn {
+                answer: SignInAnswer::Password {
+                    name: "ada",
+                    password: Secret::new(PASSWORD.as_bytes().to_vec()),
+                },
+                caller: None,
+                known_browsers: &[],
+            },
+        ))
+        .map_err(|failure| failure.code)
     }
 
     /// Signs `ada` in for `partner`, allows it `openid`, and exchanges the code.
@@ -561,13 +591,13 @@ mod tests {
         let scenario = Scenario::start();
         register_partner(&scenario, "Partner");
         let (request, browser_secret, ticket) = sign_in_for_partner(&scenario, "ada", "openid");
-        let someone_else = scenario.sign_in("openid").ticket;
+        let another_session_of_ada = scenario.sign_in("openid").ticket;
         let other_browser = Secret::new(vec![7; 32]);
 
         for (secret, held) in [
             (&other_browser, Some(&ticket)),
             (&browser_secret, None),
-            (&browser_secret, Some(&someone_else)),
+            (&browser_secret, Some(&another_session_of_ada)),
         ] {
             assert_eq!(
                 answer(&scenario, request, secret, held, ConsentDecision::Allow),
@@ -765,22 +795,26 @@ mod tests {
         let events = scenario
             .storage
             .read_audit_envelopes(scenario.scope.realm());
-        let kinds: Vec<&str> = events
+        let withdrawn = &events
             .iter()
-            .filter_map(|event| event["kind"].as_str())
-            .collect();
-        let withdrawn = kinds
-            .iter()
-            .position(|kind| *kind == "consent.withdrawn")
-            .expect("the withdrawal is told");
-        assert_eq!(kinds.get(withdrawn + 1), Some(&"token.revoked"));
-        let revoked = &events[withdrawn + 1]["payload"];
-        assert_eq!(revoked["reason"], "consent_withdrawn", "{revoked}");
-        assert_eq!(revoked["client_id"], "partner", "{revoked}");
-        assert_eq!(revoked["tokens"], 1, "{revoked}");
+            .find(|event| event["kind"] == "consent.withdrawn")
+            .expect("the withdrawal is told")["payload"];
+        assert_eq!(withdrawn["client_id"], "partner", "{withdrawn}");
+        assert_eq!(withdrawn["refresh_families_revoked"], 1, "{withdrawn}");
+        assert_eq!(withdrawn["refresh_tokens_revoked"], 1, "{withdrawn}");
         assert_eq!(
-            events[withdrawn]["payload"]["actor"]["person_id"],
+            withdrawn["refresh_families"].as_array().map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            withdrawn["actor"]["person_id"],
             scenario.find_ada().to_string()
+        );
+        assert!(
+            !scenario
+                .read_event_kinds()
+                .contains(&"token.revoked".to_owned()),
+            "the families it ended are told in its own entry"
         );
 
         assert_eq!(
@@ -832,6 +866,17 @@ mod tests {
             scenario.refresh_as("partner", &refresh_token, None).err(),
             Some(OAuthError::InvalidGrant)
         );
+        // Written behind the back of the product, which names no client so.
+        let planted = Consent {
+            person: ada,
+            client_id: "not a client!".to_owned(),
+            scopes: vec!["openid".to_owned()],
+            granted_at: scenario.app.now(),
+        };
+        let mut work =
+            complete(scenario.app.storage.begin(scenario.scope)).expect("a unit of work");
+        complete(work.add_consent(&planted)).expect("a consent");
+        complete(work.commit()).expect("a commit");
         assert_eq!(
             complete(withdraw_person_consent(
                 &scenario.app,
@@ -842,6 +887,385 @@ mod tests {
             .map_err(|failure| failure.code),
             Err(ErrorCode::ConsentNotFound),
             "what is not a client identifier names no consent"
+        );
+        let mut work =
+            complete(scenario.app.storage.begin(scenario.scope)).expect("a unit of work");
+        assert_eq!(
+            complete(work.read_consent(ada, "not a client!")),
+            Ok(Some(planted)),
+            "and nothing is removed under it"
+        );
+    }
+
+    #[test]
+    fn a_code_given_before_a_withdrawal_obtains_nothing_after_it() {
+        let scenario = Scenario::start();
+        register_partner(&scenario, "Partner");
+        let (request, browser_secret, ticket) = sign_in_for_partner(&scenario, "ada", "openid");
+        let from_the_page = answer(
+            &scenario,
+            request,
+            &browser_secret,
+            Some(&ticket),
+            ConsentDecision::Allow,
+        )
+        .expect("a code");
+        let Ok(Authorization::Granted {
+            location: from_the_session,
+        }) = ask_partner(&scenario, "openid", Some(&ticket))
+        else {
+            panic!("allowed once, the session answers alone");
+        };
+
+        complete(withdraw_my_consent(
+            &scenario.app,
+            "acme",
+            Some(&ticket),
+            "partner",
+        ))
+        .expect("a withdrawal");
+
+        for kept in [&from_the_page, &from_the_session] {
+            let code = read_code(kept).expect("a code");
+            assert_eq!(
+                try_exchange(&scenario, &code).err(),
+                Some(OAuthError::InvalidGrant),
+                "a code kept across the withdrawal: {kept}"
+            );
+        }
+    }
+
+    #[test]
+    fn prompt_consent_on_a_client_that_requires_none_asks_once_and_keeps_nothing() {
+        let scenario = Scenario::start();
+        let ticket = scenario.sign_in("openid").ticket;
+        let asked = Asked {
+            client_id: "webapp",
+            scope: "openid",
+            prompt: Some("consent"),
+            hint: None,
+        };
+        let Ok(Authorization::ConsentRequired {
+            request,
+            browser_secret,
+        }) = ask(&scenario, &asked, Some(&ticket))
+        else {
+            panic!("prompt=consent asks the person on a page");
+        };
+
+        let location = answer(
+            &scenario,
+            request,
+            &browser_secret,
+            Some(&ticket),
+            ConsentDecision::Allow,
+        )
+        .expect("a code");
+
+        assert!(read_code(&location).is_some(), "{location}");
+        assert_eq!(
+            complete(list_my_consents(&scenario.app, "acme", Some(&ticket))).map(|held| held.len()),
+            Ok(0),
+            "nothing kept: nothing stands to be withdrawn"
+        );
+    }
+
+    #[test]
+    fn a_session_reads_what_was_allowed_only_when_it_decides() {
+        let scenario = Scenario::start();
+        register_partner(&scenario, "Partner");
+        let ticket = scenario.sign_in("openid").ticket;
+        let ask_with = |client_id: &str, prompt| {
+            let asked = Asked {
+                client_id,
+                scope: "openid",
+                prompt,
+                hint: None,
+            };
+            read_outcome(ask(&scenario, &asked, Some(&ticket)))
+        };
+        let read = || scenario.storage.count_consent_reads();
+        let before = read();
+
+        assert_eq!(ask_with("webapp", None), "granted");
+        assert_eq!(read(), before, "a client that requires none");
+        assert_eq!(ask_with("partner", Some("consent")), "consent");
+        assert_eq!(read(), before, "asked again whatever was allowed");
+        assert_eq!(ask_with("partner", None), "consent");
+        assert_eq!(read(), before + 1, "what was allowed decides: read once");
+    }
+
+    #[test]
+    fn prompt_consent_without_a_session_asks_after_the_sign_in_and_reads_nothing_to_know_it() {
+        let scenario = Scenario::start();
+        register_partner(&scenario, "Partner");
+        consent_once(&scenario);
+
+        for client_id in ["webapp", "partner"] {
+            let asked = Asked {
+                client_id,
+                scope: "openid",
+                prompt: Some("consent"),
+                hint: None,
+            };
+            let Ok(Authorization::SignInRequired {
+                request,
+                browser_secret,
+            }) = ask(&scenario, &asked, None)
+            else {
+                panic!("a person without a session signs in first");
+            };
+            let before = scenario.storage.count_consent_reads();
+
+            let step = sign_in_again(&scenario, request, &browser_secret);
+
+            assert!(
+                matches!(step, Ok(SignInStep::ConsentRequired(_))),
+                "{client_id}, even allowed before: {step:?}"
+            );
+            assert_eq!(
+                scenario.storage.count_consent_reads(),
+                before,
+                "{client_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_answer_takes_its_request_without_reading_it_first() {
+        let scenario = Scenario::start();
+        register_partner(&scenario, "Partner");
+        let (request, browser_secret, ticket) = sign_in_for_partner(&scenario, "ada", "openid");
+        let before = scenario.storage.count_pending_reads();
+
+        answer(
+            &scenario,
+            request,
+            &browser_secret,
+            Some(&ticket),
+            ConsentDecision::Deny,
+        )
+        .expect("a refusal sent back");
+
+        assert_eq!(scenario.storage.count_pending_reads(), before);
+    }
+
+    #[test]
+    fn a_page_without_a_session_opens_no_unit_of_work() {
+        let scenario = Scenario::start();
+        register_partner(&scenario, "Partner");
+        let (request, browser_secret, _) = sign_in_for_partner(&scenario, "ada", "openid");
+        let opened = scenario.storage.count_units_of_work();
+        let code =
+            |outcome: Result<(), crate::error::Failure>| outcome.map_err(|failure| failure.code);
+
+        assert_eq!(
+            code(complete(list_my_consents(&scenario.app, "acme", None)).map(|_| ())),
+            Err(ErrorCode::SessionRequired)
+        );
+        assert_eq!(
+            code(complete(withdraw_my_consent(
+                &scenario.app,
+                "acme",
+                None,
+                "partner"
+            ))),
+            Err(ErrorCode::SessionRequired)
+        );
+        assert_eq!(
+            code(
+                complete(describe_consent(
+                    &scenario.app,
+                    "acme",
+                    request,
+                    &browser_secret,
+                    None
+                ))
+                .map(|_| ())
+            ),
+            Err(ErrorCode::AuthorizationRequestExpired)
+        );
+        assert_eq!(
+            answer(
+                &scenario,
+                request,
+                &browser_secret,
+                None,
+                ConsentDecision::Allow
+            ),
+            Err(ErrorCode::AuthorizationRequestExpired)
+        );
+        assert_eq!(scenario.storage.count_units_of_work(), opened);
+    }
+
+    #[test]
+    fn a_session_of_the_password_alone_lists_and_withdraws_nothing_once_its_person_holds_a_factor()
+    {
+        let scenario = Scenario::start();
+        register_partner(&scenario, "Partner");
+        let (ticket, _) = consent_once(&scenario);
+        let typed_secret = scenario.enroll_authenticator(&ticket);
+
+        assert_eq!(
+            complete(list_my_consents(&scenario.app, "acme", Some(&ticket)))
+                .map(|held| held.len())
+                .map_err(|failure| failure.code),
+            Err(ErrorCode::SessionRequired)
+        );
+        assert_eq!(
+            complete(withdraw_my_consent(
+                &scenario.app,
+                "acme",
+                Some(&ticket),
+                "partner"
+            ))
+            .map_err(|failure| failure.code),
+            Err(ErrorCode::SessionRequired)
+        );
+        let proven = scenario.sign_in_with_code(&typed_secret);
+        assert_eq!(
+            complete(list_my_consents(&scenario.app, "acme", Some(&proven))).map(|held| held.len()),
+            Ok(1),
+            "nothing was withdrawn"
+        );
+    }
+
+    #[test]
+    fn a_person_disabled_since_they_signed_in_lists_and_withdraws_nothing() {
+        let scenario = Scenario::start();
+        register_partner(&scenario, "Partner");
+        let (ticket, _) = consent_once(&scenario);
+        scenario.storage.disable_person("ada");
+
+        assert_eq!(
+            complete(list_my_consents(&scenario.app, "acme", Some(&ticket)))
+                .map(|held| held.len())
+                .map_err(|failure| failure.code),
+            Err(ErrorCode::SessionRequired)
+        );
+        assert_eq!(
+            complete(withdraw_my_consent(
+                &scenario.app,
+                "acme",
+                Some(&ticket),
+                "partner"
+            ))
+            .map_err(|failure| failure.code),
+            Err(ErrorCode::SessionRequired)
+        );
+    }
+
+    #[test]
+    fn a_client_disabled_while_its_request_waits_gets_no_page_and_no_code() {
+        let scenario = Scenario::start();
+        register_partner(&scenario, "Partner");
+        let (request, browser_secret, ticket) = sign_in_for_partner(&scenario, "ada", "openid");
+        scenario.storage.disable_client("partner");
+
+        assert_eq!(
+            complete(describe_consent(
+                &scenario.app,
+                "acme",
+                request,
+                &browser_secret,
+                Some(&ticket)
+            ))
+            .map_err(|failure| failure.code),
+            Err(ErrorCode::ClientNotFound)
+        );
+        assert_eq!(
+            answer(
+                &scenario,
+                request,
+                &browser_secret,
+                Some(&ticket),
+                ConsentDecision::Allow
+            ),
+            Err(ErrorCode::ClientNotFound)
+        );
+    }
+
+    #[test]
+    fn a_second_sign_in_for_a_request_that_waits_for_a_consent_ends_its_own_session() {
+        use crate::login::session::SessionState;
+
+        let scenario = Scenario::start();
+        register_partner(&scenario, "Partner");
+        let (request, browser_secret, first) = sign_in_for_partner(&scenario, "ada", "openid");
+
+        assert_eq!(
+            sign_in_again(&scenario, request, &browser_secret).map(|_| ()),
+            Err(ErrorCode::AuthorizationRequestExpired)
+        );
+
+        let events = scenario
+            .storage
+            .read_audit_envelopes(scenario.scope.realm());
+        let ended = events
+            .iter()
+            .rev()
+            .find(|event| event["kind"] == "session.ended")
+            .and_then(|event| event["payload"]["session_id"].as_str())
+            .and_then(|id| Uuid::parse_str(id).ok())
+            .expect("the session of the second sign-in is ended");
+        assert_ne!(ended, first.session);
+        let mut work =
+            complete(scenario.app.storage.begin(scenario.scope)).expect("a unit of work");
+        let read = complete(work.read_session(ended))
+            .expect("a read")
+            .expect("the session");
+        assert_eq!(
+            read.session.state,
+            SessionState::Ended,
+            "its ticket proves nothing"
+        );
+        drop(work);
+        assert!(
+            answer(
+                &scenario,
+                request,
+                &browser_secret,
+                Some(&first),
+                ConsentDecision::Allow
+            )
+            .is_ok(),
+            "the request still waits for the first"
+        );
+    }
+
+    #[test]
+    fn a_client_removed_while_its_request_waits_is_asked_for_and_its_page_says_it_is_gone() {
+        let scenario = Scenario::start();
+        let asked = Asked {
+            client_id: "webapp",
+            scope: "openid",
+            prompt: None,
+            hint: None,
+        };
+        let Ok(Authorization::SignInRequired {
+            request,
+            browser_secret,
+        }) = ask(&scenario, &asked, None)
+        else {
+            panic!("a person without a session signs in first");
+        };
+        scenario.storage.remove_client("webapp");
+
+        let step = sign_in_again(&scenario, request, &browser_secret);
+
+        let Ok(SignInStep::ConsentRequired(signed_in)) = step else {
+            panic!("no code for a client gone: {step:?}");
+        };
+        assert_eq!(
+            complete(describe_consent(
+                &scenario.app,
+                "acme",
+                request,
+                &browser_secret,
+                Some(&signed_in.ticket)
+            ))
+            .map_err(|failure| failure.code),
+            Err(ErrorCode::ClientNotFound)
         );
     }
 }

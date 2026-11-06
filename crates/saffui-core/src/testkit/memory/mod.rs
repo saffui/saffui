@@ -111,18 +111,28 @@ pub(crate) struct KeptCode {
     pub(crate) replayed_at: Option<OffsetDateTime>,
 }
 
+/// How often units of work read what a test counts, committed or not.
+#[derive(Default)]
+pub(crate) struct CountedReads {
+    /// What a person allowed a client, by any of its reads.
+    pub(crate) consents: AtomicUsize,
+    pub(crate) pending_authorizations: AtomicUsize,
+}
+
 #[derive(Default)]
 pub struct MemoryStorage {
     state: Arc<Mutex<State>>,
     outage: Mutex<Option<StorageUnavailable>>,
     probes: AtomicUsize,
     units_of_work: AtomicUsize,
+    reads: Arc<CountedReads>,
 }
 
 pub struct MemoryUnitOfWork {
     scope: RealmScope,
     working: State,
     shared: Arc<Mutex<State>>,
+    reads: Arc<CountedReads>,
     /// As on a database, a refused statement ends the transaction: nothing
     /// that follows is kept.
     failed: bool,
@@ -198,6 +208,14 @@ impl MemoryStorage {
         }
     }
 
+    /// Removes the client of that identifier from every realm, as someone
+    /// with a hand in the database would: the product removes none.
+    pub fn remove_client(&self, client_id: &str) {
+        for clients in lock(&self.state).clients.values_mut() {
+            clients.retain(|client| client.client_id != client_id);
+        }
+    }
+
     /// Makes the storage refuse everything with `reason`, as a database that is down.
     pub fn fail_with(&self, reason: StorageUnavailable) {
         *lock(&self.outage) = Some(reason);
@@ -211,6 +229,18 @@ impl MemoryStorage {
     #[must_use]
     pub fn count_units_of_work(&self) -> usize {
         self.units_of_work.load(Ordering::Relaxed)
+    }
+
+    /// How many statements read what a person allowed a client.
+    #[must_use]
+    pub fn count_consent_reads(&self) -> usize {
+        self.reads.consents.load(Ordering::Relaxed)
+    }
+
+    /// How many statements read a pending request without taking it.
+    #[must_use]
+    pub fn count_pending_reads(&self) -> usize {
+        self.reads.pending_authorizations.load(Ordering::Relaxed)
     }
 
     #[must_use]
@@ -293,6 +323,7 @@ impl MemoryStorage {
             scope,
             working: lock(&self.state).clone(),
             shared: Arc::clone(&self.state),
+            reads: Arc::clone(&self.reads),
             failed: false,
             read_only,
         }))

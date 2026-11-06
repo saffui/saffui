@@ -19,7 +19,7 @@ use super::errors::OAuthError;
 use super::pkce::is_well_formed_challenge;
 use crate::app::App;
 use crate::clients::{Client, check_scope_token, read_named_client};
-use crate::consent::is_consent_owed;
+use crate::consent::{ConsentTerms, is_consent_owed};
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
 use crate::login::device::DeviceMark;
@@ -376,7 +376,8 @@ async fn hold_session_to_hint(
 }
 
 /// Whether `person` must allow the client before it gets a code, read in the
-/// unit of work that would issue it.
+/// unit of work that would issue it. What they allowed is read only where it
+/// decides: for a client that requires consent, unless it asked again.
 async fn is_consent_owed_by(
     work: &mut dyn UnitOfWork,
     client: &Client,
@@ -384,8 +385,18 @@ async fn is_consent_owed_by(
     person: Uuid,
     scopes: &[String],
 ) -> Result<bool, Failure> {
-    let held = work.read_consent(person, &client.client_id).await?;
-    Ok(is_consent_owed(client, prompted, held.as_ref(), scopes))
+    let allowed = if client.requires_consent && !prompted {
+        work.read_consent(person, &client.client_id)
+            .await?
+            .map(|held| held.scopes)
+    } else {
+        None
+    };
+    let terms = ConsentTerms {
+        requires_consent: client.requires_consent,
+        allowed,
+    };
+    Ok(is_consent_owed(&terms, prompted, scopes))
 }
 
 /// Keeps a request until a person signs in for it, or until the person of
@@ -838,24 +849,22 @@ pub async fn finish_sign_in(
 }
 
 /// Whether the person who just signed in must allow the client of a request
-/// before it gets a code. A client gone since is asked for, and its page
-/// says it is gone.
+/// before it gets a code. Asked again, they are, and nothing is read. The
+/// flag of the client is read now, not when the request was made: a client
+/// marked since asks. A client gone since is asked for, and its page says
+/// it is gone.
 async fn is_consent_owed_after_sign_in(
     work: &mut dyn UnitOfWork,
     pending: &PendingAuthorization,
     person: Uuid,
 ) -> Result<bool, Failure> {
-    let Some(client) = read_named_client(work, &pending.client_id).await? else {
+    if pending.consent_prompted {
+        return Ok(true);
+    }
+    let Some(terms) = work.read_consent_terms(person, &pending.client_id).await? else {
         return Ok(true);
     };
-    is_consent_owed_by(
-        work,
-        &client,
-        pending.consent_prompted,
-        person,
-        &pending.scopes,
-    )
-    .await
+    Ok(is_consent_owed(&terms, false, &pending.scopes))
 }
 
 /// Ends the session of a submission that lost its request to another.

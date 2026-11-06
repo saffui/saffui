@@ -131,7 +131,7 @@ async fn a_person_who_signed_in_is_asked_on_a_page_and_sent_back_with_a_code_onc
         !signed_in
             .cookies
             .iter()
-            .any(|cookie| cookie.starts_with(&waiting.flow)),
+            .any(|cookie| cookie.starts_with("__Host-saffui_flow_")),
         "the flow goes on, and keeps its cookie: {:?}",
         signed_in.cookies
     );
@@ -287,6 +287,42 @@ async fn a_name_that_changes_direction_is_shown_with_the_change_replaced() {
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     assert!(page.body.contains("Pay\u{fffd}lapyap"), "{}", page.body);
     assert!(!page.body.contains('\u{202e}'));
+}
+
+#[actix_web::test]
+async fn the_consent_page_reads_its_form_after_its_guard() {
+    let (product, _) = start("Partner").await;
+    let (waiting, _) = sign_in_for_partner(&product).await;
+    let both = waiting.send_both();
+    // Well formed, and larger than the forms the plane reads.
+    let large = format!(
+        "{}&padding={}",
+        waiting.write_answer("allow"),
+        "a".repeat(9 * 1024)
+    );
+
+    let from_elsewhere = post(&product, CONSENT, &[(COOKIE.as_str(), &both), EVIL], &large).await;
+    assert!(
+        from_elsewhere.body.contains("This sign-in has expired."),
+        "refused by its origin, unread: {}",
+        from_elsewhere.body
+    );
+    let from_here = post(&product, CONSENT, &[(COOKIE.as_str(), &both)], &large).await;
+    assert_eq!(from_here.status, StatusCode::BAD_REQUEST);
+    assert!(
+        from_here
+            .body
+            .contains("The request is missing a parameter or carries one it cannot."),
+        "read, and refused as a form: {}",
+        from_here.body
+    );
+    let page = get(
+        &product,
+        &format!("{CONSENT}?request={}", waiting.request),
+        &[(COOKIE.as_str(), &both)],
+    )
+    .await;
+    assert_eq!(page.status, StatusCode::OK, "the request still waits");
 }
 
 /// Signs `ada` in for `partner` and allows it: her session cookie.

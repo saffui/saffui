@@ -1,6 +1,7 @@
--- What a person allowed a client, and the request that waits for them to
--- answer. A consent is every scope allowed so far: a client that asks for
--- more asks again. Withdrawn, the row goes; the audit chain keeps the rest.
+-- What a person allowed a client. A consent is every scope allowed so far:
+-- a client that asks for more asks again. Withdrawn, the row goes; the
+-- audit chain keeps the rest. The requests that wait for an answer change
+-- in the next migration, so that no migration holds two tables that serve.
 
 CREATE TABLE consents (
     tenant_id uuid NOT NULL,
@@ -33,11 +34,3 @@ ALTER TABLE clients ALTER COLUMN requires_consent DROP DEFAULT;
 ALTER TABLE clients
     ADD CONSTRAINT clients_consent_for_applications
         CHECK (allows_authorization_code OR NOT requires_consent);
-
--- Whether the client asked the person to consent again, and the session the
--- request waits in for their answer. That session is written once.
-ALTER TABLE authorization_requests
-    ADD COLUMN consent_prompted boolean NOT NULL DEFAULT false,
-    ADD COLUMN consent_session_id uuid;
-ALTER TABLE authorization_requests ALTER COLUMN consent_prompted DROP DEFAULT;
-GRANT UPDATE (consent_session_id) ON authorization_requests TO saffui_app;

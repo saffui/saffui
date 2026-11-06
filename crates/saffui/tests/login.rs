@@ -1534,9 +1534,8 @@ fn a_client_that_requires_consent_asks_once_and_again_once_the_person_withdraws(
         .position(|kind| kind == "consent.withdrawn")
         .expect("the withdrawal is in the chain");
     assert!(kinds.contains(&"consent.granted".to_owned()), "{kinds:?}");
-    assert_eq!(
-        kinds.get(withdrawal + 1).map(String::as_str),
-        Some("token.revoked"),
-        "{kinds:?}"
+    assert!(
+        !kinds[withdrawal..].contains(&"token.revoked".to_owned()),
+        "the family it ended is told in its own entry: {kinds:?}"
     );
 }

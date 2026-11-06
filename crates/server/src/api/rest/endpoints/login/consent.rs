@@ -106,7 +106,7 @@ pub async fn submit_consent(
         return expire(&product);
     }
     let Some(form) = read_posted_form::<ConsentForm>(&http, payload).await else {
-        return expire(&product);
+        return render_refusal(&product, &Failure::new(ErrorCode::RequestInvalid));
     };
     let decision = match form.decision.as_str() {
         "allow" => ConsentDecision::Allow,

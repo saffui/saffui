@@ -1,3 +1,5 @@
+use std::sync::atomic::Ordering;
+
 use async_trait::async_trait;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -271,6 +273,9 @@ impl CodeStore for MemoryUnitOfWork {
         id: Uuid,
         now: OffsetDateTime,
     ) -> Result<Option<PendingAuthorization>, StorageError> {
+        self.reads
+            .pending_authorizations
+            .fetch_add(1, Ordering::Relaxed);
         Ok(self
             .working
             .pending_authorizations

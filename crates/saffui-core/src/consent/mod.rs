@@ -9,8 +9,6 @@ pub mod store;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::clients::Client;
-
 /// How many consents of one person a list shows: a person allows few clients.
 pub const MOST_LISTED_CONSENTS: u32 = 500;
 
@@ -33,94 +31,71 @@ pub struct ListedConsent {
     pub client_name: String,
 }
 
+/// What decides whether a person owes a client their consent, as one
+/// statement reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConsentTerms {
+    pub requires_consent: bool,
+    /// What the person allowed the client so far. `None` when they allowed
+    /// it nothing.
+    pub allowed: Option<Vec<String>>,
+}
+
 /// Whether the person must be asked before the client gets a code: always
 /// when it asked so with `prompt=consent`, and for a client that requires
 /// consent, whenever it asks a scope the person did not allow it.
 #[must_use]
-pub fn is_consent_owed(
-    client: &Client,
-    prompted: bool,
-    held: Option<&Consent>,
-    asked: &[String],
-) -> bool {
-    let allowed = held.is_some_and(|consent| {
+pub fn is_consent_owed(terms: &ConsentTerms, prompted: bool, asked: &[String]) -> bool {
+    let allowed = terms.allowed.as_ref().is_some_and(|kept| {
         asked
             .iter()
-            .all(|scope| consent.scopes.iter().any(|kept| kept == scope))
+            .all(|scope| kept.iter().any(|allowed| allowed == scope))
     });
-    prompted || (client.requires_consent && !allowed)
+    prompted || (terms.requires_consent && !allowed)
 }
 
 #[cfg(test)]
 mod tests {
-    use time::OffsetDateTime;
-    use uuid::Uuid;
+    use super::{ConsentTerms, is_consent_owed};
 
-    use super::{Consent, is_consent_owed};
-    use crate::clients::Client;
-
-    fn make_client(requires_consent: bool) -> Client {
-        Client {
-            id: Uuid::from_u128(1),
-            client_id: "partner".to_owned(),
-            name: "Partner".to_owned(),
-            secret_digest: None,
-            allows_client_credentials: false,
-            allows_authorization_code: true,
-            redirect_uris: vec!["https://app.example.org/callback".to_owned()],
-            post_logout_redirect_uris: Vec::new(),
+    fn ask(requires_consent: bool, allowed: Option<&[&str]>) -> ConsentTerms {
+        ConsentTerms {
             requires_consent,
-            scopes: vec!["openid".to_owned(), "email".to_owned()],
-            capabilities: Vec::new(),
-            enabled: true,
-            created_at: OffsetDateTime::UNIX_EPOCH,
-        }
-    }
-
-    fn allow(scopes: &[&str]) -> Consent {
-        Consent {
-            person: Uuid::from_u128(2),
-            client_id: "partner".to_owned(),
-            scopes: scopes.iter().map(|&scope| scope.to_owned()).collect(),
-            granted_at: OffsetDateTime::UNIX_EPOCH,
+            allowed: allowed.map(|scopes| scopes.iter().map(|&scope| scope.to_owned()).collect()),
         }
     }
 
     #[test]
     fn a_client_that_requires_consent_asks_until_every_scope_it_asks_was_allowed() {
-        let partner = make_client(true);
         let openid = ["openid".to_owned()];
         let both = ["openid".to_owned(), "email".to_owned()];
 
-        assert!(is_consent_owed(&partner, false, None, &openid));
-        assert!(is_consent_owed(&partner, false, None, &[]), "nothing yet");
+        assert!(is_consent_owed(&ask(true, None), false, &openid));
+        assert!(is_consent_owed(&ask(true, None), false, &[]), "nothing yet");
         assert!(!is_consent_owed(
-            &partner,
+            &ask(true, Some(&["openid"])),
             false,
-            Some(&allow(&["openid"])),
             &openid
         ));
         assert!(
-            is_consent_owed(&partner, false, Some(&allow(&["openid"])), &both),
+            is_consent_owed(&ask(true, Some(&["openid"])), false, &both),
             "a scope not allowed before"
         );
         assert!(!is_consent_owed(
-            &partner,
+            &ask(true, Some(&["email", "openid"])),
             false,
-            Some(&allow(&["email", "openid"])),
             &openid
         ));
     }
 
     #[test]
     fn prompt_consent_asks_any_client_and_a_client_that_requires_none_asks_nothing_else() {
-        let webapp = make_client(false);
         let openid = ["openid".to_owned()];
 
-        assert!(!is_consent_owed(&webapp, false, None, &openid));
-        assert!(is_consent_owed(&webapp, true, None, &openid));
+        assert!(!is_consent_owed(&ask(false, None), false, &openid));
+        assert!(is_consent_owed(&ask(false, None), true, &openid));
         assert!(
-            is_consent_owed(&make_client(true), true, Some(&allow(&["openid"])), &openid),
+            is_consent_owed(&ask(true, Some(&["openid"])), true, &openid),
             "even what was allowed"
         );
     }

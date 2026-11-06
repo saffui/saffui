@@ -1,14 +1,24 @@
+use std::sync::atomic::Ordering;
+
 use async_trait::async_trait;
 use uuid::Uuid;
 
 use super::MemoryUnitOfWork;
 use crate::consent::store::ConsentStore;
-use crate::consent::{Consent, ListedConsent};
+use crate::consent::{Consent, ConsentTerms, ListedConsent};
 use crate::ports::storage::StorageError;
 
 impl MemoryUnitOfWork {
     fn key_consent(&self, person: Uuid, client_id: &str) -> (Uuid, Uuid, String) {
         (self.scope.realm().as_uuid(), person, client_id.to_owned())
+    }
+
+    /// The consent of a person to a client, counted as one statement.
+    fn find_consent(&self, person: Uuid, client_id: &str) -> Option<&Consent> {
+        self.reads.consents.fetch_add(1, Ordering::Relaxed);
+        self.working
+            .consents
+            .get(&self.key_consent(person, client_id))
     }
 }
 
@@ -19,8 +29,38 @@ impl ConsentStore for MemoryUnitOfWork {
         person: Uuid,
         client_id: &str,
     ) -> Result<Option<Consent>, StorageError> {
-        let key = self.key_consent(person, client_id);
-        Ok(self.working.consents.get(&key).cloned())
+        Ok(self.find_consent(person, client_id).cloned())
+    }
+
+    async fn hold_consent(
+        &mut self,
+        person: Uuid,
+        client_id: &str,
+    ) -> Result<Option<Vec<String>>, StorageError> {
+        // The double serializes nothing: what is held is what is read.
+        Ok(self
+            .find_consent(person, client_id)
+            .map(|held| held.scopes.clone()))
+    }
+
+    async fn read_consent_terms(
+        &mut self,
+        person: Uuid,
+        client_id: &str,
+    ) -> Result<Option<ConsentTerms>, StorageError> {
+        let allowed = self
+            .find_consent(person, client_id)
+            .map(|held| held.scopes.clone());
+        let realm = self.scope.realm().as_uuid();
+        Ok(self
+            .working
+            .clients
+            .get(&realm)
+            .and_then(|clients| clients.iter().find(|client| client.client_id == client_id))
+            .map(|client| ConsentTerms {
+                requires_consent: client.requires_consent,
+                allowed,
+            }))
     }
 
     async fn add_consent(&mut self, consent: &Consent) -> Result<(), StorageError> {

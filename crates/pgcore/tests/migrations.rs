@@ -8,7 +8,7 @@ use pgcore::connect::{ConnectionPlan, TlsMode, plan_connection};
 use pgcore::lock::{MIGRATION_LOCK, SessionLock};
 use pgcore::migrate::plan::PlanError;
 use pgcore::migrate::window::SchemaWindow;
-use pgcore::migrate::{MigrateError, Migration, apply_pending};
+use pgcore::migrate::{EMBEDDED, MigrateError, Migration, apply_pending};
 use pgcore::pool::{PoolSettings, build_pool};
 use pgcore::probe::{ProbeFailure, probe_database};
 use pgcore::role::{Privilege, read_role_facts, refuse_privileged_role};
@@ -680,6 +680,55 @@ async fn the_migrations_go_to_public_whatever_schema_bears_the_name_of_the_runne
         .expect("the table of the migration, once")
         .get(0);
     assert_eq!(placed, "public");
+}
+
+/// A migration that waits for a table behind a long transaction keeps every
+/// table it locked before closed as long, up to its bound: no migration of
+/// the product locks two of the tables that were there before it.
+#[tokio::test]
+async fn no_migration_of_the_product_locks_two_tables_that_were_there_before_it() {
+    let database = TestDatabase::create(&[]).await;
+    let owner = database.plan(OWNER);
+    let client = owner.connect_directly().await.expect("a connection");
+    client
+        .batch_execute("SET search_path = public")
+        .await
+        .expect("the schema of the migrations");
+    let read_names = async |query: &str| -> Vec<String> {
+        client
+            .query(query, &[])
+            .await
+            .expect("names")
+            .iter()
+            .map(|row| row.get(0))
+            .collect()
+    };
+
+    for (applied, migration) in EMBEDDED.iter().enumerate() {
+        apply_pending(&owner, &EMBEDDED[..applied])
+            .await
+            .expect("the migrations before it");
+        let before = read_names(
+            "SELECT relname::text FROM pg_class
+             WHERE relkind IN ('r', 'p') AND relnamespace = 'public'::regnamespace",
+        )
+        .await;
+        client.batch_execute("BEGIN").await.expect("a transaction");
+        client
+            .batch_execute(migration.sql)
+            .await
+            .expect("the migration");
+        let locked = read_names(
+            "SELECT c.relname::text FROM pg_locks AS l JOIN pg_class AS c ON c.oid = l.relation
+             WHERE l.pid = pg_backend_pid() AND l.mode = 'AccessExclusiveLock'
+               AND c.relkind IN ('r', 'p')",
+        )
+        .await;
+        client.batch_execute("ROLLBACK").await.expect("a rollback");
+
+        let held: Vec<&String> = locked.iter().filter(|name| before.contains(name)).collect();
+        assert!(held.len() <= 1, "{} locks {held:?}", migration.name);
+    }
 }
 
 #[tokio::test]

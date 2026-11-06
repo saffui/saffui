@@ -12,31 +12,37 @@ use crate::audit::append::record_event;
 use crate::authz::admin::AdminCaller;
 use crate::clients::{check_client_identifier, neutralize_unshowable};
 use crate::error::{ErrorCode, Failure};
-use crate::login::session::{Session, SessionTicket, find_live_session};
-use crate::oidc::refresh::describe_family_end;
+use crate::login::session::{Session, SessionTicket, find_answering_session};
 use crate::ports::storage::UnitOfWork;
 use crate::tenancy::resolve::resolve_realm;
 
-/// The live session a ticket proves, of a person who may still sign in.
+/// How many of the families a withdrawal ended its event names: the rest
+/// are counted.
+const MOST_NAMED_FAMILIES: u32 = 100;
+
+fn require_session() -> Failure {
+    Failure::new(ErrorCode::SessionRequired)
+}
+
+/// The live session a ticket proves, when it still answers for its person
+/// and that person may still sign in.
 async fn find_signed_in_session(
     app: &App,
     work: &mut dyn UnitOfWork,
-    ticket: Option<&SessionTicket>,
+    ticket: &SessionTicket,
 ) -> Result<Session, Failure> {
-    let required = || Failure::new(ErrorCode::SessionRequired);
-    let ticket = ticket.ok_or_else(required)?;
-    let session = find_live_session(app, work, ticket)
+    let session = find_answering_session(app, work, ticket)
         .await?
-        .ok_or_else(required)?;
+        .ok_or_else(require_session)?;
     work.read_person(session.person)
         .await?
         .filter(|person| person.enabled)
-        .ok_or_else(required)?;
+        .ok_or_else(require_session)?;
     Ok(session)
 }
 
 /// Removes a consent, revokes every refresh token its client holds for the
-/// person, and says so: the consent first, then each family it ended.
+/// person, and says so in one event, however many families it ended.
 async fn withdraw_consent(
     app: &App,
     work: &mut dyn UnitOfWork,
@@ -50,29 +56,20 @@ async fn withdraw_consent(
     {
         return Err(Failure::new(ErrorCode::ConsentNotFound));
     }
-    let families = work
-        .revoke_refresh_families_of_client(person, client_id, app.now())
+    let revoked = work
+        .revoke_refresh_families_of_client(person, client_id, app.now(), MOST_NAMED_FAMILIES)
         .await?;
-    // The events come last: the head of the chain stays locked until the commit.
+    let named: Vec<String> = revoked.named.iter().map(Uuid::to_string).collect();
+    // The event comes last: the head of the chain stays locked until the commit.
     let withdrawn = json!({
         "actor": actor,
         "client_id": client_id,
         "person_id": person.to_string(),
-        "refresh_families_revoked": families.len(),
+        "refresh_families": named,
+        "refresh_families_revoked": revoked.families,
+        "refresh_tokens_revoked": revoked.tokens,
     });
-    record_event(app, work, EventKind::ConsentWithdrawn, withdrawn).await?;
-    for revoked in &families {
-        let told = describe_family_end(
-            client_id,
-            revoked.family,
-            person,
-            revoked.session,
-            "consent_withdrawn",
-            &revoked.ended,
-        );
-        record_event(app, work, EventKind::TokenRevoked, told).await?;
-    }
-    Ok(())
+    record_event(app, work, EventKind::ConsentWithdrawn, withdrawn).await
 }
 
 /// The consents of the person signed in, with the names of their clients as
@@ -80,13 +77,14 @@ async fn withdraw_consent(
 ///
 /// # Errors
 ///
-/// Returns [`ErrorCode::SessionRequired`] without a live session, or the
-/// storage failure.
+/// Returns [`ErrorCode::SessionRequired`] without a live session that
+/// answers for its person, or the storage failure.
 pub async fn list_my_consents(
     app: &App,
     realm: &str,
     ticket: Option<&SessionTicket>,
 ) -> Result<Vec<ListedConsent>, Failure> {
+    let ticket = ticket.ok_or_else(require_session)?;
     let (_, scope) = resolve_realm(app, realm).await?;
     let mut work = app.storage.begin(scope).await?;
     let session = find_signed_in_session(app, work.as_mut(), ticket).await?;
@@ -103,15 +101,16 @@ pub async fn list_my_consents(
 ///
 /// # Errors
 ///
-/// Returns [`ErrorCode::SessionRequired`] without a live session,
-/// [`ErrorCode::ConsentNotFound`] when they gave that client none, or the
-/// storage failure.
+/// Returns [`ErrorCode::SessionRequired`] without a live session that
+/// answers for its person, [`ErrorCode::ConsentNotFound`] when they gave
+/// that client none, or the storage failure.
 pub async fn withdraw_my_consent(
     app: &App,
     realm: &str,
     ticket: Option<&SessionTicket>,
     client_id: &str,
 ) -> Result<(), Failure> {
+    let ticket = ticket.ok_or_else(require_session)?;
     let (_, scope) = resolve_realm(app, realm).await?;
     let mut work = app.storage.begin(scope).await?;
     let session = find_signed_in_session(app, work.as_mut(), ticket).await?;
@@ -156,4 +155,85 @@ pub async fn withdraw_person_consent(
     withdraw_consent(app, work.as_mut(), person, client_id, actor).await?;
     work.commit().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use time::Duration;
+    use uuid::Uuid;
+
+    use super::{MOST_NAMED_FAMILIES, withdraw_person_consent};
+    use crate::authz::capability::Capability;
+    use crate::consent::Consent;
+    use crate::oidc::scenario::{CALLBACK, Scenario};
+    use crate::testkit::drive::complete;
+    use crate::testkit::fixtures::{Application, register_application};
+    use crate::tokens::store::RefreshToken;
+
+    #[test]
+    fn a_withdrawal_is_one_entry_that_counts_every_family_and_names_a_bounded_few() {
+        let scenario = Scenario::start();
+        let partner = Application {
+            client_id: "partner",
+            redirect_uri: CALLBACK,
+            post_logout_redirect_uri: None,
+            public: true,
+            requires_consent: true,
+        };
+        complete(register_application(&scenario.app, scenario.scope, partner));
+        let ada = scenario.find_ada();
+        let session = scenario.sign_in("openid").ticket.session;
+        let operator = scenario.name_operator(&[Capability::UserWrite]);
+        let now = scenario.app.now();
+        let families = u8::try_from(MOST_NAMED_FAMILIES + 1).expect("a small bound");
+        let mut work =
+            complete(scenario.app.storage.begin(scenario.scope)).expect("a unit of work");
+        complete(work.add_consent(&Consent {
+            person: ada,
+            client_id: "partner".to_owned(),
+            scopes: vec!["openid".to_owned()],
+            granted_at: now,
+        }))
+        .expect("a consent");
+        for each in 0..families {
+            let mut token_digest = vec![0xee; 32];
+            token_digest[0] = each;
+            complete(work.insert_refresh_token(&RefreshToken {
+                token_digest,
+                family: Uuid::from_u128(1_000 + u128::from(each)),
+                client_id: "partner".to_owned(),
+                person: ada,
+                session,
+                scopes: vec!["openid".to_owned()],
+                issued_at: now,
+                expires_at: now + Duration::hours(1),
+            }))
+            .expect("the first token of a family");
+        }
+        complete(work.commit()).expect("a commit");
+        let before = scenario.read_event_kinds().len();
+
+        complete(withdraw_person_consent(
+            &scenario.app,
+            &operator,
+            ada,
+            "partner",
+        ))
+        .expect("a withdrawal");
+
+        let events = scenario
+            .storage
+            .read_audit_envelopes(scenario.scope.realm());
+        let told = &events[before..];
+        assert_eq!(told.len(), 1, "one entry, however many families");
+        assert_eq!(told[0]["kind"], "consent.withdrawn");
+        let payload = &told[0]["payload"];
+        assert_eq!(payload["refresh_families_revoked"], families, "{payload}");
+        assert_eq!(payload["refresh_tokens_revoked"], families, "{payload}");
+        assert_eq!(
+            payload["refresh_families"].as_array().map(Vec::len),
+            usize::try_from(MOST_NAMED_FAMILIES).ok(),
+            "the first named, the rest counted"
+        );
+    }
 }

@@ -56,7 +56,7 @@ async fn every_answer_of_the_data_plane_says_what_a_browser_must_not_do_with_it(
         assert_eq!(find(&headers, "x-frame-options"), Some("DENY"), "{path}");
         assert_eq!(
             find(&headers, "referrer-policy"),
-            Some("no-referrer"),
+            Some("same-origin"),
             "{path}"
         );
         assert_eq!(

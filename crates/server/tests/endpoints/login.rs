@@ -578,11 +578,20 @@ async fn a_sign_in_that_another_browser_or_another_site_submits_is_refused_like_
         &form,
     )
     .await;
+    // A page that hides its origin, or a sandboxed frame, posts `null`.
+    let from_an_unnamed_origin = post(
+        &product,
+        "/realms/acme/login",
+        &[(COOKIE.as_str(), &flow), (ORIGIN.as_str(), "null")],
+        &form,
+    )
+    .await;
 
     for refused in [
         without_cookie,
         with_the_cookie_of_another_request,
         from_another_site,
+        from_an_unnamed_origin,
     ] {
         assert_eq!(refused.status, StatusCode::BAD_REQUEST);
         assert!(refused.body.contains("This sign-in has expired."));
@@ -624,7 +633,7 @@ async fn the_sign_in_page_runs_no_script_is_framed_by_nobody_and_is_kept_by_no_c
     assert_eq!(page.read_header(CACHE_CONTROL.as_str()), Some("no-store"));
     assert_eq!(page.read_header("x-frame-options"), Some("DENY"));
     assert_eq!(page.read_header("x-content-type-options"), Some("nosniff"));
-    assert_eq!(page.read_header("referrer-policy"), Some("no-referrer"));
+    assert_eq!(page.read_header("referrer-policy"), Some("same-origin"));
     let policy = page
         .read_header("content-security-policy")
         .expect("a policy");

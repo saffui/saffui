@@ -155,6 +155,43 @@ async fn a_schema_with_faults_is_refused_with_each_fault_at_its_line() {
 }
 
 #[actix_web::test]
+async fn a_schema_at_its_bound_is_read_whole_and_one_past_it_is_told_its_fault() {
+    use saffui_core::authz::relations::schema::SCHEMA_MAX_BYTES;
+
+    let started = start().await;
+    let path = "/admin/v1/realms/acme/relations/schema";
+    let head = "definition user {}\n//";
+    // A quote takes two bytes once escaped: the body is about twice the source.
+    let at_bound = format!("{head}{}", "\"".repeat(SCHEMA_MAX_BYTES - head.len()));
+    let body = json!({ "source": at_bound });
+    assert!(
+        body.to_string().len() > 2 * (SCHEMA_MAX_BYTES - head.len()),
+        "the body is past the limit the rest of the plane reads"
+    );
+
+    let (status, answer) = started.admin(Method::PUT, path, Some(&body)).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["types"], json!(["user"]));
+    let past = format!("{head}{}", "x".repeat(SCHEMA_MAX_BYTES + 1 - head.len()));
+    let (status, answer) = started
+        .admin(Method::PUT, path, Some(&json!({ "source": past })))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        answer["faults"],
+        json!([{ "line": 1, "message": format!("a schema is at most {SCHEMA_MAX_BYTES} bytes") }]),
+        "{answer}"
+    );
+    let unread = json!({ "source": "x".repeat(3 * SCHEMA_MAX_BYTES) });
+    let (status, answer) = started.admin(Method::PUT, path, Some(&unread)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        answer["code"], "platform.request_invalid",
+        "a body past what a schema at its bound needs is not read"
+    );
+}
+
+#[actix_web::test]
 async fn relations_are_written_listed_and_deleted_as_the_schema_admits_them() {
     let started = start().await;
     started

@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 use saffui_core::authz::relations::{
-    AdmittedRelation, ObjectRef, RelationTuple, StoredSchema, SubjectRef,
+    AdmittedRelation, GuardedSchema, ObjectRef, RelationTuple, StoredSchema, SubjectRef,
 };
 use saffui_core::authz::store::RelationStore;
 use saffui_core::ports::storage::StorageError;
@@ -14,6 +14,19 @@ use crate::work::PgUnitOfWork;
 /// The subject a row names. An empty member is the subject itself.
 fn write_member(subject: &SubjectRef) -> &str {
     subject.member.as_deref().unwrap_or("")
+}
+
+/// Kinds of relations as four columns, for `unnest`: type of object,
+/// relation, type of subject, member.
+fn split_kinds(kinds: &[AdmittedRelation]) -> [Vec<&str>; 4] {
+    let mut columns: [Vec<&str>; 4] = Default::default();
+    for kind in kinds {
+        columns[0].push(&kind.object_type);
+        columns[1].push(&kind.relation);
+        columns[2].push(&kind.subject.object_type);
+        columns[3].push(kind.subject.member.as_deref().unwrap_or(""));
+    }
+    columns
 }
 
 #[async_trait]
@@ -55,6 +68,32 @@ impl RelationStore for PgUnitOfWork {
                     source: row.get(0),
                     compiled: row.try_get(1).map_err(|_| StorageError::Failed)?,
                     written_at: row.get(2),
+                })
+            })
+            .transpose()
+    }
+
+    async fn read_guarded_schema(
+        &mut self,
+        object_type: &str,
+        client_id: &str,
+    ) -> Result<Option<GuardedSchema>, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        let rows = self
+            .read_raw(
+                "SELECT compiled, EXISTS (SELECT 1 FROM relation_guards
+                     WHERE tenant_id = $1 AND realm_id = $2 AND object_type = $3
+                       AND client_id = $4)
+                 FROM relation_schemas
+                 WHERE tenant_id = $1 AND realm_id = $2",
+                &[&tenant, &realm, &object_type, &client_id],
+            )
+            .await?;
+        rows.first()
+            .map(|row| {
+                Ok(GuardedSchema {
+                    compiled: row.try_get(0).map_err(|_| StorageError::Failed)?,
+                    guarded: row.get(1),
                 })
             })
             .transpose()
@@ -117,19 +156,7 @@ impl RelationStore for PgUnitOfWork {
         admitted: &[AdmittedRelation],
     ) -> Result<u64, StorageError> {
         let (tenant, realm) = self.scope_keys();
-        let object_types: Vec<&str> = admitted
-            .iter()
-            .map(|one| one.object_type.as_str())
-            .collect();
-        let relations: Vec<&str> = admitted.iter().map(|one| one.relation.as_str()).collect();
-        let subject_types: Vec<&str> = admitted
-            .iter()
-            .map(|one| one.subject.object_type.as_str())
-            .collect();
-        let members: Vec<&str> = admitted
-            .iter()
-            .map(|one| one.subject.member.as_deref().unwrap_or(""))
-            .collect();
+        let [object_types, relations, subject_types, members] = split_kinds(admitted);
         // What the schema admits, as rows: a kept relation none of them names goes.
         self.execute_raw(
             "DELETE FROM relation_tuples kept
@@ -142,6 +169,35 @@ impl RelationStore for PgUnitOfWork {
                      AND admitted.subject_type = kept.subject_type
                      AND admitted.subject_member = kept.subject_member
                )",
+            &[
+                &tenant,
+                &realm,
+                &object_types,
+                &relations,
+                &subject_types,
+                &members,
+            ],
+        )
+        .await
+    }
+
+    async fn delete_withdrawn_relations(
+        &mut self,
+        withdrawn: &[AdmittedRelation],
+    ) -> Result<u64, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        let [object_types, relations, subject_types, members] = split_kinds(withdrawn);
+        // Each kind reaches its rows by the type of their object, at the head
+        // of the primary key: the relations of the other types are not read.
+        self.execute_raw(
+            "DELETE FROM relation_tuples kept
+             USING unnest($3::text[], $4::text[], $5::text[], $6::text[])
+                 AS withdrawn (object_type, relation, subject_type, subject_member)
+             WHERE kept.tenant_id = $1 AND kept.realm_id = $2
+               AND kept.object_type = withdrawn.object_type
+               AND kept.relation = withdrawn.relation
+               AND kept.subject_type = withdrawn.subject_type
+               AND kept.subject_member = withdrawn.subject_member",
             &[
                 &tenant,
                 &realm,
@@ -186,24 +242,6 @@ impl RelationStore for PgUnitOfWork {
             )
             .await?;
         Ok(removed == 1)
-    }
-
-    async fn is_relation_guard(
-        &mut self,
-        object_type: &str,
-        client_id: &str,
-    ) -> Result<bool, StorageError> {
-        let (tenant, realm) = self.scope_keys();
-        let rows = self
-            .read_raw(
-                "SELECT EXISTS (SELECT 1 FROM relation_guards
-                     WHERE tenant_id = $1 AND realm_id = $2 AND object_type = $3 AND client_id = $4)",
-                &[&tenant, &realm, &object_type, &client_id],
-            )
-            .await?;
-        rows.first()
-            .map(|row| row.get(0))
-            .ok_or(StorageError::Failed)
     }
 
     async fn list_relation_guards(

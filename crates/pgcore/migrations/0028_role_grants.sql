@@ -54,7 +54,7 @@ CREATE TABLE group_members (
     FOREIGN KEY (tenant_id, realm_id, group_id) REFERENCES groups ON DELETE CASCADE,
     FOREIGN KEY (tenant_id, realm_id, person_id) REFERENCES persons ON DELETE CASCADE
 );
-CREATE INDEX group_members_by_person ON group_members (tenant_id, realm_id, person_id);
+CREATE INDEX group_members_by_person ON group_members (tenant_id, realm_id, person_id, group_id);
 
 ALTER TABLE person_roles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE person_roles FORCE ROW LEVEL SECURITY;

@@ -1,7 +1,8 @@
 //! Whether a subject stands in a member of an object: a walk over the
 //! relations kept, bounded in depth, in reads of the storage, in subjects
 //! read at once and in time. A walk that reaches a bound answers that it
-//! could not tell, never that the subject does not stand.
+//! could not tell, never that the subject does not stand. A storage that
+//! fails is not a bound: the walk stops on its error.
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -13,7 +14,7 @@ use super::schema::{CompiledSchema, MemberKind, Rule};
 use super::{ObjectRef, SubjectRef};
 use crate::app::App;
 use crate::authz::shares::DecisionShare;
-use crate::ports::storage::UnitOfWork;
+use crate::ports::storage::{StorageError, UnitOfWork};
 
 /// How deep a walk goes before it gives up.
 pub const MAX_DEPTH: usize = 64;
@@ -45,7 +46,6 @@ pub enum WalkLimit {
     /// The walk came back to where it was: the relations kept form a loop.
     Cycle,
     Steps,
-    Storage,
 }
 
 impl WalkLimit {
@@ -58,12 +58,18 @@ impl WalkLimit {
             Self::Duration => "duration",
             Self::Cycle => "cycle",
             Self::Steps => "steps",
-            Self::Storage => "storage",
         }
     }
 }
 
-type Step<'w> = Pin<Box<dyn Future<Output = Walk> + Send + 'w>>;
+type Step<'w> = Pin<Box<dyn Future<Output = Result<Walk, StorageError>> + Send + 'w>>;
+
+/// What one read of a walk found.
+enum Subjects {
+    Read(Vec<SubjectRef>),
+    /// A bound was reached before or around the read.
+    Bound(WalkLimit),
+}
 
 /// Folds the walks of a sum: one found is enough.
 fn fold_union(walks: impl IntoIterator<Item = Walk>) -> Walk {
@@ -112,50 +118,49 @@ impl Walker<'_> {
         &mut self,
         object: &ObjectRef,
         relation: &str,
-    ) -> Result<Vec<SubjectRef>, WalkLimit> {
+    ) -> Result<Subjects, StorageError> {
         self.reads += 1;
         if self.reads > MAX_READS {
-            return Err(WalkLimit::Reads);
+            return Ok(Subjects::Bound(WalkLimit::Reads));
         }
         if let Some(limit) = self.check_time() {
-            return Err(limit);
+            return Ok(Subjects::Bound(limit));
         }
         let ceiling = u32::try_from(MAX_FANOUT + 1).unwrap_or(u32::MAX);
         let subjects = self
             .work
             .list_relation_subjects(object, relation, ceiling)
-            .await
-            .map_err(|_| WalkLimit::Storage)?;
+            .await?;
         if subjects.len() > MAX_FANOUT {
-            return Err(WalkLimit::Fanout);
+            return Ok(Subjects::Bound(WalkLimit::Fanout));
         }
         // Around the read too: a slow storage is a slow walk.
         if let Some(limit) = self.check_time() {
-            return Err(limit);
+            return Ok(Subjects::Bound(limit));
         }
-        Ok(subjects)
+        Ok(Subjects::Read(subjects))
     }
 
     fn walk_member(&mut self, object: ObjectRef, member: String, depth: usize) -> Step<'_> {
         Box::pin(async move {
             self.steps += 1;
             if self.steps > MAX_STEPS {
-                return Walk::Undecided(WalkLimit::Steps);
+                return Ok(Walk::Undecided(WalkLimit::Steps));
             }
             // At each member, not only around a read: a walk that never reads
             // still meets its deadline.
             if let Some(limit) = self.check_time() {
-                return Walk::Undecided(limit);
+                return Ok(Walk::Undecided(limit));
             }
             if depth > MAX_DEPTH {
-                return Walk::Undecided(WalkLimit::Depth);
+                return Ok(Walk::Undecided(WalkLimit::Depth));
             }
             let key = (object, member);
             if let Some(known) = self.known.get(&key) {
-                return *known;
+                return Ok(*known);
             }
             if !self.walking.insert(key.clone()) {
-                return Walk::Undecided(WalkLimit::Cycle);
+                return Ok(Walk::Undecided(WalkLimit::Cycle));
             }
             let (object, member) = &key;
             let schema = self.schema;
@@ -163,15 +168,15 @@ impl Walker<'_> {
                 None => Walk::NotFound,
                 Some(MemberKind::Relation(_)) => {
                     self.walk_relation(object.clone(), member.clone(), depth)
-                        .await
+                        .await?
                 }
                 Some(MemberKind::Permission(rule)) => {
-                    self.walk_rule(object.clone(), rule.clone(), depth).await
+                    self.walk_rule(object.clone(), rule.clone(), depth).await?
                 }
             };
             self.walking.remove(&key);
             self.known.insert(key, walk);
-            walk
+            Ok(walk)
         })
     }
 
@@ -184,11 +189,11 @@ impl Walker<'_> {
             let Some(MemberKind::Relation(allowed)) =
                 schema.find_member(&object.object_type, &relation)
             else {
-                return Walk::NotFound;
+                return Ok(Walk::NotFound);
             };
-            let subjects = match self.read_subjects(&object, &relation).await {
-                Ok(subjects) => subjects,
-                Err(limit) => return Walk::Undecided(limit),
+            let subjects = match self.read_subjects(&object, &relation).await? {
+                Subjects::Read(subjects) => subjects,
+                Subjects::Bound(limit) => return Ok(Walk::Undecided(limit)),
             };
             let admitted: Vec<SubjectRef> = subjects
                 .into_iter()
@@ -203,19 +208,19 @@ impl Walker<'_> {
                 .iter()
                 .any(|named| named.member.is_none() && named.object == *self.subject)
             {
-                return Walk::Found;
+                return Ok(Walk::Found);
             }
             let mut walks = Vec::new();
             for named in admitted {
                 if let Some(member) = named.member {
-                    let walk = self.walk_member(named.object, member, depth + 1).await;
+                    let walk = self.walk_member(named.object, member, depth + 1).await?;
                     if walk == Walk::Found {
-                        return Walk::Found;
+                        return Ok(Walk::Found);
                     }
                     walks.push(walk);
                 }
             }
-            fold_union(walks)
+            Ok(fold_union(walks))
         })
     }
 
@@ -228,57 +233,57 @@ impl Walker<'_> {
                     let Some(MemberKind::Relation(allowed)) =
                         schema.find_member(&object.object_type, &relation)
                     else {
-                        return Walk::NotFound;
+                        return Ok(Walk::NotFound);
                     };
-                    let objects: Vec<ObjectRef> = match self.read_subjects(&object, &relation).await
-                    {
-                        Ok(subjects) => subjects
-                            .into_iter()
-                            .filter(|named| {
-                                named.member.is_none()
-                                    && allowed.iter().any(|subject| {
-                                        subject.member.is_none()
-                                            && subject.object_type == named.object.object_type
-                                    })
-                            })
-                            .map(|named| named.object)
-                            .collect(),
-                        Err(limit) => return Walk::Undecided(limit),
-                    };
+                    let objects: Vec<ObjectRef> =
+                        match self.read_subjects(&object, &relation).await? {
+                            Subjects::Read(subjects) => subjects
+                                .into_iter()
+                                .filter(|named| {
+                                    named.member.is_none()
+                                        && allowed.iter().any(|subject| {
+                                            subject.member.is_none()
+                                                && subject.object_type == named.object.object_type
+                                        })
+                                })
+                                .map(|named| named.object)
+                                .collect(),
+                            Subjects::Bound(limit) => return Ok(Walk::Undecided(limit)),
+                        };
                     let mut walks = Vec::new();
                     for next in objects {
-                        let walk = self.walk_member(next, member.clone(), depth + 1).await;
+                        let walk = self.walk_member(next, member.clone(), depth + 1).await?;
                         if walk == Walk::Found {
-                            return Walk::Found;
+                            return Ok(Walk::Found);
                         }
                         walks.push(walk);
                     }
-                    fold_union(walks)
+                    Ok(fold_union(walks))
                 }
                 Rule::Union { rules } => {
                     let mut walks = Vec::new();
                     for inner in rules {
-                        let walk = self.walk_rule(object.clone(), inner, depth + 1).await;
+                        let walk = self.walk_rule(object.clone(), inner, depth + 1).await?;
                         if walk == Walk::Found {
-                            return Walk::Found;
+                            return Ok(Walk::Found);
                         }
                         walks.push(walk);
                     }
-                    fold_union(walks)
+                    Ok(fold_union(walks))
                 }
                 // An intersection of nothing finds nothing: the parser never
                 // writes one, and a stored form is not trusted to be its work.
-                Rule::Intersection { rules } if rules.is_empty() => Walk::NotFound,
+                Rule::Intersection { rules } if rules.is_empty() => Ok(Walk::NotFound),
                 Rule::Intersection { rules } => {
                     let mut undecided = None;
                     for inner in rules {
-                        match self.walk_rule(object.clone(), inner, depth + 1).await {
-                            Walk::NotFound => return Walk::NotFound,
+                        match self.walk_rule(object.clone(), inner, depth + 1).await? {
+                            Walk::NotFound => return Ok(Walk::NotFound),
                             Walk::Undecided(limit) => undecided = Some(limit),
                             Walk::Found => {}
                         }
                     }
-                    undecided.map_or(Walk::Found, Walk::Undecided)
+                    Ok(undecided.map_or(Walk::Found, Walk::Undecided))
                 }
             }
         })
@@ -286,6 +291,10 @@ impl Walker<'_> {
 }
 
 /// Tells whether `subject` stands in `member` of `object`.
+///
+/// # Errors
+///
+/// Returns the storage failure: a read that fails is never taken for an answer.
 pub(crate) async fn walk_relations(
     app: &App,
     work: &mut dyn UnitOfWork,
@@ -294,7 +303,7 @@ pub(crate) async fn walk_relations(
     member: &str,
     subject: &ObjectRef,
     budget: WalkBudget<'_>,
-) -> Walk {
+) -> Result<Walk, StorageError> {
     let mut walker = Walker {
         app,
         work,
@@ -429,6 +438,7 @@ mod tests {
                     budget(&self.scenario.app, &share),
                 )
                 .await
+                .expect("the storage answers")
             })
         }
     }
@@ -640,7 +650,7 @@ mod tests {
             )
             .await
         });
-        assert_eq!(walked, Walk::NotFound);
+        assert_eq!(walked, Ok(Walk::NotFound));
     }
 
     #[test]
@@ -685,7 +695,7 @@ mod tests {
             )
             .await
         });
-        assert_eq!(walked, Walk::NotFound);
+        assert_eq!(walked, Ok(Walk::NotFound));
     }
 
     #[test]
@@ -716,7 +726,7 @@ mod tests {
             )
             .await
         });
-        assert_eq!(walked, Walk::Undecided(WalkLimit::Duration));
+        assert_eq!(walked, Ok(Walk::Undecided(WalkLimit::Duration)));
     }
 
     #[test]
@@ -760,7 +770,7 @@ mod tests {
             )
             .await
         });
-        assert_eq!(walked, Walk::Undecided(WalkLimit::Depth));
+        assert_eq!(walked, Ok(Walk::Undecided(WalkLimit::Depth)));
         assert!(
             begun.elapsed() < std::time::Duration::from_secs(1),
             "each member once, not each way to it: {:?}",
@@ -819,7 +829,7 @@ mod tests {
             )
             .await
         });
-        assert_eq!(walked, Walk::Undecided(WalkLimit::Steps));
+        assert_eq!(walked, Ok(Walk::Undecided(WalkLimit::Steps)));
     }
 
     #[test]

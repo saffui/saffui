@@ -6,6 +6,7 @@ pub mod schema;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use serde::Deserialize as _;
 use serde_json::json;
 use time::OffsetDateTime;
 
@@ -68,6 +69,25 @@ pub fn list_admitted_relations(schema: &CompiledSchema) -> Vec<AdmittedRelation>
         .collect()
 }
 
+/// What a schema that replaces another withdraws: every relation the one
+/// before admitted and it does not.
+#[must_use]
+pub fn list_withdrawn_relations(
+    before: &CompiledSchema,
+    after: &CompiledSchema,
+) -> Vec<AdmittedRelation> {
+    list_admitted_relations(before)
+        .into_iter()
+        .filter(|one| {
+            !after
+                .types
+                .get(&one.object_type)
+                .and_then(|found| found.relations.get(&one.relation))
+                .is_some_and(|allowed| allowed.contains(&one.subject))
+        })
+        .collect()
+}
+
 /// A schema as a realm keeps it: what was written, and what it compiled to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredSchema {
@@ -81,11 +101,25 @@ impl StoredSchema {
     /// from its source, never read as it is.
     #[must_use]
     pub fn open(&self) -> Option<CompiledSchema> {
-        serde_json::from_value::<CompiledSchema>(self.compiled.clone())
-            .ok()
-            .filter(|compiled| compiled.version == COMPILED_VERSION)
-            .or_else(|| compile_schema(&self.source).ok())
+        read_compiled_schema(&self.compiled).or_else(|| compile_schema(&self.source).ok())
     }
+}
+
+/// Reads a compiled form as this version writes it. A form of another
+/// version, or one that does not read, is none.
+#[must_use]
+pub fn read_compiled_schema(compiled: &serde_json::Value) -> Option<CompiledSchema> {
+    CompiledSchema::deserialize(compiled)
+        .ok()
+        .filter(|schema| schema.version == COMPILED_VERSION)
+}
+
+/// What a question reads of the schema of a realm: the compiled form, and
+/// whether the client that asks guards the type asked of.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuardedSchema {
+    pub compiled: serde_json::Value,
+    pub guarded: bool,
 }
 
 /// Whether a text may identify an object: 1 to 128 letters, digits, dots,
@@ -196,10 +230,28 @@ pub async fn write_relation_schema(
             ErrorCode::ResourceTypeTaken,
         )));
     }
+    // Read under the lock: what it admitted stands until this one replaces it.
+    let before = work
+        .read_relation_schema()
+        .await?
+        .and_then(|stored| stored.open());
     work.write_relation_schema(&stored).await?;
-    let removed = work
-        .delete_relations_not_admitted(&list_admitted_relations(&compiled))
-        .await?;
+    let removed = match before {
+        Some(before) => {
+            let withdrawn = list_withdrawn_relations(&before, &compiled);
+            if withdrawn.is_empty() {
+                0
+            } else {
+                work.delete_withdrawn_relations(&withdrawn).await?
+            }
+        }
+        // What the schema before admitted is not known: whatever this one
+        // does not admit goes.
+        None => {
+            work.delete_relations_not_admitted(&list_admitted_relations(&compiled))
+                .await?
+        }
+    };
     // The schema is replaced in place: the chain keeps what each said.
     let told = json!({
         "actor": describe_actor(caller),
@@ -277,6 +329,9 @@ pub async fn write_relation(
     tuple: &RelationTuple,
 ) -> Result<(), Failure> {
     let mut work = app.storage.begin(caller.scope).await?;
+    // Checked and kept while no writer of the schema can replace it: one that
+    // comes after finds this relation, and removes it if it no longer admits it.
+    work.freeze_definitions().await?;
     let schema = work
         .read_relation_schema()
         .await?
@@ -460,6 +515,95 @@ mod tests {
             1,
             "the schema that admits them again wakes none of them"
         );
+    }
+
+    #[test]
+    fn a_schema_removes_only_the_kinds_it_withdraws_and_one_that_withdraws_none_removes_nothing() {
+        use super::{ObjectRef, RelationTuple, SubjectRef, list_relation_subjects, write_relation};
+
+        let scenario = Scenario::start();
+        let caller = scenario.name_operator(&[Capability::PolicyWrite]);
+        let wide = "definition user {}\ndefinition team {\n  relation member: user\n}\ndefinition document {\n  relation owner: user\n  relation reader: user | team#member\n}";
+        let narrow = "definition user {}\ndefinition team {\n  relation member: user\n}\ndefinition document {\n  relation reader: user\n}";
+        let object = |text: &str| {
+            let (object_type, object_id) = text.split_once(':').expect("type:id");
+            ObjectRef {
+                object_type: object_type.to_owned(),
+                object_id: object_id.to_owned(),
+            }
+        };
+        let relate = |object_text: &str, relation: &str, subject_text: &str| {
+            let (subject, member) = match subject_text.split_once('#') {
+                Some((subject, member)) => (subject, Some(member.to_owned())),
+                None => (subject_text, None),
+            };
+            RelationTuple {
+                object: object(object_text),
+                relation: relation.to_owned(),
+                subject: SubjectRef {
+                    object: object(subject),
+                    member,
+                },
+            }
+        };
+        let count = |object_text: &str, relation: &str| {
+            complete(list_relation_subjects(
+                &scenario.app,
+                scenario.scope,
+                &object(object_text),
+                relation,
+            ))
+            .expect("a list")
+            .0
+            .len()
+        };
+        complete(write_relation_schema(&scenario.app, &caller, wide)).expect("a schema");
+        for (object_text, relation, subject_text) in [
+            ("document:q3", "owner", "user:bob"),
+            ("document:q3", "reader", "user:ada"),
+            ("document:q3", "reader", "team:core#member"),
+            ("document:q4", "reader", "team:core#member"),
+            ("document:q4", "reader", "user:eve"),
+            ("team:core", "member", "user:ada"),
+        ] {
+            let tuple = relate(object_text, relation, subject_text);
+            complete(write_relation(&scenario.app, &caller, &tuple)).expect("a relation");
+        }
+
+        let (_, removed) =
+            complete(write_relation_schema(&scenario.app, &caller, narrow)).expect("a schema");
+        assert_eq!(removed, 3, "the owners, and the teams that read");
+        assert_eq!(
+            (
+                count("document:q3", "owner"),
+                count("document:q3", "reader"),
+                count("document:q4", "reader"),
+                count("team:core", "member"),
+            ),
+            (0, 1, 1, 1)
+        );
+
+        // A relation no schema admits, kept behind the product's back: a
+        // schema that withdraws nothing does not look for it.
+        complete(async {
+            let mut work = scenario
+                .app
+                .storage
+                .begin(scenario.scope)
+                .await
+                .expect("a unit of work");
+            work.insert_relation(
+                &relate("document:q3", "owner", "user:mallory"),
+                scenario.app.now(),
+            )
+            .await
+            .expect("a relation kept by hand");
+            work.commit().await.expect("a commit");
+        });
+        let (_, removed) =
+            complete(write_relation_schema(&scenario.app, &caller, narrow)).expect("a schema");
+        assert_eq!(removed, 0);
+        assert_eq!(count("document:q3", "owner"), 1, "nothing was swept");
     }
 
     #[test]

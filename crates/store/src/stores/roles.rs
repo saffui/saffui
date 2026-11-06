@@ -99,6 +99,18 @@ impl RoleStore for PgUnitOfWork {
         Ok(self.read_one(&select).await?.as_ref().map(read_role_row))
     }
 
+    async fn read_roles(&mut self, ids: &[Uuid]) -> Result<Vec<Role>, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        let rows = self
+            .read_raw(
+                "SELECT role_id, client_id, name, description, created_at FROM roles
+                 WHERE tenant_id = $1 AND realm_id = $2 AND role_id = ANY($3)",
+                &[&tenant, &realm, &ids],
+            )
+            .await?;
+        Ok(rows.iter().map(read_role_row).collect())
+    }
+
     async fn list_roles(&mut self, window: ListWindow) -> Result<Vec<Role>, StorageError> {
         // A name is unique per client only: the identifier closes the order.
         let query = ListQuery::new(window)
@@ -153,6 +165,18 @@ impl RoleStore for PgUnitOfWork {
             .filter(Criteria::new().where_equal(groups::GROUP_ID, &id))
             .build();
         Ok(self.read_one(&select).await?.as_ref().map(read_group_row))
+    }
+
+    async fn read_groups(&mut self, ids: &[Uuid]) -> Result<Vec<Group>, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        let rows = self
+            .read_raw(
+                "SELECT group_id, name, description, created_at FROM groups
+                 WHERE tenant_id = $1 AND realm_id = $2 AND group_id = ANY($3)",
+                &[&tenant, &realm, &ids],
+            )
+            .await?;
+        Ok(rows.iter().map(read_group_row).collect())
     }
 
     async fn list_groups(&mut self, window: ListWindow) -> Result<Vec<Group>, StorageError> {
@@ -302,7 +326,8 @@ impl RoleStore for PgUnitOfWork {
         let most = i64::from(most);
         // Both ways in one statement, each filtered on the instant of the
         // question. `least` skips an absent end: a way ends with the first
-        // grant on it that has one.
+        // grant on it that has one. Cut before it is ordered: past `most` the
+        // core refuses whichever ways were read, and no more than `most` are sorted.
         let rows = self
             .read_raw(
                 "SELECT role_id, client_id, name, through, until FROM (
@@ -325,12 +350,11 @@ impl RoleStore for PgUnitOfWork {
                        AND m.valid_from <= $4 AND (m.valid_until IS NULL OR m.valid_until > $4)
                        AND g.valid_from <= $4 AND (g.valid_until IS NULL OR g.valid_until > $4)
                  ) held
-                 ORDER BY name, client_id COLLATE \"C\" NULLS FIRST, through NULLS FIRST
                  LIMIT $5",
                 &[&tenant, &realm, &person, &now, &most],
             )
             .await?;
-        Ok(rows
+        let mut held: Vec<HeldRole> = rows
             .iter()
             .map(|row| HeldRole {
                 role: row.get(0),
@@ -339,7 +363,17 @@ impl RoleStore for PgUnitOfWork {
                 through: row.get(3),
                 until: row.get(4),
             })
-            .collect())
+            .collect();
+        // Byte for byte, as the collation "C" orders the names; an absent
+        // client, then an absent group, first.
+        held.sort_by(|left, right| {
+            (&left.name, &left.client_id, left.through).cmp(&(
+                &right.name,
+                &right.client_id,
+                right.through,
+            ))
+        });
+        Ok(held)
     }
 
     async fn list_member_groups(

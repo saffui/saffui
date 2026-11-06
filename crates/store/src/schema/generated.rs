@@ -154,6 +154,18 @@ pub(crate) mod authorization_requests {
     ];
 }
 
+pub(crate) mod authz_definitions {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "authz_definitions",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[];
+}
+
 pub(crate) mod authz_policies {
     use super::{Column, ScopeKeys, Table};
 
@@ -795,6 +807,7 @@ pub(crate) const TABLES: &[(Table, &[Column])] = &[
     (audit_events::TABLE, audit_events::ALL),
     (authorization_codes::TABLE, authorization_codes::ALL),
     (authorization_requests::TABLE, authorization_requests::ALL),
+    (authz_definitions::TABLE, authz_definitions::ALL),
     (authz_policies::TABLE, authz_policies::ALL),
     (clients::TABLE, clients::ALL),
     (code_attempts::TABLE, code_attempts::ALL),

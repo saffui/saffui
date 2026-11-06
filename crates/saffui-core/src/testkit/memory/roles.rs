@@ -8,7 +8,7 @@ use super::MemoryUnitOfWork;
 use crate::authz::grants::{HeldRole, Membership, RoleGrant, RoleHolder};
 use crate::authz::policy::Policy;
 use crate::authz::relations::{
-    AdmittedRelation, ObjectRef, RelationTuple, StoredSchema, SubjectRef,
+    AdmittedRelation, GuardedSchema, ObjectRef, RelationTuple, StoredSchema, SubjectRef,
 };
 use crate::authz::roles::{Group, Role};
 use crate::authz::store::{PolicyStore, RelationStore, RoleStore};
@@ -29,6 +29,16 @@ fn cut_window<T>(rows: Vec<T>, window: ListWindow) -> Vec<T> {
 
 fn count<T>(rows: &[T]) -> Result<u64, StorageError> {
     u64::try_from(rows.len()).map_err(|_| StorageError::Failed)
+}
+
+/// Whether a relation kept is of one of these kinds.
+fn is_of_kinds(tuple: &RelationTuple, kinds: &[AdmittedRelation]) -> bool {
+    kinds.iter().any(|kind| {
+        kind.object_type == tuple.object.object_type
+            && kind.relation == tuple.relation
+            && kind.subject.object_type == tuple.subject.object.object_type
+            && kind.subject.member == tuple.subject.member
+    })
 }
 
 impl MemoryUnitOfWork {
@@ -59,6 +69,14 @@ impl RoleStore for MemoryUnitOfWork {
             .iter()
             .find(|role| role.id == id)
             .cloned())
+    }
+
+    async fn read_roles(&mut self, ids: &[Uuid]) -> Result<Vec<Role>, StorageError> {
+        Ok(read_realm(&self.working.roles, self.realm())
+            .iter()
+            .filter(|role| ids.contains(&role.id))
+            .cloned()
+            .collect())
     }
 
     async fn list_roles(&mut self, window: ListWindow) -> Result<Vec<Role>, StorageError> {
@@ -106,6 +124,14 @@ impl RoleStore for MemoryUnitOfWork {
             .iter()
             .find(|group| group.id == id)
             .cloned())
+    }
+
+    async fn read_groups(&mut self, ids: &[Uuid]) -> Result<Vec<Group>, StorageError> {
+        Ok(read_realm(&self.working.groups, self.realm())
+            .iter()
+            .filter(|group| ids.contains(&group.id))
+            .cloned()
+            .collect())
     }
 
     async fn list_groups(&mut self, window: ListWindow) -> Result<Vec<Group>, StorageError> {
@@ -272,6 +298,25 @@ impl RelationStore for MemoryUnitOfWork {
         Ok(self.working.relation_schemas.get(&self.realm()).cloned())
     }
 
+    async fn read_guarded_schema(
+        &mut self,
+        object_type: &str,
+        client_id: &str,
+    ) -> Result<Option<GuardedSchema>, StorageError> {
+        let realm = self.realm();
+        let guarded = read_realm(&self.working.relation_guards, realm).iter().any(
+            |(known_type, known_client)| known_type == object_type && known_client == client_id,
+        );
+        Ok(self
+            .working
+            .relation_schemas
+            .get(&realm)
+            .map(|stored| GuardedSchema {
+                compiled: stored.compiled.clone(),
+                guarded,
+            }))
+    }
+
     async fn insert_relation(
         &mut self,
         tuple: &RelationTuple,
@@ -307,14 +352,20 @@ impl RelationStore for MemoryUnitOfWork {
         let realm = self.realm();
         let kept = self.working.relations.entry(realm).or_default();
         let before = kept.len();
-        kept.retain(|tuple| {
-            admitted.iter().any(|allowed| {
-                allowed.object_type == tuple.object.object_type
-                    && allowed.relation == tuple.relation
-                    && allowed.subject.object_type == tuple.subject.object.object_type
-                    && allowed.subject.member == tuple.subject.member
-            })
-        });
+        kept.retain(|tuple| is_of_kinds(tuple, admitted));
+        u64::try_from(before - kept.len()).map_err(|_| StorageError::Failed)
+    }
+
+    async fn delete_withdrawn_relations(
+        &mut self,
+        withdrawn: &[AdmittedRelation],
+    ) -> Result<u64, StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        let realm = self.realm();
+        let kept = self.working.relations.entry(realm).or_default();
+        let before = kept.len();
+        kept.retain(|tuple| !is_of_kinds(tuple, withdrawn));
         u64::try_from(before - kept.len()).map_err(|_| StorageError::Failed)
     }
 
@@ -350,18 +401,6 @@ impl RelationStore for MemoryUnitOfWork {
             !(known_type == object_type && known_client == client_id)
         });
         Ok(guards.len() < before)
-    }
-
-    async fn is_relation_guard(
-        &mut self,
-        object_type: &str,
-        client_id: &str,
-    ) -> Result<bool, StorageError> {
-        Ok(read_realm(&self.working.relation_guards, self.realm())
-            .iter()
-            .any(|(known_type, known_client)| {
-                known_type == object_type && known_client == client_id
-            }))
     }
 
     async fn list_relation_guards(
@@ -423,6 +462,14 @@ impl PolicyStore for MemoryUnitOfWork {
         Ok(policies)
     }
 
+    async fn count_policies(&mut self, client_id: &str, most: u32) -> Result<u64, StorageError> {
+        let kept = read_realm(&self.working.policies, self.realm())
+            .iter()
+            .filter(|policy| policy.client_id == client_id)
+            .count();
+        Ok(u64::try_from(kept).map_or(u64::from(most), |kept| kept.min(u64::from(most))))
+    }
+
     async fn list_applicable_policies(
         &mut self,
         client_id: &str,
@@ -446,6 +493,10 @@ impl PolicyStore for MemoryUnitOfWork {
 
     async fn lock_definitions(&mut self) -> Result<(), StorageError> {
         // One unit of work at a time: nothing else counts meanwhile.
+        Ok(())
+    }
+
+    async fn freeze_definitions(&mut self) -> Result<(), StorageError> {
         Ok(())
     }
 

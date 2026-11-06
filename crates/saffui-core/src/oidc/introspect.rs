@@ -52,8 +52,10 @@ pub struct Introspection {
 ///
 /// Returns [`ErrorCode::ClientAuthenticationFailed`] for a caller that is
 /// not a client with its secret, [`ErrorCode::RequestInvalid`] when no token
-/// is presented, or the storage failure. A token that does not stand is not
-/// an error: it is an answer.
+/// is presented, [`ErrorCode::HeldTooMany`] for a token that asks for the
+/// roles of a person who holds them by more ways than are read, or the
+/// storage failure. A token that does not stand is not an error: it is an
+/// answer.
 pub async fn introspect_token(
     app: &App,
     realm: &str,

@@ -24,7 +24,7 @@ use crate::tenancy::RealmScope;
 /// How many conditions a policy holds at most.
 pub const MAX_CONDITIONS: usize = 32;
 /// How many policies one client keeps at most.
-pub const MAX_POLICIES_PER_CLIENT: usize = 200;
+pub const MAX_POLICIES_PER_CLIENT: u32 = 200;
 /// How many of them one action on one type of resource has at most: what a
 /// question reads and weighs.
 pub const MAX_APPLICABLE_POLICIES: usize = 16;
@@ -310,7 +310,7 @@ pub enum PolicyOutcome {
 ///
 /// Fails when the document is not a list of conditions this version reads.
 pub fn read_conditions(document: &Value) -> Result<Vec<Condition>, Failure> {
-    serde_json::from_value(document.clone()).map_err(|_| Failure::new(ErrorCode::PolicyInvalid))
+    Vec::<Condition>::deserialize(document).map_err(|_| Failure::new(ErrorCode::PolicyInvalid))
 }
 
 #[must_use]
@@ -418,25 +418,11 @@ async fn check_conditions(
     if conditions.is_empty() || conditions.len() > MAX_CONDITIONS {
         return Err(invalid());
     }
+    let (mut roles, mut groups) = (Vec::new(), Vec::new());
     for condition in conditions {
         match condition {
-            // A role of the realm, or of the client that writes the policy:
-            // the role of another client is said to it alone.
-            Condition::Role(role) => {
-                let named = work.read_role(*role).await?;
-                if !named.is_some_and(|role| {
-                    role.client_id
-                        .as_deref()
-                        .is_none_or(|owner| owner == client_id)
-                }) {
-                    return Err(invalid());
-                }
-            }
-            Condition::Group(group) => {
-                if work.read_group(*group).await?.is_none() {
-                    return Err(invalid());
-                }
-            }
+            Condition::Role(role) => roles.push(*role),
+            Condition::Group(group) => groups.push(*group),
             Condition::Attribute {
                 left,
                 operator,
@@ -472,6 +458,31 @@ async fn check_conditions(
                 }
             }
         }
+    }
+    // Each kind read once, however many conditions name it.
+    roles.sort_unstable();
+    roles.dedup();
+    groups.sort_unstable();
+    groups.dedup();
+    if !roles.is_empty() {
+        // A role of the realm, or of the client that writes the policy: the
+        // role of another client is said to it alone.
+        let admitted = work
+            .read_roles(&roles)
+            .await?
+            .iter()
+            .filter(|role| {
+                role.client_id
+                    .as_deref()
+                    .is_none_or(|owner| owner == client_id)
+            })
+            .count();
+        if admitted != roles.len() {
+            return Err(invalid());
+        }
+    }
+    if !groups.is_empty() && work.read_groups(&groups).await?.len() != groups.len() {
+        return Err(invalid());
     }
     Ok(())
 }
@@ -529,7 +540,10 @@ pub async fn create_policy(
         return Err(Failure::new(ErrorCode::ResourceTypeTaken));
     }
     // Counted under the lock: two writers do not both find room.
-    if work.list_policies(wanted.client_id).await?.len() >= MAX_POLICIES_PER_CLIENT {
+    let kept = work
+        .count_policies(wanted.client_id, MAX_POLICIES_PER_CLIENT)
+        .await?;
+    if kept >= u64::from(MAX_POLICIES_PER_CLIENT) {
         return Err(invalid());
     }
     let applicable = work
@@ -1250,6 +1264,93 @@ mod tests {
         }
         assert_eq!(write("one-more", "approve"), Err(ErrorCode::PolicyInvalid));
         assert_eq!(write("of-another-action", "read"), Ok(()));
+    }
+
+    #[test]
+    fn a_policy_holds_so_many_conditions_and_so_many_bytes_and_no_more() {
+        use super::{MAX_CONDITIONS, MAX_CONDITIONS_BYTES};
+
+        let scenario = Scenario::start();
+        let caller = scenario.name_operator(&[Capability::PolicyWrite]);
+        let write = |name: &str, conditions: &Value| {
+            complete(create_policy(
+                &scenario.app,
+                &caller,
+                NewPolicy {
+                    client_id: "billing",
+                    name,
+                    resource_type: "invoice",
+                    action: name,
+                    effect: Effect::Deny,
+                    combine: Combine::Any,
+                    conditions,
+                },
+            ))
+            .map(|_| ())
+            .map_err(|failure| failure.code)
+        };
+        let present = attribute(&json!({ "resource": "amount" }), "present", None);
+        let counted = |count: usize| Value::Array(vec![present.clone(); count]);
+        // One condition whose value pads the document to `bytes`, as written.
+        let sized = |bytes: usize| {
+            let mut document = json!([attribute(
+                &json!({ "resource": "note" }),
+                "equals",
+                Some(json!({ "value": "" }))
+            )]);
+            let padding = bytes - document.to_string().len();
+            document[0]["attribute"]["right"]["value"] = json!("x".repeat(padding));
+            assert_eq!(document.to_string().len(), bytes);
+            document
+        };
+
+        assert_eq!(write("full", &counted(MAX_CONDITIONS)), Ok(()));
+        assert_eq!(
+            write("too-many", &counted(MAX_CONDITIONS + 1)),
+            Err(ErrorCode::PolicyInvalid)
+        );
+        assert_eq!(write("at-bound", &sized(MAX_CONDITIONS_BYTES)), Ok(()));
+        assert_eq!(
+            write("past-bound", &sized(MAX_CONDITIONS_BYTES + 1)),
+            Err(ErrorCode::PolicyInvalid)
+        );
+    }
+
+    #[test]
+    fn a_client_keeps_two_hundred_policies_and_another_client_its_own() {
+        use super::MAX_POLICIES_PER_CLIENT;
+
+        let scenario = Scenario::start();
+        let caller = scenario.name_operator(&[Capability::PolicyWrite]);
+        let present = json!([attribute(&json!({ "resource": "amount" }), "present", None)]);
+        // An action each: no one action fills up first.
+        let write = |client_id: &str, index: u32| {
+            let name = format!("policy-{index}");
+            complete(create_policy(
+                &scenario.app,
+                &caller,
+                NewPolicy {
+                    client_id,
+                    name: &name,
+                    resource_type: "invoice",
+                    action: &name,
+                    effect: Effect::Deny,
+                    combine: Combine::All,
+                    conditions: &present,
+                },
+            ))
+            .map(|_| ())
+            .map_err(|failure| failure.code)
+        };
+
+        for index in 0..MAX_POLICIES_PER_CLIENT {
+            assert_eq!(write("billing", index), Ok(()), "policy {index}");
+        }
+        assert_eq!(
+            write("billing", MAX_POLICIES_PER_CLIENT),
+            Err(ErrorCode::PolicyInvalid)
+        );
+        assert_eq!(write("webapp", MAX_POLICIES_PER_CLIENT), Ok(()));
     }
 
     #[test]

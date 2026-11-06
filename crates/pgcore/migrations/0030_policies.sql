@@ -36,3 +36,31 @@ CREATE POLICY authz_policies_scope ON authz_policies
 -- A policy is written and removed, never changed.
 GRANT SELECT, INSERT, DELETE ON authz_policies TO saffui_app;
 GRANT SELECT ON authz_policies TO saffui_maintenance;
+
+-- One row per realm, made with the realm. Whoever checks the definitions of
+-- its authorization against what it writes takes the row first and keeps it
+-- until the end: a writer of policies, of the schema, or of the roles and
+-- groups a policy names, for update; a writer of relations, shared.
+CREATE TABLE authz_definitions (
+    tenant_id uuid NOT NULL,
+    realm_id uuid NOT NULL,
+    PRIMARY KEY (tenant_id, realm_id),
+    FOREIGN KEY (tenant_id, realm_id) REFERENCES realms
+);
+
+-- The realms made before this migration, read from the directory of names:
+-- row security, forced on realms and soon on this table, would let none of
+-- them through.
+INSERT INTO authz_definitions (tenant_id, realm_id)
+SELECT tenant_id, realm_id FROM realm_directory;
+
+ALTER TABLE authz_definitions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE authz_definitions FORCE ROW LEVEL SECURITY;
+CREATE POLICY authz_definitions_scope ON authz_definitions
+    USING (tenant_id = saffui_current_tenant() AND realm_id = saffui_current_realm())
+    WITH CHECK (tenant_id = saffui_current_tenant() AND realm_id = saffui_current_realm());
+
+-- A row lock asks for the right to update one column. Row security keeps
+-- that column where it is: no update can move the row.
+GRANT SELECT, INSERT, UPDATE (realm_id) ON authz_definitions TO saffui_app;
+GRANT SELECT ON authz_definitions TO saffui_maintenance;

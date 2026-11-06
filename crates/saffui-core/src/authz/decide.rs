@@ -11,8 +11,8 @@ use uuid::Uuid;
 use super::grants::{read_held_roles, read_member_groups};
 use super::policy::{Facts, PolicyVerdict, SubjectFacts, weigh_policies};
 use super::relations::check::{MAX_DURATION, Walk, WalkBudget, walk_relations};
-use super::relations::schema::CompiledSchema;
-use super::relations::{ObjectRef, is_object_id};
+use super::relations::schema::{CompiledSchema, compile_schema};
+use super::relations::{ObjectRef, is_object_id, read_compiled_schema};
 use super::roles::is_role_name;
 use crate::app::App;
 use crate::clients::authenticate::authenticate_client;
@@ -158,15 +158,21 @@ async fn read_schema_for(
     client_id: &str,
     resource_type: &str,
 ) -> Result<SchemaFor, Failure> {
-    let Some(stored) = work.read_relation_schema().await? else {
+    let Some(read) = work.read_guarded_schema(resource_type, client_id).await? else {
         return Ok(SchemaFor::Policies);
     };
-    let Some(schema) = stored.open() else {
+    let schema = match read_compiled_schema(&read.compiled) {
+        Some(schema) => Some(schema),
+        // A form another version wrote: the source is read only then.
+        None => work
+            .read_relation_schema()
+            .await?
+            .and_then(|stored| compile_schema(&stored.source).ok()),
+    };
+    let Some(schema) = schema else {
         return Ok(SchemaFor::Unreadable);
     };
-    if !schema.types.contains_key(resource_type)
-        || !work.is_relation_guard(resource_type, client_id).await?
-    {
+    if !schema.types.contains_key(resource_type) || !read.guarded {
         return Ok(SchemaFor::Policies);
     }
     Ok(SchemaFor::Relations(schema))
@@ -195,7 +201,9 @@ async fn decide_by_relations(
         object_type: request.resource_type.to_owned(),
         object_id: object_id.to_owned(),
     };
-    let walk = walk_relations(app, work, schema, &object, request.action, subject, budget).await;
+    let walk = walk_relations(app, work, schema, &object, request.action, subject, budget)
+        .await
+        .map_err(Failure::from)?;
     Ok(match walk {
         Walk::Found => Decision::permit("relation", None),
         Walk::NotFound => Decision::deny("no_relation", None),
@@ -896,6 +904,65 @@ mod tests {
         assert_eq!(
             (told.decision, told.reason.as_str()),
             ("deny", "schema_unreadable")
+        );
+    }
+
+    #[test]
+    fn a_compiled_form_another_version_wrote_is_compiled_again_from_its_source() {
+        use crate::authz::relations::StoredSchema;
+
+        let started = Started::open();
+        complete(async {
+            let mut work = started
+                .scenario
+                .app
+                .storage
+                .begin(started.scenario.scope)
+                .await
+                .expect("a unit of work");
+            let older = StoredSchema {
+                source: SCHEMA.to_owned(),
+                compiled: json!({ "version": 0, "types": {} }),
+                written_at: started.scenario.app.now(),
+            };
+            work.write_relation_schema(&older).await.expect("a schema");
+            work.commit().await.expect("a commit");
+        });
+        started.guard("document");
+        let ada = started.scenario.find_ada().to_string();
+        started.keep(("document", "q3"), "owner", ("user", &ada));
+
+        assert_eq!(
+            told(&started.ask("read", ("document", Some("q3")), &json!({}))),
+            ("permit", "relation", None)
+        );
+    }
+
+    #[test]
+    fn a_guard_left_on_a_type_the_schema_no_longer_defines_lets_its_policies_decide() {
+        let started = Started::open();
+        let schema = |source: &str| {
+            complete(write_relation_schema(
+                &started.scenario.app,
+                &started.caller,
+                source,
+            ))
+            .expect("a schema")
+        };
+        schema("definition user {}\ndefinition invoice {\n  relation approver: user\n}");
+        started.guard("invoice");
+        schema("definition user {}");
+        started.write_policy(
+            "named-ada",
+            "billing",
+            Effect::Permit,
+            &json!([{ "attribute": { "left": { "subject": "username" }, "operator": "equals", "right": { "value": "ada" } } }]),
+        );
+
+        assert_eq!(
+            told(&started.ask("approve", ("invoice", None), &json!({}))),
+            ("permit", "policy", Some("named-ada")),
+            "the type went with the schema, the guard stayed: the policies decide"
         );
     }
 }

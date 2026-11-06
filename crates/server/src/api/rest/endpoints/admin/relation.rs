@@ -2,11 +2,13 @@
 //! clients that guard its types. An object is written `type:id`, a subject
 //! `type:id` or `type:id#member`.
 
+use actix_web::dev::JsonBody;
 use actix_web::http::StatusCode;
-use actix_web::{HttpResponse, delete, get, put, web};
+use actix_web::{HttpRequest, HttpResponse, delete, get, put, web};
 use api::{NewRelationSchema, RelationSchemaView, SchemaFaultView};
 use saffui_core::app::App as Product;
 use saffui_core::authz::capability::Capability;
+use saffui_core::authz::relations::schema::SCHEMA_MAX_BYTES;
 use saffui_core::authz::relations::{
     self, RelationTuple, SchemaRefusal, read_object, read_subject,
 };
@@ -48,6 +50,12 @@ pub async fn read_schema(caller: Caller, product: web::Data<Product>) -> HttpRes
     }
 }
 
+/// The largest body a schema is written in: a source at its bound, each byte
+/// of it escaped to two at most, and room for the object around it.
+const SCHEMA_BODY_LIMIT: usize = 2 * SCHEMA_MAX_BYTES + 1024;
+
+/// Read past the limit of the plane, which a source at its bound outgrows
+/// once escaped: the guard has let the caller through before the body is read.
 #[put(
     "/admin/v1/realms/{realm}/relations/schema",
     wrap = "RequireCapability(Capability::PolicyWrite)"
@@ -55,8 +63,16 @@ pub async fn read_schema(caller: Caller, product: web::Data<Product>) -> HttpRes
 pub async fn write_schema(
     caller: Caller,
     product: web::Data<Product>,
-    wanted: web::Json<NewRelationSchema>,
+    request: HttpRequest,
+    payload: web::Payload,
 ) -> HttpResponse {
+    let mut payload = payload.into_inner();
+    let read = JsonBody::<NewRelationSchema>::new(&request, &mut payload, None, true)
+        .limit(SCHEMA_BODY_LIMIT)
+        .await;
+    let Ok(wanted) = read else {
+        return render_failure(&ErrorCode::RequestInvalid.into());
+    };
     match relations::write_relation_schema(&product, &caller, &wanted.source).await {
         Ok((compiled, removed)) => HttpResponse::Ok().json(serde_json::json!({
             "relations_removed": removed,

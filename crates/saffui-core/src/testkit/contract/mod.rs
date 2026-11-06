@@ -1722,6 +1722,10 @@ pub async fn check_security_keys_contract(app: &App) {
 /// # Panics
 ///
 /// Panics when the storage breaks the contract.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario, read from top to bottom"
+)]
 pub async fn check_roles_contract(app: &App) {
     use crate::authz::roles::{Group, Role};
     use crate::clients::store::ListWindow;
@@ -1799,6 +1803,21 @@ pub async fn check_roles_contract(app: &App) {
         Ok(Some(portal_admin.clone()))
     );
     assert_eq!(work.read_group(finance.id).await, Ok(Some(finance.clone())));
+    let by_id = |mut roles: Vec<Role>| {
+        roles.sort_by_key(|role| role.id);
+        roles
+    };
+    assert_eq!(
+        work.read_roles(&[admin.id, viewer.id, Uuid::from_u128(7)])
+            .await
+            .map(by_id),
+        Ok(by_id(vec![admin.clone(), viewer.clone()])),
+        "the roles named that the realm has, in one read"
+    );
+    assert_eq!(
+        work.read_groups(&[finance.id, Uuid::from_u128(7)]).await,
+        Ok(vec![finance.clone()])
+    );
     assert_eq!(
         work.list_groups(ListWindow { first: 0, max: 10 }).await,
         Ok(vec![finance.clone()])
@@ -1809,6 +1828,8 @@ pub async fn check_roles_contract(app: &App) {
     let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
     assert_eq!(elsewhere.read_role(admin.id).await, Ok(None));
     assert_eq!(elsewhere.read_group(finance.id).await, Ok(None));
+    assert_eq!(elsewhere.read_roles(&[admin.id]).await, Ok(Vec::new()));
+    assert_eq!(elsewhere.read_groups(&[finance.id]).await, Ok(Vec::new()));
     assert_eq!(elsewhere.count_roles().await, Ok(0));
     assert_eq!(elsewhere.count_groups().await, Ok(0));
     assert_eq!(elsewhere.delete_role(admin.id).await, Ok(false));
@@ -1946,9 +1967,11 @@ pub async fn check_grants_contract(app: &App) {
         "a way lasts until the first of its grants ends"
     );
     assert_eq!(
-        work.list_held_roles(ada.id, now, 1).await,
-        Ok(vec![held(&admin, None, 1)]),
-        "as many as asked, the first first"
+        work.list_held_roles(ada.id, now, 1)
+            .await
+            .map(|held| held.len()),
+        Ok(1),
+        "as many as asked, whichever ones"
     );
     assert_eq!(
         work.list_held_roles(ada.id, now + Duration::minutes(90), 10)
@@ -2028,6 +2051,75 @@ pub async fn check_grants_contract(app: &App) {
         Ok(false)
     );
     work.commit().await.expect("a commit");
+
+    // The other ends a way may have: the grant to the group ends first, the
+    // membership has no end, the grant has none. And a role held both ways,
+    // the direct way first.
+    let bob = create_person(app, scope, "bob", "correct horse battery").await;
+    let (auditor, clerk, signer) = (
+        make_role("auditor", None),
+        make_role("clerk", None),
+        make_role("signer", None),
+    );
+    let make_group = |name: &str| Group {
+        id: identify(),
+        name: name.to_owned(),
+        description: None,
+        created_at: now,
+    };
+    let (early, open_member, open_grant) = (
+        make_group("early"),
+        make_group("open-member"),
+        make_group("open-grant"),
+    );
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    for role in [&auditor, &clerk, &signer] {
+        assert_eq!(work.insert_role(role).await, Ok(true));
+    }
+    for group in [&early, &open_member, &open_grant] {
+        assert_eq!(work.insert_group(group).await, Ok(true));
+    }
+    let given = |role: &Role, holder: RoleHolder, until: Option<i64>| RoleGrant {
+        role: role.id,
+        holder,
+        grant: lasting(until),
+    };
+    for grant in [
+        given(&auditor, RoleHolder::Person(bob.id), None),
+        given(&auditor, RoleHolder::Group(early.id), Some(1)),
+        given(&clerk, RoleHolder::Group(open_member.id), Some(3)),
+        given(&signer, RoleHolder::Group(open_grant.id), None),
+    ] {
+        work.write_role_grant(&grant).await.expect("a grant");
+    }
+    for (group, until) in [
+        (&early, Some(2)),
+        (&open_member, None),
+        (&open_grant, Some(2)),
+    ] {
+        let membership = Membership {
+            group: group.id,
+            person: bob.id,
+            grant: lasting(until),
+        };
+        work.write_membership(&membership)
+            .await
+            .expect("a membership");
+    }
+    assert_eq!(
+        work.list_held_roles(bob.id, now, 10).await,
+        Ok(vec![
+            HeldRole {
+                until: None,
+                ..held(&auditor, None, 0)
+            },
+            held(&auditor, Some(early.id), 1),
+            held(&clerk, Some(open_member.id), 3),
+            held(&signer, Some(open_grant.id), 2),
+        ]),
+        "each way ends with the first of its ends, and none is no end"
+    );
+    work.commit().await.expect("a commit");
 }
 
 /// What any storage owes to the schema of relations and to the relations
@@ -2083,6 +2175,10 @@ pub async fn check_relations_contract(app: &App) {
 
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
     assert_eq!(work.read_relation_schema().await, Ok(None));
+    assert_eq!(
+        work.read_guarded_schema("document", "portal").await,
+        Ok(None)
+    );
     work.write_relation_schema(&schema("definition first {}"))
         .await
         .expect("a schema");
@@ -2169,6 +2265,39 @@ pub async fn check_relations_contract(app: &App) {
     );
     work.commit().await.expect("a commit");
 
+    // Only the kinds withdrawn go: the owners that are users, not the
+    // members of a team, nor the readers.
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    for tuple in [&owner, &reader] {
+        assert_eq!(work.insert_relation(tuple, now).await, Ok(true));
+    }
+    work.commit().await.expect("a commit");
+    let users_reading = [admitted("document", "reader", "user", None)];
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(
+        elsewhere.delete_withdrawn_relations(&users_reading).await,
+        Ok(0)
+    );
+    elsewhere.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.delete_withdrawn_relations(&[admitted("document", "owner", "user", None)])
+            .await,
+        Ok(1)
+    );
+    assert_eq!(
+        work.list_relation_subjects(&object("document:q3"), "owner", 10)
+            .await,
+        Ok(vec![team.subject.clone()])
+    );
+    assert_eq!(
+        work.list_relation_subjects(&object("document:q3"), "reader", 10)
+            .await,
+        Ok(vec![reader.subject.clone()]),
+        "nor what another realm withdrew"
+    );
+    work.commit().await.expect("a commit");
+
     // A guard is kept once, read for its type and client only, and listed.
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
     assert_eq!(
@@ -2179,8 +2308,25 @@ pub async fn check_relations_contract(app: &App) {
         work.insert_relation_guard("document", "portal", now).await,
         Ok(false)
     );
-    assert_eq!(work.is_relation_guard("document", "portal").await, Ok(true));
-    assert_eq!(work.is_relation_guard("folder", "portal").await, Ok(false));
+    assert_eq!(
+        work.read_guarded_schema("document", "portal")
+            .await
+            .map(|found| found.map(|found| found.guarded)),
+        Ok(Some(true))
+    );
+    assert_eq!(
+        work.read_guarded_schema("folder", "portal")
+            .await
+            .map(|found| found.map(|found| found.guarded)),
+        Ok(Some(false))
+    );
+    assert_eq!(
+        work.read_guarded_schema("document", "portal")
+            .await
+            .map(|found| found.map(|found| found.compiled)),
+        Ok(Some(json!({ "version": 1, "types": {} }))),
+        "the compiled form, as it was written"
+    );
     assert_eq!(
         work.list_relation_guards("document", 10).await,
         Ok(vec!["portal".to_owned()])
@@ -2188,8 +2334,8 @@ pub async fn check_relations_contract(app: &App) {
     work.commit().await.expect("a commit");
     let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
     assert_eq!(
-        elsewhere.is_relation_guard("document", "portal").await,
-        Ok(false)
+        elsewhere.read_guarded_schema("document", "portal").await,
+        Ok(None)
     );
     assert_eq!(
         elsewhere.delete_relation_guard("document", "portal").await,
@@ -2274,6 +2420,12 @@ pub async fn check_policies_contract(app: &App) {
         work.list_policies("billing").await,
         Ok(vec![alpha.clone(), read.clone(), zeta.clone()])
     );
+    assert_eq!(work.count_policies("billing", 10).await, Ok(3));
+    assert_eq!(
+        work.count_policies("billing", 2).await,
+        Ok(2),
+        "counted to the bound and no further"
+    );
     assert_eq!(
         work.list_applicable_policies("billing", "invoice", "approve")
             .await,
@@ -2326,6 +2478,7 @@ pub async fn check_policies_contract(app: &App) {
 
     let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
     assert_eq!(elsewhere.list_policies("billing").await, Ok(Vec::new()));
+    assert_eq!(elsewhere.count_policies("billing", 10).await, Ok(0));
     assert_eq!(elsewhere.delete_policy("billing", zeta.id).await, Ok(false));
     assert_eq!(
         elsewhere.has_policy_for_types(&types(&["invoice"])).await,

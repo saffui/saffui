@@ -27,6 +27,7 @@ CREATE TABLE roles (
     FOREIGN KEY (tenant_id, realm_id, client_id)
         REFERENCES clients (tenant_id, realm_id, client_id) ON DELETE CASCADE
 );
+CREATE INDEX roles_by_name ON roles (tenant_id, realm_id, name, role_id);
 
 CREATE TABLE groups (
     tenant_id uuid NOT NULL,

@@ -4,7 +4,9 @@ use uuid::Uuid;
 
 use super::grants::{HeldRole, Membership, RoleGrant, RoleHolder};
 use super::policy::Policy;
-use super::relations::{AdmittedRelation, ObjectRef, RelationTuple, StoredSchema, SubjectRef};
+use super::relations::{
+    AdmittedRelation, GuardedSchema, ObjectRef, RelationTuple, StoredSchema, SubjectRef,
+};
 use super::roles::{Group, Role};
 use crate::clients::store::ListWindow;
 use crate::ports::storage::StorageError;
@@ -16,6 +18,9 @@ pub trait RoleStore {
     async fn insert_role(&mut self, role: &Role) -> Result<bool, StorageError>;
 
     async fn read_role(&mut self, id: Uuid) -> Result<Option<Role>, StorageError>;
+
+    /// The roles of these identifiers the realm has, in one read.
+    async fn read_roles(&mut self, ids: &[Uuid]) -> Result<Vec<Role>, StorageError>;
 
     /// The roles of the realm and of its clients by name, within the window.
     async fn list_roles(&mut self, window: ListWindow) -> Result<Vec<Role>, StorageError>;
@@ -30,6 +35,9 @@ pub trait RoleStore {
     async fn insert_group(&mut self, group: &Group) -> Result<bool, StorageError>;
 
     async fn read_group(&mut self, id: Uuid) -> Result<Option<Group>, StorageError>;
+
+    /// The groups of these identifiers the realm has, in one read.
+    async fn read_groups(&mut self, ids: &[Uuid]) -> Result<Vec<Group>, StorageError>;
 
     /// The groups of the realm by name, within the window.
     async fn list_groups(&mut self, window: ListWindow) -> Result<Vec<Group>, StorageError>;
@@ -58,9 +66,9 @@ pub trait RoleStore {
 
     /// The roles a person holds at `now`, once per way: granted to them, or
     /// through each group they are a member of. A way stands when every
-    /// grant on it does, and lasts until the first of them ends. Ordered by
-    /// name, then client, then group, a role of the realm and a direct grant
-    /// first; `most` at most.
+    /// grant on it does, and lasts until the first of them ends. `most` at
+    /// most, whichever ones when there are more, ordered by name, then
+    /// client, then group, a role of the realm and a direct grant first.
     async fn list_held_roles(
         &mut self,
         person: Uuid,
@@ -84,6 +92,14 @@ pub trait RelationStore {
 
     async fn read_relation_schema(&mut self) -> Result<Option<StoredSchema>, StorageError>;
 
+    /// The compiled form of the schema of the realm, without its source, and
+    /// whether a client guards a type, in one read.
+    async fn read_guarded_schema(
+        &mut self,
+        object_type: &str,
+        client_id: &str,
+    ) -> Result<Option<GuardedSchema>, StorageError>;
+
     /// Keeps a relation. Answers `false` when it was kept already.
     async fn insert_relation(
         &mut self,
@@ -101,6 +117,13 @@ pub trait RelationStore {
         admitted: &[AdmittedRelation],
     ) -> Result<u64, StorageError>;
 
+    /// Removes every relation kept that one of `withdrawn` names, and no
+    /// other. Returns how many went.
+    async fn delete_withdrawn_relations(
+        &mut self,
+        withdrawn: &[AdmittedRelation],
+    ) -> Result<u64, StorageError>;
+
     /// Keeps a client as a guard of a type. Answers `false` when it was one.
     async fn insert_relation_guard(
         &mut self,
@@ -111,13 +134,6 @@ pub trait RelationStore {
 
     /// Removes a guard of a type. Answers whether there was one.
     async fn delete_relation_guard(
-        &mut self,
-        object_type: &str,
-        client_id: &str,
-    ) -> Result<bool, StorageError>;
-
-    /// Whether a client guards a type.
-    async fn is_relation_guard(
         &mut self,
         object_type: &str,
         client_id: &str,
@@ -157,13 +173,21 @@ pub trait PolicyStore {
         action: &str,
     ) -> Result<Vec<Policy>, StorageError>;
 
+    /// How many policies a client has, counted to `most` and no further.
+    async fn count_policies(&mut self, client_id: &str, most: u32) -> Result<u64, StorageError>;
+
     /// Removes a policy of a client. Answers whether there was one.
     async fn delete_policy(&mut self, client_id: &str, id: Uuid) -> Result<bool, StorageError>;
 
     /// Holds, until the unit of work ends, the definitions of the realm, its
-    /// policies, its schema of relations, its roles and its groups, against
-    /// another unit of work that would check them before it writes.
+    /// policies, its schema of relations, its roles and its groups, to change
+    /// them: any other unit of work that locks or freezes them waits.
     async fn lock_definitions(&mut self) -> Result<(), StorageError>;
+
+    /// Keeps the definitions of the realm as they are until the unit of work
+    /// ends, to write by them: a unit of work that locks them waits, another
+    /// that freezes them does not.
+    async fn freeze_definitions(&mut self) -> Result<(), StorageError>;
 
     /// Whether a policy of any client of the realm guards one of these types.
     async fn has_policy_for_types(&mut self, types: &[String]) -> Result<bool, StorageError>;

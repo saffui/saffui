@@ -27,6 +27,21 @@ fn read_policy_row(row: &Row) -> Result<Policy, StorageError> {
     })
 }
 
+impl PgUnitOfWork {
+    /// Takes the row of the definitions of the realm, made with the realm, by
+    /// a statement that locks it. A realm without the row is refused, never
+    /// let through unlocked.
+    async fn take_definitions_row(&mut self, statement: &str) -> Result<(), StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        let taken = self.read_raw(statement, &[&tenant, &realm]).await?;
+        if taken.len() == 1 {
+            Ok(())
+        } else {
+            Err(StorageError::Failed)
+        }
+    }
+}
+
 #[async_trait]
 impl PolicyStore for PgUnitOfWork {
     async fn insert_policy(&mut self, policy: &Policy) -> Result<bool, StorageError> {
@@ -94,6 +109,23 @@ impl PolicyStore for PgUnitOfWork {
         rows.iter().map(read_policy_row).collect()
     }
 
+    async fn count_policies(&mut self, client_id: &str, most: u32) -> Result<u64, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        let most = i64::from(most);
+        let rows = self
+            .read_raw(
+                "SELECT count(*) FROM (
+                     SELECT 1 FROM authz_policies
+                     WHERE tenant_id = $1 AND realm_id = $2 AND client_id = $3
+                     LIMIT $4
+                 ) counted",
+                &[&tenant, &realm, &client_id, &most],
+            )
+            .await?;
+        let kept: i64 = rows.first().ok_or(StorageError::Failed)?.get(0);
+        u64::try_from(kept).map_err(|_| StorageError::Failed)
+    }
+
     async fn delete_policy(&mut self, client_id: &str, id: Uuid) -> Result<bool, StorageError> {
         let (tenant, realm) = self.scope_keys();
         let removed = self
@@ -107,16 +139,17 @@ impl PolicyStore for PgUnitOfWork {
     }
 
     async fn lock_definitions(&mut self) -> Result<(), StorageError> {
-        let (tenant, realm) = self.scope_keys();
-        let key = format!("authz_definitions:{tenant}:{realm}");
-        // A lock of the transaction, named after the realm: a second writer
-        // of its definitions waits for the first to end before it checks.
-        self.read_raw(
-            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-            &[&key],
+        self.take_definitions_row(
+            "SELECT 1 FROM authz_definitions WHERE tenant_id = $1 AND realm_id = $2 FOR UPDATE",
         )
         .await
-        .map(|_| ())
+    }
+
+    async fn freeze_definitions(&mut self) -> Result<(), StorageError> {
+        self.take_definitions_row(
+            "SELECT 1 FROM authz_definitions WHERE tenant_id = $1 AND realm_id = $2 FOR SHARE",
+        )
+        .await
     }
 
     async fn has_policy_for_types(&mut self, types: &[String]) -> Result<bool, StorageError> {

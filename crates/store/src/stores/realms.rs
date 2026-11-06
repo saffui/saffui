@@ -7,7 +7,7 @@ use crate::query::bind::col;
 use crate::query::ident::Column;
 use crate::query::insert::Insert;
 use crate::query::select::Select;
-use crate::schema::{realms, tenants};
+use crate::schema::{authz_definitions, realms, tenants};
 use crate::work::PgUnitOfWork;
 
 const REALM: &[Column] = &[realms::NAME, realms::ENABLED, realms::CREATED_AT];
@@ -46,7 +46,11 @@ impl RealmStore for PgUnitOfWork {
             ],
         )
         .build();
-        self.execute(&insert).await.map(|_| ())
+        self.execute(&insert).await?;
+        // The row the writers of its definitions of authorization lock: a
+        // realm without it refuses them.
+        let definitions = Insert::into(authz_definitions::TABLE, Vec::new()).build();
+        self.execute(&definitions).await.map(|_| ())
     }
 
     async fn read_realm(&mut self) -> Result<Option<Realm>, StorageError> {

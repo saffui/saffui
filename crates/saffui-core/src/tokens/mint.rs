@@ -10,6 +10,7 @@ use super::{
     ACCESS_TOKEN_LIFETIME_SECONDS, ACCESS_TOKEN_TYPE, IDENTITY_TOKEN_TYPE, IssuedAccessToken,
 };
 use crate::app::App;
+use crate::authz::grants::RoleClaims;
 use crate::directory::Person;
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
@@ -31,6 +32,8 @@ pub struct AccessTokenSubject<'a> {
     pub scopes: &'a [String],
     /// The session behind the token, when a person is.
     pub session: Option<Uuid>,
+    /// What the token says of the roles of the person, when it was asked.
+    pub roles: Option<&'a RoleClaims>,
 }
 
 #[derive(Clone, Copy)]
@@ -91,6 +94,14 @@ pub fn mint_access_token(
     subject: AccessTokenSubject<'_>,
 ) -> Result<IssuedAccessToken, Failure> {
     let issued_at = app.now().unix_timestamp();
+    let lifetime_ends = issued_at.saturating_add_unsigned(ACCESS_TOKEN_LIFETIME_SECONDS);
+    // A token that says a role lives no longer than the role.
+    let expires_at = subject
+        .roles
+        .and_then(|roles| roles.until)
+        .map_or(lifetime_ends, |until| {
+            until.unix_timestamp().min(lifetime_ends)
+        });
     let scope = subject.scopes.join(" ");
     let mut claims = json!({
         "iss": subject.issuer,
@@ -100,15 +111,19 @@ pub fn mint_access_token(
         "client_id": subject.client_id,
         "scope": scope,
         "iat": issued_at,
-        "exp": issued_at.saturating_add_unsigned(ACCESS_TOKEN_LIFETIME_SECONDS),
+        "exp": expires_at,
         "jti": mint_id(app)?.to_string(),
     });
     if let Some(session) = subject.session {
         claims["sid"] = Value::String(session.to_string());
     }
+    if let Some(roles) = subject.roles {
+        claims["realm_access"] = roles.write_realm_access();
+        claims["resource_access"] = roles.write_resource_access(subject.client_id);
+    }
     Ok(IssuedAccessToken {
         token: sign_claims(app, key, ACCESS_TOKEN_TYPE, &claims)?,
-        expires_in: ACCESS_TOKEN_LIFETIME_SECONDS,
+        expires_in: u64::try_from(expires_at - issued_at).unwrap_or(0),
         scope,
     })
 }

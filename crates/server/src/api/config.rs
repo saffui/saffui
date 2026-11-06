@@ -4,7 +4,7 @@
 //! `tests/mounted.rs` would say so.
 
 use crate::api::rest::endpoints::health::{self, DrainFlag};
-use crate::api::rest::endpoints::{account, admin, login, oidc};
+use crate::api::rest::endpoints::{account, admin, authz, login, oidc};
 use crate::error::{refuse_unreadable_json, refuse_unreadable_query};
 use crate::middleware::security_headers::protect_answers;
 use actix_web::web;
@@ -46,6 +46,7 @@ pub fn register_data_plane(
                     .service(oidc::logout::begin)
                     .service(oidc::logout::confirm)
                     .service(oidc::authorize::begin)
+                    .service(authz::decide::ask_decision)
                     .service(login::page::show_sign_in)
                     .service(login::page::submit_sign_in)
                     .service(account::authenticator::show_authenticator)
@@ -64,6 +65,30 @@ pub fn register_data_plane(
                     .service(admin::user::remove_authenticator)
                     .service(admin::user::resume_person_codes)
                     .service(admin::user::remove_keys)
+                    .service(admin::role::list_roles)
+                    .service(admin::role::create_role)
+                    .service(admin::role::delete_role)
+                    .service(admin::group::list_groups)
+                    .service(admin::group::create_group)
+                    .service(admin::group::delete_group)
+                    .service(admin::group::grant_group_role)
+                    .service(admin::group::revoke_group_role)
+                    .service(admin::group::add_group_member)
+                    .service(admin::group::remove_group_member)
+                    .service(admin::user::list_user_roles)
+                    .service(admin::user::grant_user_role)
+                    .service(admin::user::revoke_user_role)
+                    .service(admin::relation::read_schema)
+                    .service(admin::relation::write_schema)
+                    .service(admin::relation::list_relations)
+                    .service(admin::relation::write_relation)
+                    .service(admin::relation::delete_relation)
+                    .service(admin::relation::list_guards)
+                    .service(admin::relation::write_guard)
+                    .service(admin::relation::delete_guard)
+                    .service(admin::policy::list_policies)
+                    .service(admin::policy::create_policy)
+                    .service(admin::policy::delete_policy)
                     .service(admin::audit::verify_audit_chain),
             );
     }

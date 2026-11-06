@@ -1,6 +1,11 @@
 //! From the types of the core to what the administration API says.
 
-use api::{ClientView, RealmView, UserView};
+use api::{
+    ClientView, GrantView, GroupView, HeldRoleView, PolicyView, RealmView, RoleView, UserView,
+};
+use saffui_core::authz::grants::{Grant, HeldRole};
+use saffui_core::authz::policy::Policy;
+use saffui_core::authz::roles::{Group, Role};
 use saffui_core::clients::Client;
 use saffui_core::directory::Person;
 use saffui_core::instant::write_instant;
@@ -47,5 +52,58 @@ pub(super) fn show_user(person: &Person) -> UserView {
         display_name: person.display_name.clone(),
         enabled: person.enabled,
         created_at: write_instant(person.created_at),
+    }
+}
+
+pub(super) fn show_role(role: &Role) -> RoleView {
+    RoleView {
+        id: role.id.to_string(),
+        name: role.name.clone(),
+        client_id: role.client_id.clone(),
+        description: role.description.clone(),
+        created_at: write_instant(role.created_at),
+    }
+}
+
+pub(super) fn show_group(group: &Group) -> GroupView {
+    GroupView {
+        id: group.id.to_string(),
+        name: group.name.clone(),
+        description: group.description.clone(),
+        created_at: write_instant(group.created_at),
+    }
+}
+
+pub(super) fn show_grant(grant: &Grant) -> GrantView {
+    GrantView {
+        valid_from: write_instant(grant.valid_from),
+        valid_until: grant.valid_until.map(write_instant),
+        granted_by: grant.granted_by.clone(),
+        reason: grant.reason.clone(),
+        granted_at: write_instant(grant.granted_at),
+    }
+}
+
+pub(super) fn show_held_role(held: &HeldRole) -> HeldRoleView {
+    HeldRoleView {
+        role_id: held.role.to_string(),
+        name: held.name.clone(),
+        client_id: held.client_id.clone(),
+        through_group: held.through.map(|group| group.to_string()),
+        until: held.until.map(write_instant),
+    }
+}
+
+pub(super) fn show_policy(policy: &Policy) -> PolicyView {
+    PolicyView {
+        id: policy.id.to_string(),
+        client_id: policy.client_id.clone(),
+        name: policy.name.clone(),
+        resource_type: policy.resource_type.clone(),
+        action: policy.action.clone(),
+        effect: policy.effect.name().to_owned(),
+        combine: policy.combine.name().to_owned(),
+        conditions: policy.conditions.clone(),
+        created_at: write_instant(policy.created_at),
     }
 }

@@ -193,6 +193,13 @@ async fn a_realm_with_a_history_is_not_deleted_with_it() {
 
     assert_eq!(refused.code(), Some(&SqlState::FOREIGN_KEY_VIOLATION));
     assert_eq!(
+        refused
+            .as_db_error()
+            .and_then(|refusal| refusal.constraint()),
+        Some("audit_chain_heads_tenant_id_realm_id_fkey"),
+        "the chain refuses it, not another row of the realm"
+    );
+    assert_eq!(
         verify_chain(&app, scope).await,
         Ok(ChainVerdict::Intact { events: 2 })
     );

@@ -3,7 +3,11 @@
 
 pub mod audit;
 pub mod client;
+pub mod group;
 mod listing;
+pub mod policy;
 pub mod realm;
+pub mod relation;
+pub mod role;
 pub mod user;
 mod views;

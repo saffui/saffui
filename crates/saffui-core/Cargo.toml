@@ -19,7 +19,8 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 time.workspace = true
-uuid.workspace = true
+# Policies name roles and groups by identifier, in the document they are written in.
+uuid = { workspace = true, features = ["serde"] }
 zeroize.workspace = true
 
 [dev-dependencies]

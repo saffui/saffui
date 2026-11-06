@@ -2,10 +2,12 @@
 //! stands, and what it says.
 
 use serde::Serialize;
+use serde_json::Value;
 
 use super::discovery::name_issuer;
 use super::errors::OAuthFailure;
 use crate::app::App;
+use crate::authz::grants::{ROLES_SCOPE, RoleClaims, read_role_claims};
 use crate::clients::authenticate::authenticate_client;
 use crate::error::{ErrorCode, Failure};
 use crate::login::session::read_live_subject;
@@ -35,6 +37,11 @@ pub struct Introspection {
     pub sid: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_type: Option<&'static str>,
+    /// The roles the person holds now, not those the token was made with.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub realm_access: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_access: Option<Value>,
 }
 
 /// Tells a client whether a token stands. An access token stands while it
@@ -45,8 +52,10 @@ pub struct Introspection {
 ///
 /// Returns [`ErrorCode::ClientAuthenticationFailed`] for a caller that is
 /// not a client with its secret, [`ErrorCode::RequestInvalid`] when no token
-/// is presented, or the storage failure. A token that does not stand is not
-/// an error: it is an answer.
+/// is presented, [`ErrorCode::HeldTooMany`] for a token that asks for the
+/// roles of a person who holds them by more ways than are read, or the
+/// storage failure. A token that does not stand is not an error: it is an
+/// answer.
 pub async fn introspect_token(
     app: &App,
     realm: &str,
@@ -66,27 +75,48 @@ pub async fn introspect_token(
 
     match verify_access_token(app, work.as_mut(), &issuer, token).await {
         Ok(claims) => {
-            let stands = match claims.session {
-                None => true,
-                Some(session) => read_live_subject(app, work.as_mut(), session)
-                    .await?
-                    .is_some(),
+            let person = match claims.session {
+                None => None,
+                Some(session) => match read_live_subject(app, work.as_mut(), session).await? {
+                    Some((_, person)) => Some(person.id),
+                    None => return Ok(Introspection::default()),
+                },
             };
-            return Ok(if stands {
-                Introspection {
-                    active: true,
-                    scope: Some(claims.scopes.join(" ")),
-                    client_id: Some(claims.client_id),
-                    sub: Some(claims.subject),
-                    iss: Some(issuer),
-                    exp: Some(claims.expires_at),
-                    iat: Some(claims.issued_at),
-                    jti: Some(claims.token_id),
-                    sid: claims.session.map(|session| session.to_string()),
-                    token_type: Some("Bearer"),
+            // Read now: a role taken away since the token was made is not
+            // said, so that a service that asks learns of it at once.
+            let asked = claims.scopes.iter().any(|scope| scope == ROLES_SCOPE);
+            let roles = match person {
+                Some(person) if asked => {
+                    Some(read_role_claims(work.as_mut(), person, &claims.client_id, now).await?)
                 }
-            } else {
-                Introspection::default()
+                _ => None,
+            };
+            // An answer that says roles stands no longer than the first of
+            // them: a cache that keeps it until `exp` keeps no role past its end.
+            let expires_at = roles
+                .as_ref()
+                .and_then(|roles| roles.until)
+                .map_or(claims.expires_at, |until| {
+                    until.unix_timestamp().min(claims.expires_at)
+                });
+            // The roles of an application are told to it alone.
+            let told_to_its_client = client.client_id == claims.client_id;
+            return Ok(Introspection {
+                active: true,
+                scope: Some(claims.scopes.join(" ")),
+                sub: Some(claims.subject),
+                iss: Some(issuer),
+                exp: Some(expires_at),
+                iat: Some(claims.issued_at),
+                jti: Some(claims.token_id),
+                sid: claims.session.map(|session| session.to_string()),
+                token_type: Some("Bearer"),
+                realm_access: roles.as_ref().map(RoleClaims::write_realm_access),
+                resource_access: roles
+                    .as_ref()
+                    .filter(|_| told_to_its_client)
+                    .map(|roles| roles.write_resource_access(&claims.client_id)),
+                client_id: Some(claims.client_id),
             });
         }
         Err(failure) if failure.code == ErrorCode::TokenInvalid => {}
@@ -119,6 +149,7 @@ pub async fn introspect_token(
         jti: None,
         sid: Some(stored.token.session.to_string()),
         token_type: None,
+        ..Introspection::default()
     })
 }
 

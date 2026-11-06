@@ -4,6 +4,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use time::OffsetDateTime;
 
+use crate::authz::shares::DecisionShares;
 use crate::error::{ErrorCode, Failure};
 use crate::login::fairness::HashingShares;
 use crate::ports::clock::Clock;
@@ -28,6 +29,9 @@ pub struct App {
     pub security_keys: Arc<dyn SecurityKeys>,
     /// What each realm may take of the hashers at once.
     pub hashing_shares: Arc<HashingShares>,
+    /// What each tenant, and the node, may have answered by the point of
+    /// decision at once.
+    pub decision_shares: Arc<DecisionShares>,
     /// A hash nobody's password matches, made once per process. Start it empty.
     pub decoy_hash: Arc<OnceLock<String>>,
 }

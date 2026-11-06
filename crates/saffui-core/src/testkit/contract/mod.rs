@@ -1714,3 +1714,1142 @@ pub async fn check_security_keys_contract(app: &App) {
     assert_eq!(work.holds_second_factor(ada.id).await, Ok(false));
     work.commit().await.expect("a commit");
 }
+
+/// What any storage owes to roles and groups: a name is taken once per
+/// realm or per client, they are listed by name byte for byte, a deletion
+/// answers once, and nothing of them is reachable from another realm.
+///
+/// # Panics
+///
+/// Panics when the storage breaks the contract.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario, read from top to bottom"
+)]
+pub async fn check_roles_contract(app: &App) {
+    use crate::authz::roles::{Group, Role};
+    use crate::clients::store::ListWindow;
+    use crate::testkit::fixtures::{Application, create_realm, register_application};
+
+    let scope = create_realm(app, "contract-roles").await;
+    let other = create_realm(app, "contract-roles-other").await;
+    let portal = Application {
+        client_id: "portal",
+        redirect_uri: "https://app.example.org/cb",
+        post_logout_redirect_uri: None,
+        public: true,
+    };
+    register_application(app, scope, portal).await;
+    let now = app.now();
+    let identify = || mint_id(app).expect("an identifier");
+    let make_role = |name: &str, client_id: Option<&str>| Role {
+        id: identify(),
+        client_id: client_id.map(str::to_owned),
+        name: name.to_owned(),
+        description: Some("what it lets do".to_owned()),
+        created_at: now,
+    };
+    // Upper case sorts before lower case, byte for byte.
+    let (admin, portal_admin, viewer) = (
+        make_role("admin", None),
+        make_role("admin", Some("portal")),
+        make_role("Viewer", None),
+    );
+    let finance = Group {
+        id: identify(),
+        name: "finance".to_owned(),
+        description: None,
+        created_at: now,
+    };
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    for role in [&admin, &portal_admin, &viewer] {
+        assert_eq!(work.insert_role(role).await, Ok(true));
+    }
+    assert_eq!(work.insert_group(&finance).await, Ok(true));
+    assert_eq!(
+        work.insert_role(&make_role("admin", Some("portal"))).await,
+        Ok(false),
+        "a name is taken once per client"
+    );
+    assert_eq!(
+        work.insert_role(&make_role("admin", None)).await,
+        Ok(false),
+        "and once in the realm"
+    );
+    let twin = Group {
+        id: identify(),
+        ..finance.clone()
+    };
+    assert_eq!(work.insert_group(&twin).await, Ok(false));
+    work.commit().await.expect("a commit");
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    // By name, byte for byte, then by identifier where names tie.
+    let mut ordered = vec![viewer.clone(), admin.clone(), portal_admin.clone()];
+    ordered.sort_by(|left, right| (&left.name, left.id).cmp(&(&right.name, right.id)));
+    assert_eq!(ordered[0], viewer, "upper case comes first");
+    assert_eq!(
+        work.list_roles(ListWindow { first: 0, max: 10 }).await,
+        Ok(ordered.clone())
+    );
+    assert_eq!(
+        work.list_roles(ListWindow { first: 1, max: 1 }).await,
+        Ok(vec![ordered[1].clone()])
+    );
+    assert_eq!(work.count_roles().await, Ok(3));
+    assert_eq!(
+        work.read_role(portal_admin.id).await,
+        Ok(Some(portal_admin.clone()))
+    );
+    assert_eq!(work.read_group(finance.id).await, Ok(Some(finance.clone())));
+    let by_id = |mut roles: Vec<Role>| {
+        roles.sort_by_key(|role| role.id);
+        roles
+    };
+    assert_eq!(
+        work.read_roles(&[admin.id, viewer.id, Uuid::from_u128(7)])
+            .await
+            .map(by_id),
+        Ok(by_id(vec![admin.clone(), viewer.clone()])),
+        "the roles named that the realm has, in one read"
+    );
+    assert_eq!(
+        work.read_groups(&[finance.id, Uuid::from_u128(7)]).await,
+        Ok(vec![finance.clone()])
+    );
+    assert_eq!(
+        work.list_groups(ListWindow { first: 0, max: 10 }).await,
+        Ok(vec![finance.clone()])
+    );
+    assert_eq!(work.count_groups().await, Ok(1));
+    drop(work);
+
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(elsewhere.read_role(admin.id).await, Ok(None));
+    assert_eq!(elsewhere.read_group(finance.id).await, Ok(None));
+    assert_eq!(elsewhere.read_roles(&[admin.id]).await, Ok(Vec::new()));
+    assert_eq!(elsewhere.read_groups(&[finance.id]).await, Ok(Vec::new()));
+    assert_eq!(elsewhere.count_roles().await, Ok(0));
+    assert_eq!(elsewhere.count_groups().await, Ok(0));
+    assert_eq!(elsewhere.delete_role(admin.id).await, Ok(false));
+    assert_eq!(elsewhere.delete_group(finance.id).await, Ok(false));
+    drop(elsewhere);
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(work.delete_role(admin.id).await, Ok(true));
+    assert_eq!(work.delete_role(admin.id).await, Ok(false));
+    assert_eq!(work.delete_group(finance.id).await, Ok(true));
+    assert_eq!(work.delete_group(finance.id).await, Ok(false));
+    assert_eq!(work.count_roles().await, Ok(2));
+    work.commit().await.expect("a commit");
+}
+
+/// What any storage owes to grants and memberships: a grant replaces the one
+/// its holder had, a role is held only while every grant on its way stands
+/// and until the first of them ends, what is deleted takes its grants with
+/// it, and nothing of it is reachable from another realm.
+///
+/// # Panics
+///
+/// Panics when the storage breaks the contract.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario, read from top to bottom"
+)]
+pub async fn check_grants_contract(app: &App) {
+    use time::Duration;
+
+    use crate::authz::grants::{Grant, HeldRole, Membership, RoleGrant, RoleHolder};
+    use crate::authz::roles::{Group, Role};
+    use crate::testkit::fixtures::{
+        Application, create_person, create_realm, register_application,
+    };
+
+    let scope = create_realm(app, "contract-grants").await;
+    let other = create_realm(app, "contract-grants-other").await;
+    let portal = Application {
+        client_id: "portal",
+        redirect_uri: "https://app.example.org/cb",
+        post_logout_redirect_uri: None,
+        public: true,
+    };
+    register_application(app, scope, portal).await;
+    let ada = create_person(app, scope, "ada", "correct horse battery").await;
+    let now = app.now();
+    let identify = || mint_id(app).expect("an identifier");
+    let make_role = |name: &str, client_id: Option<&str>| Role {
+        id: identify(),
+        client_id: client_id.map(str::to_owned),
+        name: name.to_owned(),
+        description: None,
+        created_at: now,
+    };
+    let (admin, portal_admin, viewer) = (
+        make_role("admin", None),
+        make_role("admin", Some("portal")),
+        make_role("Viewer", None),
+    );
+    let finance = Group {
+        id: identify(),
+        name: "finance".to_owned(),
+        description: None,
+        created_at: now,
+    };
+    let lasting = |until: Option<i64>| Grant {
+        valid_from: now,
+        valid_until: until.map(|hours| now + Duration::hours(hours)),
+        granted_by: "operator".to_owned(),
+        reason: Some("audit season".to_owned()),
+        granted_at: now,
+    };
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    for role in [&admin, &portal_admin, &viewer] {
+        assert_eq!(work.insert_role(role).await, Ok(true));
+    }
+    assert_eq!(work.insert_group(&finance).await, Ok(true));
+
+    // Admin given to ada for good, then again for an hour: the second
+    // replaces the first. Admin of the portal given to the group for three
+    // hours, and ada a member for two. A viewer grant that starts later.
+    let direct = |role: &Role, until: Option<i64>| RoleGrant {
+        role: role.id,
+        holder: RoleHolder::Person(ada.id),
+        grant: lasting(until),
+    };
+    work.write_role_grant(&direct(&admin, None))
+        .await
+        .expect("a grant");
+    work.write_role_grant(&direct(&admin, Some(1)))
+        .await
+        .expect("the grant again");
+    let to_group = RoleGrant {
+        role: portal_admin.id,
+        holder: RoleHolder::Group(finance.id),
+        grant: lasting(Some(3)),
+    };
+    work.write_role_grant(&to_group).await.expect("a grant");
+    let membership = Membership {
+        group: finance.id,
+        person: ada.id,
+        grant: lasting(Some(2)),
+    };
+    work.write_membership(&membership)
+        .await
+        .expect("a membership");
+    let later = RoleGrant {
+        grant: Grant {
+            valid_from: now + Duration::minutes(30),
+            ..lasting(None)
+        },
+        ..direct(&viewer, None)
+    };
+    work.write_role_grant(&later)
+        .await
+        .expect("a grant for later");
+    work.commit().await.expect("a commit");
+
+    let held = |role: &Role, through: Option<Uuid>, until: i64| HeldRole {
+        role: role.id,
+        client_id: role.client_id.clone(),
+        name: role.name.clone(),
+        through,
+        until: Some(now + Duration::hours(until)),
+    };
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.list_held_roles(ada.id, now, 10).await,
+        Ok(vec![
+            held(&admin, None, 1),
+            held(&portal_admin, Some(finance.id), 2)
+        ]),
+        "a way lasts until the first of its grants ends"
+    );
+    assert_eq!(
+        work.list_held_roles(ada.id, now, 1)
+            .await
+            .map(|held| held.len()),
+        Ok(1),
+        "as many as asked, whichever ones"
+    );
+    assert_eq!(
+        work.list_held_roles(ada.id, now + Duration::minutes(90), 10)
+            .await,
+        Ok(vec![
+            HeldRole {
+                until: None,
+                ..held(&viewer, None, 0)
+            },
+            held(&portal_admin, Some(finance.id), 2),
+        ]),
+        "admin ended, the viewer grant started"
+    );
+    assert_eq!(
+        work.list_held_roles(ada.id, now + Duration::hours(2), 10)
+            .await,
+        Ok(vec![HeldRole {
+            until: None,
+            ..held(&viewer, None, 0)
+        }]),
+        "the membership ended, and the end is not held"
+    );
+    drop(work);
+
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(
+        elsewhere.list_held_roles(ada.id, now, 10).await,
+        Ok(Vec::new())
+    );
+    assert_eq!(
+        elsewhere
+            .delete_role_grant(admin.id, RoleHolder::Person(ada.id))
+            .await,
+        Ok(false)
+    );
+    assert_eq!(
+        elsewhere.delete_membership(finance.id, ada.id).await,
+        Ok(false)
+    );
+    drop(elsewhere);
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.delete_role_grant(viewer.id, RoleHolder::Person(ada.id))
+            .await,
+        Ok(true)
+    );
+    assert_eq!(
+        work.delete_role_grant(viewer.id, RoleHolder::Person(ada.id))
+            .await,
+        Ok(false)
+    );
+    assert_eq!(work.delete_membership(finance.id, ada.id).await, Ok(true));
+    assert_eq!(work.delete_membership(finance.id, ada.id).await, Ok(false));
+    assert_eq!(
+        work.list_held_roles(ada.id, now, 10).await,
+        Ok(vec![held(&admin, None, 1)])
+    );
+    work.write_membership(&membership)
+        .await
+        .expect("a membership again");
+    work.commit().await.expect("a commit");
+
+    // A role deleted takes its grants; a group deleted, its members and grants.
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(work.delete_role(admin.id).await, Ok(true));
+    assert_eq!(work.delete_role(admin.id).await, Ok(false));
+    assert_eq!(
+        work.list_held_roles(ada.id, now, 10).await,
+        Ok(vec![held(&portal_admin, Some(finance.id), 2)])
+    );
+    assert_eq!(work.delete_group(finance.id).await, Ok(true));
+    assert_eq!(work.list_held_roles(ada.id, now, 10).await, Ok(Vec::new()));
+    assert_eq!(
+        work.delete_role_grant(portal_admin.id, RoleHolder::Group(finance.id))
+            .await,
+        Ok(false)
+    );
+    work.commit().await.expect("a commit");
+
+    // The other ends a way may have: the grant to the group ends first, the
+    // membership has no end, the grant has none. And a role held both ways,
+    // the direct way first.
+    let bob = create_person(app, scope, "bob", "correct horse battery").await;
+    let (auditor, clerk, signer) = (
+        make_role("auditor", None),
+        make_role("clerk", None),
+        make_role("signer", None),
+    );
+    let make_group = |name: &str| Group {
+        id: identify(),
+        name: name.to_owned(),
+        description: None,
+        created_at: now,
+    };
+    let (early, open_member, open_grant) = (
+        make_group("early"),
+        make_group("open-member"),
+        make_group("open-grant"),
+    );
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    for role in [&auditor, &clerk, &signer] {
+        assert_eq!(work.insert_role(role).await, Ok(true));
+    }
+    for group in [&early, &open_member, &open_grant] {
+        assert_eq!(work.insert_group(group).await, Ok(true));
+    }
+    let given = |role: &Role, holder: RoleHolder, until: Option<i64>| RoleGrant {
+        role: role.id,
+        holder,
+        grant: lasting(until),
+    };
+    for grant in [
+        given(&auditor, RoleHolder::Person(bob.id), None),
+        given(&auditor, RoleHolder::Group(early.id), Some(1)),
+        given(&clerk, RoleHolder::Group(open_member.id), Some(3)),
+        given(&signer, RoleHolder::Group(open_grant.id), None),
+    ] {
+        work.write_role_grant(&grant).await.expect("a grant");
+    }
+    for (group, until) in [
+        (&early, Some(2)),
+        (&open_member, None),
+        (&open_grant, Some(2)),
+    ] {
+        let membership = Membership {
+            group: group.id,
+            person: bob.id,
+            grant: lasting(until),
+        };
+        work.write_membership(&membership)
+            .await
+            .expect("a membership");
+    }
+    assert_eq!(
+        work.list_held_roles(bob.id, now, 10).await,
+        Ok(vec![
+            HeldRole {
+                until: None,
+                ..held(&auditor, None, 0)
+            },
+            held(&auditor, Some(early.id), 1),
+            held(&clerk, Some(open_member.id), 3),
+            held(&signer, Some(open_grant.id), 2),
+        ]),
+        "each way ends with the first of its ends, and none is no end"
+    );
+    work.commit().await.expect("a commit");
+
+    // Names made out of their order, and a way through a group to a name
+    // before those given directly: the ways are in the order of the names.
+    let cyd = create_person(app, scope, "cyd", "correct horse battery").await;
+    let (zulu, mike, alpha) = (
+        make_role("zulu", None),
+        make_role("mike", None),
+        make_role("alpha", None),
+    );
+    let crew = make_group("crew");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    for role in [&zulu, &mike, &alpha] {
+        assert_eq!(work.insert_role(role).await, Ok(true));
+    }
+    assert_eq!(work.insert_group(&crew).await, Ok(true));
+    for grant in [
+        given(&zulu, RoleHolder::Person(cyd.id), None),
+        given(&mike, RoleHolder::Person(cyd.id), None),
+        given(&alpha, RoleHolder::Group(crew.id), None),
+    ] {
+        work.write_role_grant(&grant).await.expect("a grant");
+    }
+    let membership = Membership {
+        group: crew.id,
+        person: cyd.id,
+        grant: lasting(None),
+    };
+    work.write_membership(&membership)
+        .await
+        .expect("a membership");
+    let for_good = |role: &Role, through: Option<Uuid>| HeldRole {
+        until: None,
+        ..held(role, through, 0)
+    };
+    assert_eq!(
+        work.list_held_roles(cyd.id, now, 10).await,
+        Ok(vec![
+            for_good(&alpha, Some(crew.id)),
+            for_good(&mike, None),
+            for_good(&zulu, None),
+        ]),
+        "byte for byte by name, whichever way and whenever made"
+    );
+    work.commit().await.expect("a commit");
+}
+
+/// What any storage owes to the schema of relations and to the relations
+/// kept: a schema replaces the one before, and its kinds theirs, a relation
+/// is kept once and read back only for its object and relation, in the order
+/// of its subjects, and nothing of it is reachable from another realm. A
+/// relation the product did not keep goes with the first schema that would
+/// admit it, and a form another version wrote is compiled again.
+///
+/// # Panics
+///
+/// Panics when the storage breaks the contract.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario, read from top to bottom"
+)]
+pub async fn check_relations_contract(app: &App) {
+    use serde_json::json;
+
+    use crate::authz::relations::schema::AllowedSubject;
+    use crate::authz::relations::{
+        AdmittedRelation, ObjectRef, RelationAdmission, RelationTuple, StoredSchema, SubjectRef,
+    };
+    use crate::testkit::fixtures::create_realm;
+
+    let scope = create_realm(app, "contract-relations").await;
+    let other = create_realm(app, "contract-relations-other").await;
+    let portal = crate::testkit::fixtures::Application {
+        client_id: "portal",
+        redirect_uri: "https://app.example.org/cb",
+        post_logout_redirect_uri: None,
+        public: true,
+    };
+    crate::testkit::fixtures::register_application(app, scope, portal).await;
+    let now = app.now();
+    let object = |text: &str| {
+        let (object_type, object_id) = text.split_once(':').expect("type:id");
+        ObjectRef {
+            object_type: object_type.to_owned(),
+            object_id: object_id.to_owned(),
+        }
+    };
+    let relate = |object_text: &str, relation: &str, subject_text: &str, member: Option<&str>| {
+        RelationTuple {
+            object: object(object_text),
+            relation: relation.to_owned(),
+            subject: SubjectRef {
+                object: object(subject_text),
+                member: member.map(str::to_owned),
+            },
+        }
+    };
+    let schema = |source: &str| StoredSchema {
+        source: source.to_owned(),
+        compiled: json!({ "version": 1, "types": {} }),
+        written_at: now,
+    };
+    let kind = |relation: &str, subject_type: &str, member: Option<&str>| AdmittedRelation {
+        object_type: "document".to_owned(),
+        relation: relation.to_owned(),
+        subject: AllowedSubject {
+            object_type: subject_type.to_owned(),
+            member: member.map(str::to_owned),
+        },
+    };
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(work.read_relation_schema().await, Ok(None));
+    assert_eq!(
+        work.read_guarded_schema("document", "portal").await,
+        Ok(None)
+    );
+    let first = [kind("owner", "user", None), kind("reader", "user", None)];
+    work.write_relation_schema(&schema("definition first {}"), &first)
+        .await
+        .expect("a schema");
+    let second = [
+        kind("owner", "user", None),
+        kind("owner", "team", Some("member")),
+    ];
+    work.write_relation_schema(&schema("definition second {}"), &second)
+        .await
+        .expect("a schema in place of the first");
+    let owner = relate("document:q3", "owner", "user:ada", None);
+    let team = relate("document:q3", "owner", "team:core", Some("member"));
+    let reader = relate("document:q3", "reader", "user:bob", None);
+    assert_eq!(work.insert_relation(&owner, now).await, Ok(true));
+    assert_eq!(work.insert_relation(&owner, now).await, Ok(false));
+    assert_eq!(work.insert_relation(&team, now).await, Ok(true));
+    assert_eq!(work.insert_relation(&reader, now).await, Ok(true));
+    work.commit().await.expect("a commit");
+
+    // The kinds follow the schema in place: those of the first went with it.
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.admit_relation(&reader).await,
+        Ok(RelationAdmission::Refused),
+        "a kind the schema no longer admits, kept or not"
+    );
+    assert_eq!(
+        work.admit_relation(&team).await,
+        Ok(RelationAdmission::Kept)
+    );
+    // Each one column away from a kind the schema admits: the member, the
+    // type of the subject, the type of the object.
+    for tuple in [
+        relate("document:q3", "owner", "team:core", None),
+        relate("document:q3", "owner", "user:ada", Some("member")),
+        relate("folder:q3", "owner", "user:ada", None),
+    ] {
+        assert_eq!(
+            work.admit_relation(&tuple).await,
+            Ok(RelationAdmission::Refused),
+            "{tuple:?}"
+        );
+    }
+    assert_eq!(
+        work.admit_relation(&relate("document:q4", "owner", "user:ada", None))
+            .await,
+        Ok(RelationAdmission::Taken)
+    );
+    drop(work);
+    // A unit of work that only reads answers what it reads, and cannot hold
+    // the definitions.
+    let mut snapshot = app.storage.begin_snapshot(scope).await.expect("a snapshot");
+    assert_eq!(
+        snapshot.admit_relation(&reader).await,
+        Ok(RelationAdmission::Refused)
+    );
+    assert_eq!(
+        snapshot.admit_relation(&team).await,
+        Ok(RelationAdmission::Kept)
+    );
+    assert_eq!(
+        snapshot
+            .admit_relation(&relate("document:q4", "owner", "user:ada", None))
+            .await,
+        Err(StorageError::Failed)
+    );
+    drop(snapshot);
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(
+        elsewhere.admit_relation(&owner).await,
+        Ok(RelationAdmission::Refused),
+        "nor the kinds of another realm"
+    );
+    drop(elsewhere);
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.read_relation_schema()
+            .await
+            .map(|stored| stored.map(|stored| stored.source)),
+        Ok(Some("definition second {}".to_owned()))
+    );
+    assert_eq!(
+        work.list_relation_subjects(&object("document:q3"), "owner", 10)
+            .await,
+        Ok(vec![team.subject.clone(), owner.subject.clone()]),
+        "by type, then identifier, then member, byte for byte"
+    );
+    assert_eq!(
+        work.list_relation_subjects(&object("document:q3"), "owner", 1)
+            .await
+            .map(|subjects| subjects.len()),
+        Ok(1)
+    );
+    assert_eq!(
+        work.list_relation_subjects(&object("document:q4"), "owner", 10)
+            .await,
+        Ok(Vec::new())
+    );
+    drop(work);
+
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(elsewhere.read_relation_schema().await, Ok(None));
+    assert_eq!(
+        elsewhere
+            .list_relation_subjects(&object("document:q3"), "owner", 10)
+            .await,
+        Ok(Vec::new())
+    );
+    assert_eq!(elsewhere.delete_relation(&owner).await, Ok(false));
+    drop(elsewhere);
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(work.delete_relation(&owner).await, Ok(true));
+    assert_eq!(work.delete_relation(&owner).await, Ok(false));
+    // What a schema admits stays; what none of it names goes, here the reader bob.
+    let admitted = |object_type: &str, relation: &str, subject_type: &str, member: Option<&str>| {
+        crate::authz::relations::AdmittedRelation {
+            object_type: object_type.to_owned(),
+            relation: relation.to_owned(),
+            subject: crate::authz::relations::schema::AllowedSubject {
+                object_type: subject_type.to_owned(),
+                member: member.map(str::to_owned),
+            },
+        }
+    };
+    assert_eq!(
+        work.delete_relations_not_admitted(&[
+            admitted("document", "owner", "user", None),
+            admitted("document", "owner", "team", Some("member")),
+        ])
+        .await,
+        Ok(1)
+    );
+    assert_eq!(
+        work.list_relation_subjects(&object("document:q3"), "reader", 10)
+            .await,
+        Ok(Vec::new())
+    );
+    assert_eq!(
+        work.list_relation_subjects(&object("document:q3"), "owner", 10)
+            .await,
+        Ok(vec![team.subject.clone()])
+    );
+    work.commit().await.expect("a commit");
+
+    // Only the kinds withdrawn go: the owners that are users, not the
+    // members of a team, nor the readers.
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    for tuple in [&owner, &reader] {
+        assert_eq!(work.insert_relation(tuple, now).await, Ok(true));
+    }
+    work.commit().await.expect("a commit");
+    let users_reading = [admitted("document", "reader", "user", None)];
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(
+        elsewhere.delete_relations_of_kinds(&users_reading).await,
+        Ok(0)
+    );
+    elsewhere.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.delete_relations_of_kinds(&[admitted("document", "owner", "user", None)])
+            .await,
+        Ok(1)
+    );
+    assert_eq!(
+        work.list_relation_subjects(&object("document:q3"), "owner", 10)
+            .await,
+        Ok(vec![team.subject.clone()])
+    );
+    assert_eq!(
+        work.list_relation_subjects(&object("document:q3"), "reader", 10)
+            .await,
+        Ok(vec![reader.subject.clone()]),
+        "nor what another realm withdrew"
+    );
+    // Two kinds of one type at once, one of them the members of a team.
+    assert_eq!(
+        work.delete_relations_of_kinds(&[
+            admitted("document", "owner", "team", Some("member")),
+            admitted("document", "reader", "user", None),
+        ])
+        .await,
+        Ok(2)
+    );
+    for relation in ["owner", "reader"] {
+        assert_eq!(
+            work.list_relation_subjects(&object("document:q3"), relation, 10)
+                .await,
+            Ok(Vec::new())
+        );
+    }
+    work.commit().await.expect("a commit");
+
+    // A guard is kept once, read for its type and client only, and listed.
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.insert_relation_guard("document", "portal", now).await,
+        Ok(true)
+    );
+    assert_eq!(
+        work.insert_relation_guard("document", "portal", now).await,
+        Ok(false)
+    );
+    assert_eq!(
+        work.read_guarded_schema("document", "portal")
+            .await
+            .map(|found| found.map(|found| found.guarded)),
+        Ok(Some(true))
+    );
+    assert_eq!(
+        work.read_guarded_schema("folder", "portal")
+            .await
+            .map(|found| found.map(|found| found.guarded)),
+        Ok(Some(false))
+    );
+    assert_eq!(
+        work.read_guarded_schema("document", "portal")
+            .await
+            .map(|found| found.map(|found| found.compiled)),
+        Ok(Some(json!({ "version": 1, "types": {} }))),
+        "the compiled form, as it was written"
+    );
+    assert_eq!(
+        work.list_relation_guards("document", 10).await,
+        Ok(vec!["portal".to_owned()])
+    );
+    work.commit().await.expect("a commit");
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(
+        elsewhere.read_guarded_schema("document", "portal").await,
+        Ok(None)
+    );
+    assert_eq!(
+        elsewhere.delete_relation_guard("document", "portal").await,
+        Ok(false)
+    );
+    drop(elsewhere);
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.delete_relation_guard("document", "portal").await,
+        Ok(true)
+    );
+    assert_eq!(
+        work.delete_relation_guard("document", "portal").await,
+        Ok(false)
+    );
+    work.commit().await.expect("a commit");
+
+    check_that_a_schema_sweeps_what_the_product_did_not_keep(app).await;
+    check_that_a_form_another_version_wrote_is_compiled_again(app).await;
+}
+
+/// A compiled form another version wrote, which this one does not read: its
+/// source is compiled again, and serves, where the schema is read and where
+/// a question is decided.
+async fn check_that_a_form_another_version_wrote_is_compiled_again(app: &App) {
+    use serde_json::{Map, json};
+
+    use crate::authz::capability::Capability;
+    use crate::authz::decide::{DecisionRequest, decide};
+    use crate::authz::relations::schema::compile_schema;
+    use crate::authz::relations::{
+        ObjectRef, RelationTuple, StoredSchema, SubjectRef, list_admitted_relations,
+        read_relation_schema,
+    };
+    use crate::testkit::fixtures::{create_administrator, create_realm, create_service_client};
+
+    let realm = "contract-older-form";
+    let scope = create_realm(app, realm).await;
+    let secret = create_service_client(app, scope, "billing", &[]).await;
+    let subject_token =
+        create_administrator(app, realm, scope, "auditor", &[Capability::AuditRead]).await;
+    let source = "definition client {}\ndefinition document {\n  relation reader: client\n}";
+    let older = StoredSchema {
+        source: source.to_owned(),
+        compiled: json!({ "version": 0 }),
+        written_at: app.now(),
+    };
+    let admitted = list_admitted_relations(&compile_schema(source).expect("a schema"));
+    let object = |object_type: &str, object_id: &str| ObjectRef {
+        object_type: object_type.to_owned(),
+        object_id: object_id.to_owned(),
+    };
+    let reader = RelationTuple {
+        object: object("document", "q3"),
+        relation: "reader".to_owned(),
+        subject: SubjectRef {
+            object: object("client", "auditor"),
+            member: None,
+        },
+    };
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.write_relation_schema(&older, &admitted)
+        .await
+        .expect("a form of another version");
+    work.insert_relation_guard("document", "billing", app.now())
+        .await
+        .expect("a guard");
+    assert_eq!(work.insert_relation(&reader, app.now()).await, Ok(true));
+    work.commit().await.expect("a commit");
+
+    let read = read_relation_schema(app, scope)
+        .await
+        .expect("the schema")
+        .and_then(|stored| stored.open());
+    assert_eq!(
+        read.map(|schema| schema.types.into_keys().collect::<Vec<_>>()),
+        Some(vec!["client".to_owned(), "document".to_owned()]),
+        "the schema is read from its source"
+    );
+    let attributes = Map::new();
+    let asked = decide(
+        app,
+        realm,
+        Some("billing"),
+        Some(secret),
+        DecisionRequest {
+            subject_token: Some(&subject_token),
+            action: "reader",
+            resource_type: "document",
+            resource_id: Some("q3"),
+            attributes: &attributes,
+        },
+    )
+    .await;
+    assert_eq!(
+        asked
+            .map(|decision| (decision.decision, decision.reason))
+            .map_err(|failure| failure.error),
+        Ok(("permit", "relation".to_owned())),
+        "the question is decided by the source compiled again"
+    );
+}
+
+/// A relation kept by hand before any schema, then one of a kind a later
+/// schema admits anew: each goes with the schema that would admit it, and
+/// what the product kept stays.
+async fn check_that_a_schema_sweeps_what_the_product_did_not_keep(app: &App) {
+    use crate::authz::admin::authorize_admin_call;
+    use crate::authz::capability::Capability;
+    use crate::authz::relations::{
+        ObjectRef, RelationTuple, SubjectRef, write_relation, write_relation_schema,
+    };
+    use crate::testkit::fixtures::{create_administrator, create_realm};
+
+    let scope = create_realm(app, "contract-sweep").await;
+    let token = create_administrator(
+        app,
+        "contract-sweep",
+        scope,
+        "operator",
+        &[Capability::PolicyWrite],
+    )
+    .await;
+    let caller = authorize_admin_call(app, "contract-sweep", Some(&token), Capability::PolicyWrite)
+        .await
+        .expect("an operator");
+    let document = ObjectRef {
+        object_type: "document".to_owned(),
+        object_id: "q1".to_owned(),
+    };
+    let relate = |relation: &str, user: &str| RelationTuple {
+        object: document.clone(),
+        relation: relation.to_owned(),
+        subject: SubjectRef {
+            object: ObjectRef {
+                object_type: "user".to_owned(),
+                object_id: user.to_owned(),
+            },
+            member: None,
+        },
+    };
+    let keep_by_hand = |tuple: RelationTuple| async move {
+        let mut work = app.storage.begin(scope).await.expect("a unit of work");
+        assert_eq!(work.insert_relation(&tuple, app.now()).await, Ok(true));
+        work.commit().await.expect("a commit");
+    };
+    let read = |relation: &'static str| {
+        let document = document.clone();
+        async move {
+            let mut work = app.storage.begin(scope).await.expect("a unit of work");
+            work.list_relation_subjects(&document, relation, 10)
+                .await
+                .expect("the subjects")
+                .into_iter()
+                .map(|subject| subject.object.object_id)
+                .collect::<Vec<_>>()
+        }
+    };
+    let readers = "definition user {}\ndefinition document {\n  relation reader: user\n}";
+    let owners = "definition user {}\ndefinition document {\n  relation owner: user\n  relation reader: user\n}";
+
+    keep_by_hand(relate("reader", "mallory")).await;
+    let written = write_relation_schema(app, &caller, readers).await;
+    assert_eq!(written.map(|(_, removed)| removed), Ok(1));
+    assert_eq!(read("reader").await, Vec::<String>::new());
+
+    write_relation(app, &caller, &relate("reader", "ada"))
+        .await
+        .expect("a relation the schema admits");
+    keep_by_hand(relate("owner", "mallory")).await;
+    let written = write_relation_schema(app, &caller, owners).await;
+    assert_eq!(written.map(|(_, removed)| removed), Ok(1));
+    assert_eq!(read("owner").await, Vec::<String>::new());
+    assert_eq!(read("reader").await, ["ada"]);
+}
+
+/// What any storage owes to policies: a name is taken once per client, they
+/// are listed by name for their client, and for an action on a type of
+/// resource, a deletion answers once, and nothing of them is reachable from
+/// another realm.
+///
+/// # Panics
+///
+/// Panics when the storage breaks the contract.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario, read from top to bottom"
+)]
+pub async fn check_policies_contract(app: &App) {
+    use serde_json::json;
+
+    use crate::authz::policy::{Combine, Effect, Policy};
+    use crate::testkit::fixtures::{Application, create_realm, register_application};
+
+    let scope = create_realm(app, "contract-policies").await;
+    let other = create_realm(app, "contract-policies-other").await;
+    for client_id in ["billing", "portal"] {
+        let application = Application {
+            client_id,
+            redirect_uri: "https://app.example.org/cb",
+            post_logout_redirect_uri: None,
+            public: true,
+        };
+        register_application(app, scope, application).await;
+    }
+    let now = app.now();
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let make_policy = |name: &str, client_id: &str, action: &str| Policy {
+        id: mint_id(app).expect("an identifier"),
+        client_id: client_id.to_owned(),
+        name: name.to_owned(),
+        resource_type: "invoice".to_owned(),
+        action: action.to_owned(),
+        effect: Effect::Deny,
+        combine: Combine::Any,
+        conditions: json!([{ "role": Uuid::from_u128(1) }]),
+        created_at: now,
+    };
+    let (zeta, alpha, read, portal) = (
+        make_policy("zeta", "billing", "approve"),
+        make_policy("alpha", "billing", "approve"),
+        make_policy("readers", "billing", "read"),
+        make_policy("alpha", "portal", "approve"),
+    );
+    for policy in [&zeta, &alpha, &read, &portal] {
+        assert_eq!(work.insert_policy(policy).await, Ok(true));
+    }
+    work.commit().await.expect("a commit");
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.insert_policy(&make_policy("alpha", "billing", "read"))
+            .await,
+        Ok(false),
+        "a name is taken once per client"
+    );
+    drop(work);
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.list_policies("billing").await,
+        Ok(vec![alpha.clone(), read.clone(), zeta.clone()])
+    );
+    assert_eq!(work.count_policies("billing", 10).await, Ok(3));
+    assert_eq!(
+        work.count_policies("billing", 2).await,
+        Ok(2),
+        "counted to the bound and no further"
+    );
+    assert_eq!(
+        work.list_applicable_policies("billing", "invoice", "approve")
+            .await,
+        Ok(vec![alpha.clone(), zeta.clone()])
+    );
+    assert_eq!(
+        work.list_applicable_policies("billing", "receipt", "approve")
+            .await,
+        Ok(Vec::new())
+    );
+    assert_eq!(work.delete_policy("portal", alpha.id).await, Ok(false));
+    assert_eq!(work.delete_policy("billing", alpha.id).await, Ok(true));
+    assert_eq!(work.list_policies("portal").await, Ok(vec![portal.clone()]));
+    work.commit().await.expect("a commit");
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let types =
+        |names: &[&str]| -> Vec<String> { names.iter().map(|name| (*name).to_owned()).collect() };
+    assert_eq!(
+        work.has_policy_for_types(&types(&["receipt", "invoice"]))
+            .await,
+        Ok(true)
+    );
+    assert_eq!(
+        work.has_policy_for_types(&types(&["receipt"])).await,
+        Ok(false)
+    );
+    assert_eq!(
+        work.is_named_by_policy("role", Uuid::from_u128(1)).await,
+        Ok(true)
+    );
+    assert_eq!(
+        work.is_named_by_policy("group", Uuid::from_u128(1)).await,
+        Ok(false)
+    );
+    let grouped = Policy {
+        conditions: json!([{ "group": Uuid::from_u128(9) }]),
+        ..make_policy("by-group", "portal", "approve")
+    };
+    assert_eq!(work.insert_policy(&grouped).await, Ok(true));
+    assert_eq!(
+        work.is_named_by_policy("group", Uuid::from_u128(9)).await,
+        Ok(true)
+    );
+    assert_eq!(
+        work.is_named_by_policy("role", Uuid::from_u128(2)).await,
+        Ok(false)
+    );
+    drop(work);
+
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(elsewhere.list_policies("billing").await, Ok(Vec::new()));
+    assert_eq!(elsewhere.count_policies("billing", 10).await, Ok(0));
+    assert_eq!(elsewhere.delete_policy("billing", zeta.id).await, Ok(false));
+    assert_eq!(
+        elsewhere.has_policy_for_types(&types(&["invoice"])).await,
+        Ok(false)
+    );
+    assert_eq!(
+        elsewhere
+            .is_named_by_policy("role", Uuid::from_u128(1))
+            .await,
+        Ok(false)
+    );
+}
+
+/// What any storage owes to the groups of a person: those they are a member
+/// of at an instant, by identifier, and no other.
+///
+/// # Panics
+///
+/// Panics when the storage breaks the contract.
+pub async fn check_member_groups_contract(app: &App) {
+    use time::Duration;
+
+    use crate::authz::grants::{Grant, Membership};
+    use crate::authz::roles::Group;
+    use crate::testkit::fixtures::{create_person, create_realm};
+
+    let scope = create_realm(app, "contract-member-groups").await;
+    let ada = create_person(app, scope, "ada", "correct horse battery").await;
+    let bob = create_person(app, scope, "bob", "correct horse battery").await;
+    let now = app.now();
+    let make_group = |name: &str| Group {
+        id: mint_id(app).expect("an identifier"),
+        name: name.to_owned(),
+        description: None,
+        created_at: now,
+    };
+    let (night, day, later) = (make_group("night"), make_group("day"), make_group("later"));
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    for (group, from, until) in [(&night, 0, Some(1)), (&day, 0, None), (&later, 2, None)] {
+        assert_eq!(work.insert_group(group).await, Ok(true));
+        work.write_membership(&Membership {
+            group: group.id,
+            person: ada.id,
+            grant: Grant {
+                valid_from: now + Duration::hours(from),
+                valid_until: until.map(|hours| now + Duration::hours(hours)),
+                granted_by: "operator".to_owned(),
+                reason: None,
+                granted_at: now,
+            },
+        })
+        .await
+        .expect("a membership");
+    }
+    let mut both = vec![night.id, day.id];
+    both.sort();
+    assert_eq!(
+        work.list_member_groups(ada.id, now, 1).await,
+        Ok(vec![both[0]]),
+        "the first, `most` at most"
+    );
+    assert_eq!(work.list_member_groups(ada.id, now, 10).await, Ok(both));
+    assert_eq!(
+        work.list_member_groups(ada.id, now + Duration::hours(1), 10)
+            .await,
+        Ok(vec![day.id]),
+        "a membership ends at its end"
+    );
+    let mut from_two = vec![day.id, later.id];
+    from_two.sort();
+    assert_eq!(
+        work.list_member_groups(ada.id, now + Duration::hours(2), 10)
+            .await,
+        Ok(from_two),
+        "and starts at its start"
+    );
+    assert_eq!(
+        work.list_member_groups(bob.id, now, 10).await,
+        Ok(Vec::new())
+    );
+    work.commit().await.expect("a commit");
+}

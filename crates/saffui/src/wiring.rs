@@ -19,6 +19,7 @@ use pgcore::pool::{BuildPoolError, PoolSettings, build_pool};
 use pgcore::probe::describe_driver_error;
 use pgcore::role::{PrivilegedRole, read_role_facts, refuse_privileged_role};
 use saffui_core::app::App;
+use saffui_core::authz::shares::DecisionShares;
 use saffui_core::login::fairness::HashingShares;
 use saffui_core::ports::clock::Clock;
 use saffui_core::ports::storage::StorageUnavailable;
@@ -86,6 +87,7 @@ pub(crate) fn wire_product(
         EnvelopeSealer::new(Arc::clone(&provider), root_key).map_err(|_| WiringError::RootKey)?;
     let hasher = BoundedPasswordHasher::new(Arc::clone(&provider), password_hashers)
         .map_err(|_| WiringError::Hasher)?;
+    let connections = pool.max_size;
     let pool = build_pool(database, pool)?;
     let storage = PgStorage::new(pool.clone(), SchemaWindow::of_exactly(EMBEDDED));
     let security_keys = WebauthnSecurityKeys::for_origin(settings.public_origin.as_str());
@@ -103,6 +105,7 @@ pub(crate) fn wire_product(
             one_time_codes: Arc::new(ProviderOneTimeCodes::new(Arc::clone(&provider))),
             security_keys: Arc::new(security_keys),
             hashing_shares: Arc::new(HashingShares::new(password_hashers)),
+            decision_shares: Arc::new(DecisionShares::for_pool(connections)),
             decoy_hash: Arc::new(OnceLock::new()),
             signer: Arc::new(JoseSigner::new(provider)),
         },

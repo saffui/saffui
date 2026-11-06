@@ -7,7 +7,7 @@ pub mod errors;
 pub mod introspect;
 pub mod logout;
 pub mod pkce;
-mod refresh;
+pub(crate) mod refresh;
 pub mod revoke;
 #[cfg(test)]
 pub(crate) mod scenario;

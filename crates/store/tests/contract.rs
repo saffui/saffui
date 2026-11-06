@@ -4,11 +4,11 @@
 use pgcore::pool::PoolSettings;
 use saffui_core::testkit::contract::{
     check_authenticators_contract, check_clients_contract, check_codes_contract,
-    check_ended_sessions_contract, check_grants_contract, check_keys_contract,
-    check_known_browsers_contract, check_member_groups_contract, check_persons_contract,
-    check_policies_contract, check_refresh_contract, check_relations_contract,
-    check_roles_contract, check_security_keys_contract, check_sign_in_contract,
-    check_tenancy_contract,
+    check_consents_contract, check_ended_sessions_contract, check_grants_contract,
+    check_keys_contract, check_known_browsers_contract, check_member_groups_contract,
+    check_persons_contract, check_policies_contract, check_refresh_contract,
+    check_relations_contract, check_roles_contract, check_security_keys_contract,
+    check_sign_in_contract, check_tenancy_contract,
 };
 
 mod support;
@@ -60,6 +60,13 @@ async fn postgres_passes_the_refresh_contract() {
     let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
 
     check_refresh_contract(&app).await;
+}
+
+#[tokio::test]
+async fn postgres_passes_the_consents_contract() {
+    let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
+
+    check_consents_contract(&app).await;
 }
 
 #[tokio::test]
@@ -372,6 +379,7 @@ async fn a_family_taken_back_is_not_written_again_however_often_it_comes_back() 
         redirect_uri: CALLBACK,
         post_logout_redirect_uri: None,
         public: true,
+        requires_consent: false,
     };
     register_application(&app, scope, webapp).await;
     let flow = CodeFlow {
@@ -424,4 +432,243 @@ async fn a_family_taken_back_is_not_written_again_however_often_it_comes_back() 
         Ok(()),
         "a revocation asked again"
     );
+}
+
+/// Two answers of one person to one client at once: the second waits for
+/// the first, then adds to what it allowed, so that neither is lost.
+#[tokio::test]
+async fn of_two_consents_given_at_once_each_keeps_what_it_allowed() {
+    use std::time::Duration as Wait;
+
+    use saffui_core::consent::Consent;
+    use saffui_core::testkit::fixtures::{
+        Application, create_person, create_realm, register_application,
+    };
+
+    let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let scope = create_realm(&app, "consents").await;
+    let ada = create_person(&app, scope, "ada", "correct horse battery").await;
+    let partner = Application {
+        client_id: "partner",
+        redirect_uri: "https://app.example.org/cb",
+        post_logout_redirect_uri: None,
+        public: true,
+        requires_consent: true,
+    };
+    register_application(&app, scope, partner).await;
+    let now = app.now();
+    let allow = move |scopes: [&str; 2]| Consent {
+        person: ada.id,
+        client_id: "partner".to_owned(),
+        scopes: scopes.map(str::to_owned).to_vec(),
+        granted_at: now,
+    };
+
+    let mut first = app.storage.begin(scope).await.expect("a unit of work");
+    first
+        .add_consent(&allow(["openid", "email"]))
+        .await
+        .expect("a consent");
+    let storage = app.storage.clone();
+    let second = tokio::spawn(async move {
+        let mut work = storage.begin(scope).await.expect("a unit of work");
+        work.add_consent(&allow(["openid", "profile"]))
+            .await
+            .expect("a consent");
+        work.commit().await
+    });
+    tokio::time::sleep(Wait::from_millis(300)).await;
+    assert!(!second.is_finished(), "the second waits for the first");
+    first.commit().await.expect("a commit");
+    assert_eq!(second.await.expect("the second answer"), Ok(()));
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let kept = work
+        .read_consent(ada.id, "partner")
+        .await
+        .expect("a read")
+        .expect("the consent");
+    assert_eq!(kept.scopes, ["openid", "email", "profile"]);
+}
+
+/// The realm `consents-held`, `ada` with a session, and `partner`, which
+/// requires consent and was allowed `openid`; an administrator who withdraws.
+async fn allow_partner_once(
+    app: &saffui_core::app::App,
+) -> (
+    saffui_core::tenancy::RealmScope,
+    saffui_core::directory::Person,
+    saffui_core::login::session::Session,
+    saffui_core::authz::admin::AdminCaller,
+) {
+    use saffui_core::authz::admin::authorize_admin_call;
+    use saffui_core::authz::capability::Capability;
+    use saffui_core::consent::Consent;
+    use saffui_core::login::session::{AuthenticationMethod, Session, SessionState};
+    use saffui_core::testkit::fixtures::{
+        Application, create_administrator, create_person, create_realm, register_application,
+    };
+
+    let scope = create_realm(app, "consents-held").await;
+    let ada = create_person(app, scope, "ada", "correct horse battery").await;
+    let partner = Application {
+        client_id: "partner",
+        redirect_uri: CALLBACK,
+        post_logout_redirect_uri: None,
+        public: true,
+        requires_consent: true,
+    };
+    register_application(app, scope, partner).await;
+    let token = create_administrator(
+        app,
+        "consents-held",
+        scope,
+        "operator",
+        &[Capability::UserWrite],
+    )
+    .await;
+    let caller = authorize_admin_call(app, "consents-held", Some(&token), Capability::UserWrite)
+        .await
+        .expect("an administrator");
+    let now = app.now();
+    let session = Session {
+        id: uuid::Uuid::from_u128(7),
+        person: ada.id,
+        secret_digest: vec![7; 32],
+        state: SessionState::Active,
+        methods: vec![AuthenticationMethod::Password],
+        authenticated_at: now,
+        expires_at: now + time::Duration::hours(1),
+    };
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.insert_session(&session).await.expect("a session");
+    work.add_consent(&Consent {
+        person: ada.id,
+        client_id: "partner".to_owned(),
+        scopes: vec!["openid".to_owned()],
+        granted_at: now,
+    })
+    .await
+    .expect("a consent");
+    work.commit().await.expect("a commit");
+    (scope, ada, session, caller)
+}
+
+/// Whether a session of the database comes to wait on a lock before `task`
+/// ends, within three seconds: short of what a unit of work waits for one.
+async fn wait_for_a_waiter<T>(
+    observer: &tokio_postgres::Client,
+    task: &tokio::task::JoinHandle<T>,
+) -> bool {
+    use std::time::{Duration as Wait, Instant};
+
+    let deadline = Instant::now() + Wait::from_secs(3);
+    while !task.is_finished() && Instant::now() < deadline {
+        let waiting: i64 = observer
+            .query_one(
+                "SELECT count(*) FROM pg_stat_activity
+                 WHERE datname = current_database() AND wait_event_type = 'Lock'",
+                &[],
+            )
+            .await
+            .expect("a count")
+            .get(0);
+        if waiting > 0 {
+            return true;
+        }
+        tokio::time::sleep(Wait::from_millis(10)).await;
+    }
+    false
+}
+
+/// An exchange holds the consent it relies on until it commits: a withdrawal
+/// that comes meanwhile waits for it, then revokes the family it opened.
+#[tokio::test]
+async fn a_withdrawal_waits_for_an_exchange_that_holds_the_consent_then_ends_its_family() {
+    use saffui_core::consent::manage::withdraw_person_consent;
+    use saffui_core::tokens::store::RefreshToken;
+
+    let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let observer = database
+        .plan(pgcore::APP_ROLE)
+        .connect_directly()
+        .await
+        .expect("a connection");
+    let (scope, ada, session, caller) = allow_partner_once(&app).await;
+    let now = app.now();
+    let opened = RefreshToken {
+        token_digest: vec![9; 32],
+        family: uuid::Uuid::from_u128(8),
+        client_id: "partner".to_owned(),
+        person: ada.id,
+        session: session.id,
+        scopes: vec!["openid".to_owned()],
+        issued_at: now,
+        expires_at: now + time::Duration::hours(1),
+    };
+
+    // The second unit of work of an exchange, up to its commit.
+    let mut exchange = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        exchange.hold_consent(ada.id, "partner").await,
+        Ok(Some(vec!["openid".to_owned()]))
+    );
+    exchange
+        .insert_refresh_token(&opened)
+        .await
+        .expect("the first token of a family");
+    let withdrawal = {
+        let app = app.clone();
+        tokio::spawn(async move { withdraw_person_consent(&app, &caller, ada.id, "partner").await })
+    };
+    assert!(
+        wait_for_a_waiter(&observer, &withdrawal).await,
+        "the withdrawal waits for the exchange"
+    );
+    exchange.commit().await.expect("a commit");
+    withdrawal
+        .await
+        .expect("the withdrawal")
+        .expect("a withdrawal");
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let stored = work
+        .read_refresh_token(&opened.token_digest)
+        .await
+        .expect("a read")
+        .expect("the token");
+    assert!(
+        stored.revoked_at.is_some(),
+        "the family the exchange opened is revoked with the rest"
+    );
+}
+
+/// A withdrawal that came first leaves an exchange nothing to hold: it
+/// waits for the withdrawal, then finds no consent.
+#[tokio::test]
+async fn an_exchange_that_comes_during_a_withdrawal_finds_no_consent_to_hold() {
+    let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let observer = database
+        .plan(pgcore::APP_ROLE)
+        .connect_directly()
+        .await
+        .expect("a connection");
+    let (scope, ada, _, _) = allow_partner_once(&app).await;
+
+    let mut withdrawal = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(withdrawal.delete_consent(ada.id, "partner").await, Ok(true));
+    let exchange = {
+        let app = app.clone();
+        tokio::spawn(async move {
+            let mut work = app.storage.begin(scope).await.expect("a unit of work");
+            work.hold_consent(ada.id, "partner").await
+        })
+    };
+    assert!(
+        wait_for_a_waiter(&observer, &exchange).await,
+        "the exchange waits for the withdrawal"
+    );
+    withdrawal.commit().await.expect("a commit");
+
+    assert_eq!(exchange.await.expect("the exchange"), Ok(None));
 }

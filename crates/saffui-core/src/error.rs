@@ -70,6 +70,7 @@ pub enum ErrorCode {
     SecondFactorProofRequired = 409,
     KeyRejected = 410,
     SecurityKeysNotServed = 411,
+    ConsentNotFound = 412,
     TokenInvalid = 500,
     GrantInvalid = 501,
     TokenScopeInsufficient = 502,
@@ -133,7 +134,8 @@ impl ErrorCode {
             | Self::RoleGrantNotFound
             | Self::MembershipNotFound
             | Self::RelationNotFound
-            | Self::PolicyNotFound => ErrorKind::NotFound,
+            | Self::PolicyNotFound
+            | Self::ConsentNotFound => ErrorKind::NotFound,
             Self::ClientAuthenticationFailed
             | Self::TokenInvalid
             | Self::AdminAuthenticationFailed
@@ -225,6 +227,7 @@ impl ErrorCode {
             Self::AuthenticatorNotFound => "user.authenticator_not_found",
             Self::KeyRejected => "auth.key_rejected",
             Self::SecurityKeysNotServed => "auth.security_keys_not_served",
+            Self::ConsentNotFound => "auth.consent_not_found",
             Self::SecurityKeyNotFound => "user.security_key_not_found",
             Self::TenantNameInvalid => "tenant.name_invalid",
             Self::RoleNameInvalid => "authz.role_name_invalid",
@@ -295,6 +298,7 @@ impl ErrorCode {
                 "This account needs a security key, and this service cannot use one. Ask an administrator."
             }
             Self::SecurityKeyNotFound => "This person has no security key.",
+            Self::ConsentNotFound => "This person gave that client no consent.",
             Self::RedirectUriMismatch => "The redirect URI is not one the client registered.",
             Self::RequestInvalid => "The request is missing a parameter or carries one it cannot.",
             Self::ClientAuthenticationFailed => "Client authentication failed.",
@@ -422,7 +426,7 @@ mod tests {
 
     use super::ErrorCode;
 
-    const ALL: [ErrorCode; 67] = [
+    const ALL: [ErrorCode; 68] = [
         ErrorCode::Internal,
         ErrorCode::StorageUnavailable,
         ErrorCode::Conflict,
@@ -469,6 +473,7 @@ mod tests {
         ErrorCode::AuthenticatorNotFound,
         ErrorCode::KeyRejected,
         ErrorCode::SecurityKeysNotServed,
+        ErrorCode::ConsentNotFound,
         ErrorCode::SecurityKeyNotFound,
         ErrorCode::TenantNameInvalid,
         ErrorCode::RoleNameInvalid,

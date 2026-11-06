@@ -504,3 +504,79 @@ async fn every_table_that_carries_the_scope_keys_has_row_security_forced_on_it()
         assert!(policies >= 1, "{name}: no policy binds its rows");
     }
 }
+
+/// A consent is removed by the serving role in its realm only, whatever the
+/// statement asks, and only its scopes and its instant ever change.
+#[tokio::test]
+async fn a_statement_under_one_scope_removes_no_consent_of_another_realm() {
+    use saffui_core::consent::Consent;
+    use saffui_core::tenancy::RealmScope;
+    use saffui_core::testkit::fixtures::{
+        Application, create_person, create_realm, register_application,
+    };
+
+    let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let mut scopes = Vec::new();
+    for realm_name in ["acme", "globex"] {
+        let scope = create_realm(&app, realm_name).await;
+        let ada = create_person(&app, scope, "ada", "correct horse battery").await;
+        let partner = Application {
+            client_id: "partner",
+            redirect_uri: "https://app.example.org/cb",
+            post_logout_redirect_uri: None,
+            public: true,
+            requires_consent: true,
+        };
+        register_application(&app, scope, partner).await;
+        let mut work = app.storage.begin(scope).await.expect("a unit of work");
+        work.add_consent(&Consent {
+            person: ada.id,
+            client_id: "partner".to_owned(),
+            scopes: vec!["openid".to_owned()],
+            granted_at: app.now(),
+        })
+        .await
+        .expect("a consent");
+        work.commit().await.expect("a commit");
+        scopes.push(scope);
+    }
+    let session = connect(&database, APP_ROLE).await;
+    let open = async |scope: RealmScope| {
+        session
+            .batch_execute(&format!(
+                "BEGIN; SELECT set_config('saffui.tenant', '{}', true), \
+                 set_config('saffui.realm', '{}', true)",
+                scope.tenant().as_uuid(),
+                scope.realm().as_uuid()
+            ))
+            .await
+            .expect("a scoped transaction");
+    };
+
+    open(scopes[0]).await;
+    assert_eq!(count_rows(&session, "consents").await, 1);
+    let removed = session
+        .execute("DELETE FROM consents", &[])
+        .await
+        .expect("a removal without a filter");
+    assert_eq!(removed, 1, "the consent of its own realm, and no other");
+    session.batch_execute("COMMIT").await.expect("a commit");
+
+    open(scopes[1]).await;
+    let moved = session
+        .execute("UPDATE consents SET client_id = 'another'", &[])
+        .await
+        .expect_err("a consent given to another client");
+    assert_eq!(moved.code(), Some(&SqlState::INSUFFICIENT_PRIVILEGE));
+    session.batch_execute("ROLLBACK").await.expect("a rollback");
+
+    let maintenance = connect(&database, MAINTENANCE_ROLE).await;
+    let left: Vec<uuid::Uuid> = maintenance
+        .query("SELECT realm_id FROM consents", &[])
+        .await
+        .expect("the consents")
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(left, [scopes[1].realm().as_uuid()]);
+}

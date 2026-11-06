@@ -14,6 +14,10 @@ use crate::error::{ErrorCode, Failure};
 use crate::ports::storage::{StorageError, UnitOfWork};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each is a column of its own: a grant refused, a consent not asked, unless written"
+)]
 pub struct Client {
     pub id: Uuid,
     /// The public identifier, unique in its realm.
@@ -31,6 +35,9 @@ pub struct Client {
     pub redirect_uris: Vec<String>,
     /// Where a person may be sent after signing out, by exact equality too.
     pub post_logout_redirect_uris: Vec<String>,
+    /// Each person is asked before the client gets a code in their name, and
+    /// asked again for a scope they did not allow it.
+    pub requires_consent: bool,
     /// The scopes the client may be given.
     pub scopes: Vec<String>,
     /// What the client may do on the administration plane of its realm.
@@ -138,6 +145,22 @@ pub fn is_unshowable(character: char) -> bool {
         )
 }
 
+/// Writes a text a page shows with each character it cannot show as it is
+/// replaced by U+FFFD: a name written by whoever registered a client never
+/// reorders or hides what is around it.
+#[must_use]
+pub fn neutralize_unshowable(text: &str) -> String {
+    text.chars()
+        .map(|character| {
+            if is_unshowable(character) {
+                char::REPLACEMENT_CHARACTER
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
 /// Reads the client a caller names. What is not written as a client
 /// identifier names no client, and is never sent to the storage.
 ///
@@ -156,7 +179,10 @@ pub async fn read_named_client(
 
 #[cfg(test)]
 mod tests {
-    use super::{check_client_identifier, check_redirect_uri, check_scope_token, is_unshowable};
+    use super::{
+        check_client_identifier, check_redirect_uri, check_scope_token, is_unshowable,
+        neutralize_unshowable,
+    };
 
     #[test]
     fn an_https_url_and_an_http_url_of_this_machine_may_be_registered() {
@@ -201,6 +227,15 @@ mod tests {
         for shown in ['a', '\u{e9}', ' ', '\u{2713}', '\u{4e2d}'] {
             assert!(!is_unshowable(shown), "{shown:?}");
         }
+    }
+
+    #[test]
+    fn a_shown_name_keeps_what_it_can_show_and_replaces_each_character_it_cannot() {
+        assert_eq!(
+            neutralize_unshowable("Pay\u{202e}lap\u{2066}Inc\u{200b}."),
+            "Pay\u{fffd}lap\u{fffd}Inc\u{fffd}."
+        );
+        assert_eq!(neutralize_unshowable("Caf\u{e9} <b>"), "Caf\u{e9} <b>");
     }
 
     #[test]

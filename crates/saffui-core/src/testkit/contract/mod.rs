@@ -438,6 +438,7 @@ pub async fn check_clients_contract(app: &App) {
         allows_authorization_code: false,
         redirect_uris: Vec::new(),
         post_logout_redirect_uris: Vec::new(),
+        requires_consent: false,
         scopes: vec!["invoices:read".to_owned(), "invoices:write".to_owned()],
         capabilities: vec![
             crate::authz::capability::Capability::ClientRead,
@@ -464,6 +465,7 @@ pub async fn check_clients_contract(app: &App) {
         allows_authorization_code: true,
         redirect_uris: vec!["https://app.example.org/callback".to_owned()],
         post_logout_redirect_uris: vec!["https://app.example.org/goodbye".to_owned()],
+        requires_consent: true,
         capabilities: Vec::new(),
         ..client.clone()
     };
@@ -747,6 +749,8 @@ pub async fn check_codes_contract(app: &App) {
         expected_person: Some(ada.id),
         first_factor: None,
         key_proof: None,
+        consent_prompted: true,
+        consent_session: None,
     };
     work.insert_pending_authorization(&pending)
         .await
@@ -1738,6 +1742,7 @@ pub async fn check_roles_contract(app: &App) {
         redirect_uri: "https://app.example.org/cb",
         post_logout_redirect_uri: None,
         public: true,
+        requires_consent: false,
     };
     register_application(app, scope, portal).await;
     let now = app.now();
@@ -1873,6 +1878,7 @@ pub async fn check_grants_contract(app: &App) {
         redirect_uri: "https://app.example.org/cb",
         post_logout_redirect_uri: None,
         public: true,
+        requires_consent: false,
     };
     register_application(app, scope, portal).await;
     let ada = create_person(app, scope, "ada", "correct horse battery").await;
@@ -2196,6 +2202,7 @@ pub async fn check_relations_contract(app: &App) {
         redirect_uri: "https://app.example.org/cb",
         post_logout_redirect_uri: None,
         public: true,
+        requires_consent: false,
     };
     crate::testkit::fixtures::register_application(app, scope, portal).await;
     let now = app.now();
@@ -2672,6 +2679,7 @@ pub async fn check_policies_contract(app: &App) {
             redirect_uri: "https://app.example.org/cb",
             post_logout_redirect_uri: None,
             public: true,
+            requires_consent: false,
         };
         register_application(app, scope, application).await;
     }
@@ -2851,5 +2859,336 @@ pub async fn check_member_groups_contract(app: &App) {
         work.list_member_groups(bob.id, now, 10).await,
         Ok(Vec::new())
     );
+    work.commit().await.expect("a commit");
+}
+
+/// What any storage owes to consents: kept by person and client, widened in
+/// place, in one realm, read with the flag of their client; a request waits
+/// for one consent at most; the tokens of a client for a person are revoked
+/// together.
+///
+/// # Panics
+///
+/// Panics at the first answer that breaks the contract.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one contract, read from top to bottom"
+)]
+pub async fn check_consents_contract(app: &App) {
+    use time::Duration;
+
+    use crate::consent::{Consent, ConsentTerms, ListedConsent};
+    use crate::testkit::fixtures::{
+        Application, create_person, create_realm, register_application,
+    };
+
+    let scope = create_realm(app, "contract-consents").await;
+    let other = create_realm(app, "contract-consents-other").await;
+    let ada = create_person(app, scope, "ada", "correct horse battery").await;
+    let bob = create_person(app, scope, "bob", "correct horse battery").await;
+    for (client_id, requires_consent) in [("webapp", true), ("portal", true), ("plain", false)] {
+        let application = Application {
+            client_id,
+            redirect_uri: "https://app.example.org/cb",
+            post_logout_redirect_uri: None,
+            public: true,
+            requires_consent,
+        };
+        register_application(app, scope, application).await;
+    }
+    let now = app.now();
+    let allow = |person: Uuid, client_id: &str, scopes: &[&str]| Consent {
+        person,
+        client_id: client_id.to_owned(),
+        scopes: scopes.iter().map(|&scope| scope.to_owned()).collect(),
+        granted_at: now,
+    };
+    // The name of a client the fixture registers is its identifier.
+    let listed = |consent: &Consent| ListedConsent {
+        consent: consent.clone(),
+        client_name: consent.client_id.clone(),
+    };
+
+    let terms = |requires_consent: bool, allowed: Option<&[&str]>| ConsentTerms {
+        requires_consent,
+        allowed: allowed.map(|scopes| scopes.iter().map(|&scope| scope.to_owned()).collect()),
+    };
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(work.read_consent(ada.id, "webapp").await, Ok(None));
+    assert_eq!(work.hold_consent(ada.id, "webapp").await, Ok(None));
+    assert_eq!(
+        work.read_consent_terms(ada.id, "webapp").await,
+        Ok(Some(terms(true, None))),
+        "the flag of the client, and nothing allowed yet"
+    );
+    assert_eq!(
+        work.read_consent_terms(ada.id, "plain").await,
+        Ok(Some(terms(false, None)))
+    );
+    assert_eq!(
+        work.read_consent_terms(ada.id, "nobody").await,
+        Ok(None),
+        "no such client"
+    );
+    work.add_consent(&allow(ada.id, "webapp", &["openid", "email"]))
+        .await
+        .expect("a consent");
+    let later = now + Duration::minutes(1);
+    work.add_consent(&Consent {
+        granted_at: later,
+        ..allow(ada.id, "webapp", &["profile", "openid"])
+    })
+    .await
+    .expect("a wider consent");
+    let wider = Consent {
+        granted_at: later,
+        ..allow(ada.id, "webapp", &["openid", "email", "profile"])
+    };
+    assert_eq!(
+        work.read_consent(ada.id, "webapp").await,
+        Ok(Some(wider.clone())),
+        "widened in place: what was allowed keeps its place, the new comes after"
+    );
+    assert_eq!(
+        work.hold_consent(ada.id, "webapp").await,
+        Ok(Some(wider.scopes.clone()))
+    );
+    assert_eq!(
+        work.read_consent_terms(ada.id, "webapp").await,
+        Ok(Some(terms(true, Some(&["openid", "email", "profile"]))))
+    );
+    assert_eq!(
+        work.read_consent_terms(bob.id, "webapp").await,
+        Ok(Some(terms(true, None))),
+        "what another person allowed is not read"
+    );
+    let portal = allow(ada.id, "portal", &["openid"]);
+    work.add_consent(&portal).await.expect("a second consent");
+    work.add_consent(&allow(bob.id, "webapp", &["openid"]))
+        .await
+        .expect("a consent of bob");
+    assert_eq!(
+        work.list_consents(ada.id, 10).await,
+        Ok(vec![listed(&portal), listed(&wider)]),
+        "by client, with its name, and only those of the person"
+    );
+    assert_eq!(
+        work.list_consents(ada.id, 1).await,
+        Ok(vec![listed(&portal)]),
+        "`most` at most"
+    );
+    work.commit().await.expect("a commit");
+
+    let mut snapshot = app.storage.begin_snapshot(scope).await.expect("a snapshot");
+    assert!(
+        snapshot.hold_consent(ada.id, "webapp").await.is_err(),
+        "a snapshot holds nothing"
+    );
+    drop(snapshot);
+
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(elsewhere.read_consent(ada.id, "webapp").await, Ok(None));
+    assert_eq!(elsewhere.hold_consent(ada.id, "webapp").await, Ok(None));
+    assert_eq!(
+        elsewhere.read_consent_terms(ada.id, "webapp").await,
+        Ok(None)
+    );
+    assert_eq!(elsewhere.list_consents(ada.id, 10).await, Ok(Vec::new()));
+    assert_eq!(elsewhere.delete_consent(ada.id, "webapp").await, Ok(false));
+    drop(elsewhere);
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(work.delete_consent(ada.id, "webapp").await, Ok(true));
+    assert_eq!(work.delete_consent(ada.id, "webapp").await, Ok(false));
+    assert_eq!(
+        work.list_consents(ada.id, 10).await,
+        Ok(vec![listed(&portal)])
+    );
+    work.commit().await.expect("a commit");
+
+    check_that_a_request_waits_for_one_consent(app, scope).await;
+    check_that_a_client_loses_its_tokens_of_a_person(app, scope, ada.id, bob.id).await;
+}
+
+/// A request waits for the consent of one session, written once, and is
+/// taken with it.
+async fn check_that_a_request_waits_for_one_consent(app: &App, scope: RealmScope) {
+    use time::Duration;
+
+    use crate::oidc::code::PendingAuthorization;
+
+    let now = app.now();
+    let pending = PendingAuthorization {
+        id: mint_id(app).expect("an identifier"),
+        browser_digest: vec![4; 32],
+        client_id: "webapp".to_owned(),
+        redirect_uri: "https://app.example.org/cb".to_owned(),
+        scopes: vec!["openid".to_owned()],
+        state: None,
+        nonce: None,
+        code_challenge: "challenge".to_owned(),
+        expires_at: now + Duration::minutes(10),
+        expected_person: None,
+        first_factor: None,
+        key_proof: None,
+        consent_prompted: false,
+        consent_session: None,
+    };
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.insert_pending_authorization(&pending)
+        .await
+        .expect("a pending request");
+    let (session, other_session) = (
+        mint_id(app).expect("an identifier"),
+        mint_id(app).expect("an identifier"),
+    );
+    assert_eq!(
+        work.mark_consent_owed(pending.id, session, pending.expires_at)
+            .await,
+        Ok(false),
+        "not once expired"
+    );
+    assert_eq!(
+        work.mark_consent_owed(pending.id, session, now).await,
+        Ok(true)
+    );
+    assert_eq!(
+        work.mark_consent_owed(pending.id, other_session, now).await,
+        Ok(false),
+        "not twice"
+    );
+    let waiting = PendingAuthorization {
+        consent_session: Some(session),
+        ..pending
+    };
+    assert_eq!(
+        work.read_pending_authorization(waiting.id, now).await,
+        Ok(Some(waiting.clone()))
+    );
+    assert_eq!(
+        work.take_pending_authorization(waiting.id, now).await,
+        Ok(Some(waiting))
+    );
+    work.commit().await.expect("a commit");
+}
+
+/// The live tokens of one client for one person go together, in every
+/// session of theirs and no other; each family is counted once, and named
+/// within the bound.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one contract, read from top to bottom"
+)]
+async fn check_that_a_client_loses_its_tokens_of_a_person(
+    app: &App,
+    scope: RealmScope,
+    ada: Uuid,
+    bob: Uuid,
+) {
+    use time::Duration;
+
+    use crate::login::session::{AuthenticationMethod, Session, SessionState};
+    use crate::tokens::store::{RefreshToken, RevokedFamilies};
+
+    let now = app.now();
+    let open = |person: Uuid| Session {
+        id: mint_id(app).expect("an identifier"),
+        person,
+        secret_digest: vec![7; 32],
+        state: SessionState::Active,
+        methods: vec![AuthenticationMethod::Password],
+        authenticated_at: now,
+        expires_at: now + Duration::hours(1),
+    };
+    let sessions = [open(ada), open(ada), open(bob)];
+    let mint = |digest: u8, family: Uuid, client_id: &str, session: &Session| RefreshToken {
+        token_digest: vec![digest; 32],
+        family,
+        client_id: client_id.to_owned(),
+        person: session.person,
+        session: session.id,
+        scopes: vec!["openid".to_owned()],
+        issued_at: now,
+        expires_at: now + Duration::minutes(30),
+    };
+    let families: Vec<Uuid> = (0..5)
+        .map(|_| mint_id(app).expect("an identifier"))
+        .collect();
+    let first = mint(1, families[0], "webapp", &sessions[0]);
+    let rotated = RefreshToken {
+        issued_at: now + Duration::minutes(1),
+        ..mint(2, families[0], "webapp", &sessions[0])
+    };
+    let elsewhere = mint(3, families[1], "webapp", &sessions[1]);
+    let of_portal = mint(4, families[2], "portal", &sessions[0]);
+    let of_bob = mint(5, families[3], "webapp", &sessions[2]);
+    let told_before = mint(6, families[4], "webapp", &sessions[1]);
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    for session in &sessions {
+        work.insert_session(session).await.expect("a session");
+    }
+    for token in [&first, &elsewhere, &of_portal, &of_bob, &told_before] {
+        work.insert_refresh_token(token).await.expect("a token");
+    }
+    work.spend_refresh_token(&first.token_digest, "webapp", now)
+        .await
+        .expect("a spending")
+        .expect("the first token");
+    work.insert_refresh_token(&rotated)
+        .await
+        .expect("a rotation");
+    // A family revoked already, and a token written into it after, as a
+    // rotation in flight does.
+    work.revoke_refresh_family(families[4], now)
+        .await
+        .expect("a revocation");
+    let late = mint(7, families[4], "webapp", &sessions[1]);
+    work.insert_refresh_token(&late)
+        .await
+        .expect("a late token");
+
+    assert_eq!(
+        work.revoke_refresh_families_of_client(ada, "webapp", now, 1)
+            .await,
+        Ok(RevokedFamilies {
+            families: 2,
+            tokens: 4,
+            named: vec![families[0].min(families[1])],
+        }),
+        "in each session of the person; the family revoked before is not counted, its late \
+         token is; the first family by identifier is named, and no more"
+    );
+    assert_eq!(
+        work.revoke_refresh_families_of_client(ada, "webapp", now, 1)
+            .await,
+        Ok(RevokedFamilies {
+            families: 0,
+            tokens: 0,
+            named: Vec::new(),
+        }),
+        "what is revoked is not revoked again"
+    );
+    for (token, live) in [
+        (&first, false),
+        (&rotated, false),
+        (&elsewhere, false),
+        (&late, false),
+        (&of_portal, true),
+        (&of_bob, true),
+    ] {
+        let stored = work
+            .read_refresh_token(&token.token_digest)
+            .await
+            .expect("a read")
+            .expect("the token");
+        assert_eq!(
+            stored.revoked_at.is_none(),
+            live,
+            "token {}",
+            token.token_digest[0]
+        );
+    }
     work.commit().await.expect("a commit");
 }

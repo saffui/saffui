@@ -25,6 +25,8 @@ pub struct NewClient<'a> {
     pub post_logout_redirect_uris: &'a [String],
     /// A public application runs where no secret can be kept: it gets none.
     pub public: bool,
+    /// Each person is asked before the client gets a code in their name.
+    pub requires_consent: bool,
     /// The client of the administration plane that asks, when one does.
     pub created_by: Option<&'a str>,
 }
@@ -60,8 +62,11 @@ pub async fn register_client(
     {
         check_redirect_uri(uri)?;
     }
-    // Only a client that signs people in has anyone to send back after they sign out.
-    if wanted.redirect_uris.is_empty() && !wanted.post_logout_redirect_uris.is_empty() {
+    // Only a client that signs people in has anyone to send back after they
+    // sign out, or anyone to ask.
+    if wanted.redirect_uris.is_empty()
+        && (!wanted.post_logout_redirect_uris.is_empty() || wanted.requires_consent)
+    {
         return Err(Failure::new(ErrorCode::RequestInvalid));
     }
     let name = wanted.name.trim();
@@ -102,6 +107,7 @@ pub async fn register_client(
         allows_authorization_code: !wanted.redirect_uris.is_empty(),
         redirect_uris: wanted.redirect_uris.to_vec(),
         post_logout_redirect_uris: wanted.post_logout_redirect_uris.to_vec(),
+        requires_consent: wanted.requires_consent,
         scopes: wanted.scopes.to_vec(),
         capabilities: wanted.capabilities.to_vec(),
         enabled: true,
@@ -125,6 +131,7 @@ pub async fn register_client(
         "scopes": client.scopes,
         "capabilities": capabilities,
         "public": wanted.public,
+        "requires_consent": client.requires_consent,
     });
     if let Some(actor) = wanted.created_by {
         created["actor"] = json!({ "client_id": actor });
@@ -155,6 +162,7 @@ pub async fn register_service_client(
             redirect_uris: &[],
             post_logout_redirect_uris: &[],
             public: false,
+            requires_consent: false,
             created_by: None,
         },
     )
@@ -263,6 +271,7 @@ mod tests {
                 redirect_uris: &callbacks,
                 post_logout_redirect_uris: &[],
                 public: true,
+                requires_consent: false,
                 created_by: Some("operator"),
             },
         ))
@@ -303,6 +312,7 @@ mod tests {
                     redirect_uris,
                     post_logout_redirect_uris: &[],
                     public,
+                    requires_consent: false,
                     created_by: None,
                 },
             ))
@@ -343,6 +353,7 @@ mod tests {
                     redirect_uris,
                     post_logout_redirect_uris: &goodbyes,
                     public: false,
+                    requires_consent: false,
                     created_by: None,
                 },
             ))
@@ -363,5 +374,41 @@ mod tests {
             register(&callbacks, "https://app.example.org/goodbye"),
             Ok(vec!["https://app.example.org/goodbye".to_owned()])
         );
+    }
+
+    #[test]
+    fn only_an_application_asks_people_for_their_consent() {
+        use super::{NewClient, register_client};
+
+        let (app, _storage) = MemoryStorage::wire();
+        let scope = complete(create_realm(&app, "acme"));
+        let callbacks = ["https://app.example.org/callback".to_owned()];
+        let register = |client_id, redirect_uris: &[String]| {
+            let mut work = complete(app.storage.begin(scope)).expect("a unit of work");
+            complete(register_client(
+                &app,
+                work.as_mut(),
+                NewClient {
+                    client_id,
+                    name: "Partner",
+                    scopes: &[],
+                    capabilities: &[],
+                    redirect_uris,
+                    post_logout_redirect_uris: &[],
+                    public: false,
+                    requires_consent: true,
+                    created_by: None,
+                },
+            ))
+            .map(|(client, _)| client.requires_consent)
+            .map_err(|failure| failure.code)
+        };
+
+        assert_eq!(
+            register("billing", &[]),
+            Err(ErrorCode::RequestInvalid),
+            "a service signs nobody in"
+        );
+        assert_eq!(register("partner", &callbacks), Ok(true));
     }
 }

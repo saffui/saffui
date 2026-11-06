@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use async_trait::async_trait;
 use time::OffsetDateTime;
@@ -6,7 +6,9 @@ use uuid::Uuid;
 
 use super::MemoryUnitOfWork;
 use crate::ports::storage::StorageError;
-use crate::tokens::store::{EndedFamily, RefreshStore, RefreshToken, StoredRefreshToken};
+use crate::tokens::store::{
+    EndedFamily, RefreshStore, RefreshToken, RevokedFamilies, StoredRefreshToken,
+};
 
 impl MemoryUnitOfWork {
     fn refresh_tokens_of_the_realm(&mut self) -> &mut Vec<StoredRefreshToken> {
@@ -117,6 +119,35 @@ impl RefreshStore for MemoryUnitOfWork {
             last_issued_at,
             last_used_at: revoked.iter().filter_map(|stored| stored.used_at).max(),
         }))
+    }
+
+    async fn revoke_refresh_families_of_client(
+        &mut self,
+        person: Uuid,
+        client_id: &str,
+        now: OffsetDateTime,
+        most: u32,
+    ) -> Result<RevokedFamilies, StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        // Read before: a family revoked already is not counted again.
+        let revoked_before = self.read_revoked_families();
+        let revoked = self.revoke_refresh_tokens_where(now, |token| {
+            token.person == person && token.client_id == client_id
+        });
+        let ended: BTreeSet<Uuid> = revoked
+            .iter()
+            .map(|stored| stored.token.family)
+            .filter(|family| !revoked_before.contains_key(family))
+            .collect();
+        Ok(RevokedFamilies {
+            families: u64::try_from(ended.len()).unwrap_or(u64::MAX),
+            tokens: u64::try_from(revoked.len()).unwrap_or(u64::MAX),
+            named: ended
+                .into_iter()
+                .take(usize::try_from(most).unwrap_or(usize::MAX))
+                .collect(),
+        })
     }
 
     async fn revoke_refresh_tokens_of_session(

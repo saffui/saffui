@@ -135,6 +135,10 @@ pub(crate) mod authorization_requests {
     pub(crate) const KEY_PROOF_STATE: Column = Column("key_proof_state");
     /// jsonb, nullable
     pub(crate) const KEY_PROOF_OPTIONS: Column = Column("key_proof_options");
+    /// boolean
+    pub(crate) const CONSENT_PROMPTED: Column = Column("consent_prompted");
+    /// uuid, nullable
+    pub(crate) const CONSENT_SESSION_ID: Column = Column("consent_session_id");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -151,6 +155,8 @@ pub(crate) mod authorization_requests {
         FIRST_FACTOR_PERSON_ID,
         KEY_PROOF_STATE,
         KEY_PROOF_OPTIONS,
+        CONSENT_PROMPTED,
+        CONSENT_SESSION_ID,
     ];
 }
 
@@ -237,6 +243,8 @@ pub(crate) mod clients {
     pub(crate) const REDIRECT_URIS: Column = Column("redirect_uris");
     /// ARRAY
     pub(crate) const POST_LOGOUT_REDIRECT_URIS: Column = Column("post_logout_redirect_uris");
+    /// boolean
+    pub(crate) const REQUIRES_CONSENT: Column = Column("requires_consent");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -252,6 +260,7 @@ pub(crate) mod clients {
         ALLOWS_AUTHORIZATION_CODE,
         REDIRECT_URIS,
         POST_LOGOUT_REDIRECT_URIS,
+        REQUIRES_CONSENT,
     ];
 }
 
@@ -271,6 +280,26 @@ pub(crate) mod code_attempts {
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[PERSON_ID, ATTEMPTS, LAST_AT];
+}
+
+pub(crate) mod consents {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "consents",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// uuid
+    pub(crate) const PERSON_ID: Column = Column("person_id");
+    /// text
+    pub(crate) const CLIENT_ID: Column = Column("client_id");
+    /// ARRAY
+    pub(crate) const SCOPES: Column = Column("scopes");
+    /// timestamp with time zone
+    pub(crate) const GRANTED_AT: Column = Column("granted_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[PERSON_ID, CLIENT_ID, SCOPES, GRANTED_AT];
 }
 
 pub(crate) mod group_members {
@@ -831,6 +860,7 @@ pub(crate) const TABLES: &[(Table, &[Column])] = &[
     (authz_policies::TABLE, authz_policies::ALL),
     (clients::TABLE, clients::ALL),
     (code_attempts::TABLE, code_attempts::ALL),
+    (consents::TABLE, consents::ALL),
     (group_members::TABLE, group_members::ALL),
     (group_roles::TABLE, group_roles::ALL),
     (groups::TABLE, groups::ALL),

@@ -34,6 +34,8 @@ pub struct ClientView {
     pub public: bool,
     pub redirect_uris: Vec<String>,
     pub post_logout_redirect_uris: Vec<String>,
+    /// Whether each person is asked before it gets a code in their name.
+    pub consent: bool,
     pub scopes: Vec<String>,
     pub capabilities: Vec<String>,
     pub enabled: bool,
@@ -62,6 +64,9 @@ pub struct NewClient {
     /// An application that runs where no secret can be kept: it gets none.
     #[serde(default)]
     pub public: bool,
+    /// Whether each person is asked before it gets a code in their name.
+    #[serde(default)]
+    pub consent: bool,
 }
 
 /// A client that was just created, with the one showing of its secret.
@@ -247,6 +252,14 @@ pub struct SchemaFaultView {
     pub message: String,
 }
 
+/// What a person allowed a client.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConsentView {
+    pub client_id: String,
+    pub scopes: Vec<String>,
+    pub granted_at: String,
+}
+
 /// A role a person holds now, by one way.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeldRoleView {
@@ -272,6 +285,7 @@ mod tests {
                 public: false,
                 redirect_uris: Vec::new(),
                 post_logout_redirect_uris: Vec::new(),
+                consent: false,
                 scopes: Vec::new(),
                 capabilities: Vec::new(),
                 enabled: true,

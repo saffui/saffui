@@ -26,6 +26,7 @@ const TIME_ENOUGH: std::time::Duration = std::time::Duration::from_mins(1);
 
 /// Writes, in one realm, a row past its keeping and a row still of use in
 /// each of the seven tables retention reads.
+#[expect(clippy::too_many_lines, reason = "one realm, filled table by table")]
 async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
     let identify = || mint_id(app).expect("an identifier");
     let person = Person {
@@ -103,6 +104,8 @@ async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
             expected_person: None,
             first_factor: None,
             key_proof: None,
+            consent_prompted: false,
+            consent_session: None,
         })
         .await
         .expect("a pending request");
@@ -768,9 +771,9 @@ async fn plant_expired_requests(
     planting
         .execute(
             "INSERT INTO authorization_requests (tenant_id, realm_id, request_id, browser_digest,
-                 client_id, redirect_uri, scopes, code_challenge, expires_at)
+                 client_id, redirect_uri, scopes, code_challenge, consent_prompted, expires_at)
              SELECT $1, $2, gen_random_uuid(), int4send(n), 'portal', 'https://app.example.org/cb',
-                    '{}', 'c', $3
+                    '{}', 'c', false, $3
              FROM generate_series(1, $4) AS n",
             &[&tenant, &realm, &(now - Duration::minutes(1)), &count],
         )

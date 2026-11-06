@@ -7,9 +7,10 @@ use uuid::Uuid;
 /// What a page says when a form of a key was posted without an answer.
 pub(crate) const KEY_SILENT: &str = "The security key did not answer.";
 
-/// Writes text as text, whatever it holds. What is shown on these pages is
-/// made by this product, from names and an origin it checked: this is the
-/// second lock.
+/// Writes text as text, whatever it holds. Most of what these pages show is
+/// made by this product from names it checked, and this is a second lock;
+/// the name and scopes of a client were written by whoever registered it,
+/// and this is the only one.
 pub(crate) fn escape_text(text: &str) -> String {
     let mut written = String::with_capacity(text.len());
     for character in text.chars() {

@@ -8,7 +8,7 @@ use pgcore::connect::{ConnectionPlan, TlsMode, plan_connection};
 use pgcore::lock::{MIGRATION_LOCK, SessionLock};
 use pgcore::migrate::plan::PlanError;
 use pgcore::migrate::window::SchemaWindow;
-use pgcore::migrate::{MigrateError, Migration, apply_pending};
+use pgcore::migrate::{EMBEDDED, MigrateError, Migration, apply_pending};
 use pgcore::pool::{PoolSettings, build_pool};
 use pgcore::probe::{ProbeFailure, probe_database};
 use pgcore::role::{Privilege, read_role_facts, refuse_privileged_role};
@@ -680,6 +680,120 @@ async fn the_migrations_go_to_public_whatever_schema_bears_the_name_of_the_runne
         .expect("the table of the migration, once")
         .get(0);
     assert_eq!(placed, "public");
+}
+
+/// A migration that waits for a table behind a long transaction keeps every
+/// table it locked before closed to writes as long, up to its bound: each
+/// migration of the consent blocks writes to one of the tables served before
+/// them, at most. Some migrations before them block two or more.
+#[tokio::test]
+async fn no_migration_of_the_consent_blocks_writes_to_two_tables_served_before_it() {
+    let blocking_writes: &[&str] = &[
+        "ShareLock",
+        "ShareRowExclusiveLock",
+        "ExclusiveLock",
+        "AccessExclusiveLock",
+    ];
+    let first = EMBEDDED
+        .iter()
+        .position(|migration| migration.name == "0031_consent")
+        .expect("the first migration of the consent");
+    let database = TestDatabase::create(&[]).await;
+    let owner = database.plan(OWNER);
+    let client = owner.connect_directly().await.expect("a connection");
+    client
+        .batch_execute("SET search_path = public")
+        .await
+        .expect("the schema of the migrations");
+    apply_pending(&owner, &EMBEDDED[..first])
+        .await
+        .expect("the migrations before the consent");
+    let served: Vec<String> = client
+        .query(
+            "SELECT relname::text FROM pg_class
+             WHERE relkind IN ('r', 'p') AND relnamespace = 'public'::regnamespace",
+            &[],
+        )
+        .await
+        .expect("the tables")
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+
+    let consent = EMBEDDED
+        .iter()
+        .enumerate()
+        .filter(|(_, migration)| migration.name.contains("consent"));
+    for (applied, migration) in consent {
+        apply_pending(&owner, &EMBEDDED[..applied])
+            .await
+            .expect("the migrations before it");
+        client.batch_execute("BEGIN").await.expect("a transaction");
+        client
+            .batch_execute(migration.sql)
+            .await
+            .expect("the migration");
+        let mut held: Vec<String> = client
+            .query(
+                "SELECT DISTINCT c.relname::text
+                 FROM pg_locks AS l JOIN pg_class AS c ON c.oid = l.relation
+                 WHERE l.pid = pg_backend_pid() AND l.mode = ANY($1)
+                   AND c.relkind IN ('r', 'p')",
+                &[&blocking_writes],
+            )
+            .await
+            .expect("the locks it holds")
+            .iter()
+            .map(|row| row.get(0))
+            .collect();
+        client.batch_execute("ROLLBACK").await.expect("a rollback");
+
+        held.retain(|name| served.contains(name));
+        assert!(
+            held.len() <= 1,
+            "{} blocks writes to {held:?}",
+            migration.name
+        );
+    }
+}
+
+/// The rule of consent binds the rows of clients written once it is set,
+/// without scanning those already there under the lock that sets it: they
+/// are checked by the migration after, under a lock that blocks no write.
+#[tokio::test]
+async fn the_rule_of_consent_on_clients_is_checked_apart_from_the_lock_that_sets_it() {
+    let set_at = EMBEDDED
+        .iter()
+        .position(|migration| migration.name == "0032_consent_clients")
+        .expect("the migration that sets the rule");
+    let database = TestDatabase::create(&[]).await;
+    let owner = database.plan(OWNER);
+    let read_validated = async || -> bool {
+        owner
+            .connect_directly()
+            .await
+            .expect("a connection")
+            .query_one(
+                "SELECT convalidated FROM pg_constraint
+                 WHERE conname = 'clients_consent_for_applications'",
+                &[],
+            )
+            .await
+            .expect("the rule")
+            .get(0)
+    };
+
+    apply_pending(&owner, &EMBEDDED[..=set_at])
+        .await
+        .expect("the migrations up to the rule");
+    assert!(
+        !read_validated().await,
+        "set without checking the rows there"
+    );
+    apply_pending(&owner, EMBEDDED)
+        .await
+        .expect("the migrations after it");
+    assert!(read_validated().await, "checked after");
 }
 
 #[tokio::test]

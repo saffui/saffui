@@ -7,13 +7,14 @@
 
 mod audit;
 mod clients;
+mod consents;
 mod keys;
 mod login;
 mod refresh;
 mod roles;
 mod tenancy;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
@@ -32,6 +33,7 @@ use crate::authz::policy::Policy;
 use crate::authz::relations::{AdmittedRelation, RelationTuple, StoredSchema};
 use crate::authz::roles::{Group, Role};
 use crate::clients::Client;
+use crate::consent::Consent;
 use crate::directory::Person;
 use crate::keys::SigningKey;
 use crate::login::session::Session;
@@ -96,6 +98,8 @@ pub(crate) struct State {
     pub(crate) relation_guards: HashMap<Uuid, Vec<(String, String)>>,
     /// The policies of the clients of each realm, by realm.
     pub(crate) policies: HashMap<Uuid, Vec<Policy>>,
+    /// By realm, person and client: ordered by client within a person.
+    pub(crate) consents: BTreeMap<(Uuid, Uuid, String), Consent>,
 }
 
 /// A code as the double keeps it: spent codes stay, so that a replay is told.
@@ -107,18 +111,30 @@ pub(crate) struct KeptCode {
     pub(crate) replayed_at: Option<OffsetDateTime>,
 }
 
+/// How often units of work read what a test counts, committed or not.
+#[derive(Default)]
+pub(crate) struct CountedReads {
+    /// What a person allowed a client, by any of its reads.
+    pub(crate) consents: AtomicUsize,
+    pub(crate) pending_authorizations: AtomicUsize,
+    /// A client alone, by its identifier.
+    pub(crate) clients: AtomicUsize,
+}
+
 #[derive(Default)]
 pub struct MemoryStorage {
     state: Arc<Mutex<State>>,
     outage: Mutex<Option<StorageUnavailable>>,
     probes: AtomicUsize,
     units_of_work: AtomicUsize,
+    reads: Arc<CountedReads>,
 }
 
 pub struct MemoryUnitOfWork {
     scope: RealmScope,
     working: State,
     shared: Arc<Mutex<State>>,
+    reads: Arc<CountedReads>,
     /// As on a database, a refused statement ends the transaction: nothing
     /// that follows is kept.
     failed: bool,
@@ -194,6 +210,14 @@ impl MemoryStorage {
         }
     }
 
+    /// Removes the client of that identifier from every realm, as someone
+    /// with a hand in the database would: the product removes none.
+    pub fn remove_client(&self, client_id: &str) {
+        for clients in lock(&self.state).clients.values_mut() {
+            clients.retain(|client| client.client_id != client_id);
+        }
+    }
+
     /// Makes the storage refuse everything with `reason`, as a database that is down.
     pub fn fail_with(&self, reason: StorageUnavailable) {
         *lock(&self.outage) = Some(reason);
@@ -207,6 +231,24 @@ impl MemoryStorage {
     #[must_use]
     pub fn count_units_of_work(&self) -> usize {
         self.units_of_work.load(Ordering::Relaxed)
+    }
+
+    /// How many statements read what a person allowed a client.
+    #[must_use]
+    pub fn count_consent_reads(&self) -> usize {
+        self.reads.consents.load(Ordering::Relaxed)
+    }
+
+    /// How many statements read a pending request without taking it.
+    #[must_use]
+    pub fn count_pending_reads(&self) -> usize {
+        self.reads.pending_authorizations.load(Ordering::Relaxed)
+    }
+
+    /// How many statements read a client alone, by its identifier.
+    #[must_use]
+    pub fn count_client_reads(&self) -> usize {
+        self.reads.clients.load(Ordering::Relaxed)
     }
 
     #[must_use]
@@ -289,6 +331,7 @@ impl MemoryStorage {
             scope,
             working: lock(&self.state).clone(),
             shared: Arc::clone(&self.state),
+            reads: Arc::clone(&self.reads),
             failed: false,
             read_only,
         }))
@@ -358,11 +401,11 @@ mod tests {
     use super::MemoryStorage;
     use crate::testkit::contract::{
         check_audit_contract, check_authenticators_contract, check_clients_contract,
-        check_codes_contract, check_ended_sessions_contract, check_grants_contract,
-        check_keys_contract, check_known_browsers_contract, check_member_groups_contract,
-        check_persons_contract, check_policies_contract, check_refresh_contract,
-        check_relations_contract, check_roles_contract, check_security_keys_contract,
-        check_sign_in_contract, check_tenancy_contract,
+        check_codes_contract, check_consents_contract, check_ended_sessions_contract,
+        check_grants_contract, check_keys_contract, check_known_browsers_contract,
+        check_member_groups_contract, check_persons_contract, check_policies_contract,
+        check_refresh_contract, check_relations_contract, check_roles_contract,
+        check_security_keys_contract, check_sign_in_contract, check_tenancy_contract,
     };
     use crate::testkit::drive::complete;
 
@@ -460,6 +503,12 @@ mod tests {
     fn the_double_passes_the_member_groups_contract() {
         let (app, _storage) = MemoryStorage::wire();
         complete(check_member_groups_contract(&app));
+    }
+
+    #[test]
+    fn the_double_passes_the_consents_contract() {
+        let (app, _storage) = MemoryStorage::wire();
+        complete(check_consents_contract(&app));
     }
 
     #[test]

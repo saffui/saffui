@@ -15,6 +15,7 @@ use crate::audit::append::record_event;
 use crate::authz::grants::{ROLES_SCOPE, read_role_claims};
 use crate::clients::authenticate::{authenticate_client, identify_client};
 use crate::clients::check_scope_token;
+use crate::consent::{ConsentTerms, is_consent_owed};
 use crate::directory::Person;
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
@@ -229,6 +230,21 @@ async fn exchange_code(
         .await?
         .filter(|(_, person)| person.id == code.person)
         .ok_or_else(invalid)?;
+    // Held until the commit, before anything is locked: a withdrawal that
+    // comes meanwhile waits, then revokes the family this opens. One that
+    // came first left nothing to hold, and the code obtains nothing.
+    if client.requires_consent {
+        let terms = ConsentTerms {
+            requires_consent: true,
+            allowed: work
+                .hold_consent(person.id, &client.client_id)
+                .await
+                .map_err(Failure::from)?,
+        };
+        if is_consent_owed(&terms, false, &code.scopes) {
+            return Err(invalid());
+        }
+    }
 
     // Presented again meanwhile, the code obtains nothing. Bound before
     // anything is written: the event comes last, as the head of the chain

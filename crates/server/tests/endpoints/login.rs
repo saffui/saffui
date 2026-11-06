@@ -142,6 +142,7 @@ async fn start() -> saffui_core::app::App {
         redirect_uri: REDIRECT,
         post_logout_redirect_uri: Some("https://app.example.test/goodbye"),
         public: true,
+        requires_consent: false,
     };
     register_application(&product, scope, portal).await;
     product

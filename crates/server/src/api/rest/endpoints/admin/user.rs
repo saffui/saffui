@@ -3,6 +3,7 @@ use api::NewUser;
 use saffui_core::app::App as Product;
 use saffui_core::authz::capability::Capability;
 use saffui_core::authz::grants::{self, RoleHolder};
+use saffui_core::consent::manage::{list_person_consents, withdraw_person_consent};
 use saffui_core::directory::create::{NewPerson, create_person};
 use saffui_core::directory::list::list_persons;
 use saffui_core::error::{ErrorCode, Failure};
@@ -12,7 +13,7 @@ use saffui_core::secret::Secret;
 
 use super::group::{read_identifiers, read_terms};
 use super::listing::{ListParameters, answer_page};
-use super::views::{show_grant, show_held_role, show_user};
+use super::views::{show_consent, show_grant, show_held_role, show_user};
 use crate::error::render_failure;
 use crate::extract::admin::Caller;
 use crate::middleware::admin_guard::RequireCapability;
@@ -214,6 +215,50 @@ pub async fn revoke_user_role(
         Err(failure) => return render_failure(&failure),
     };
     match grants::revoke_role(&product, &caller, role, RoleHolder::Person(person)).await {
+        Ok(()) => HttpResponse::NoContent().finish(),
+        Err(failure) => render_failure(&failure),
+    }
+}
+
+/// What a person allowed the clients of the realm.
+#[get(
+    "/admin/v1/realms/{realm}/users/{person}/consents",
+    wrap = "RequireCapability(Capability::UserRead)"
+)]
+pub async fn list_user_consents(
+    caller: Caller,
+    product: web::Data<Product>,
+    path: web::Path<(String, String)>,
+) -> HttpResponse {
+    let (_realm, person) = path.into_inner();
+    let Ok(person) = uuid::Uuid::parse_str(&person) else {
+        return render_failure(&Failure::new(ErrorCode::PersonNotFound));
+    };
+    match list_person_consents(&product, &caller, person).await {
+        Ok(listed) => {
+            let items: Vec<api::ConsentView> = listed.iter().map(show_consent).collect();
+            HttpResponse::Ok().json(serde_json::json!({ "items": items }))
+        }
+        Err(failure) => render_failure(&failure),
+    }
+}
+
+/// Withdraws a consent in a person's place: the client loses what it holds
+/// for them.
+#[delete(
+    "/admin/v1/realms/{realm}/users/{person}/consents/{client_id}",
+    wrap = "RequireCapability(Capability::UserWrite)"
+)]
+pub async fn withdraw_user_consent(
+    caller: Caller,
+    product: web::Data<Product>,
+    path: web::Path<(String, String, String)>,
+) -> HttpResponse {
+    let (_realm, person, client_id) = path.into_inner();
+    let Ok(person) = uuid::Uuid::parse_str(&person) else {
+        return render_failure(&Failure::new(ErrorCode::ConsentNotFound));
+    };
+    match withdraw_person_consent(&product, &caller, person, &client_id).await {
         Ok(()) => HttpResponse::NoContent().finish(),
         Err(failure) => render_failure(&failure),
     }

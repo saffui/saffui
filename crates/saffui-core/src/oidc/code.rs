@@ -6,7 +6,8 @@ use uuid::Uuid;
 
 use crate::ports::storage::StorageError;
 
-/// An authorization request that waits for its person to sign in.
+/// An authorization request that waits for its person to sign in, or to
+/// allow the client.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PendingAuthorization {
     pub id: Uuid,
@@ -29,6 +30,11 @@ pub struct PendingAuthorization {
     /// The proof by a security key that person may give next, when they
     /// hold one.
     pub key_proof: Option<PendingKeyProof>,
+    /// The client asked the person to consent again (`prompt=consent`).
+    pub consent_prompted: bool,
+    /// The session whose person the request waits for to consent. Nobody
+    /// yet, when no consent was found owed.
+    pub consent_session: Option<Uuid>,
 }
 
 /// A proof by a security key that was started and waits for its answer.
@@ -88,6 +94,16 @@ pub trait CodeStore {
         id: Uuid,
         person: Uuid,
         key_proof: Option<&PendingKeyProof>,
+        now: OffsetDateTime,
+    ) -> Result<bool, StorageError>;
+
+    /// Writes on a pending request the session whose person it now waits for
+    /// to consent. Once: answers whether the request was still waiting at
+    /// `now` and waited for no session yet.
+    async fn mark_consent_owed(
+        &mut self,
+        id: Uuid,
+        session: Uuid,
         now: OffsetDateTime,
     ) -> Result<bool, StorageError>;
 

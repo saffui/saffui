@@ -1487,6 +1487,9 @@ fn a_client_that_requires_consent_asks_once_and_again_once_the_person_withdraws(
         "{}",
         again.head
     );
+    let kept_code = read_header(&again, "location")
+        .and_then(|location| read_parameter(location, "code"))
+        .expect("a code");
 
     let listed = http::send_request(
         node.data,
@@ -1518,6 +1521,23 @@ fn a_client_that_requires_consent_asks_once_and_again_once_the_person_withdraws(
     .expect("an answer");
     assert_eq!(refreshed.status, 400, "{}", refreshed.body);
     assert_eq!(read_json(&refreshed.body)["error"], "invalid_grant");
+    let late = http::send_request(
+        node.data,
+        "POST",
+        TOKEN,
+        &[FORM],
+        &format!(
+            "grant_type=authorization_code&client_id=partner&code={kept_code}\
+             &redirect_uri=https%3A%2F%2Fapp.example.test%2Fcallback&code_verifier={VERIFIER}"
+        ),
+    )
+    .expect("an answer");
+    assert_eq!(late.status, 400, "{}", late.body);
+    assert_eq!(
+        read_json(&late.body)["error"],
+        "invalid_grant",
+        "a code kept across the withdrawal obtains nothing"
+    );
     let asked_again = http::send_request(node.data, "GET", &path, &[("Cookie", &session)], "")
         .expect("an answer");
     assert_eq!(asked_again.status, 303, "{}", asked_again.body);
@@ -1538,4 +1558,36 @@ fn a_client_that_requires_consent_asks_once_and_again_once_the_person_withdraws(
         !kinds[withdrawal..].contains(&"token.revoked".to_owned()),
         "the family it ended is told in its own entry: {kinds:?}"
     );
+    let told = read_last_withdrawal(&database);
+    assert!(
+        told["payload"]["refresh_families_revoked"]
+            .as_u64()
+            .is_some_and(|families| families >= 1),
+        "{told}"
+    );
+}
+
+/// The last withdrawal of a consent the chain keeps, read as maintenance.
+fn read_last_withdrawal(database: &TestDatabase) -> Value {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime")
+        .block_on(async {
+            let maintenance = database
+                .plan(MAINTENANCE_ROLE)
+                .connect_directly()
+                .await
+                .expect("a connection");
+            let envelope: String = maintenance
+                .query_one(
+                    "SELECT convert_from(envelope, 'UTF8') FROM audit_events
+                     WHERE kind = 'consent.withdrawn' ORDER BY seq DESC LIMIT 1",
+                    &[],
+                )
+                .await
+                .expect("the withdrawal")
+                .get(0);
+            serde_json::from_str(&envelope).expect("an envelope of JSON")
+        })
 }

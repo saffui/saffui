@@ -2980,6 +2980,13 @@ pub async fn check_consents_contract(app: &App) {
     );
     work.commit().await.expect("a commit");
 
+    let mut snapshot = app.storage.begin_snapshot(scope).await.expect("a snapshot");
+    assert!(
+        snapshot.hold_consent(ada.id, "webapp").await.is_err(),
+        "a snapshot holds nothing"
+    );
+    drop(snapshot);
+
     let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
     assert_eq!(elsewhere.read_consent(ada.id, "webapp").await, Ok(None));
     assert_eq!(elsewhere.hold_consent(ada.id, "webapp").await, Ok(None));

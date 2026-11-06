@@ -117,6 +117,8 @@ pub(crate) struct CountedReads {
     /// What a person allowed a client, by any of its reads.
     pub(crate) consents: AtomicUsize,
     pub(crate) pending_authorizations: AtomicUsize,
+    /// A client alone, by its identifier.
+    pub(crate) clients: AtomicUsize,
 }
 
 #[derive(Default)]
@@ -241,6 +243,12 @@ impl MemoryStorage {
     #[must_use]
     pub fn count_pending_reads(&self) -> usize {
         self.reads.pending_authorizations.load(Ordering::Relaxed)
+    }
+
+    /// How many statements read a client alone, by its identifier.
+    #[must_use]
+    pub fn count_client_reads(&self) -> usize {
+        self.reads.clients.load(Ordering::Relaxed)
     }
 
     #[must_use]

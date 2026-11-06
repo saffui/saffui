@@ -1,3 +1,5 @@
+use std::sync::atomic::Ordering;
+
 use async_trait::async_trait;
 
 use super::MemoryUnitOfWork;
@@ -32,6 +34,7 @@ impl ClientStore for MemoryUnitOfWork {
     }
 
     async fn read_client(&mut self, client_id: &str) -> Result<Option<Client>, StorageError> {
+        self.reads.clients.fetch_add(1, Ordering::Relaxed);
         Ok(self
             .working
             .clients

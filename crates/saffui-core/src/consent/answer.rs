@@ -179,6 +179,7 @@ async fn allow_client(
     // The event comes last: the head of the chain stays locked until the commit.
     let granted = json!({
         "client_id": client.client_id,
+        "kept": client.requires_consent,
         "person_id": session.person.to_string(),
         "scopes": pending.scopes,
         "session_id": session.id.to_string(),
@@ -357,6 +358,18 @@ mod tests {
         .map_err(|failure| failure.code)
     }
 
+    /// What the last `consent.granted` of the realm says.
+    fn read_last_grant(scenario: &Scenario) -> serde_json::Value {
+        scenario
+            .storage
+            .read_audit_envelopes(scenario.scope.realm())
+            .into_iter()
+            .rev()
+            .find(|event| event["kind"] == "consent.granted")
+            .expect("a consent granted")["payload"]
+            .clone()
+    }
+
     fn read_code(location: &str) -> Option<String> {
         location
             .split_once("code=")
@@ -449,11 +462,7 @@ mod tests {
         assert!(location.contains("state=s1"), "{location}");
         let tokens = exchange(&scenario, &read_code(&location).expect("a code"));
         assert!(tokens.id_token.is_some());
-        assert!(
-            scenario
-                .read_event_kinds()
-                .contains(&"consent.granted".to_owned())
-        );
+        assert_eq!(read_last_grant(&scenario)["kept"], true);
 
         assert_eq!(
             read_outcome(ask_partner(&scenario, "openid", Some(&ticket))),
@@ -968,6 +977,11 @@ mod tests {
             Ok(0),
             "nothing kept: nothing stands to be withdrawn"
         );
+        assert_eq!(
+            read_last_grant(&scenario)["kept"],
+            false,
+            "the chain says the answer was kept nowhere"
+        );
     }
 
     #[test]
@@ -1267,5 +1281,129 @@ mod tests {
             .map_err(|failure| failure.code),
             Err(ErrorCode::ClientNotFound)
         );
+    }
+
+    #[test]
+    fn a_code_asked_for_more_than_what_was_allowed_again_obtains_nothing() {
+        let scenario = Scenario::start();
+        register_partner(&scenario, "Partner");
+        let (request, browser_secret, ticket) =
+            sign_in_for_partner(&scenario, "ada", "openid email");
+        let wider = answer(
+            &scenario,
+            request,
+            &browser_secret,
+            Some(&ticket),
+            ConsentDecision::Allow,
+        )
+        .expect("a code for openid and email");
+        complete(withdraw_my_consent(
+            &scenario.app,
+            "acme",
+            Some(&ticket),
+            "partner",
+        ))
+        .expect("a withdrawal");
+        let Ok(Authorization::ConsentRequired {
+            request,
+            browser_secret,
+        }) = ask_partner(&scenario, "openid", Some(&ticket))
+        else {
+            panic!("withdrawn, the consent is asked again");
+        };
+        answer(
+            &scenario,
+            request,
+            &browser_secret,
+            Some(&ticket),
+            ConsentDecision::Allow,
+        )
+        .expect("openid allowed again, and nothing more");
+
+        assert_eq!(
+            try_exchange(&scenario, &read_code(&wider).expect("a code")).err(),
+            Some(OAuthError::InvalidGrant),
+            "email is no longer allowed"
+        );
+    }
+
+    #[test]
+    fn a_page_without_a_session_is_refused_before_its_realm_is_looked_for() {
+        let scenario = Scenario::start();
+        let code =
+            |outcome: Result<(), crate::error::Failure>| outcome.map_err(|failure| failure.code);
+        let request = Uuid::from_u128(1);
+        let browser_secret = Secret::new(vec![1; 32]);
+
+        assert_eq!(
+            code(complete(list_my_consents(&scenario.app, "nowhere", None)).map(|_| ())),
+            Err(ErrorCode::SessionRequired)
+        );
+        assert_eq!(
+            code(complete(withdraw_my_consent(
+                &scenario.app,
+                "nowhere",
+                None,
+                "partner"
+            ))),
+            Err(ErrorCode::SessionRequired)
+        );
+        assert_eq!(
+            code(
+                complete(describe_consent(
+                    &scenario.app,
+                    "nowhere",
+                    request,
+                    &browser_secret,
+                    None
+                ))
+                .map(|_| ())
+            ),
+            Err(ErrorCode::AuthorizationRequestExpired)
+        );
+        assert_eq!(
+            code(
+                complete(answer_consent(
+                    &scenario.app,
+                    "nowhere",
+                    request,
+                    &browser_secret,
+                    None,
+                    ConsentDecision::Allow
+                ))
+                .map(|_| ())
+            ),
+            Err(ErrorCode::AuthorizationRequestExpired)
+        );
+    }
+
+    #[test]
+    fn a_sign_in_reads_the_flag_of_the_client_and_its_consent_in_one_statement() {
+        let scenario = Scenario::start();
+        let asked = Asked {
+            client_id: "webapp",
+            scope: "openid",
+            prompt: None,
+            hint: None,
+        };
+        let Ok(Authorization::SignInRequired {
+            request,
+            browser_secret,
+        }) = ask(&scenario, &asked, None)
+        else {
+            panic!("a person without a session signs in first");
+        };
+        let clients = scenario.storage.count_client_reads();
+        let consents = scenario.storage.count_consent_reads();
+
+        let step = sign_in_again(&scenario, request, &browser_secret);
+
+        assert!(matches!(step, Ok(SignInStep::Finished(_))), "{step:?}");
+        assert_eq!(
+            scenario.storage.count_client_reads(),
+            clients,
+            "no client read alone"
+        );
+        assert_eq!(scenario.storage.count_consent_reads(), consents + 1);
     }
 }

@@ -37,7 +37,10 @@ impl ConsentStore for MemoryUnitOfWork {
         person: Uuid,
         client_id: &str,
     ) -> Result<Option<Vec<String>>, StorageError> {
-        // The double serializes nothing: what is held is what is read.
+        // As a read-only transaction refuses `FOR SHARE`. The double
+        // serializes nothing: what is held is what is read.
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
         Ok(self
             .find_consent(person, client_id)
             .map(|held| held.scopes.clone()))

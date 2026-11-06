@@ -330,13 +330,16 @@ impl RelationStore for MemoryUnitOfWork {
         // One unit of work at a time: the definitions are never held by another.
         let realm = self.realm();
         let admitted = read_realm(&self.working.relation_kinds, realm);
-        Ok(if !is_of_kinds(tuple, admitted) {
-            RelationAdmission::Refused
-        } else if read_realm(&self.working.relations, realm).contains(tuple) {
-            RelationAdmission::Kept
-        } else {
-            RelationAdmission::Taken
-        })
+        if !is_of_kinds(tuple, admitted) {
+            return Ok(RelationAdmission::Refused);
+        }
+        if read_realm(&self.working.relations, realm).contains(tuple) {
+            return Ok(RelationAdmission::Kept);
+        }
+        // Holding them is a lock for update, which a snapshot cannot take.
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        Ok(RelationAdmission::Taken)
     }
 
     async fn insert_relation(

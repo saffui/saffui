@@ -26,6 +26,9 @@ struct FaultsBody {
     error_code: u32,
     message: &'static str,
     faults: Vec<SchemaFaultView>,
+    /// How many faults past those told: absent when every one is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    faults_not_shown: Option<usize>,
 }
 
 #[get(
@@ -88,12 +91,14 @@ pub async fn write_schema(
                 error_code: code.number(),
                 message: code.message(),
                 faults: faults
+                    .shown
                     .into_iter()
                     .map(|fault| SchemaFaultView {
                         line: fault.line,
                         message: fault.message,
                     })
                     .collect(),
+                faults_not_shown: (faults.not_shown > 0).then_some(faults.not_shown),
             })
         }
         Err(SchemaRefusal::Failed(failure)) => render_failure(&failure),

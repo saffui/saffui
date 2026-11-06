@@ -2267,12 +2267,43 @@ pub async fn check_relations_contract(app: &App) {
         work.admit_relation(&team).await,
         Ok(RelationAdmission::Kept)
     );
+    // Each one column away from a kind the schema admits: the member, the
+    // type of the subject, the type of the object.
+    for tuple in [
+        relate("document:q3", "owner", "team:core", None),
+        relate("document:q3", "owner", "user:ada", Some("member")),
+        relate("folder:q3", "owner", "user:ada", None),
+    ] {
+        assert_eq!(
+            work.admit_relation(&tuple).await,
+            Ok(RelationAdmission::Refused),
+            "{tuple:?}"
+        );
+    }
     assert_eq!(
         work.admit_relation(&relate("document:q4", "owner", "user:ada", None))
             .await,
         Ok(RelationAdmission::Taken)
     );
     drop(work);
+    // A unit of work that only reads answers what it reads, and cannot hold
+    // the definitions.
+    let mut snapshot = app.storage.begin_snapshot(scope).await.expect("a snapshot");
+    assert_eq!(
+        snapshot.admit_relation(&reader).await,
+        Ok(RelationAdmission::Refused)
+    );
+    assert_eq!(
+        snapshot.admit_relation(&team).await,
+        Ok(RelationAdmission::Kept)
+    );
+    assert_eq!(
+        snapshot
+            .admit_relation(&relate("document:q4", "owner", "user:ada", None))
+            .await,
+        Err(StorageError::Failed)
+    );
+    drop(snapshot);
     let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
     assert_eq!(
         elsewhere.admit_relation(&owner).await,

@@ -220,6 +220,36 @@ async fn a_schema_at_its_bound_is_read_whole_and_one_past_it_is_told_its_fault()
 }
 
 #[actix_web::test]
+async fn a_schema_of_thousands_of_faults_is_told_the_first_ones_in_a_bounded_body() {
+    use saffui_core::authz::relations::schema::{MAX_FAULTS_SHOWN, SCHEMA_MAX_BYTES};
+
+    let started = start().await;
+    let (head, tail) = ("definition doc {\n permission p = z", "\n}");
+    let terms = (SCHEMA_MAX_BYTES - head.len() - tail.len()) / 2 + 1;
+    let source = format!("{head}{}{tail}", "+z".repeat(terms - 1));
+
+    let (status, answer) = started
+        .admin(
+            Method::PUT,
+            "/admin/v1/realms/acme/relations/schema",
+            Some(&json!({ "source": source })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        answer["faults"].as_array().map(Vec::len),
+        Some(MAX_FAULTS_SHOWN)
+    );
+    assert_eq!(
+        answer["faults"][0],
+        json!({ "line": 2, "message": "`doc` has no member `z`" })
+    );
+    assert_eq!(answer["faults_not_shown"], terms - MAX_FAULTS_SHOWN);
+    let written = answer.to_string().len();
+    assert!(written < 16 * 1024, "the answer takes {written} bytes");
+}
+
+#[actix_web::test]
 async fn relations_are_written_listed_and_deleted_as_the_schema_admits_them() {
     let started = start().await;
     started

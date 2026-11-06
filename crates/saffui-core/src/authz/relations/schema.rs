@@ -30,9 +30,15 @@ pub const COMPILED_VERSION: u32 = 1;
 pub const SCHEMA_MAX_BYTES: usize = 64 * 1024;
 
 /// The longest compiled form, in bytes of compact JSON. Four times the
-/// longest source: readable names compile to about twice their length, and
-/// a question reads the form whole.
+/// longest source: readable names compile to about twice their length. Short
+/// terms, all distinct, compile to some fifteen times theirs, and such a
+/// source is refused well before its own bound: every question reads the
+/// form whole.
 pub const SCHEMA_COMPILED_MAX_BYTES: usize = 4 * SCHEMA_MAX_BYTES;
+
+/// How many faults a schema is told, the first found. The others are only
+/// counted: one unknown term written again would be told thousands of times.
+pub const MAX_FAULTS_SHOWN: usize = 100;
 
 /// How deep parentheses nest in a permission. The parser walks them on the
 /// stack of the thread that compiles: deeper is refused, never walked.
@@ -102,6 +108,32 @@ impl CompiledSchema {
 pub struct SchemaFault {
     pub line: usize,
     pub message: String,
+}
+
+/// The faults of a schema that does not compile.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SchemaFaults {
+    /// The first found, [`MAX_FAULTS_SHOWN`] at most, by line.
+    pub shown: Vec<SchemaFault>,
+    /// How many more were found.
+    pub not_shown: usize,
+}
+
+impl SchemaFaults {
+    fn note(&mut self, fault: SchemaFault) {
+        if self.shown.len() < MAX_FAULTS_SHOWN {
+            self.shown.push(fault);
+        } else {
+            self.not_shown += 1;
+        }
+    }
+
+    fn one(fault: SchemaFault) -> Self {
+        Self {
+            shown: vec![fault],
+            not_shown: 0,
+        }
+    }
 }
 
 /// Whether a text may name a type or a member: a lowercase letter, then up
@@ -404,12 +436,12 @@ impl Parser {
 
 struct Compiler<'a> {
     definitions: &'a [Definition],
-    faults: Vec<SchemaFault>,
+    faults: SchemaFaults,
 }
 
 impl Compiler<'_> {
     fn note(&mut self, line: usize, message: String) {
-        self.faults.push(SchemaFault { line, message });
+        self.faults.note(SchemaFault { line, message });
     }
 
     fn find(&self, object_type: &str) -> Option<&Definition> {
@@ -619,28 +651,29 @@ impl Compiler<'_> {
 /// # Errors
 ///
 /// Returns the faults of the schema: a syntax fault per definition it
-/// spoils, then every fault of meaning in what could be read. A schema
-/// without them whose form passes its bound has that fault alone.
-pub fn compile_schema(source: &str) -> Result<CompiledSchema, Vec<SchemaFault>> {
+/// spoils, then every fault of meaning in what could be read, the first
+/// [`MAX_FAULTS_SHOWN`] of them told. A schema without them whose form
+/// passes its bound has that fault alone.
+pub fn compile_schema(source: &str) -> Result<CompiledSchema, SchemaFaults> {
     if source.len() > SCHEMA_MAX_BYTES {
-        return Err(vec![SchemaFault {
+        return Err(SchemaFaults::one(SchemaFault {
             line: 1,
             message: format!("a schema is at most {SCHEMA_MAX_BYTES} bytes"),
-        }]);
+        }));
     }
-    let lexemes = read_lexemes(source).map_err(|fault| vec![fault])?;
+    let lexemes = read_lexemes(source).map_err(SchemaFaults::one)?;
     let mut parser = Parser {
         lexemes,
         at: 0,
         nesting: 0,
     };
     let mut definitions = Vec::new();
-    let mut faults = Vec::new();
+    let mut faults = SchemaFaults::default();
     while parser.peek().is_some() {
         match parser.read_definition() {
             Ok(definition) => definitions.push(definition),
             Err(fault) => {
-                faults.push(fault);
+                faults.note(fault);
                 parser.skip_to_next_definition();
             }
         }
@@ -667,9 +700,9 @@ pub fn compile_schema(source: &str) -> Result<CompiledSchema, Vec<SchemaFault>> 
             );
         }
     }
-    if !compiler.faults.is_empty() {
+    if !compiler.faults.shown.is_empty() {
         let mut faults = compiler.faults;
-        faults.sort_by_key(|fault| fault.line);
+        faults.shown.sort_by_key(|fault| fault.line);
         return Err(faults);
     }
     let schema = CompiledSchema {
@@ -679,10 +712,10 @@ pub fn compile_schema(source: &str) -> Result<CompiledSchema, Vec<SchemaFault>> 
     // Distinct terms still compile to some fifteen times their source.
     let written = serde_json::to_vec(&schema).map_or(usize::MAX, |bytes| bytes.len());
     if written > SCHEMA_COMPILED_MAX_BYTES {
-        return Err(vec![SchemaFault {
+        return Err(SchemaFaults::one(SchemaFault {
             line: 1,
             message: format!("a schema compiles to at most {SCHEMA_COMPILED_MAX_BYTES} bytes"),
-        }]);
+        }));
     }
     Ok(schema)
 }
@@ -690,8 +723,8 @@ pub fn compile_schema(source: &str) -> Result<CompiledSchema, Vec<SchemaFault>> 
 #[cfg(test)]
 mod tests {
     use super::{
-        AllowedSubject, MemberKind, Rule, SCHEMA_COMPILED_MAX_BYTES, SCHEMA_MAX_BYTES,
-        compile_schema, is_schema_name,
+        AllowedSubject, MAX_FAULTS_SHOWN, MemberKind, Rule, SCHEMA_COMPILED_MAX_BYTES,
+        SCHEMA_MAX_BYTES, SchemaFault, compile_schema, is_schema_name,
     };
 
     const DOCUMENTS: &str = "
@@ -722,6 +755,7 @@ mod tests {
     fn read_lines(source: &str) -> Vec<(usize, String)> {
         compile_schema(source)
             .expect_err("a faulty schema")
+            .shown
             .into_iter()
             .map(|fault| (fault.line, fault.message))
             .collect()
@@ -889,7 +923,7 @@ definition team {
             .expect("a thread")
             .join()
             .expect("the thread returns");
-        let faults = compiled.expect_err("faults");
+        let faults = compiled.expect_err("faults").shown;
         assert_eq!(faults.len(), 1);
         assert_eq!(faults[0].message, "parentheses nest at most 16 deep");
         let sixteen = format!(
@@ -987,13 +1021,99 @@ definition team {
     }
 
     #[test]
+    fn a_form_at_its_bound_is_kept_and_one_a_byte_longer_is_refused() {
+        let letters: Vec<char> = ('a'..='z').collect();
+        let mut pairs = Vec::new();
+        for (index, first) in letters.iter().enumerate() {
+            for second in &letters[index + 1..] {
+                pairs.push(format!("({first}+{second})"));
+            }
+        }
+        let pairs = pairs.join("&");
+        // Fillers are relations named once in the form: a name of `length`
+        // letters adds those letters, and what the form writes around them.
+        let source = |fillers: &[usize]| {
+            let relations = letters
+                .iter()
+                .map(|letter| format!(" relation {letter}: doc\n"))
+                .collect::<Vec<_>>()
+                .concat();
+            let permissions = (0..8)
+                .map(|index| format!(" permission p{index} = {pairs}\n"))
+                .collect::<Vec<_>>()
+                .concat();
+            let fillers = fillers
+                .iter()
+                .enumerate()
+                .map(|(index, length)| {
+                    format!(" relation {:_<length$}: doc\n", format!("f{index}"))
+                })
+                .collect::<Vec<_>>()
+                .concat();
+            format!("definition doc {{\n{relations}{permissions}{fillers}}}")
+        };
+        let measure = |fillers: &[usize]| {
+            let schema = compile_schema(&source(fillers)).expect("a schema under the bound");
+            serde_json::to_vec(&schema).expect("a compiled form").len()
+        };
+        let base = measure(&[]);
+        let around = measure(&[10]) - base - 10;
+        let (longest, shortest) = (64 + around, 4 + around);
+        let fill = |wanted: usize| {
+            let (mut left, mut lengths) = (wanted - base, Vec::new());
+            while left > longest + shortest {
+                lengths.push(64);
+                left -= longest;
+            }
+            if left > longest {
+                lengths.push(left - shortest - around);
+                left = shortest;
+            }
+            lengths.push(left - around);
+            lengths
+        };
+
+        let at_bound = fill(SCHEMA_COMPILED_MAX_BYTES);
+        assert!(source(&at_bound).len() <= SCHEMA_MAX_BYTES);
+        assert_eq!(measure(&at_bound), SCHEMA_COMPILED_MAX_BYTES);
+        assert_eq!(
+            read_lines(&source(&fill(SCHEMA_COMPILED_MAX_BYTES + 1))),
+            [(
+                1,
+                format!("a schema compiles to at most {SCHEMA_COMPILED_MAX_BYTES} bytes")
+            )]
+        );
+    }
+
+    #[test]
+    fn a_schema_is_told_its_first_faults_and_how_many_more_it_has() {
+        let (head, tail) = ("definition doc {\n permission p = z", "\n}");
+        let terms = (SCHEMA_MAX_BYTES - head.len() - tail.len()) / 2 + 1;
+        let source = format!("{head}{}{tail}", "+z".repeat(terms - 1));
+        assert!(source.len() <= SCHEMA_MAX_BYTES);
+
+        let faults = compile_schema(&source).expect_err("faults");
+        assert_eq!(faults.shown.len(), MAX_FAULTS_SHOWN);
+        assert_eq!(
+            faults.shown.len() + faults.not_shown,
+            terms,
+            "each unknown term is counted"
+        );
+        let unknown = SchemaFault {
+            line: 2,
+            message: "`doc` has no member `z`".to_owned(),
+        };
+        assert!(faults.shown.iter().all(|fault| fault == &unknown));
+    }
+
+    #[test]
     fn a_character_that_cannot_be_shown_is_a_fault_even_in_a_comment() {
         for source in [
             "definition user {} // \u{202e}evil",
             "definition user {}\u{2028}definition team {}",
             "definition us\u{200b}er {}",
         ] {
-            let faults = compile_schema(source).expect_err("a fault");
+            let faults = compile_schema(source).expect_err("a fault").shown;
             assert!(
                 faults[0].message.starts_with("U+") && !faults[0].message.contains('\u{202e}'),
                 "{source:?}: {}",

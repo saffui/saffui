@@ -10,7 +10,9 @@ use serde::Deserialize as _;
 use serde_json::json;
 use time::OffsetDateTime;
 
-use self::schema::{AllowedSubject, COMPILED_VERSION, CompiledSchema, SchemaFault, compile_schema};
+use self::schema::{
+    AllowedSubject, COMPILED_VERSION, CompiledSchema, SchemaFaults, compile_schema,
+};
 use super::admin::AdminCaller;
 use super::roles::describe_actor;
 use crate::app::App;
@@ -200,8 +202,8 @@ pub async fn list_relation_subjects(
 /// Why a schema was not written.
 #[derive(Debug, PartialEq, Eq)]
 pub enum SchemaRefusal {
-    /// Its faults, each at its line.
-    Faults(Vec<SchemaFault>),
+    /// Its first faults, each at its line, and how many more it has.
+    Faults(SchemaFaults),
     Failed(Failure),
 }
 
@@ -330,8 +332,9 @@ fn describe_relation(tuple: &RelationTuple) -> serde_json::Value {
 }
 
 /// Keeps a relation the schema of the realm admits. Kept twice, it is kept
-/// once, and the chain says so once. Only a relation to keep waits for the
-/// definitions of the realm: a refusal, or one kept already, does not.
+/// once, and the chain says so once. A relation refused, or kept already, is
+/// answered without waiting for the definitions of the realm; one to keep
+/// waits for them, and is refused after all if its kind went meanwhile.
 ///
 /// # Errors
 ///
@@ -717,7 +720,7 @@ mod tests {
     }
 
     #[test]
-    fn a_relation_no_schema_could_name_is_refused_before_the_storage_is_asked() {
+    fn a_relation_whose_identifiers_no_object_may_have_is_refused_and_kept_nowhere() {
         use super::{ObjectRef, RelationTuple, SubjectRef, list_relation_subjects, write_relation};
         use crate::error::ErrorCode;
 

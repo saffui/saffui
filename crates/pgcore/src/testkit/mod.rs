@@ -65,6 +65,23 @@ impl TestDatabase {
         describe_connection(&self.cluster, role, &self.name)
     }
 
+    /// Makes every session opened from now on begin its transactions under
+    /// repeatable read, as an operator may set a database to.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the cluster refuses.
+    pub async fn default_transactions_to_repeatable_read(&self) {
+        connect(&self.cluster)
+            .await
+            .batch_execute(&format!(
+                "ALTER DATABASE {} SET default_transaction_isolation = 'repeatable read'",
+                self.name
+            ))
+            .await
+            .expect("a default level for the test database");
+    }
+
     /// The accepted plan of a connection to this database as `role`.
     ///
     /// # Panics

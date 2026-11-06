@@ -79,6 +79,66 @@ async fn a_failed_migration_leaves_nothing_of_itself() {
     );
 }
 
+/// Expand, then fill: the fill reaches a note committed while the migration
+/// waited for the lock of its table.
+#[tokio::test]
+async fn a_fill_reaches_a_row_written_while_its_migration_waited_under_a_repeatable_read_default() {
+    let database = TestDatabase::create(&[NOTES]).await;
+    database.default_transactions_to_repeatable_read().await;
+    let owner = database.plan(OWNER);
+    let writer = owner.connect_directly().await.expect("a connection");
+    writer
+        .batch_execute("INSERT INTO notes VALUES (1, 'before')")
+        .await
+        .expect("a note");
+    writer
+        .batch_execute("BEGIN; INSERT INTO notes VALUES (2, 'meanwhile')")
+        .await
+        .expect("a note not yet committed");
+    let filled = Migration {
+        sql: "ALTER TABLE notes ADD COLUMN author text; UPDATE notes SET author = 'unknown';",
+        ..NOTES_AUTHOR
+    };
+    let runner = owner.clone();
+    let migrating = tokio::spawn(async move { apply_pending(&runner, &[NOTES, filled]).await });
+    let observer = owner.connect_directly().await.expect("a connection");
+    let deadline = Instant::now() + Duration::from_secs(4);
+    loop {
+        let waiting: i64 = observer
+            .query_one(
+                "SELECT count(*) FROM pg_stat_activity
+                 WHERE datname = current_database() AND wait_event_type = 'Lock'",
+                &[],
+            )
+            .await
+            .expect("a count")
+            .get(0);
+        if waiting > 0 || migrating.is_finished() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the migration never waited for the table"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        !migrating.is_finished(),
+        "the migration waits for the table"
+    );
+    writer.batch_execute("COMMIT").await.expect("a commit");
+
+    let applied = migrating.await.expect("the run").expect("a run");
+
+    assert_eq!(applied.applied, vec![2]);
+    let unfilled: i64 = observer
+        .query_one("SELECT count(*) FROM notes WHERE author IS NULL", &[])
+        .await
+        .expect("a count")
+        .get(0);
+    assert_eq!(unfilled, 0, "the note written meanwhile was filled too");
+}
+
 #[tokio::test]
 async fn a_migration_edited_after_it_was_applied_is_refused() {
     let database = TestDatabase::create(&[NOTES]).await;

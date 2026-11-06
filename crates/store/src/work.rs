@@ -23,9 +23,11 @@ pub(crate) enum Mode {
 }
 
 impl Mode {
+    /// Each level is said: the default is a setting of the server, the
+    /// database, the role or the session, and any of them may change it.
     fn begin(self) -> &'static str {
         match self {
-            Self::Normal => "BEGIN",
+            Self::Normal => "BEGIN ISOLATION LEVEL READ COMMITTED",
             Self::Snapshot => "BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY",
         }
     }

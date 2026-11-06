@@ -177,7 +177,11 @@ async fn apply_under_lock(
 }
 
 async fn apply_one(client: &Client, migration: &Migration) -> Result<(), tokio_postgres::Error> {
-    client.batch_execute("BEGIN").await?;
+    // A fill reaches the rows written while its migration waited for a lock:
+    // each statement sees what committed before it, whatever the default.
+    client
+        .batch_execute("BEGIN ISOLATION LEVEL READ COMMITTED")
+        .await?;
     client.batch_execute(migration.sql).await?;
     history::record_applied(client, migration).await?;
     client.batch_execute("COMMIT").await

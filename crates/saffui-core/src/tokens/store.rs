@@ -52,6 +52,15 @@ pub struct EndedFamily {
     pub last_used_at: Option<OffsetDateTime>,
 }
 
+/// A family taken back with the other tokens of its client, and the session
+/// it belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RevokedFamily {
+    pub family: Uuid,
+    pub session: Uuid,
+    pub ended: EndedFamily,
+}
+
 #[async_trait]
 pub trait RefreshStore {
     async fn insert_refresh_token(&mut self, token: &RefreshToken) -> Result<(), StorageError>;
@@ -81,6 +90,16 @@ pub trait RefreshStore {
         family: Uuid,
         now: OffsetDateTime,
     ) -> Result<Option<EndedFamily>, StorageError>;
+
+    /// Revokes every live token a client holds for a person, in each of their
+    /// sessions, in one statement. Says what each family tells, in the order
+    /// of the families; a family revoked before is not told again.
+    async fn revoke_refresh_families_of_client(
+        &mut self,
+        person: Uuid,
+        client_id: &str,
+        now: OffsetDateTime,
+    ) -> Result<Vec<RevokedFamily>, StorageError>;
 
     /// Revokes every token of a session that is not revoked yet. Returns how many.
     async fn revoke_refresh_tokens_of_session(

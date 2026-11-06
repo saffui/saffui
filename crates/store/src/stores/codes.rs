@@ -11,6 +11,7 @@ use crate::query::criteria::Criteria;
 use crate::query::ident::Column;
 use crate::query::insert::Insert;
 use crate::query::select::Select;
+use crate::query::update::Update;
 use crate::schema::{authorization_codes, authorization_requests};
 use crate::work::PgUnitOfWork;
 
@@ -27,6 +28,8 @@ const PENDING: &[Column] = &[
     authorization_requests::FIRST_FACTOR_PERSON_ID,
     authorization_requests::KEY_PROOF_STATE,
     authorization_requests::KEY_PROOF_OPTIONS,
+    authorization_requests::CONSENT_PROMPTED,
+    authorization_requests::CONSENT_SESSION_ID,
 ];
 
 /// The proof by a key a row keeps, when the two columns hold one.
@@ -79,6 +82,14 @@ impl CodeStore for PgUnitOfWork {
                 ),
                 col(authorization_requests::KEY_PROOF_STATE, &key_state),
                 col(authorization_requests::KEY_PROOF_OPTIONS, &key_options),
+                col(
+                    authorization_requests::CONSENT_PROMPTED,
+                    &pending.consent_prompted,
+                ),
+                col(
+                    authorization_requests::CONSENT_SESSION_ID,
+                    &pending.consent_session,
+                ),
             ],
         )
         .build();
@@ -113,6 +124,8 @@ impl CodeStore for PgUnitOfWork {
                 expected_person: row.get(8),
                 first_factor: row.get(9),
                 key_proof: read_key_proof(row.get(10), row.get(11)),
+                consent_prompted: row.get(12),
+                consent_session: row.get(13),
             }))
     }
 
@@ -145,6 +158,28 @@ impl CodeStore for PgUnitOfWork {
         Ok(marked == 1)
     }
 
+    async fn mark_consent_owed(
+        &mut self,
+        id: Uuid,
+        session: Uuid,
+        now: OffsetDateTime,
+    ) -> Result<bool, StorageError> {
+        // Of two marks at once, the second waits for the first, then finds a
+        // session written and matches no row.
+        let session = Some(session);
+        let update = Update::table(
+            authorization_requests::TABLE,
+            vec![col(authorization_requests::CONSENT_SESSION_ID, &session)],
+            Criteria::new()
+                .where_equal(authorization_requests::REQUEST_ID, &id)
+                .where_greater(authorization_requests::EXPIRES_AT, &now)
+                .where_null(authorization_requests::CONSENT_SESSION_ID),
+        )
+        .build()
+        .map_err(|_| StorageError::Failed)?;
+        Ok(self.execute(&update).await? == 1)
+    }
+
     async fn take_pending_authorization(
         &mut self,
         id: Uuid,
@@ -159,7 +194,8 @@ impl CodeStore for PgUnitOfWork {
                  WHERE tenant_id = $1 AND realm_id = $2 AND request_id = $3 AND expires_at > $4
                  RETURNING browser_digest, client_id, redirect_uri, scopes, state, nonce,
                            code_challenge, expires_at, expected_person, first_factor_person_id,
-                           key_proof_state, key_proof_options",
+                           key_proof_state, key_proof_options, consent_prompted,
+                           consent_session_id",
                 &[&tenant, &realm, &id, &now],
             )
             .await?;
@@ -176,6 +212,8 @@ impl CodeStore for PgUnitOfWork {
             expected_person: row.get(8),
             first_factor: row.get(9),
             key_proof: read_key_proof(row.get(10), row.get(11)),
+            consent_prompted: row.get(12),
+            consent_session: row.get(13),
         }))
     }
 

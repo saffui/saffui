@@ -48,6 +48,7 @@ impl Scenario {
             redirect_uri: CALLBACK,
             post_logout_redirect_uri: Some(GOODBYE),
             public: true,
+            requires_consent: false,
         };
         complete(register_application(&app, scope, webapp));
         let service_secret = complete(create_service_client(

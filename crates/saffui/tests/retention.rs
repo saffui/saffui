@@ -57,9 +57,11 @@ fn plant_an_expired_request(database: &TestDatabase) {
                         set_config('saffui.realm', realm_id::text, true)
                  FROM realm_directory WHERE name = 'acme';
                  INSERT INTO authorization_requests (tenant_id, realm_id, request_id,
-                     browser_digest, client_id, redirect_uri, scopes, code_challenge, expires_at)
+                     browser_digest, client_id, redirect_uri, scopes, code_challenge,
+                     consent_prompted, expires_at)
                  SELECT tenant_id, realm_id, gen_random_uuid(), '\\x00', 'portal',
-                        'https://app.example.test/cb', '{}', 'c', now() - interval '1 hour'
+                        'https://app.example.test/cb', '{}', 'c', false,
+                        now() - interval '1 hour'
                  FROM realm_directory WHERE name = 'acme';
                  COMMIT;",
             )

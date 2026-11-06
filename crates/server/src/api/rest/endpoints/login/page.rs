@@ -12,8 +12,8 @@ use saffui_core::login::device::{
     DEVICE_MARK_LIFETIME, keep_device_marks, read_device_marks, write_device_marks,
 };
 use saffui_core::oidc::authorize::{
-    OwedSecondFactor, SignInAnswer, SignInStep, SignedInForRequest, TypedSignIn,
-    describe_owed_second_factor, finish_sign_in,
+    OwedSecondFactor, SignInAnswer, SignInStep, SignedInForConsent, SignedInForRequest,
+    TypedSignIn, describe_owed_second_factor, finish_sign_in,
 };
 use saffui_core::secret::Secret;
 use serde::Deserialize;
@@ -314,6 +314,47 @@ fn send_back_to_client(
         .finish()
 }
 
+/// Where a browser goes once its person signed in for a client they must
+/// allow first: on to the consent page, with its session and the mark of
+/// this sign-in. The flow goes on, and keeps its cookie.
+fn send_on_to_consent(
+    product: &Product,
+    realm: &str,
+    secure: bool,
+    signed_in: SignedInForConsent,
+    known_browsers: &[DeviceMark],
+) -> HttpResponse {
+    HttpResponse::SeeOther()
+        .insert_header((
+            LOCATION,
+            format!("/realms/{realm}/consent?request={}", signed_in.request),
+        ))
+        .insert_header((CACHE_CONTROL, "no-store"))
+        .append_header((
+            SET_COOKIE,
+            write_cookie(
+                &name_session_cookie(realm, secure),
+                &signed_in.ticket.write(),
+                None,
+                secure,
+            ),
+        ))
+        .append_header((
+            SET_COOKIE,
+            write_cookie(
+                &name_device_cookie(realm, secure),
+                &write_device_marks(&keep_device_marks(
+                    signed_in.device_mark,
+                    known_browsers,
+                    product.now(),
+                )),
+                Some(DEVICE_MARK_LIFETIME.whole_seconds()),
+                secure,
+            ),
+        ))
+        .finish()
+}
+
 /// Tells whether a browser says the form was posted from another origin.
 /// The cookie is already withheld from such a post: this refuses it by name.
 pub(crate) fn is_posted_from_elsewhere(product: &Product, http: &HttpRequest) -> bool {
@@ -435,6 +476,9 @@ pub async fn submit_sign_in(
         Ok(SignInStep::SecondFactorRequired(owed)) if is_realm_label(&realm) => {
             render_second_factor(&product, &realm, request, &owed, StatusCode::OK, "")
         }
+        Ok(SignInStep::ConsentRequired(signed_in)) if is_realm_label(&realm) => {
+            send_on_to_consent(&product, &realm, secure, signed_in, &known_browsers)
+        }
         // The request still waits: the person tries again on the same step.
         Err(failure)
             if matches!(
@@ -452,7 +496,7 @@ pub async fn submit_sign_in(
             };
             show_refused_answer(&product, &waiting, &failure, answered).await
         }
-        Ok(SignInStep::SecondFactorRequired(_)) => expired(),
+        Ok(SignInStep::SecondFactorRequired(_) | SignInStep::ConsentRequired(_)) => expired(),
         Err(failure) => render_refusal(&product, &failure),
     }
 }

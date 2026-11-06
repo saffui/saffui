@@ -6,7 +6,9 @@ use uuid::Uuid;
 
 use super::MemoryUnitOfWork;
 use crate::ports::storage::StorageError;
-use crate::tokens::store::{EndedFamily, RefreshStore, RefreshToken, StoredRefreshToken};
+use crate::tokens::store::{
+    EndedFamily, RefreshStore, RefreshToken, RevokedFamily, StoredRefreshToken,
+};
 
 impl MemoryUnitOfWork {
     fn refresh_tokens_of_the_realm(&mut self) -> &mut Vec<StoredRefreshToken> {
@@ -117,6 +119,45 @@ impl RefreshStore for MemoryUnitOfWork {
             last_issued_at,
             last_used_at: revoked.iter().filter_map(|stored| stored.used_at).max(),
         }))
+    }
+
+    async fn revoke_refresh_families_of_client(
+        &mut self,
+        person: Uuid,
+        client_id: &str,
+        now: OffsetDateTime,
+    ) -> Result<Vec<RevokedFamily>, StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        // Read before: a family revoked already is not told again.
+        let revoked_before = self.read_revoked_families();
+        let revoked = self.revoke_refresh_tokens_where(now, |token| {
+            token.person == person && token.client_id == client_id
+        });
+        let mut families: Vec<RevokedFamily> = Vec::new();
+        for stored in revoked
+            .iter()
+            .filter(|stored| !revoked_before.contains_key(&stored.token.family))
+        {
+            let token = &stored.token;
+            if let Some(told) = families.iter_mut().find(|told| told.family == token.family) {
+                told.ended.tokens += 1;
+                told.ended.last_issued_at = told.ended.last_issued_at.max(token.issued_at);
+                told.ended.last_used_at = told.ended.last_used_at.max(stored.used_at);
+            } else {
+                families.push(RevokedFamily {
+                    family: token.family,
+                    session: token.session,
+                    ended: EndedFamily {
+                        tokens: 1,
+                        last_issued_at: token.issued_at,
+                        last_used_at: stored.used_at,
+                    },
+                });
+            }
+        }
+        families.sort_by_key(|told| told.family);
+        Ok(families)
     }
 
     async fn revoke_refresh_tokens_of_session(

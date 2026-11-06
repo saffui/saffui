@@ -4,11 +4,11 @@
 use pgcore::pool::PoolSettings;
 use saffui_core::testkit::contract::{
     check_authenticators_contract, check_clients_contract, check_codes_contract,
-    check_ended_sessions_contract, check_grants_contract, check_keys_contract,
-    check_known_browsers_contract, check_member_groups_contract, check_persons_contract,
-    check_policies_contract, check_refresh_contract, check_relations_contract,
-    check_roles_contract, check_security_keys_contract, check_sign_in_contract,
-    check_tenancy_contract,
+    check_consents_contract, check_ended_sessions_contract, check_grants_contract,
+    check_keys_contract, check_known_browsers_contract, check_member_groups_contract,
+    check_persons_contract, check_policies_contract, check_refresh_contract,
+    check_relations_contract, check_roles_contract, check_security_keys_contract,
+    check_sign_in_contract, check_tenancy_contract,
 };
 
 mod support;
@@ -60,6 +60,13 @@ async fn postgres_passes_the_refresh_contract() {
     let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
 
     check_refresh_contract(&app).await;
+}
+
+#[tokio::test]
+async fn postgres_passes_the_consents_contract() {
+    let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
+
+    check_consents_contract(&app).await;
 }
 
 #[tokio::test]
@@ -372,6 +379,7 @@ async fn a_family_taken_back_is_not_written_again_however_often_it_comes_back() 
         redirect_uri: CALLBACK,
         post_logout_redirect_uri: None,
         public: true,
+        requires_consent: false,
     };
     register_application(&app, scope, webapp).await;
     let flow = CodeFlow {
@@ -424,4 +432,61 @@ async fn a_family_taken_back_is_not_written_again_however_often_it_comes_back() 
         Ok(()),
         "a revocation asked again"
     );
+}
+
+/// Two answers of one person to one client at once: the second waits for
+/// the first, then adds to what it allowed, so that neither is lost.
+#[tokio::test]
+async fn of_two_consents_given_at_once_each_keeps_what_it_allowed() {
+    use std::time::Duration as Wait;
+
+    use saffui_core::consent::Consent;
+    use saffui_core::testkit::fixtures::{
+        Application, create_person, create_realm, register_application,
+    };
+
+    let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let scope = create_realm(&app, "consents").await;
+    let ada = create_person(&app, scope, "ada", "correct horse battery").await;
+    let partner = Application {
+        client_id: "partner",
+        redirect_uri: "https://app.example.org/cb",
+        post_logout_redirect_uri: None,
+        public: true,
+        requires_consent: true,
+    };
+    register_application(&app, scope, partner).await;
+    let now = app.now();
+    let allow = move |scopes: [&str; 2]| Consent {
+        person: ada.id,
+        client_id: "partner".to_owned(),
+        scopes: scopes.map(str::to_owned).to_vec(),
+        granted_at: now,
+    };
+
+    let mut first = app.storage.begin(scope).await.expect("a unit of work");
+    first
+        .add_consent(&allow(["openid", "email"]))
+        .await
+        .expect("a consent");
+    let storage = app.storage.clone();
+    let second = tokio::spawn(async move {
+        let mut work = storage.begin(scope).await.expect("a unit of work");
+        work.add_consent(&allow(["openid", "profile"]))
+            .await
+            .expect("a consent");
+        work.commit().await
+    });
+    tokio::time::sleep(Wait::from_millis(300)).await;
+    assert!(!second.is_finished(), "the second waits for the first");
+    first.commit().await.expect("a commit");
+    assert_eq!(second.await.expect("the second answer"), Ok(()));
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let kept = work
+        .read_consent(ada.id, "partner")
+        .await
+        .expect("a read")
+        .expect("the consent");
+    assert_eq!(kept.scopes, ["openid", "email", "profile"]);
 }

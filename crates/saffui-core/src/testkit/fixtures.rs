@@ -126,6 +126,8 @@ pub struct Application<'a> {
     pub redirect_uri: &'a str,
     pub post_logout_redirect_uri: Option<&'a str>,
     pub public: bool,
+    /// Each person is asked before it gets a code in their name.
+    pub requires_consent: bool,
 }
 
 /// Registers an application allowed the scopes `openid`, `profile`, `email`
@@ -160,6 +162,7 @@ pub async fn register_application(
             redirect_uris: &callbacks,
             post_logout_redirect_uris: &goodbyes,
             public: wanted.public,
+            requires_consent: wanted.requires_consent,
             created_by: None,
         },
     )
@@ -187,6 +190,7 @@ pub async fn create_application(
         redirect_uri: callback,
         post_logout_redirect_uri: None,
         public,
+        requires_consent: false,
     };
     register_application(app, scope, wanted).await
 }

@@ -51,6 +51,7 @@ pub const EMBEDDED: &[Migration] = &[
     embed!(28, "0028_role_grants"),
     embed!(29, "0029_relations"),
     embed!(30, "0030_policies"),
+    embed!(31, "0031_consent"),
 ];
 
 /// One numbered step of the schema, as SQL text.

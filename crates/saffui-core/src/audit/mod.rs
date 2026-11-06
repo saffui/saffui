@@ -43,6 +43,8 @@ pub enum EventKind {
     RelationGuardDeleted,
     PolicyCreated,
     PolicyDeleted,
+    ConsentGranted,
+    ConsentWithdrawn,
 }
 
 impl EventKind {
@@ -78,6 +80,8 @@ impl EventKind {
             Self::RelationGuardDeleted => "relation.guard_deleted",
             Self::PolicyCreated => "policy.created",
             Self::PolicyDeleted => "policy.deleted",
+            Self::ConsentGranted => "consent.granted",
+            Self::ConsentWithdrawn => "consent.withdrawn",
         }
     }
 }

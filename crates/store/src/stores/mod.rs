@@ -5,6 +5,7 @@ mod authenticators;
 mod browsers;
 mod clients;
 mod codes;
+mod consents;
 mod keys;
 mod persons;
 mod policies;

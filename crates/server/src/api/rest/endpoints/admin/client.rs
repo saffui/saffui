@@ -62,6 +62,7 @@ pub async fn create_client(
             redirect_uris: &wanted.redirect_uris,
             post_logout_redirect_uris: &wanted.post_logout_redirect_uris,
             public: wanted.public,
+            requires_consent: wanted.consent,
             created_by: None,
         };
         manage::create_client(&product, &caller, client).await

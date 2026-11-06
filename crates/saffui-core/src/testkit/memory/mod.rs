@@ -7,13 +7,14 @@
 
 mod audit;
 mod clients;
+mod consents;
 mod keys;
 mod login;
 mod refresh;
 mod roles;
 mod tenancy;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
@@ -32,6 +33,7 @@ use crate::authz::policy::Policy;
 use crate::authz::relations::{AdmittedRelation, RelationTuple, StoredSchema};
 use crate::authz::roles::{Group, Role};
 use crate::clients::Client;
+use crate::consent::Consent;
 use crate::directory::Person;
 use crate::keys::SigningKey;
 use crate::login::session::Session;
@@ -96,6 +98,8 @@ pub(crate) struct State {
     pub(crate) relation_guards: HashMap<Uuid, Vec<(String, String)>>,
     /// The policies of the clients of each realm, by realm.
     pub(crate) policies: HashMap<Uuid, Vec<Policy>>,
+    /// By realm, person and client: ordered by client within a person.
+    pub(crate) consents: BTreeMap<(Uuid, Uuid, String), Consent>,
 }
 
 /// A code as the double keeps it: spent codes stay, so that a replay is told.
@@ -358,11 +362,11 @@ mod tests {
     use super::MemoryStorage;
     use crate::testkit::contract::{
         check_audit_contract, check_authenticators_contract, check_clients_contract,
-        check_codes_contract, check_ended_sessions_contract, check_grants_contract,
-        check_keys_contract, check_known_browsers_contract, check_member_groups_contract,
-        check_persons_contract, check_policies_contract, check_refresh_contract,
-        check_relations_contract, check_roles_contract, check_security_keys_contract,
-        check_sign_in_contract, check_tenancy_contract,
+        check_codes_contract, check_consents_contract, check_ended_sessions_contract,
+        check_grants_contract, check_keys_contract, check_known_browsers_contract,
+        check_member_groups_contract, check_persons_contract, check_policies_contract,
+        check_refresh_contract, check_relations_contract, check_roles_contract,
+        check_security_keys_contract, check_sign_in_contract, check_tenancy_contract,
     };
     use crate::testkit::drive::complete;
 
@@ -460,6 +464,12 @@ mod tests {
     fn the_double_passes_the_member_groups_contract() {
         let (app, _storage) = MemoryStorage::wire();
         complete(check_member_groups_contract(&app));
+    }
+
+    #[test]
+    fn the_double_passes_the_consents_contract() {
+        let (app, _storage) = MemoryStorage::wire();
+        complete(check_consents_contract(&app));
     }
 
     #[test]

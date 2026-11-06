@@ -1,7 +1,8 @@
 //! Journeys through the real binary: an operator creates a person and an
 //! application, the person signs in on the hosted page, and the application
 //! exchanges its code for tokens anyone can verify, roles included; a
-//! service asks the point of decision about the person.
+//! service asks the point of decision about the person; a client that
+//! requires consent is allowed, then withdrawn.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -1351,5 +1352,191 @@ fn a_service_asks_whether_a_person_may_read_a_document_or_approve_an_invoice() {
     assert_eq!(
         ask_decision(&node, &billing, &question("approve", invoice)),
         json!({ "decision": "permit", "reason": "policy", "policy": "approvers" })
+    );
+}
+
+/// Where `partner` sends a browser to ask for `openid`, written for a query.
+fn write_partner_path() -> String {
+    write_authorize_path_asking("openid").replace("client_id=portal", "client_id=partner")
+}
+
+/// A journey through the real binary: a client that requires consent asks
+/// the person once on a page and is let through after; once the person
+/// withdraws what they allowed, its refresh tokens are taken back and it
+/// asks again.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one journey, read from top to bottom"
+)]
+fn a_client_that_requires_consent_asks_once_and_again_once_the_person_withdraws() {
+    let database = database::create_database(EMBEDDED);
+    let (node, operator) = prepare_realm_with_operator(&database, support::saffui_command());
+    let bearer = ask_operator_token(&node, &operator);
+    let partner = json!({
+        "client_id": "partner",
+        "name": "Partner <b>Inc</b>",
+        "scopes": ["openid"],
+        "redirect_uris": ["https://app.example.test/callback"],
+        "public": true,
+        "consent": true,
+    });
+    let created = send_json(
+        &node,
+        "POST",
+        "/admin/v1/realms/acme/clients",
+        &bearer,
+        &partner,
+    );
+    assert_eq!(created.status, 201, "{}", created.body);
+    assert_eq!(read_json(&created.body)["client"]["consent"], true);
+
+    // Signed in, the person is sent on to the consent page, with a session.
+    let path = write_partner_path();
+    let begun = http::get(node.data, &path).expect("an answer");
+    let flow = read_cookie(&begun, "saffui_flow_").expect("a flow cookie");
+    let login = read_header(&begun, "location").expect("a location");
+    let request = read_parameter(login, "request").expect("a request");
+    let form = format!(
+        "request={request}&username=ada&password={}",
+        PASSWORD.replace(' ', "+")
+    );
+    let origin = ("Origin", node::PUBLIC_ORIGIN);
+    let signed_in = http::send_request(
+        node.data,
+        "POST",
+        "/realms/acme/login",
+        &[FORM, ("Cookie", &flow), origin],
+        &form,
+    )
+    .expect("an answer");
+    assert_eq!(signed_in.status, 303, "{}", signed_in.body);
+    let consent_page = format!("/realms/acme/consent?request={request}");
+    assert_eq!(
+        read_header(&signed_in, "location"),
+        Some(consent_page.as_str())
+    );
+    let session = read_cookie(&signed_in, "saffui_session_acme=").expect("a session");
+    let both = format!("{flow}; {session}");
+    let silent = http::send_request(
+        node.data,
+        "GET",
+        &format!("{path}&prompt=none"),
+        &[("Cookie", &session)],
+        "",
+    )
+    .expect("an answer");
+    assert_eq!(
+        read_header(&silent, "location").and_then(|location| read_parameter(location, "error")),
+        Some("consent_required".to_owned()),
+        "a session alone answers for no consent"
+    );
+
+    let page = http::send_request(node.data, "GET", &consent_page, &[("Cookie", &both)], "")
+        .expect("an answer");
+    assert_eq!(page.status, 200, "{}", page.body);
+    assert!(
+        page.body.contains("Partner &lt;b&gt;Inc&lt;/b&gt;") && !page.body.contains("<b>Inc"),
+        "the name is text: {}",
+        page.body
+    );
+    let without_session =
+        http::send_request(node.data, "GET", &consent_page, &[("Cookie", &flow)], "")
+            .expect("an answer");
+    assert_eq!(without_session.status, 400, "{}", without_session.body);
+
+    let allowed = http::send_request(
+        node.data,
+        "POST",
+        "/realms/acme/consent",
+        &[FORM, ("Cookie", &both), origin],
+        &format!("request={request}&decision=allow"),
+    )
+    .expect("an answer");
+    assert_eq!(allowed.status, 303, "{}", allowed.body);
+    let back = read_header(&allowed, "location").expect("a location");
+    assert!(
+        back.starts_with("https://app.example.test/callback?code="),
+        "{back}"
+    );
+    let code = read_parameter(back, "code").expect("a code");
+    let exchanged = http::send_request(
+        node.data,
+        "POST",
+        TOKEN,
+        &[FORM],
+        &format!(
+            "grant_type=authorization_code&client_id=partner&code={code}\
+             &redirect_uri=https%3A%2F%2Fapp.example.test%2Fcallback&code_verifier={VERIFIER}"
+        ),
+    )
+    .expect("an answer");
+    assert_eq!(exchanged.status, 200, "{}", exchanged.body);
+    let refresh_token = read_json(&exchanged.body)["refresh_token"]
+        .as_str()
+        .expect("a refresh token")
+        .to_owned();
+
+    // Allowed once, the client is let through with the session.
+    let again = http::send_request(node.data, "GET", &path, &[("Cookie", &session)], "")
+        .expect("an answer");
+    assert_eq!(again.status, 303, "{}", again.body);
+    assert!(
+        read_header(&again, "location")
+            .is_some_and(|location| location.starts_with("https://app.example.test/callback?code=")),
+        "{}",
+        again.head
+    );
+
+    let listed = http::send_request(
+        node.data,
+        "GET",
+        "/realms/acme/account/consents",
+        &[("Cookie", &session)],
+        "",
+    )
+    .expect("an answer");
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    assert!(listed.body.contains("value=\"partner\""), "{}", listed.body);
+    let withdrawn = http::send_request(
+        node.data,
+        "POST",
+        "/realms/acme/account/consents/withdraw",
+        &[FORM, ("Cookie", &session), origin],
+        "client_id=partner",
+    )
+    .expect("an answer");
+    assert_eq!(withdrawn.status, 200, "{}", withdrawn.body);
+
+    let refreshed = http::send_request(
+        node.data,
+        "POST",
+        TOKEN,
+        &[FORM],
+        &format!("grant_type=refresh_token&client_id=partner&refresh_token={refresh_token}"),
+    )
+    .expect("an answer");
+    assert_eq!(refreshed.status, 400, "{}", refreshed.body);
+    assert_eq!(read_json(&refreshed.body)["error"], "invalid_grant");
+    let asked_again = http::send_request(node.data, "GET", &path, &[("Cookie", &session)], "")
+        .expect("an answer");
+    assert_eq!(asked_again.status, 303, "{}", asked_again.body);
+    assert!(
+        read_header(&asked_again, "location")
+            .is_some_and(|location| location.starts_with("/realms/acme/consent?request=")),
+        "{}",
+        asked_again.head
+    );
+
+    let (_, kinds) = read_passwords_and_events(&database);
+    let withdrawal = kinds
+        .iter()
+        .position(|kind| kind == "consent.withdrawn")
+        .expect("the withdrawal is in the chain");
+    assert!(kinds.contains(&"consent.granted".to_owned()), "{kinds:?}");
+    assert_eq!(
+        kinds.get(withdrawal + 1).map(String::as_str),
+        Some("token.revoked"),
+        "{kinds:?}"
     );
 }

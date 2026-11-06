@@ -19,6 +19,7 @@ use super::errors::OAuthError;
 use super::pkce::is_well_formed_challenge;
 use crate::app::App;
 use crate::clients::{Client, check_scope_token, read_named_client};
+use crate::consent::is_consent_owed;
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
 use crate::login::device::DeviceMark;
@@ -74,6 +75,12 @@ pub enum Authorization {
         request: Uuid,
         browser_secret: Secret,
     },
+    /// The person is signed in and must allow the client first. The request
+    /// waits for their answer as one waits for a sign-in.
+    ConsentRequired {
+        request: Uuid,
+        browser_secret: Secret,
+    },
 }
 
 #[derive(Debug)]
@@ -94,6 +101,10 @@ impl fmt::Debug for Authorization {
                 .finish(),
             Self::SignInRequired { request, .. } => formatter
                 .debug_struct("SignInRequired")
+                .field("request", request)
+                .finish_non_exhaustive(),
+            Self::ConsentRequired { request, .. } => formatter
+                .debug_struct("ConsentRequired")
                 .field("request", request)
                 .finish_non_exhaustive(),
         }
@@ -125,7 +136,7 @@ struct ProofAsked {
     fresh: bool,
     /// No page: a session answers, or the client is told one is needed.
     silent: bool,
-    /// A consent this realm has no page to ask for: refused, never assumed.
+    /// The person is asked to allow the client again, even what they allowed.
     consent: bool,
     /// A session older than this many seconds does not answer.
     max_age: Option<i64>,
@@ -180,7 +191,7 @@ pub(super) fn write_query_value(location: &mut String, value: &str) {
 
 /// Builds the redirection back to the client. The issuer travels with every
 /// answer, so that a client talking to several providers knows who answered.
-fn write_return_location(
+pub(crate) fn write_return_location(
     redirect_uri: &str,
     issuer: &str,
     state: Option<&str>,
@@ -257,10 +268,6 @@ async fn trust_request(
     };
     let proof = read_proof_asked(parameters.prompt, parameters.max_age)
         .ok_or_else(|| returned(OAuthError::InvalidRequest))?;
-    // Consent cannot be asked yet: refused, as OIDC Core asks, never taken as given.
-    if proof.consent {
-        return Err(returned(OAuthError::ConsentRequired));
-    }
     let mut scopes = Vec::new();
     for token in parameters
         .scope
@@ -289,21 +296,21 @@ async fn trust_request(
     })
 }
 
-struct CodeGrant<'a> {
-    realm: &'a RealmName,
-    client_id: &'a str,
-    redirect_uri: &'a str,
-    scopes: &'a [String],
-    state: Option<&'a str>,
-    nonce: Option<&'a str>,
-    code_challenge: &'a str,
-    person: Uuid,
-    session: Uuid,
-    authenticated_at: time::OffsetDateTime,
+pub(crate) struct CodeGrant<'a> {
+    pub(crate) realm: &'a RealmName,
+    pub(crate) client_id: &'a str,
+    pub(crate) redirect_uri: &'a str,
+    pub(crate) scopes: &'a [String],
+    pub(crate) state: Option<&'a str>,
+    pub(crate) nonce: Option<&'a str>,
+    pub(crate) code_challenge: &'a str,
+    pub(crate) person: Uuid,
+    pub(crate) session: Uuid,
+    pub(crate) authenticated_at: time::OffsetDateTime,
 }
 
 /// Mints a code, keeps its digest, and returns where to send the browser.
-async fn issue_code(
+pub(crate) async fn issue_code(
     app: &App,
     work: &mut dyn UnitOfWork,
     grant: CodeGrant<'_>,
@@ -368,13 +375,28 @@ async fn hold_session_to_hint(
     ))
 }
 
-/// Keeps a request no session answered until a person signs in for it, and
-/// gives back its id and the secret only the browser that asked holds.
+/// Whether `person` must allow the client before it gets a code, read in the
+/// unit of work that would issue it.
+async fn is_consent_owed_by(
+    work: &mut dyn UnitOfWork,
+    client: &Client,
+    prompted: bool,
+    person: Uuid,
+    scopes: &[String],
+) -> Result<bool, Failure> {
+    let held = work.read_consent(person, &client.client_id).await?;
+    Ok(is_consent_owed(client, prompted, held.as_ref(), scopes))
+}
+
+/// Keeps a request until a person signs in for it, or until the person of
+/// `consent_session` answers whether they allow the client. Gives back its
+/// id and the secret only the browser that asked holds.
 async fn keep_pending_authorization(
     app: &App,
     work: &mut dyn UnitOfWork,
     trusted: TrustedRequest,
     expected_person: Option<Uuid>,
+    consent_session: Option<Uuid>,
 ) -> Result<(Uuid, Vec<u8>), Failure> {
     let mut browser_secret = vec![0_u8; 32];
     app.random
@@ -393,11 +415,57 @@ async fn keep_pending_authorization(
         expected_person,
         first_factor: None,
         key_proof: None,
+        consent_prompted: trusted.proof.consent,
+        consent_session,
     };
     work.insert_pending_authorization(&pending)
         .await
         .map_err(Failure::from)?;
     Ok((pending.id, browser_secret))
+}
+
+/// Leaves a request waiting, as [`keep_pending_authorization`] keeps it, and
+/// commits. Each keeps a row for ten minutes: it is counted against the
+/// caller first, whether it waits for a sign-in or for a consent.
+async fn leave_request_waiting(
+    app: &App,
+    work_slot: &mut Option<Box<dyn UnitOfWork>>,
+    parameters: AuthorizationParameters<'_>,
+    trusted: TrustedRequest,
+    expected_person: Option<Uuid>,
+    consent_session: Option<Uuid>,
+) -> Result<(Uuid, Secret), Failure> {
+    let mut work = work_slot.take().ok_or(Failure::new(ErrorCode::Internal))?;
+    admit_pending_sign_in(
+        app,
+        work.as_mut(),
+        parameters.caller,
+        parameters.known_browsers,
+    )
+    .await?;
+    let (request, browser_secret) = keep_pending_authorization(
+        app,
+        work.as_mut(),
+        trusted,
+        expected_person,
+        consent_session,
+    )
+    .await?;
+    work.commit().await?;
+    Ok((request, Secret::new(browser_secret)))
+}
+
+/// Sends the client back the error of a request it got right: no page was
+/// allowed, and one was needed.
+fn tell_client(trusted: &TrustedRequest, issuer: &str, error: OAuthError) -> AuthorizationRefusal {
+    AuthorizationRefusal::Returned {
+        location: write_return_location(
+            &trusted.redirect_uri,
+            issuer,
+            trusted.state.as_deref(),
+            &[("error", error.name())],
+        ),
+    }
 }
 
 /// Handles a request to the authorization endpoint.
@@ -444,16 +512,38 @@ pub async fn begin_authorization(
         None => (session, None),
     };
     if session.is_none() && trusted.proof.silent {
-        return Err(AuthorizationRefusal::Returned {
-            location: write_return_location(
-                &trusted.redirect_uri,
-                &issuer,
-                trusted.state.as_deref(),
-                &[("error", OAuthError::LoginRequired.name())],
-            ),
-        });
+        return Err(tell_client(&trusted, &issuer, OAuthError::LoginRequired));
     }
     if let Some(session) = session {
+        let owed = is_consent_owed_by(
+            work.as_mut(),
+            &trusted.client,
+            trusted.proof.consent,
+            session.person,
+            &trusted.scopes,
+        )
+        .await?;
+        // A session alone gives no code to a client the person must allow:
+        // they answer on a page, or the client is told they must.
+        if owed && trusted.proof.silent {
+            return Err(tell_client(&trusted, &issuer, OAuthError::ConsentRequired));
+        }
+        if owed {
+            let waiting_in = Some(session.id);
+            let (request, browser_secret) = leave_request_waiting(
+                app,
+                &mut work_slot,
+                parameters,
+                trusted,
+                expected_person,
+                waiting_in,
+            )
+            .await?;
+            return Ok(Authorization::ConsentRequired {
+                request,
+                browser_secret,
+            });
+        }
         let location = issue_code(
             app,
             work.as_mut(),
@@ -480,24 +570,18 @@ pub async fn begin_authorization(
         return Ok(Authorization::Granted { location });
     }
 
-    admit_pending_sign_in(
+    let (request, browser_secret) = leave_request_waiting(
         app,
-        work.as_mut(),
-        parameters.caller,
-        parameters.known_browsers,
+        &mut work_slot,
+        parameters,
+        trusted,
+        expected_person,
+        None,
     )
     .await?;
-    let (request, browser_secret) =
-        keep_pending_authorization(app, work.as_mut(), trusted, expected_person).await?;
-    work_slot
-        .take()
-        .ok_or(Failure::new(ErrorCode::Internal))?
-        .commit()
-        .await
-        .map_err(Failure::from)?;
     Ok(Authorization::SignInRequired {
         request,
-        browser_secret: Secret::new(browser_secret),
+        browser_secret,
     })
 }
 
@@ -544,6 +628,16 @@ impl fmt::Debug for SignedInForRequest {
     }
 }
 
+/// A person signed in on the page of a pending request whose client they
+/// must allow first: the request waits for their answer.
+#[derive(Debug)]
+pub struct SignedInForConsent {
+    pub request: Uuid,
+    /// The session the request now waits in. Only it can answer.
+    pub ticket: SessionTicket,
+    pub device_mark: DeviceMark,
+}
+
 /// Where an answer leaves a pending request.
 #[derive(Debug)]
 pub enum SignInStep {
@@ -551,6 +645,7 @@ pub enum SignInStep {
     /// The password was right and the person owes a second factor: the page
     /// asks for it, and the request waits.
     SecondFactorRequired(OwedSecondFactor),
+    ConsentRequired(SignedInForConsent),
 }
 
 /// What the page of a pending request asks next. One of the two is enough.
@@ -568,7 +663,7 @@ impl SignInStep {
     pub fn into_finished(self) -> Option<SignedInForRequest> {
         match self {
             Self::Finished(finished) => Some(finished),
-            Self::SecondFactorRequired(_) => None,
+            Self::SecondFactorRequired(_) | Self::ConsentRequired(_) => None,
         }
     }
 }
@@ -668,13 +763,34 @@ pub async fn finish_sign_in(
     };
 
     let mut work = app.storage.begin(scope).await?;
+    // Someone else than the person a hint named is sent back below, and is
+    // asked nothing.
+    let hinted_at_another = pending
+        .expected_person
+        .is_some_and(|expected| expected != signed_in.person.id);
+    if !hinted_at_another
+        && is_consent_owed_after_sign_in(work.as_mut(), &pending, signed_in.person.id).await?
+    {
+        // Marked once: of two submissions of one page, the other signed in
+        // for nothing, and its session ends here.
+        if !work
+            .mark_consent_owed(request, signed_in.session, app.now())
+            .await?
+        {
+            end_orphan_session(app, work, signed_in.session).await?;
+            return Err(expired());
+        }
+        work.commit().await?;
+        return Ok(SignInStep::ConsentRequired(SignedInForConsent {
+            request,
+            ticket: signed_in.ticket,
+            device_mark: signed_in.device_mark,
+        }));
+    }
     // Taken, not read: of two submissions of one page, one finishes the
     // request. The other signed in for nothing, and its session ends here.
     let Some(pending) = work.take_pending_authorization(request, app.now()).await? else {
-        if let Some(orphan) = work.read_session(signed_in.session).await? {
-            close_session(app, work.as_mut(), &orphan.session).await?;
-            work.commit().await?;
-        }
+        end_orphan_session(app, work, signed_in.session).await?;
         return Err(expired());
     };
     // The person a hint named is the one the client waits for: anyone else
@@ -719,6 +835,40 @@ pub async fn finish_sign_in(
         ticket: signed_in.ticket,
         device_mark: signed_in.device_mark,
     }))
+}
+
+/// Whether the person who just signed in must allow the client of a request
+/// before it gets a code. A client gone since is asked for, and its page
+/// says it is gone.
+async fn is_consent_owed_after_sign_in(
+    work: &mut dyn UnitOfWork,
+    pending: &PendingAuthorization,
+    person: Uuid,
+) -> Result<bool, Failure> {
+    let Some(client) = read_named_client(work, &pending.client_id).await? else {
+        return Ok(true);
+    };
+    is_consent_owed_by(
+        work,
+        &client,
+        pending.consent_prompted,
+        person,
+        &pending.scopes,
+    )
+    .await
+}
+
+/// Ends the session of a submission that lost its request to another.
+async fn end_orphan_session(
+    app: &App,
+    mut work: Box<dyn UnitOfWork>,
+    session: Uuid,
+) -> Result<(), Failure> {
+    if let Some(orphan) = work.read_session(session).await? {
+        close_session(app, work.as_mut(), &orphan.session).await?;
+        work.commit().await?;
+    }
+    Ok(())
 }
 
 /// Tells what a pending request still asks of the browser that started it,
@@ -1536,6 +1686,7 @@ mod tests {
             match complete(begin_authorization(&app, "acme", parameters, ticket)) {
                 Ok(Authorization::Granted { .. }) => "granted".to_owned(),
                 Ok(Authorization::SignInRequired { .. }) => "sign in".to_owned(),
+                Ok(Authorization::ConsentRequired { .. }) => "consent".to_owned(),
                 Err(AuthorizationRefusal::Returned { location }) => {
                     read_query(&location, "error").expect("an error")
                 }
@@ -1560,9 +1711,10 @@ mod tests {
         );
         assert_eq!(
             ask_with(Some("consent"), None, Some(&ticket)),
-            "consent_required",
-            "there is no page to ask it on: it is refused, not assumed"
+            "consent",
+            "the person is asked on a page, even by a client that requires no consent"
         );
+        assert_eq!(ask_with(Some("consent"), None, None), "sign in");
         clock.advance(Duration::from_secs(3_601));
         assert_eq!(ask_with(None, Some("3600"), Some(&ticket)), "sign in");
         assert_eq!(
@@ -1592,6 +1744,7 @@ mod tests {
             match complete(begin_authorization(&app, "acme", parameters, ticket)) {
                 Ok(Authorization::Granted { .. }) => "granted".to_owned(),
                 Ok(Authorization::SignInRequired { .. }) => "sign in".to_owned(),
+                Ok(Authorization::ConsentRequired { .. }) => "consent".to_owned(),
                 Err(AuthorizationRefusal::Returned { location }) => {
                     read_query(&location, "error").expect("an error")
                 }

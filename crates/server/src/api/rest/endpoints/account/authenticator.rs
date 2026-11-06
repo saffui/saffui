@@ -40,7 +40,7 @@ pub(super) fn read_marks(product: &Product, realm: &str, http: &HttpRequest) -> 
         .unwrap_or_default()
 }
 
-pub(super) fn read_ticket(
+pub(crate) fn read_ticket(
     product: &Product,
     realm: &str,
     http: &HttpRequest,

@@ -308,6 +308,31 @@ impl CodeStore for MemoryUnitOfWork {
         }))
     }
 
+    async fn mark_consent_owed(
+        &mut self,
+        id: Uuid,
+        session: Uuid,
+        now: OffsetDateTime,
+    ) -> Result<bool, StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        let waiting = self
+            .working
+            .pending_authorizations
+            .get_mut(&self.scope.realm().as_uuid())
+            .and_then(|pending| {
+                pending.iter_mut().find(|request| {
+                    request.id == id
+                        && request.expires_at > now
+                        && request.consent_session.is_none()
+                })
+            });
+        Ok(waiting.is_some_and(|request| {
+            request.consent_session = Some(session);
+            true
+        }))
+    }
+
     async fn take_pending_authorization(
         &mut self,
         id: Uuid,

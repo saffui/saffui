@@ -1,12 +1,14 @@
 //! From the types of the core to what the administration API says.
 
 use api::{
-    ClientView, GrantView, GroupView, HeldRoleView, PolicyView, RealmView, RoleView, UserView,
+    ClientView, ConsentView, GrantView, GroupView, HeldRoleView, PolicyView, RealmView, RoleView,
+    UserView,
 };
 use saffui_core::authz::grants::{Grant, HeldRole};
 use saffui_core::authz::policy::Policy;
 use saffui_core::authz::roles::{Group, Role};
 use saffui_core::clients::Client;
+use saffui_core::consent::ListedConsent;
 use saffui_core::directory::Person;
 use saffui_core::instant::write_instant;
 use saffui_core::tenancy::Realm;
@@ -31,6 +33,7 @@ pub(super) fn show_client(client: &Client) -> ClientView {
         public: client.secret_digest.is_none(),
         redirect_uris: client.redirect_uris.clone(),
         post_logout_redirect_uris: client.post_logout_redirect_uris.clone(),
+        consent: client.requires_consent,
         scopes: client.scopes.clone(),
         capabilities: client
             .capabilities
@@ -91,6 +94,14 @@ pub(super) fn show_held_role(held: &HeldRole) -> HeldRoleView {
         client_id: held.client_id.clone(),
         through_group: held.through.map(|group| group.to_string()),
         until: held.until.map(write_instant),
+    }
+}
+
+pub(super) fn show_consent(listed: &ListedConsent) -> ConsentView {
+    ConsentView {
+        client_id: listed.consent.client_id.clone(),
+        scopes: listed.consent.scopes.clone(),
+        granted_at: write_instant(listed.consent.granted_at),
     }
 }
 

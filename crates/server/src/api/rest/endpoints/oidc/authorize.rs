@@ -10,7 +10,9 @@ use saffui_core::login::session::SessionTicket;
 use saffui_core::oidc::authorize::{
     Authorization, AuthorizationParameters, AuthorizationRefusal, begin_authorization,
 };
+use saffui_core::secret::Secret;
 use serde::Deserialize;
+use uuid::Uuid;
 
 use crate::api::rest::endpoints::login::page::render_refusal;
 use crate::extract::cookies::{
@@ -42,6 +44,31 @@ fn redirect_to(location: &str) -> HttpResponse {
     HttpResponse::SeeOther()
         .insert_header((LOCATION, location))
         .insert_header((CACHE_CONTROL, "no-store"))
+        .finish()
+}
+
+/// Sends the browser to a hosted page of the realm, `login` or `consent`,
+/// with the cookie that binds the request to it.
+fn send_to_page(
+    realm: &str,
+    page: &str,
+    request: Uuid,
+    browser_secret: &Secret,
+    secure: bool,
+) -> HttpResponse {
+    let cookie = write_cookie(
+        &name_flow_cookie(request, secure),
+        &URL_SAFE_NO_PAD.encode(browser_secret.expose()),
+        Some(FLOW_COOKIE_SECONDS),
+        secure,
+    );
+    HttpResponse::SeeOther()
+        .insert_header((
+            LOCATION,
+            format!("/realms/{realm}/{page}?request={request}"),
+        ))
+        .insert_header((CACHE_CONTROL, "no-store"))
+        .insert_header((SET_COOKIE, cookie))
         .finish()
 }
 
@@ -80,19 +107,11 @@ pub async fn begin(
         Ok(Authorization::SignInRequired {
             request,
             browser_secret,
-        }) => {
-            let cookie = write_cookie(
-                &name_flow_cookie(request, secure),
-                &URL_SAFE_NO_PAD.encode(browser_secret.expose()),
-                Some(FLOW_COOKIE_SECONDS),
-                secure,
-            );
-            HttpResponse::SeeOther()
-                .insert_header((LOCATION, format!("/realms/{realm}/login?request={request}")))
-                .insert_header((CACHE_CONTROL, "no-store"))
-                .insert_header((SET_COOKIE, cookie))
-                .finish()
-        }
+        }) => send_to_page(&realm, "login", request, &browser_secret, secure),
+        Ok(Authorization::ConsentRequired {
+            request,
+            browser_secret,
+        }) => send_to_page(&realm, "consent", request, &browser_secret, secure),
         // Shown here and sent nowhere: the client or its address is not trusted.
         Err(AuthorizationRefusal::Shown(failure)) => render_refusal(&product, &failure),
     }

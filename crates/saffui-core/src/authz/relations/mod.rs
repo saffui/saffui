@@ -69,23 +69,29 @@ pub fn list_admitted_relations(schema: &CompiledSchema) -> Vec<AdmittedRelation>
         .collect()
 }
 
-/// What a schema that replaces another withdraws: every relation the one
-/// before admitted and it does not.
+fn is_admitted_by(one: &AdmittedRelation, schema: &CompiledSchema) -> bool {
+    schema
+        .types
+        .get(&one.object_type)
+        .and_then(|found| found.relations.get(&one.relation))
+        .is_some_and(|allowed| allowed.contains(&one.subject))
+}
+
+/// What changes when a schema replaces another: every relation one of them
+/// admits and the other does not. A relation of a kind the later one admits
+/// anew was not kept by the product, which refused it until now.
 #[must_use]
-pub fn list_withdrawn_relations(
+pub fn list_changed_relations(
     before: &CompiledSchema,
     after: &CompiledSchema,
 ) -> Vec<AdmittedRelation> {
-    list_admitted_relations(before)
+    let withdrawn = list_admitted_relations(before)
         .into_iter()
-        .filter(|one| {
-            !after
-                .types
-                .get(&one.object_type)
-                .and_then(|found| found.relations.get(&one.relation))
-                .is_some_and(|allowed| allowed.contains(&one.subject))
-        })
-        .collect()
+        .filter(|one| !is_admitted_by(one, after));
+    let admitted_anew = list_admitted_relations(after)
+        .into_iter()
+        .filter(|one| !is_admitted_by(one, before));
+    withdrawn.chain(admitted_anew).collect()
 }
 
 /// A schema as a realm keeps it: what was written, and what it compiled to.
@@ -203,8 +209,9 @@ impl From<crate::ports::storage::StorageError> for SchemaRefusal {
 
 /// Writes the schema of relations of a realm, in place of the one before.
 /// The relations it no longer admits go with the schema that admitted them:
-/// a later schema that admits them again finds none of them. Returns the
-/// schema and how many relations went.
+/// a later schema that admits them again finds none of them. So do those of
+/// a kind it admits anew, kept behind the product's back. Returns the schema
+/// and how many relations went.
 ///
 /// # Errors
 ///
@@ -231,26 +238,26 @@ pub async fn write_relation_schema(
         )));
     }
     // Read under the lock: what it admitted stands until this one replaces it.
-    let before = work
-        .read_relation_schema()
-        .await?
-        .and_then(|stored| stored.open());
+    let before = work.read_relation_schema().await?;
     work.write_relation_schema(&stored).await?;
-    let removed = match before {
-        Some(before) => {
-            let withdrawn = list_withdrawn_relations(&before, &compiled);
-            if withdrawn.is_empty() {
+    let removed = match before.as_ref().map(StoredSchema::open) {
+        Some(Some(before)) => {
+            let changed = list_changed_relations(&before, &compiled);
+            if changed.is_empty() {
                 0
             } else {
-                work.delete_withdrawn_relations(&withdrawn).await?
+                work.delete_relations_of_kinds(&changed).await?
             }
         }
         // What the schema before admitted is not known: whatever this one
         // does not admit goes.
-        None => {
+        Some(None) => {
             work.delete_relations_not_admitted(&list_admitted_relations(&compiled))
                 .await?
         }
+        // No schema stood, and the product kept no relation: every kind this
+        // one admits is new, and whatever it does not admit goes too.
+        None => work.delete_relations_not_admitted(&[]).await?,
     };
     // The schema is replaced in place: the chain keeps what each said.
     let told = json!({
@@ -328,15 +335,23 @@ pub async fn write_relation(
     caller: &AdminCaller,
     tuple: &RelationTuple,
 ) -> Result<(), Failure> {
+    let invalid = || Failure::new(ErrorCode::RelationInvalid);
     let mut work = app.storage.begin(caller.scope).await?;
     // Checked and kept while no writer of the schema can replace it: one that
     // comes after finds this relation, and removes it if it no longer admits it.
-    work.freeze_definitions().await?;
-    let schema = work
-        .read_relation_schema()
+    let compiled = work
+        .lock_definitions_and_read_schema()
         .await?
-        .and_then(|stored| stored.open())
-        .ok_or_else(|| Failure::new(ErrorCode::RelationInvalid))?;
+        .ok_or_else(invalid)?;
+    let schema = match read_compiled_schema(&compiled) {
+        Some(schema) => schema,
+        // A form another version wrote: its source is read and compiled again.
+        None => work
+            .read_relation_schema()
+            .await?
+            .and_then(|stored| stored.open())
+            .ok_or_else(invalid)?,
+    };
     check_relation(&schema, tuple)?;
     if work.insert_relation(tuple, app.now()).await? {
         let told = json!({ "actor": describe_actor(caller), "relation": describe_relation(tuple) });
@@ -604,6 +619,102 @@ mod tests {
             complete(write_relation_schema(&scenario.app, &caller, narrow)).expect("a schema");
         assert_eq!(removed, 0);
         assert_eq!(count("document:q3", "owner"), 1, "nothing was swept");
+
+        // A schema that admits its kind again takes it with the schema it
+        // writes: no question ever reads it as an owner.
+        let (_, removed) =
+            complete(write_relation_schema(&scenario.app, &caller, wide)).expect("a schema");
+        assert_eq!(removed, 1, "the relation kept by hand, and nothing else");
+        assert_eq!(count("document:q3", "owner"), 0);
+        assert_eq!(count("document:q3", "reader"), 1);
+    }
+
+    #[test]
+    fn a_first_schema_takes_every_relation_and_one_after_an_unreadable_schema_what_it_does_not_admit()
+     {
+        use super::{ObjectRef, RelationTuple, StoredSchema, SubjectRef, list_relation_subjects};
+
+        let scenario = Scenario::start();
+        let caller = scenario.name_operator(&[Capability::PolicyWrite]);
+        let schema = "definition user {}\ndefinition document {\n  relation owner: user\n}";
+        let relate = |object_id: &str, relation: &str, subject_id: &str| RelationTuple {
+            object: ObjectRef {
+                object_type: "document".to_owned(),
+                object_id: object_id.to_owned(),
+            },
+            relation: relation.to_owned(),
+            subject: SubjectRef {
+                object: ObjectRef {
+                    object_type: "user".to_owned(),
+                    object_id: subject_id.to_owned(),
+                },
+                member: None,
+            },
+        };
+        let keep_by_hand = |tuples: &[RelationTuple]| {
+            complete(async {
+                let mut work = scenario
+                    .app
+                    .storage
+                    .begin(scenario.scope)
+                    .await
+                    .expect("a unit of work");
+                for tuple in tuples {
+                    work.insert_relation(tuple, scenario.app.now())
+                        .await
+                        .expect("a relation kept by hand");
+                }
+                work.commit().await.expect("a commit");
+            });
+        };
+        let count = |object_id: &str, relation: &str| {
+            let object = ObjectRef {
+                object_type: "document".to_owned(),
+                object_id: object_id.to_owned(),
+            };
+            complete(list_relation_subjects(
+                &scenario.app,
+                scenario.scope,
+                &object,
+                relation,
+            ))
+            .expect("a list")
+            .0
+            .len()
+        };
+        keep_by_hand(&[
+            relate("q1", "owner", "mallory"),
+            relate("q1", "editor", "mallory"),
+        ]);
+
+        let (_, removed) =
+            complete(write_relation_schema(&scenario.app, &caller, schema)).expect("a schema");
+        assert_eq!(removed, 2, "what it admits, and what it does not");
+        assert_eq!((count("q1", "owner"), count("q1", "editor")), (0, 0));
+
+        // A schema no version reads: what it admitted is not known.
+        complete(async {
+            let mut work = scenario
+                .app
+                .storage
+                .begin(scenario.scope)
+                .await
+                .expect("a unit of work");
+            let unreadable = StoredSchema {
+                source: "definition".to_owned(),
+                compiled: serde_json::json!({ "version": 0 }),
+                written_at: scenario.app.now(),
+            };
+            work.write_relation_schema(&unreadable)
+                .await
+                .expect("a schema written by hand");
+            work.commit().await.expect("a commit");
+        });
+        keep_by_hand(&[relate("q2", "owner", "ada"), relate("q2", "editor", "eve")]);
+        let (_, removed) =
+            complete(write_relation_schema(&scenario.app, &caller, schema)).expect("a schema");
+        assert_eq!(removed, 1, "what it does not admit");
+        assert_eq!((count("q2", "owner"), count("q2", "editor")), (1, 0));
     }
 
     #[test]

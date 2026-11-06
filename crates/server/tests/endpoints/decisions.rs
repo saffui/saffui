@@ -160,18 +160,54 @@ async fn a_schema_at_its_bound_is_read_whole_and_one_past_it_is_told_its_fault()
 
     let started = start().await;
     let path = "/admin/v1/realms/acme/relations/schema";
+    let put = |body: String| {
+        let started = &started;
+        async move {
+            call(
+                &started.product,
+                Method::PUT,
+                path,
+                Some(&started.operator),
+                Some(&body),
+            )
+            .await
+        }
+    };
+    // A source at its bound in letters of two bytes, sent as an encoder that
+    // escapes all but ASCII sends it: six bytes for each letter.
     let head = "definition user {}\n//";
-    // A quote takes two bytes once escaped: the body is about twice the source.
-    let at_bound = format!("{head}{}", "\"".repeat(SCHEMA_MAX_BYTES - head.len()));
-    let body = json!({ "source": at_bound });
+    let letters = (SCHEMA_MAX_BYTES - head.len()) / 2;
+    let tail = "x".repeat(SCHEMA_MAX_BYTES - head.len() - 2 * letters);
+    let at_bound = format!("{head}{}{tail}", "\u{e9}".repeat(letters));
+    assert_eq!(at_bound.len(), SCHEMA_MAX_BYTES);
+    let body = format!(
+        r#"{{"source":"definition user {{}}\n//{}{tail}"}}"#,
+        r"\u00e9".repeat(letters)
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).expect("a body that reads")["source"],
+        at_bound
+    );
     assert!(
-        body.to_string().len() > 2 * (SCHEMA_MAX_BYTES - head.len()),
-        "the body is past the limit the rest of the plane reads"
+        body.len() > 2 * SCHEMA_MAX_BYTES + 1024,
+        "two bytes for each byte of the source would not hold it"
     );
 
-    let (status, answer) = started.admin(Method::PUT, path, Some(&body)).await;
-    assert_eq!(status, StatusCode::OK, "{answer}");
-    assert_eq!(answer["types"], json!(["user"]));
+    let answer = put(body.clone()).await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+    assert_eq!(answer.body["types"], json!(["user"]));
+    // The limit of the route, reached with blanks after the object, and passed.
+    let limit = 3 * SCHEMA_MAX_BYTES + 1024;
+    let padded = |length: usize| format!("{body}{}", " ".repeat(length - body.len()));
+    let answer = put(padded(limit)).await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+    let answer = put(padded(limit + 1)).await;
+    assert_eq!(answer.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        answer.body["code"], "platform.request_invalid",
+        "a body past what a schema at its bound needs is not read"
+    );
+
     let past = format!("{head}{}", "x".repeat(SCHEMA_MAX_BYTES + 1 - head.len()));
     let (status, answer) = started
         .admin(Method::PUT, path, Some(&json!({ "source": past })))
@@ -181,13 +217,6 @@ async fn a_schema_at_its_bound_is_read_whole_and_one_past_it_is_told_its_fault()
         answer["faults"],
         json!([{ "line": 1, "message": format!("a schema is at most {SCHEMA_MAX_BYTES} bytes") }]),
         "{answer}"
-    );
-    let unread = json!({ "source": "x".repeat(3 * SCHEMA_MAX_BYTES) });
-    let (status, answer) = started.admin(Method::PUT, path, Some(&unread)).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(
-        answer["code"], "platform.request_invalid",
-        "a body past what a schema at its bound needs is not read"
     );
 }
 

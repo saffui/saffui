@@ -117,11 +117,11 @@ pub trait RelationStore {
         admitted: &[AdmittedRelation],
     ) -> Result<u64, StorageError>;
 
-    /// Removes every relation kept that one of `withdrawn` names, and no
-    /// other. Returns how many went.
-    async fn delete_withdrawn_relations(
+    /// Removes every relation kept that one of `kinds` names, and no other.
+    /// Returns how many went.
+    async fn delete_relations_of_kinds(
         &mut self,
-        withdrawn: &[AdmittedRelation],
+        kinds: &[AdmittedRelation],
     ) -> Result<u64, StorageError>;
 
     /// Keeps a client as a guard of a type. Answers `false` when it was one.
@@ -180,14 +180,15 @@ pub trait PolicyStore {
     async fn delete_policy(&mut self, client_id: &str, id: Uuid) -> Result<bool, StorageError>;
 
     /// Holds, until the unit of work ends, the definitions of the realm, its
-    /// policies, its schema of relations, its roles and its groups, to change
-    /// them: any other unit of work that locks or freezes them waits.
+    /// policies, its schema of relations, its roles and its groups: any other
+    /// unit of work that holds them waits, in the order they came.
     async fn lock_definitions(&mut self) -> Result<(), StorageError>;
 
-    /// Keeps the definitions of the realm as they are until the unit of work
-    /// ends, to write by them: a unit of work that locks them waits, another
-    /// that freezes them does not.
-    async fn freeze_definitions(&mut self) -> Result<(), StorageError>;
+    /// Holds the definitions as `lock_definitions` does, waiting a moment at
+    /// most, and reads the compiled form of the schema of relations, if any.
+    async fn lock_definitions_and_read_schema(
+        &mut self,
+    ) -> Result<Option<serde_json::Value>, StorageError>;
 
     /// Whether a policy of any client of the realm guards one of these types.
     async fn has_policy_for_types(&mut self, types: &[String]) -> Result<bool, StorageError>;

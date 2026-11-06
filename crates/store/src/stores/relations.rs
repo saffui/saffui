@@ -16,6 +16,15 @@ fn write_member(subject: &SubjectRef) -> &str {
     subject.member.as_deref().unwrap_or("")
 }
 
+/// Removes the relations of some kinds, $3 to $6 their four columns. Each
+/// type is read once, whatever the number of its kinds: `IS TRUE` keeps the
+/// kinds a filter, where a join would read a type once for each of them.
+const DELETE_RELATIONS_OF_KINDS: &str = "DELETE FROM relation_tuples kept
+     WHERE kept.tenant_id = $1 AND kept.realm_id = $2
+       AND kept.object_type = ANY($3::text[])
+       AND ((kept.object_type, kept.relation, kept.subject_type, kept.subject_member) IN (
+           SELECT * FROM unnest($3::text[], $4::text[], $5::text[], $6::text[]))) IS TRUE";
+
 /// Kinds of relations as four columns, for `unnest`: type of object,
 /// relation, type of subject, member.
 fn split_kinds(kinds: &[AdmittedRelation]) -> [Vec<&str>; 4] {
@@ -181,23 +190,14 @@ impl RelationStore for PgUnitOfWork {
         .await
     }
 
-    async fn delete_withdrawn_relations(
+    async fn delete_relations_of_kinds(
         &mut self,
-        withdrawn: &[AdmittedRelation],
+        kinds: &[AdmittedRelation],
     ) -> Result<u64, StorageError> {
         let (tenant, realm) = self.scope_keys();
-        let [object_types, relations, subject_types, members] = split_kinds(withdrawn);
-        // Each kind reaches its rows by the type of their object, at the head
-        // of the primary key: the relations of the other types are not read.
+        let [object_types, relations, subject_types, members] = split_kinds(kinds);
         self.execute_raw(
-            "DELETE FROM relation_tuples kept
-             USING unnest($3::text[], $4::text[], $5::text[], $6::text[])
-                 AS withdrawn (object_type, relation, subject_type, subject_member)
-             WHERE kept.tenant_id = $1 AND kept.realm_id = $2
-               AND kept.object_type = withdrawn.object_type
-               AND kept.relation = withdrawn.relation
-               AND kept.subject_type = withdrawn.subject_type
-               AND kept.subject_member = withdrawn.subject_member",
+            DELETE_RELATIONS_OF_KINDS,
             &[
                 &tenant,
                 &realm,
@@ -301,5 +301,99 @@ impl RelationStore for PgUnitOfWork {
                 }
             })
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pgcore::migrate::EMBEDDED;
+    use pgcore::testkit::TestDatabase;
+
+    use super::DELETE_RELATIONS_OF_KINDS;
+
+    /// A hundred realms of three types, each of three kinds: a sweep of the
+    /// three kinds of one type and of one kind of another, planned for any
+    /// values, reads each type once, by the primary key.
+    #[tokio::test]
+    async fn a_sweep_reads_each_type_once_whatever_the_number_of_its_kinds() {
+        let database = TestDatabase::create(EMBEDDED).await;
+        let owner = database
+            .plan("saffui_owner")
+            .connect_directly()
+            .await
+            .expect("a connection");
+        let (tenant, realm) = (
+            "00000000-0000-0000-0000-000000000001",
+            "00000000-0000-0000-0000-000000000002",
+        );
+        owner
+            .batch_execute(&format!(
+                "BEGIN;
+                 SELECT set_config('saffui.tenant', '{tenant}', true);
+                 INSERT INTO tenants VALUES ('{tenant}', 'acme', now());
+                 DO $$
+                 DECLARE planted uuid;
+                 BEGIN
+                     FOR i IN 2..101 LOOP
+                         planted := ('00000000-0000-0000-0000-' || lpad(i::text, 12, '0'))::uuid;
+                         PERFORM set_config('saffui.realm', planted::text, true);
+                         INSERT INTO realms VALUES ('{tenant}', planted, 'realm-' || i, true, now());
+                         INSERT INTO relation_tuples
+                         SELECT '{tenant}', planted, object_type, 'o' || n, relation, subject_type,
+                                'u' || n, member, now()
+                         FROM generate_series(1, 25) n,
+                              unnest(ARRAY['document', 'folder', 'team']) object_type,
+                              (VALUES ('owner', 'user', ''), ('reader', 'user', ''),
+                                      ('reader', 'team', 'member')) kind (relation, subject_type, member);
+                     END LOOP;
+                 END $$;
+                 COMMIT;
+                 ANALYZE relation_tuples;"
+            ))
+            .await
+            .expect("the relations of a hundred realms");
+
+        owner
+            .batch_execute(&format!(
+                "BEGIN;
+                 SELECT set_config('saffui.tenant', '{tenant}', true),
+                        set_config('saffui.realm', '{realm}', true);
+                 SET LOCAL plan_cache_mode = force_generic_plan;
+                 PREPARE sweep (uuid, uuid, text[], text[], text[], text[]) AS
+                     {DELETE_RELATIONS_OF_KINDS}"
+            ))
+            .await
+            .expect("a sweep, planned for any values");
+        let plan = owner
+            .query(
+                &format!(
+                    "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) EXECUTE sweep (
+                         '{tenant}', '{realm}',
+                         ARRAY['document', 'document', 'document', 'folder'],
+                         ARRAY['owner', 'reader', 'reader', 'owner'],
+                         ARRAY['user', 'user', 'team', 'user'],
+                         ARRAY['', '', 'member', ''])"
+                ),
+                &[],
+            )
+            .await
+            .expect("the plan of the sweep");
+        owner.batch_execute("ROLLBACK").await.expect("a rollback");
+
+        let plan: Vec<String> = plan.iter().map(|row| row.get(0)).collect();
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("(actual rows=100 loops=1)")),
+            "the hundred relations of the four kinds are found: {plan:#?}"
+        );
+        for line in plan
+            .iter()
+            .filter(|line| line.contains(" on relation_tuples"))
+        {
+            assert!(
+                !line.contains("Seq Scan") && line.contains(" loops=1)"),
+                "{line}: {plan:#?}"
+            );
+        }
     }
 }

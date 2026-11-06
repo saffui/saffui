@@ -356,16 +356,16 @@ impl RelationStore for MemoryUnitOfWork {
         u64::try_from(before - kept.len()).map_err(|_| StorageError::Failed)
     }
 
-    async fn delete_withdrawn_relations(
+    async fn delete_relations_of_kinds(
         &mut self,
-        withdrawn: &[AdmittedRelation],
+        kinds: &[AdmittedRelation],
     ) -> Result<u64, StorageError> {
         let outcome = self.refuse_in_snapshot();
         self.record_refusal(outcome)?;
         let realm = self.realm();
         let kept = self.working.relations.entry(realm).or_default();
         let before = kept.len();
-        kept.retain(|tuple| !is_of_kinds(tuple, withdrawn));
+        kept.retain(|tuple| !is_of_kinds(tuple, kinds));
         u64::try_from(before - kept.len()).map_err(|_| StorageError::Failed)
     }
 
@@ -496,8 +496,14 @@ impl PolicyStore for MemoryUnitOfWork {
         Ok(())
     }
 
-    async fn freeze_definitions(&mut self) -> Result<(), StorageError> {
-        Ok(())
+    async fn lock_definitions_and_read_schema(
+        &mut self,
+    ) -> Result<Option<serde_json::Value>, StorageError> {
+        Ok(self
+            .working
+            .relation_schemas
+            .get(&self.realm())
+            .map(|stored| stored.compiled.clone()))
     }
 
     async fn has_policy_for_types(&mut self, types: &[String]) -> Result<bool, StorageError> {

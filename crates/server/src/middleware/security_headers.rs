@@ -8,13 +8,15 @@ use saffui_core::app::App as Product;
 const TRANSPORT_SECURITY: &str = "max-age=31536000";
 
 /// The headers of every answer. An answer is never guessed to be of another
-/// type than it says, never framed, and never sends where it came from. An
+/// type than it says, never framed, and says where it came from to this
+/// origin alone. Under `no-referrer`, a browser would post the forms of the
+/// hosted pages with an origin of `null`, which their guard refuses. An
 /// origin served over TLS says so once and is then never asked in clear.
 pub(crate) fn protect_answers(product: &Product) -> DefaultHeaders {
     let headers = DefaultHeaders::new()
         .add(("X-Content-Type-Options", "nosniff"))
         .add(("X-Frame-Options", "DENY"))
-        .add(("Referrer-Policy", "no-referrer"));
+        .add(("Referrer-Policy", "same-origin"));
     if product
         .settings
         .public_origin

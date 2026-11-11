@@ -60,5 +60,5 @@ ureq = { version = "3.4.2", default-features = false }
 uuid = { version = "1.28.0", default-features = false, features = ["std"] }
 # The state of a ceremony is kept in our database between its two requests,
 # and the counter of a key is read to compare it to a proof: the two features.
-webauthn-rs = { version = "0.5.5", default-features = false, features = ["danger-allow-state-serialisation", "danger-credential-internals"] }
+webauthn-rs = { version = "0.6.2", default-features = false, features = ["danger-allow-state-serialisation", "danger-credential-internals"] }
 zeroize = { version = "1.9.1", default-features = false, features = ["alloc", "derive"] }

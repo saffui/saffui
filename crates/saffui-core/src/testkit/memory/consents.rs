@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use super::MemoryUnitOfWork;
 use crate::consent::store::ConsentStore;
-use crate::consent::{Consent, ConsentTerms, ListedConsent};
+use crate::consent::{Consent, ConsentHold, ConsentTerms, ListedConsent};
 use crate::ports::storage::StorageError;
 
 impl MemoryUnitOfWork {
@@ -36,9 +36,10 @@ impl ConsentStore for MemoryUnitOfWork {
         &mut self,
         person: Uuid,
         client_id: &str,
+        _hold: ConsentHold,
     ) -> Result<Option<Vec<String>>, StorageError> {
-        // As a read-only transaction refuses `FOR SHARE`. The double
-        // serializes nothing: what is held is what is read.
+        // As a read-only transaction refuses a lock. The double serializes
+        // nothing, whatever the hold: what is held is what is read.
         let outcome = self.refuse_in_snapshot();
         self.record_refusal(outcome)?;
         Ok(self

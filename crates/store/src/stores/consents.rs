@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use saffui_core::consent::store::ConsentStore;
-use saffui_core::consent::{Consent, ConsentTerms, ListedConsent};
+use saffui_core::consent::{Consent, ConsentHold, ConsentTerms, ListedConsent};
 use saffui_core::ports::storage::StorageError;
 use uuid::Uuid;
 
@@ -16,10 +16,17 @@ const CONSENT: &[Column] = &[consents::SCOPES, consents::GRANTED_AT];
 
 /// Constant SQL: the row stays locked until the commit. A withdrawal that
 /// comes after waits for it; one that came first leaves no row to lock.
-const HOLD_CONSENT: &str = "
+const HOLD_CONSENT_SHARED: &str = "
     SELECT scopes FROM consents
     WHERE tenant_id = $1 AND realm_id = $2 AND person_id = $3 AND client_id = $4
     FOR SHARE";
+
+/// Constant SQL: as `HOLD_CONSENT_SHARED`, and another exchange that holds
+/// the row so waits its turn too. The key of the row never changes.
+const HOLD_CONSENT_EXCLUSIVE: &str = "
+    SELECT scopes FROM consents
+    WHERE tenant_id = $1 AND realm_id = $2 AND person_id = $3 AND client_id = $4
+    FOR NO KEY UPDATE";
 
 /// Constant SQL: the flag of the client and what the person allowed it, in
 /// one statement, each table under the keys of the scope.
@@ -81,10 +88,15 @@ impl ConsentStore for PgUnitOfWork {
         &mut self,
         person: Uuid,
         client_id: &str,
+        hold: ConsentHold,
     ) -> Result<Option<Vec<String>>, StorageError> {
         let (tenant, realm) = self.scope_keys();
+        let statement = match hold {
+            ConsentHold::Shared => HOLD_CONSENT_SHARED,
+            ConsentHold::Exclusive => HOLD_CONSENT_EXCLUSIVE,
+        };
         let rows = self
-            .read_raw(HOLD_CONSENT, &[&tenant, &realm, &person, &client_id])
+            .read_raw(statement, &[&tenant, &realm, &person, &client_id])
             .await?;
         Ok(rows.first().map(|row| row.get(0)))
     }

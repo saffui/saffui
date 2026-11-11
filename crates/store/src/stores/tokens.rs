@@ -11,9 +11,7 @@ use tokio_postgres::Row;
 use uuid::Uuid;
 
 use crate::query::bind::col;
-use crate::query::criteria::Criteria;
 use crate::query::insert::Insert;
-use crate::query::update::Update;
 use crate::schema::refresh_tokens;
 use crate::work::PgUnitOfWork;
 
@@ -89,7 +87,8 @@ const END_OFFLINE_SESSIONS_OF_CLIENT: &str = "
       AND EXISTS (
           SELECT 1 FROM refresh_tokens AS token
           WHERE token.tenant_id = $1 AND token.realm_id = $2
-            AND token.session_id = held.session_id AND token.client_id = $4)";
+            AND token.session_id = held.session_id AND token.client_id = $4)
+    RETURNING session_id";
 
 /// Constant SQL: the tokens of a person are reached through their sessions,
 /// each by an index, and each family of the client is revoked as
@@ -120,8 +119,34 @@ const REVOKE_FAMILIES_OF_CLIENT: &str = "
                 AND kin.family_id = token.family_id AND kin.revoked_at IS NOT NULL)
         RETURNING family_id),
     ended AS (SELECT DISTINCT family_id FROM revoked)
-    SELECT (SELECT count(*) FROM ended), (SELECT count(*) FROM revoked),
+    SELECT (SELECT count(*) FROM ended),
+           (SELECT count(*) FROM refresh_tokens
+            WHERE tenant_id = $1 AND realm_id = $2 AND revoked_at IS NULL
+              AND family_id IN (SELECT family_id FROM ended)),
            ARRAY(SELECT family_id FROM ended ORDER BY family_id LIMIT $6)";
+
+/// Constant SQL: each family of these sessions is revoked as `REVOKE_FAMILY`
+/// revokes one, in one statement, the tokens found by the index of sessions.
+/// It answers how many tokens the families it ended still held, read as the
+/// table stood before it ran.
+const REVOKE_FAMILIES_OF_SESSIONS: &str = "
+    WITH latest AS (
+        SELECT DISTINCT ON (family_id) token_digest
+        FROM refresh_tokens
+        WHERE tenant_id = $1 AND realm_id = $2 AND session_id = ANY ($4) AND revoked_at IS NULL
+        ORDER BY family_id, issued_at DESC),
+    revoked AS (
+        UPDATE refresh_tokens AS token SET revoked_at = $3
+        WHERE tenant_id = $1 AND realm_id = $2 AND session_id = ANY ($4) AND revoked_at IS NULL
+          AND (used_at IS NULL OR token_digest IN (SELECT token_digest FROM latest))
+          AND NOT EXISTS (
+              SELECT 1 FROM refresh_tokens AS kin
+              WHERE kin.tenant_id = $1 AND kin.realm_id = $2
+                AND kin.family_id = token.family_id AND kin.revoked_at IS NOT NULL)
+        RETURNING family_id)
+    SELECT count(*) FROM refresh_tokens
+    WHERE tenant_id = $1 AND realm_id = $2 AND revoked_at IS NULL
+      AND family_id IN (SELECT family_id FROM revoked)";
 
 /// Constant SQL, on the sessions alone: the offline sessions a client holds
 /// tokens in for a person, newest first, past the `kept` first, end.
@@ -259,14 +284,18 @@ impl RefreshStore for PgUnitOfWork {
             SessionState::Ended.name(),
             SessionState::Active.name(),
         );
-        let offline_sessions = self
-            .execute_raw(
+        let mut offline_sessions: Vec<Uuid> = self
+            .read_raw(
                 END_OFFLINE_SESSIONS_OF_CLIENT,
                 &[
                     &tenant, &realm, &person, &client_id, &ended, &offline, &active,
                 ],
             )
-            .await?;
+            .await?
+            .iter()
+            .map(|row| row.get(0))
+            .collect();
+        offline_sessions.sort_unstable();
         let rows = self
             .read_raw(
                 REVOKE_FAMILIES_OF_CLIENT,
@@ -324,16 +353,8 @@ impl RefreshStore for PgUnitOfWork {
         session: Uuid,
         now: OffsetDateTime,
     ) -> Result<u64, StorageError> {
-        let update = Update::table(
-            refresh_tokens::TABLE,
-            vec![col(refresh_tokens::REVOKED_AT, &now)],
-            Criteria::new()
-                .where_equal(refresh_tokens::SESSION_ID, &session)
-                .where_null(refresh_tokens::REVOKED_AT),
-        )
-        .build()
-        .map_err(|_| StorageError::Failed)?;
-        self.execute(&update).await
+        self.revoke_refresh_tokens_of_sessions(&[session], now)
+            .await
     }
 
     async fn revoke_refresh_tokens_of_sessions(
@@ -342,13 +363,14 @@ impl RefreshStore for PgUnitOfWork {
         now: OffsetDateTime,
     ) -> Result<u64, StorageError> {
         let (tenant, realm) = self.scope_keys();
-        self.execute_raw(
-            "UPDATE refresh_tokens SET revoked_at = $3
-             WHERE tenant_id = $1 AND realm_id = $2
-               AND session_id = ANY($4) AND revoked_at IS NULL",
-            &[&tenant, &realm, &now, &sessions],
-        )
-        .await
+        let rows = self
+            .read_raw(
+                REVOKE_FAMILIES_OF_SESSIONS,
+                &[&tenant, &realm, &now, &sessions],
+            )
+            .await?;
+        let row = rows.first().ok_or(StorageError::Failed)?;
+        u64::try_from(row.get::<_, i64>(0)).map_err(|_| StorageError::Failed)
     }
 }
 

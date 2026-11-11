@@ -732,6 +732,19 @@ mod tests {
                 .refresh_as("partner", token.expect("a refresh token"), None)
                 .map(|tokens| tokens.scope)
         };
+        let oldest_token = grants[0].tokens.refresh_token.as_deref().expect("a token");
+        let mut work =
+            complete(scenario.app.storage.begin(scenario.scope)).expect("a unit of work");
+        let stored = complete(
+            work.read_refresh_token(&scenario.app.digester.sha256(oldest_token.as_bytes())),
+        )
+        .expect("a read")
+        .expect("the token");
+        drop(work);
+        assert!(
+            stored.revoked_at.is_some(),
+            "the family of the grant that gave way goes with its session"
+        );
 
         assert_eq!(
             refresh_of(0),

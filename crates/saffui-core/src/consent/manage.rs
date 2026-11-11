@@ -61,12 +61,17 @@ async fn withdraw_consent(
         .revoke_refresh_families_of_client(person, client_id, app.now(), MOST_NAMED_FAMILIES)
         .await?;
     let named: Vec<String> = revoked.named.iter().map(Uuid::to_string).collect();
+    let offline: Vec<String> = revoked
+        .offline_sessions
+        .iter()
+        .map(Uuid::to_string)
+        .collect();
     // The event comes last: the head of the chain stays locked until the commit.
     let withdrawn = json!({
         "actor": actor,
         "client_id": client_id,
         "person_id": person.to_string(),
-        "offline_sessions_ended": revoked.offline_sessions,
+        "offline_sessions_ended": offline,
         "refresh_families": named,
         "refresh_families_revoked": revoked.families,
         "refresh_tokens_revoked": revoked.tokens,
@@ -172,6 +177,18 @@ mod tests {
     use crate::testkit::fixtures::{Application, register_application};
     use crate::tokens::store::RefreshToken;
 
+    /// The session an access token names.
+    fn read_session_of_token(token: &str) -> String {
+        use base64::Engine as _;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+        let payload = token.split('.').nth(1).expect("a compact token");
+        let claims: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).expect("base64url"))
+                .expect("claims");
+        claims["sid"].as_str().expect("a session").to_owned()
+    }
+
     #[test]
     fn a_withdrawal_is_one_entry_that_counts_every_family_and_names_a_bounded_few() {
         let scenario = Scenario::start();
@@ -276,8 +293,10 @@ mod tests {
             .rev()
             .find(|event| event["kind"] == "consent.withdrawn")
             .expect("the withdrawal");
+        let offline = read_session_of_token(&granted.tokens.access_token);
         assert_eq!(
-            withdrawn["payload"]["offline_sessions_ended"], 1,
+            withdrawn["payload"]["offline_sessions_ended"],
+            serde_json::json!([offline]),
             "{withdrawn}"
         );
     }

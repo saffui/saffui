@@ -34,21 +34,29 @@ impl MemoryUnitOfWork {
         families
     }
 
-    /// Revokes the live tokens `concerned` names, and returns them as they
-    /// were before.
-    fn revoke_refresh_tokens_where(
+    /// Revokes, as [`Self::revoke_live_family`] does, each family of the
+    /// tokens `concerned` names, and returns those it ended with how many
+    /// tokens they still held.
+    fn revoke_families_where(
         &mut self,
         now: OffsetDateTime,
         concerned: impl Fn(&RefreshToken) -> bool,
-    ) -> Vec<StoredRefreshToken> {
-        let mut revoked = Vec::new();
-        for stored in self.refresh_tokens_of_the_realm() {
-            if stored.revoked_at.is_none() && concerned(&stored.token) {
-                revoked.push(stored.clone());
-                stored.revoked_at = Some(now);
+    ) -> (BTreeSet<Uuid>, u64) {
+        let families: BTreeSet<Uuid> = self
+            .refresh_tokens_of_the_realm()
+            .iter()
+            .filter(|stored| stored.revoked_at.is_none() && concerned(&stored.token))
+            .map(|stored| stored.token.family)
+            .collect();
+        let mut ended = BTreeSet::new();
+        let mut tokens = 0;
+        for family in families {
+            if let Some(told) = self.revoke_live_family(family, now) {
+                ended.insert(family);
+                tokens += told.tokens;
             }
         }
-        revoked
+        (ended, tokens)
     }
 
     /// Ends the active offline sessions `chosen` names, and returns them.
@@ -78,12 +86,8 @@ impl MemoryUnitOfWork {
 
     /// Revokes a family no revoked token refuses yet, as Postgres does: its
     /// tokens that could still be spent and its latest are written revoked.
-    /// Returns what the family told and how many tokens were written.
-    fn revoke_live_family(
-        &mut self,
-        family: Uuid,
-        now: OffsetDateTime,
-    ) -> Option<(EndedFamily, u64)> {
+    /// Returns what the family told.
+    fn revoke_live_family(&mut self, family: Uuid, now: OffsetDateTime) -> Option<EndedFamily> {
         if self.read_revoked_families().contains_key(&family) {
             return None;
         }
@@ -100,17 +104,15 @@ impl MemoryUnitOfWork {
             last_used_at: live.iter().filter_map(|stored| stored.used_at).max(),
         };
         let latest = latest.token.token_digest.clone();
-        let mut written = 0;
         for stored in self.refresh_tokens_of_the_realm() {
             if stored.token.family == family
                 && stored.revoked_at.is_none()
                 && (stored.used_at.is_none() || stored.token.token_digest == latest)
             {
                 stored.revoked_at = Some(now);
-                written += 1;
             }
         }
-        Some((ended, written))
+        Some(ended)
     }
 }
 
@@ -175,7 +177,7 @@ impl RefreshStore for MemoryUnitOfWork {
     ) -> Result<Option<EndedFamily>, StorageError> {
         let outcome = self.refuse_in_snapshot();
         self.record_refusal(outcome)?;
-        Ok(self.revoke_live_family(family, now).map(|(ended, _)| ended))
+        Ok(self.revoke_live_family(family, now))
     }
 
     async fn end_offline_session_of_family(
@@ -248,29 +250,13 @@ impl RefreshStore for MemoryUnitOfWork {
         self.record_refusal(outcome)?;
         // The sessions first, as Postgres does.
         let holding = self.list_sessions_of_client(client_id);
-        let offline_sessions = self
-            .end_offline_sessions_where(|session| {
-                session.person == person && holding.contains(&session.id)
-            })
-            .len();
-        let families: BTreeSet<Uuid> = self
-            .refresh_tokens_of_the_realm()
-            .iter()
-            .filter(|stored| {
-                stored.token.person == person
-                    && stored.token.client_id == client_id
-                    && stored.revoked_at.is_none()
-            })
-            .map(|stored| stored.token.family)
-            .collect();
-        let mut ended = BTreeSet::new();
-        let mut tokens = 0;
-        for family in families {
-            if let Some((_, written)) = self.revoke_live_family(family, now) {
-                ended.insert(family);
-                tokens += written;
-            }
-        }
+        let mut offline_sessions = self.end_offline_sessions_where(|session| {
+            session.person == person && holding.contains(&session.id)
+        });
+        offline_sessions.sort_unstable();
+        let (ended, tokens) = self.revoke_families_where(now, |token| {
+            token.person == person && token.client_id == client_id
+        });
         Ok(RevokedFamilies {
             families: u64::try_from(ended.len()).unwrap_or(u64::MAX),
             tokens,
@@ -278,7 +264,7 @@ impl RefreshStore for MemoryUnitOfWork {
                 .into_iter()
                 .take(usize::try_from(most).unwrap_or(usize::MAX))
                 .collect(),
-            offline_sessions: u64::try_from(offline_sessions).unwrap_or(u64::MAX),
+            offline_sessions,
         })
     }
 
@@ -289,8 +275,9 @@ impl RefreshStore for MemoryUnitOfWork {
     ) -> Result<u64, StorageError> {
         let outcome = self.refuse_in_snapshot();
         self.record_refusal(outcome)?;
-        let revoked = self.revoke_refresh_tokens_where(now, |token| token.session == session);
-        Ok(u64::try_from(revoked.len()).unwrap_or(u64::MAX))
+        Ok(self
+            .revoke_families_where(now, |token| token.session == session)
+            .1)
     }
 
     async fn revoke_refresh_tokens_of_sessions(
@@ -300,8 +287,8 @@ impl RefreshStore for MemoryUnitOfWork {
     ) -> Result<u64, StorageError> {
         let outcome = self.refuse_in_snapshot();
         self.record_refusal(outcome)?;
-        let revoked =
-            self.revoke_refresh_tokens_where(now, |token| sessions.contains(&token.session));
-        Ok(u64::try_from(revoked.len()).unwrap_or(u64::MAX))
+        Ok(self
+            .revoke_families_where(now, |token| sessions.contains(&token.session))
+            .1)
     }
 }

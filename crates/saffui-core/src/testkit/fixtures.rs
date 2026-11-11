@@ -294,13 +294,20 @@ pub async fn run_code_flow(app: &App, flow: CodeFlow<'_>) -> SignedInApplication
     }
 }
 
-/// Runs a whole code flow in which the client asks the person to consent
-/// again (`prompt=consent`), and the person allows it on the page.
+/// The code verifier of the consented flows.
+const CONSENTED_VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+
+/// Runs a code flow up to its code, in which the client asks the person to
+/// consent again (`prompt=consent`) and the person allows it on the page.
+/// Returns the code, and the ticket of the session they signed in with.
 ///
 /// # Panics
 ///
 /// Panics when a step is refused.
-pub async fn run_consented_code_flow(app: &App, flow: CodeFlow<'_>) -> SignedInApplication {
+pub async fn allow_consented_code(
+    app: &App,
+    flow: &CodeFlow<'_>,
+) -> (String, crate::login::session::SessionTicket) {
     use base64::Engine as _;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
@@ -309,11 +316,8 @@ pub async fn run_consented_code_flow(app: &App, flow: CodeFlow<'_>) -> SignedInA
         Authorization, AuthorizationParameters, SignInAnswer, SignInStep, TypedSignIn,
         begin_authorization, finish_sign_in,
     };
-    use crate::oidc::token::{TokenRequest, grant_token};
 
-    const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
-
-    let challenge = URL_SAFE_NO_PAD.encode(app.digester.sha256(VERIFIER.as_bytes()));
+    let challenge = URL_SAFE_NO_PAD.encode(app.digester.sha256(CONSENTED_VERIFIER.as_bytes()));
     let parameters = AuthorizationParameters {
         response_type: Some("code"),
         client_id: Some(flow.client_id),
@@ -363,6 +367,19 @@ pub async fn run_consented_code_flow(app: &App, flow: CodeFlow<'_>) -> SignedInA
         .and_then(|(_, rest)| rest.split('&').next())
         .expect("a code in the redirection")
         .to_owned();
+    (code, signed_in.ticket)
+}
+
+/// Runs a whole code flow in which the client asks the person to consent
+/// again (`prompt=consent`), and the person allows it on the page.
+///
+/// # Panics
+///
+/// Panics when a step is refused.
+pub async fn run_consented_code_flow(app: &App, flow: CodeFlow<'_>) -> SignedInApplication {
+    use crate::oidc::token::{TokenRequest, grant_token};
+
+    let (code, ticket) = allow_consented_code(app, &flow).await;
     let exchange = TokenRequest {
         grant_type: Some("authorization_code"),
         client_id: Some(flow.client_id),
@@ -371,7 +388,7 @@ pub async fn run_consented_code_flow(app: &App, flow: CodeFlow<'_>) -> SignedInA
             .map(|secret| Secret::new(secret.expose().to_vec())),
         code: Some(&code),
         redirect_uri: Some(flow.redirect_uri),
-        code_verifier: Some(VERIFIER),
+        code_verifier: Some(CONSENTED_VERIFIER),
         ..TokenRequest::default()
     };
     let tokens = grant_token(app, flow.realm, exchange)
@@ -379,7 +396,7 @@ pub async fn run_consented_code_flow(app: &App, flow: CodeFlow<'_>) -> SignedInA
         .expect("tokens for the code");
     SignedInApplication {
         tokens,
-        ticket: signed_in.ticket,
+        ticket,
         code,
     }
 }

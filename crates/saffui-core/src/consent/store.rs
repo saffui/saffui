@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use super::{Consent, ConsentTerms, ListedConsent};
+use super::{Consent, ConsentHold, ConsentTerms, ListedConsent};
 use crate::ports::storage::StorageError;
 
 #[async_trait]
@@ -12,13 +12,15 @@ pub trait ConsentStore {
         client_id: &str,
     ) -> Result<Option<Consent>, StorageError>;
 
-    /// The scopes the person allowed the client, held until the commit: a
-    /// withdrawal waits for the unit of work that holds them. One that came
-    /// first leaves nothing to hold.
+    /// The scopes the person allowed the client, held until the commit as
+    /// `hold` says: a withdrawal waits for the unit of work that holds them,
+    /// and so does another that holds them exclusively. One that came first
+    /// leaves nothing to hold.
     async fn hold_consent(
         &mut self,
         person: Uuid,
         client_id: &str,
+        hold: ConsentHold,
     ) -> Result<Option<Vec<String>>, StorageError>;
 
     /// Whether the client requires consent and what the person allowed it,

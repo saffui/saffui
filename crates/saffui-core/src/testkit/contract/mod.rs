@@ -1115,8 +1115,9 @@ pub async fn check_refresh_contract(app: &App) {
     assert_eq!(used.used_at, Some(now));
     assert!(!used.is_live(now));
 
-    // A family is revoked whole, used tokens included, and once. The browser
-    // session it lived in stands; an offline one is ended for its family.
+    // A family is refused as soon as one of its tokens is revoked, and said
+    // so once. The browser session it lived in stands; an offline one is
+    // ended for its family.
     assert_eq!(
         work.end_offline_session_of_family(family).await,
         Ok(None),
@@ -1134,7 +1135,7 @@ pub async fn check_refresh_contract(app: &App) {
     assert_eq!(
         work.revoke_refresh_family(family, now).await,
         Ok(None),
-        "nothing is left to revoke"
+        "a family refused already is not revoked again"
     );
     assert_eq!(
         work.end_offline_session_of_family(offline_family).await,
@@ -3023,7 +3024,7 @@ pub async fn check_member_groups_contract(app: &App) {
 pub async fn check_consents_contract(app: &App) {
     use time::Duration;
 
-    use crate::consent::{Consent, ConsentTerms, ListedConsent};
+    use crate::consent::{Consent, ConsentHold, ConsentTerms, ListedConsent};
     use crate::testkit::fixtures::{
         Application, create_person, create_realm, register_application,
     };
@@ -3062,7 +3063,11 @@ pub async fn check_consents_contract(app: &App) {
 
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
     assert_eq!(work.read_consent(ada.id, "webapp").await, Ok(None));
-    assert_eq!(work.hold_consent(ada.id, "webapp").await, Ok(None));
+    assert_eq!(
+        work.hold_consent(ada.id, "webapp", ConsentHold::Shared)
+            .await,
+        Ok(None)
+    );
     assert_eq!(
         work.read_consent_terms(ada.id, "webapp").await,
         Ok(Some(terms(true, None))),
@@ -3096,10 +3101,13 @@ pub async fn check_consents_contract(app: &App) {
         Ok(Some(wider.clone())),
         "widened in place: what was allowed keeps its place, the new comes after"
     );
-    assert_eq!(
-        work.hold_consent(ada.id, "webapp").await,
-        Ok(Some(wider.scopes.clone()))
-    );
+    for hold in [ConsentHold::Shared, ConsentHold::Exclusive] {
+        assert_eq!(
+            work.hold_consent(ada.id, "webapp", hold).await,
+            Ok(Some(wider.scopes.clone())),
+            "{hold:?}"
+        );
+    }
     assert_eq!(
         work.read_consent_terms(ada.id, "webapp").await,
         Ok(Some(terms(true, Some(&["openid", "email", "profile"]))))
@@ -3126,16 +3134,22 @@ pub async fn check_consents_contract(app: &App) {
     );
     work.commit().await.expect("a commit");
 
-    let mut snapshot = app.storage.begin_snapshot(scope).await.expect("a snapshot");
-    assert!(
-        snapshot.hold_consent(ada.id, "webapp").await.is_err(),
-        "a snapshot holds nothing"
-    );
-    drop(snapshot);
+    for hold in [ConsentHold::Shared, ConsentHold::Exclusive] {
+        let mut snapshot = app.storage.begin_snapshot(scope).await.expect("a snapshot");
+        assert!(
+            snapshot.hold_consent(ada.id, "webapp", hold).await.is_err(),
+            "a snapshot holds nothing: {hold:?}"
+        );
+    }
 
     let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
     assert_eq!(elsewhere.read_consent(ada.id, "webapp").await, Ok(None));
-    assert_eq!(elsewhere.hold_consent(ada.id, "webapp").await, Ok(None));
+    assert_eq!(
+        elsewhere
+            .hold_consent(ada.id, "webapp", ConsentHold::Exclusive)
+            .await,
+        Ok(None)
+    );
     assert_eq!(
         elsewhere.read_consent_terms(ada.id, "webapp").await,
         Ok(None)
@@ -3316,14 +3330,14 @@ async fn check_that_a_client_loses_its_tokens_of_a_person(
             .await,
         Ok(RevokedFamilies {
             families: 3,
-            tokens: 3,
+            tokens: 4,
             named: vec![families[0].min(families[1]).min(families[5])],
-            offline_sessions: 1,
+            offline_sessions: vec![sessions[3].id],
         }),
-        "in each session of the person; a used token that is not the latest is not written \
-         again, and the family revoked before is left as it was, its late token too; the \
-         first family by identifier is named, and no more; the offline session of the client \
-         ends, not the one of another"
+        "in each session of the person; the tokens the families still held are counted, the \
+         family revoked before is left as it was, its late token too; the first family by \
+         identifier is named, and no more; the offline session of the client ends, not the \
+         one of another"
     );
     assert_eq!(
         work.revoke_refresh_families_of_client(ada, "webapp", now, 1)
@@ -3332,7 +3346,7 @@ async fn check_that_a_client_loses_its_tokens_of_a_person(
             families: 0,
             tokens: 0,
             named: Vec::new(),
-            offline_sessions: 0,
+            offline_sessions: Vec::new(),
         }),
         "what is revoked is not revoked again"
     );

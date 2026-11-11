@@ -6,11 +6,11 @@ use serde_json::json;
 use time::Duration;
 use uuid::Uuid;
 
-use super::Consent;
+use super::{Consent, grant_to_client};
 use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
-use crate::clients::{Client, neutralize_unshowable, read_named_client};
+use crate::clients::{neutralize_unshowable, read_named_client};
 use crate::error::{ErrorCode, Failure};
 use crate::login::session::{
     OFFLINE_SESSION_LIFETIME, Session, SessionTicket, find_answering_session,
@@ -47,19 +47,6 @@ pub enum ConsentDecision {
 
 fn expire() -> Failure {
     Failure::new(ErrorCode::AuthorizationRequestExpired)
-}
-
-/// What allowing a client on the page grants of the scopes asked: all of
-/// them to a client that requires consent; to another, all but
-/// `offline_access`, which would outlive any consent the person could
-/// withdraw. It is left out in silence, as OpenID Connect Core 1.0, section
-/// 11, allows.
-fn grant_on_the_page(client: &Client, asked: &[String]) -> Vec<String> {
-    if client.requires_consent {
-        asked.to_vec()
-    } else {
-        leave_out_offline_access(asked)
-    }
 }
 
 /// Checks that a request read or taken waits for a consent, from this
@@ -111,7 +98,7 @@ pub async fn describe_consent(
         .await?
         .filter(|client| client.enabled && client.allows_authorization_code)
         .ok_or(Failure::new(ErrorCode::ClientNotFound))?;
-    let granted = grant_on_the_page(&client, &pending.scopes);
+    let granted = grant_to_client(&client, &pending.scopes);
     Ok(ConsentPrompt {
         client_name: neutralize_unshowable(&client.name),
         scopes: leave_out_offline_access(&granted),
@@ -178,7 +165,7 @@ async fn allow_client(
     // Kept only for a client that requires it: to another, `prompt=consent`
     // asks once, nothing stands to be withdrawn, and so nothing is granted
     // that outlives the browser session.
-    let given = grant_on_the_page(&client, &pending.scopes);
+    let given = grant_to_client(&client, &pending.scopes);
     if client.requires_consent {
         work.add_consent(&Consent {
             person: session.person,
@@ -1508,6 +1495,11 @@ mod tests {
         assert_eq!(
             tokens.scope, "openid",
             "nobody could withdraw a grant offline from this client"
+        );
+        assert_eq!(
+            read_last_grant(&scenario)["scopes"],
+            serde_json::json!(["openid"]),
+            "the chain says what was granted, not what was asked"
         );
         let issued = scenario
             .storage

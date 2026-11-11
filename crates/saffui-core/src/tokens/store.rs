@@ -57,14 +57,14 @@ pub struct EndedFamily {
 pub struct RevokedFamilies {
     /// The families it ended: one with a token revoked before is left alone.
     pub families: u64,
-    /// The tokens it wrote revoked: those that could still be spent, and the
-    /// latest of each family. One refuses its whole family.
+    /// The tokens the families it ended still held, counted as
+    /// [`EndedFamily::tokens`] counts them.
     pub tokens: u64,
     /// The first of the families it ended, by identifier.
     pub named: Vec<Uuid>,
-    /// The offline sessions the client held tokens in for the person,
-    /// ended before the families.
-    pub offline_sessions: u64,
+    /// The offline sessions the client held tokens in for the person, ended
+    /// before the families, by identifier.
+    pub offline_sessions: Vec<Uuid>,
 }
 
 #[async_trait]
@@ -130,15 +130,17 @@ pub trait RefreshStore {
         now: OffsetDateTime,
     ) -> Result<Vec<Uuid>, StorageError>;
 
-    /// Revokes every token of a session that is not revoked yet. Returns how many.
+    /// Revokes, as [`Self::revoke_refresh_family`] does, each family of a
+    /// session that no revoked token refuses yet, in one statement. Returns
+    /// how many tokens those families still held.
     async fn revoke_refresh_tokens_of_session(
         &mut self,
         session: Uuid,
         now: OffsetDateTime,
     ) -> Result<u64, StorageError>;
 
-    /// Revokes, in one go, every token of these sessions that is not revoked
-    /// yet. Returns how many.
+    /// As [`Self::revoke_refresh_tokens_of_session`], for these sessions in
+    /// one go.
     async fn revoke_refresh_tokens_of_sessions(
         &mut self,
         sessions: &[Uuid],

@@ -1,0 +1,15 @@
+{#- The form of a security key: the page that includes it holds it as `key`. -#}
+<form method="post" action="{{ key.action }}" id="key-form" {# -#}
+    data-ceremony="
+    {%- match key.kind -%}
+        {%- when KeyCeremonyKind::Enrollment -%}create
+        {%- when KeyCeremonyKind::Proof -%}get
+    {%- endmatch -%}
+    " data-options="{{ key.options }}">
+    {%- if let Some(request) = key.request -%}
+        <input type="hidden" name="request" value="{{ request }}">
+    {%- endif -%}
+    <input type="hidden" name="key">{# -#}
+    <button type="submit">{{ key.label }}</button>{# -#}
+    <p id="key-note" class="error"></p>{# -#}
+</form>

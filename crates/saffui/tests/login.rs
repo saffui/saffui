@@ -786,11 +786,11 @@ fn read_key_options(page: &str) -> Value {
         .map(|(found, _)| found)
         .expect("the options of a key");
     let text = written
-        .replace("&quot;", "\"")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
+        .replace("&#34;", "\"")
+        .replace("&#60;", "<")
+        .replace("&#62;", ">")
         .replace("&#39;", "'")
-        .replace("&amp;", "&");
+        .replace("&#38;", "&");
     serde_json::from_str(&text).expect("options written as JSON")
 }
 
@@ -1437,7 +1437,7 @@ fn a_client_that_requires_consent_asks_once_and_again_once_the_person_withdraws(
         .expect("an answer");
     assert_eq!(page.status, 200, "{}", page.body);
     assert!(
-        page.body.contains("Partner &lt;b&gt;Inc&lt;/b&gt;") && !page.body.contains("<b>Inc"),
+        page.body.contains("Partner &#60;b&#62;Inc&#60;/b&#62;") && !page.body.contains("<b>Inc"),
         "the name is text: {}",
         page.body
     );

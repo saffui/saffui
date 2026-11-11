@@ -3,6 +3,7 @@
 
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, get, post, web};
+use askama::Template;
 use saffui_core::app::App as Product;
 use saffui_core::error::{ErrorCode, Failure};
 use saffui_core::login::enroll::{
@@ -12,16 +13,14 @@ use saffui_core::secret::Secret;
 use serde::Deserialize;
 
 use super::authenticator::{read_marks, read_ticket};
-use crate::api::rest::endpoints::login::key_form::{
-    KEY_SCRIPT, KEY_SILENT, KeyCeremonyKind, write_key_form,
-};
+use crate::api::rest::endpoints::login::key_form::{KEY_SILENT, KeyCeremonyKind, KeyPrompt};
 use crate::api::rest::endpoints::login::page::{
-    is_posted_from_elsewhere, is_realm_label, render_page, render_refusal, render_scripted_page,
+    Frame, is_posted_from_elsewhere, is_realm_label, render_page, render_refusal,
+    render_scripted_page,
 };
 use crate::extract::form::read_posted_form;
 use crate::middleware::caller_address::read_caller_address;
 
-const HEADING: &str = "<h1>Security key</h1>";
 const KEYS_NOT_SERVED: &str = "This service cannot use security keys: none can be added here.";
 
 // No `Debug`: the form carries a password.
@@ -36,18 +35,40 @@ pub struct KeyForm {
     key: String,
 }
 
-fn write_password_form(realm: &str, message: &str) -> String {
-    let message = if message.is_empty() {
-        String::new()
-    } else {
-        format!("<p class=\"error\">{message}</p>")
-    };
-    format!(
-        "{message}<form method=\"post\" action=\"/realms/{realm}/account/security-key\">\
-         <label>Your password<input name=\"password\" type=\"password\" \
-         autocomplete=\"current-password\" required></label>\
-         <button type=\"submit\">Add a security key</button></form>"
-    )
+/// The page of the security keys.
+#[derive(Template)]
+#[template(path = "account/security_key.html")]
+struct SecurityKeyPage<'a> {
+    frame: Frame,
+    shown: Shown<'a>,
+}
+
+/// What the page shows under its heading.
+enum Shown<'a> {
+    /// How many keys the account holds, and the form that adds one where
+    /// this service can use them.
+    Held {
+        realm: &'a str,
+        held: usize,
+        served: bool,
+    },
+    /// The form of the password again, with why it was refused.
+    PasswordForm { realm: &'a str, message: &'a str },
+    /// The form the key answers.
+    Key(KeyPrompt<'a>),
+    /// One thing said, as a refusal unless `status` is a success.
+    Note {
+        realm: &'a str,
+        status: StatusCode,
+        note: &'a str,
+        start_again: StartAgain,
+    },
+    /// Why the page refuses, and no form.
+    Refusal { message: &'a str },
+}
+
+fn render_shown(product: &Product, status: StatusCode, shown: Shown<'_>) -> HttpResponse {
+    render_page(product, status, |frame| SecurityKeyPage { frame, shown })
 }
 
 /// Whether a note offers to start the enrollment again.
@@ -66,22 +87,13 @@ fn render_note(
     note: &str,
     start_again: StartAgain,
 ) -> HttpResponse {
-    let class = if status.is_success() {
-        ""
-    } else {
-        " class=\"error\""
-    };
-    let link = match start_again {
-        StartAgain::Offered => {
-            format!("<p><a href=\"/realms/{realm}/account/security-key\">Start again</a></p>")
-        }
-        StartAgain::NotOffered => String::new(),
-    };
-    render_page(
-        product,
+    let shown = Shown::Note {
+        realm,
         status,
-        &format!("{HEADING}<p{class}>{note}</p>{link}"),
-    )
+        note,
+        start_again,
+    };
+    render_shown(product, status, shown)
 }
 
 /// A refusal of these pages: the status of its kind, its message, no form.
@@ -91,8 +103,8 @@ fn refuse_request(product: &Product, failure: &Failure) -> HttpResponse {
         ErrorCode::SecondFactorProofRequired => StatusCode::FORBIDDEN,
         _ => return render_refusal(product, failure),
     };
-    let body = format!("{HEADING}<p class=\"error\">{}</p>", failure.code.message());
-    render_page(product, status, &body)
+    let message = failure.code.message();
+    render_shown(product, status, Shown::Refusal { message })
 }
 
 #[get("/realms/{realm}/account/security-key")]
@@ -104,21 +116,12 @@ pub async fn show_security_keys(
     let ticket = read_ticket(&product, &realm, &http);
     match count_security_keys(&product, &realm, ticket.as_ref()).await {
         Ok(held) if is_realm_label(&realm) => {
-            let held = match held {
-                0 => "No security key is set up for this account.".to_owned(),
-                1 => "1 security key is set up for this account.".to_owned(),
-                many => format!("{many} security keys are set up for this account."),
+            let shown = Shown::Held {
+                realm: &realm,
+                held,
+                served: product.security_keys.are_served(),
             };
-            let offer = if product.security_keys.are_served() {
-                format!(
-                    "<p>A security key you add will be asked each time you sign in.</p>{}",
-                    write_password_form(&realm, "")
-                )
-            } else {
-                format!("<p>{KEYS_NOT_SERVED}</p>")
-            };
-            let body = format!("{HEADING}<p>{held}</p>{offer}");
-            render_page(&product, StatusCode::OK, &body)
+            render_shown(&product, StatusCode::OK, shown)
         }
         Ok(_) => refuse_request(&product, &Failure::new(ErrorCode::RealmNotFound)),
         Err(failure) => refuse_request(&product, &failure),
@@ -142,11 +145,11 @@ pub async fn begin_enrollment(
         return refuse_request(&product, &Failure::new(ErrorCode::SessionRequired));
     }
     let Some(form) = read_posted_form::<PasswordForm>(&http, payload).await else {
-        let body = format!(
-            "{HEADING}{}",
-            write_password_form(&realm, ErrorCode::RequestInvalid.message())
-        );
-        return render_page(&product, StatusCode::BAD_REQUEST, &body);
+        let shown = Shown::PasswordForm {
+            realm: &realm,
+            message: ErrorCode::RequestInvalid.message(),
+        };
+        return render_shown(&product, StatusCode::BAD_REQUEST, shown);
     };
     let begun = begin_key_enrollment(
         &product,
@@ -159,15 +162,17 @@ pub async fn begin_enrollment(
     .await;
     match begun {
         Ok(options) => {
-            let key_form = write_key_form(
-                &format!("/realms/{realm}/account/security-key/confirm"),
-                None,
-                KeyCeremonyKind::Enrollment,
-                &options,
-                "Add this security key",
-            );
-            let body = format!("{HEADING}<p>Have your security key at hand.</p>{key_form}");
-            render_scripted_page(&product, StatusCode::OK, &body, KEY_SCRIPT)
+            let shown = Shown::Key(KeyPrompt {
+                action: format!("/realms/{realm}/account/security-key/confirm"),
+                request: None,
+                kind: KeyCeremonyKind::Enrollment,
+                options: &options,
+                label: "Add this security key",
+            });
+            render_scripted_page(&product, StatusCode::OK, |frame| SecurityKeyPage {
+                frame,
+                shown,
+            })
         }
         Err(failure)
             if matches!(
@@ -180,11 +185,11 @@ pub async fn begin_enrollment(
             } else {
                 StatusCode::UNAUTHORIZED
             };
-            let body = format!(
-                "{HEADING}{}",
-                write_password_form(&realm, failure.code.message())
-            );
-            render_page(&product, status, &body)
+            let shown = Shown::PasswordForm {
+                realm: &realm,
+                message: failure.code.message(),
+            };
+            render_shown(&product, status, shown)
         }
         // The one refusal of a key before any key answered: no room is left.
         Err(failure) if failure.code == ErrorCode::KeyRejected => render_note(
@@ -254,5 +259,61 @@ pub async fn finish_enrollment(
             StartAgain::Offered,
         ),
         Err(failure) => refuse_request(&product, &failure),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use actix_web::http::StatusCode;
+    use saffui_core::testkit::memory::MemoryStorage;
+    use serde_json::json;
+
+    use super::{Shown, StartAgain, render_shown};
+    use crate::api::rest::endpoints::login::key_form::{KeyCeremonyKind, KeyPrompt};
+    use crate::api::rest::endpoints::login::page::tests::{HOSTILE, assert_written_as_text};
+
+    #[test]
+    fn every_text_the_security_key_page_shows_is_written_as_text() {
+        let (product, _storage) = MemoryStorage::wire();
+        let options = json!({ "user": HOSTILE });
+        let key = KeyPrompt {
+            action: HOSTILE.to_owned(),
+            request: None,
+            kind: KeyCeremonyKind::Enrollment,
+            options: &options,
+            label: HOSTILE,
+        };
+        let pages = [
+            (
+                Shown::Held {
+                    realm: HOSTILE,
+                    held: 2,
+                    served: true,
+                },
+                1,
+            ),
+            (
+                Shown::PasswordForm {
+                    realm: HOSTILE,
+                    message: HOSTILE,
+                },
+                2,
+            ),
+            (Shown::Key(key), 3),
+            (
+                Shown::Note {
+                    realm: HOSTILE,
+                    status: StatusCode::BAD_REQUEST,
+                    note: HOSTILE,
+                    start_again: StartAgain::Offered,
+                },
+                2,
+            ),
+            (Shown::Refusal { message: HOSTILE }, 1),
+        ];
+
+        for (shown, held) in pages {
+            assert_written_as_text(render_shown(&product, StatusCode::OK, shown), held);
+        }
     }
 }

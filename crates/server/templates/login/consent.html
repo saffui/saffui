@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{%- block body -%}
+<h1>Allow access</h1>{# -#}
+<p><strong>{{ prompt.client_name }}</strong> asks to act in your name with:</p>{# -#}
+<ul>
+    {%- for scope in prompt.scopes -%}
+        <li>{{ scope }}</li>
+    {%- endfor -%}
+</ul>
+{%- if let Some(lasts) = prompt.offline_access -%}
+    <p>It may also go on acting in your name while you are away, for {{ lasts.whole_days() }} days, {# -#}
+        even after you sign out. You can withdraw this from your account.</p>
+{%- endif -%}
+<form method="post" action="/realms/{{ realm }}/consent">{# -#}
+    <input type="hidden" name="request" value="{{ request }}">{# -#}
+    <button type="submit" name="decision" value="allow">Allow</button> {# -#}
+    <button type="submit" name="decision" value="deny">Deny</button>{# -#}
+</form>
+{%- endblock %}

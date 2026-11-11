@@ -65,6 +65,8 @@ deny = [
     { crate = "server", wrappers = ["saffui"], reason = "Only the binary mounts the server." },
     { crate = "api", wrappers = ["saffui", "server"], reason = "The contract of the administration API is shared by the server that answers and the command line that asks, and by nothing else." },
     { crate = "pgcore", wrappers = ["gen-schema", "pgcore", "saffui", "store"], reason = "The database link is shared by the binary, the store and the schema tool." },
+    # A page is rendered in one place, and escapes what it shows there.
+    { crate = "askama", wrappers = ["server"], reason = "The hosted pages are rendered by the server alone." },
     # A call over the network leaves from one place.
     { crate = "ureq", wrappers = ["saffui"], reason = "Only the command line calls a node; a call the product itself makes will have its own builder." },
 ]

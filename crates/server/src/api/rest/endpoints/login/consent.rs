@@ -1,21 +1,21 @@
 //! The consent page of a pending authorization request, and its answer.
 
-use std::fmt::Write as _;
-
 use actix_web::http::StatusCode;
 use actix_web::http::header::{CACHE_CONTROL, LOCATION, SET_COOKIE};
 use actix_web::{HttpRequest, HttpResponse, get, post, web};
+use askama::Template;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use saffui_core::app::App as Product;
-use saffui_core::consent::answer::{ConsentDecision, answer_consent, describe_consent};
+use saffui_core::consent::answer::{
+    ConsentDecision, ConsentPrompt, answer_consent, describe_consent,
+};
 use saffui_core::error::{ErrorCode, Failure};
 use saffui_core::secret::Secret;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use super::key_form::escape_text;
-use super::page::{is_posted_from_elsewhere, is_realm_label, render_page, render_refusal};
+use super::page::{Frame, is_posted_from_elsewhere, is_realm_label, render_page, render_refusal};
 use crate::api::rest::endpoints::account::authenticator::read_ticket;
 use crate::extract::cookies::{is_served_over_tls, name_flow_cookie, read_cookie, write_cookie};
 use crate::extract::form::read_posted_form;
@@ -29,6 +29,16 @@ pub struct ConsentQuery {
 pub struct ConsentForm {
     request: String,
     decision: String,
+}
+
+/// The question a person answers for a client: who asks, and for what.
+#[derive(Template)]
+#[template(path = "login/consent.html")]
+struct ConsentPage<'a> {
+    frame: Frame,
+    realm: &'a str,
+    request: Uuid,
+    prompt: &'a ConsentPrompt,
 }
 
 fn expire(product: &Product) -> HttpResponse {
@@ -72,32 +82,12 @@ pub async fn show_consent(
             Ok(prompt) => prompt,
             Err(failure) => return render_refusal(&product, &failure),
         };
-    // The name and the scopes were written by whoever registered the
-    // client: text on this page, never markup.
-    let scopes = prompt
-        .scopes
-        .iter()
-        .fold(String::new(), |mut items, scope| {
-            let _ = write!(items, "<li>{}</li>", escape_text(scope));
-            items
-        });
-    let offline = prompt.offline_access.map_or(String::new(), |lasts| {
-        format!(
-            "<p>It may also go on acting in your name while you are away, for {} days, \
-             even after you sign out. You can withdraw this from your account.</p>",
-            lasts.whole_days()
-        )
-    });
-    let body = format!(
-        "<h1>Allow access</h1><p><strong>{}</strong> asks to act in your name with:</p>\
-         <ul>{scopes}</ul>{offline}\
-         <form method=\"post\" action=\"/realms/{realm}/consent\">\
-         <input type=\"hidden\" name=\"request\" value=\"{request}\">\
-         <button type=\"submit\" name=\"decision\" value=\"allow\">Allow</button> \
-         <button type=\"submit\" name=\"decision\" value=\"deny\">Deny</button></form>",
-        escape_text(&prompt.client_name)
-    );
-    render_page(&product, StatusCode::OK, &body)
+    render_page(&product, StatusCode::OK, |frame| ConsentPage {
+        frame,
+        realm: &realm,
+        request,
+        prompt: &prompt,
+    })
 }
 
 #[post("/realms/{realm}/consent")]
@@ -150,5 +140,37 @@ pub async fn submit_consent(
                 .finish()
         }
         Err(failure) => render_refusal(&product, &failure),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use actix_web::http::StatusCode;
+    use saffui_core::consent::answer::ConsentPrompt;
+    use saffui_core::login::session::OFFLINE_SESSION_LIFETIME;
+    use saffui_core::testkit::memory::MemoryStorage;
+    use uuid::Uuid;
+
+    use super::ConsentPage;
+    use crate::api::rest::endpoints::login::page::render_page;
+    use crate::api::rest::endpoints::login::page::tests::{HOSTILE, assert_written_as_text};
+
+    #[test]
+    fn every_text_the_consent_page_shows_is_written_as_text() {
+        let (product, _storage) = MemoryStorage::wire();
+        let prompt = ConsentPrompt {
+            client_name: HOSTILE.to_owned(),
+            scopes: vec![HOSTILE.to_owned(), HOSTILE.to_owned()],
+            offline_access: Some(OFFLINE_SESSION_LIFETIME),
+        };
+
+        let page = render_page(&product, StatusCode::OK, |frame| ConsentPage {
+            frame,
+            realm: HOSTILE,
+            request: Uuid::nil(),
+            prompt: &prompt,
+        });
+
+        assert_written_as_text(page, 4);
     }
 }

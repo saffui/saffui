@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{%- macro confirmation_form(realm, message) -%}
+    {%- if !message.is_empty() -%}
+        <p class="error">{{ message }}</p>
+    {%- endif -%}
+    <form method="post" action="/realms/{{ realm }}/account/authenticator/confirm">{# -#}
+        <label>Your password<input name="password" type="password" {# -#}
+            autocomplete="current-password" required></label>{# -#}
+        <label>The code your application shows<input name="code" inputmode="numeric" {# -#}
+            autocomplete="one-time-code" maxlength="6" required></label>{# -#}
+        <button type="submit">Confirm</button>{# -#}
+    </form>
+{%- endmacro -%}
+{%- block body -%}
+<h1>Authenticator application</h1>
+{%- match shown -%}
+    {%- when Shown::Refusal with { message } -%}
+        <p class="error">{{ message }}</p>
+    {%- when Shown::Enrolled -%}
+        <p>An authenticator application is set up for this account. An administrator can remove it if you lost it.</p>
+    {%- when Shown::Offer with { realm } -%}
+        <p>A code from an application on your phone will be asked each time you sign in.</p>{# -#}
+        <form method="post" action="/realms/{{ realm }}/account/authenticator">{# -#}
+            <button type="submit">Set up an authenticator application</button>{# -#}
+        </form>
+    {%- when Shown::Secret with { realm, uri, typed_secret } -%}
+        <p>Add this account to your application, with this address or this key.</p>{# -#}
+        <p><code id="uri">{{ uri }}</code></p>{# -#}
+        <p>Key: <code id="secret">{{ typed_secret }}</code></p>
+        {%- call confirmation_form(realm, "") %}{% endcall -%}
+    {%- when Shown::Confirmation with { realm, message } -%}
+        {%- call confirmation_form(realm, message) %}{% endcall -%}
+    {%- when Shown::Confirmed -%}
+        <p>Your authenticator application is set up. A code will be asked the next time you sign in.</p>
+{%- endmatch -%}
+{%- endblock %}

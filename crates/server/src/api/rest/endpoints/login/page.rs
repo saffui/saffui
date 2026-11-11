@@ -3,6 +3,7 @@
 use actix_web::http::StatusCode;
 use actix_web::http::header::{CACHE_CONTROL, CONTENT_TYPE, LOCATION, ORIGIN, SET_COOKIE};
 use actix_web::{HttpRequest, HttpResponse, get, post, web};
+use askama::Template;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use saffui_core::app::App as Product;
@@ -19,7 +20,7 @@ use saffui_core::secret::Secret;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use super::key_form::{KEY_SCRIPT, KEY_SILENT, KeyCeremonyKind, write_key_form};
+use super::key_form::{KEY_SILENT, KeyCeremonyKind, KeyPrompt};
 use crate::extract::cookies::{
     is_served_over_tls, name_device_cookie, name_flow_cookie, name_session_cookie, read_cookie,
     write_cookie,
@@ -45,70 +46,134 @@ pub struct SignInForm {
     key: Option<String>,
 }
 
-/// Renders a page of the sign-in flow. Nothing on it comes from the client:
-/// the realm is a host label, the request an identifier, the message ours.
-pub(crate) fn render_page(product: &Product, status: StatusCode, body: &str) -> HttpResponse {
-    write_page(product, status, body, None)
+/// The frame every hosted page is drawn in, `templates/base.html`: the value
+/// its style and its script are named by, drawn for this answer, and the
+/// script it runs.
+pub(crate) struct Frame {
+    /// None when the draw failed: the page then has no style and no script.
+    nonce: Option<String>,
+    script: PageScript,
 }
 
-/// Renders a page that runs `script`, and nothing else: the policy of the
-/// page names the script by a value drawn for this answer.
-pub(crate) fn render_scripted_page(
+impl Frame {
+    /// The value the style of the page is named by.
+    pub(crate) fn style_nonce(&self) -> Option<&str> {
+        self.nonce.as_deref()
+    }
+
+    /// The value the script of the page is named by, when it runs one.
+    pub(crate) fn script_nonce(&self) -> Option<&str> {
+        match self.script {
+            PageScript::SecurityKey => self.nonce.as_deref(),
+            PageScript::Nothing => None,
+        }
+    }
+}
+
+/// The script a page runs.
+#[derive(Clone, Copy)]
+enum PageScript {
+    Nothing,
+    /// The one that hands the ceremony of a security key to the browser.
+    SecurityKey,
+}
+
+/// The sign-in page: why the last answer was refused, if one was, and what
+/// the page asks next.
+#[derive(Template)]
+#[template(path = "login/sign_in.html")]
+struct SignInPage<'a> {
+    frame: Frame,
+    /// Empty when nothing was refused.
+    message: &'a str,
+    asked: Asked<'a>,
+}
+
+/// What the sign-in page asks under its message.
+enum Asked<'a> {
+    /// Nothing: the page says why it refuses, and no more.
+    Nothing,
+    /// A name and a password.
+    Password { realm: &'a str, request: Uuid },
+    /// What the person owes after their password: a code, the answer of a
+    /// security key, or either when they set up both.
+    SecondFactor {
+        realm: &'a str,
+        request: Uuid,
+        code: bool,
+        key: Option<KeyPrompt<'a>>,
+    },
+}
+
+/// Renders a hosted page, which `page` makes in the frame drawn for this answer.
+pub(crate) fn render_page<P: Template>(
     product: &Product,
     status: StatusCode,
-    body: &str,
-    script: &'static str,
+    page: impl FnOnce(Frame) -> P,
 ) -> HttpResponse {
-    write_page(product, status, body, Some(script))
+    write_page(product, status, PageScript::Nothing, page)
 }
 
-fn write_page(
+/// Renders a page that runs the script of a security key, and nothing else:
+/// the policy of the page names the script by a value drawn for this answer.
+pub(crate) fn render_scripted_page<P: Template>(
     product: &Product,
     status: StatusCode,
-    body: &str,
-    script: Option<&'static str>,
+    page: impl FnOnce(Frame) -> P,
+) -> HttpResponse {
+    write_page(product, status, PageScript::SecurityKey, page)
+}
+
+fn write_page<P: Template>(
+    product: &Product,
+    status: StatusCode,
+    script: PageScript,
+    page: impl FnOnce(Frame) -> P,
 ) -> HttpResponse {
     let mut nonce = [0_u8; 16];
     // A page without its style is still a page: a failed draw loses the
     // style and the script, and names no value anybody could guess.
     let drawn = product.random.fill(&mut nonce).is_ok();
-    let nonce = URL_SAFE_NO_PAD.encode(nonce);
-    let (script, script_policy) = match script {
-        Some(script) if drawn => (
-            format!("<script nonce=\"{nonce}\">{script}</script>"),
-            format!(" script-src 'nonce-{nonce}';"),
-        ),
-        _ => (String::new(), String::new()),
+    let frame = Frame {
+        nonce: drawn.then(|| URL_SAFE_NO_PAD.encode(nonce)),
+        script,
     };
-    let (style, style_policy) = if drawn {
-        (
-            format!(
-                "<style nonce=\"{nonce}\">\
-                 body{{font-family:system-ui,sans-serif;max-width:22rem;margin:4rem auto;padding:0 1rem}}\
-                 label{{display:block;margin-top:1rem}}input{{width:100%;padding:.5rem;box-sizing:border-box}}\
-                 button{{margin-top:1.5rem;padding:.6rem 1rem}}.error{{color:#a3341f}}</style>"
-            ),
-            format!(" style-src 'nonce-{nonce}';"),
-        )
-    } else {
-        (String::new(), String::new())
-    };
-    let page = format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
-         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-         <title>Account</title>{style}</head><body>{body}{script}</body></html>"
-    );
-    HttpResponse::build(status)
-        .insert_header((CONTENT_TYPE, "text/html; charset=utf-8"))
-        .insert_header((CACHE_CONTROL, "no-store"))
-        .insert_header((
-            "Content-Security-Policy",
-            format!(
-                "default-src 'none';{style_policy}{script_policy} \
-                 frame-ancestors 'none'; base-uri 'none'"
-            ),
-        ))
-        .body(page)
+    let policy = write_policy(&frame);
+    answer_rendered(status, &policy, page(frame).render())
+}
+
+/// The policy of a page: nothing styles it or runs on it but what its
+/// nonces name.
+fn write_policy(frame: &Frame) -> String {
+    let style = frame
+        .style_nonce()
+        .map_or_else(String::new, |nonce| format!(" style-src 'nonce-{nonce}';"));
+    let script = frame
+        .script_nonce()
+        .map_or_else(String::new, |nonce| format!(" script-src 'nonce-{nonce}';"));
+    format!("default-src 'none';{style}{script} frame-ancestors 'none'; base-uri 'none'")
+}
+
+/// The answer that carries a rendered page. A page that could not be
+/// rendered sends nothing of itself.
+fn answer_rendered(
+    status: StatusCode,
+    policy: &str,
+    rendered: askama::Result<String>,
+) -> HttpResponse {
+    match rendered {
+        Ok(page) => HttpResponse::build(status)
+            .insert_header((CONTENT_TYPE, "text/html; charset=utf-8"))
+            .insert_header((CACHE_CONTROL, "no-store"))
+            .insert_header(("Content-Security-Policy", policy))
+            .body(page),
+        Err(error) => {
+            tracing::error!(%error, "a hosted page could not be rendered");
+            HttpResponse::InternalServerError()
+                .insert_header((CACHE_CONTROL, "no-store"))
+                .finish()
+        }
+    }
 }
 
 pub(crate) fn render_refusal(product: &Product, failure: &Failure) -> HttpResponse {
@@ -125,19 +190,12 @@ pub(crate) fn render_refusal(product: &Product, failure: &Failure) -> HttpRespon
             "a sign-in page failed"
         );
     }
-    let body = format!(
-        "<h1>Sign in</h1><p class=\"error\">{}</p>",
-        failure.code.message()
-    );
-    render_page(product, status, &body)
-}
-
-fn write_message(message: &str) -> String {
-    if message.is_empty() {
-        String::new()
-    } else {
-        format!("<p class=\"error\">{message}</p>")
-    }
+    let message = failure.code.message();
+    render_page(product, status, |frame| SignInPage {
+        frame,
+        message,
+        asked: Asked::Nothing,
+    })
 }
 
 fn render_form(
@@ -147,15 +205,12 @@ fn render_form(
     status: StatusCode,
     message: &str,
 ) -> HttpResponse {
-    let message = write_message(message);
-    let body = format!(
-        "<h1>Sign in</h1>{message}<form method=\"post\" action=\"/realms/{realm}/login\">\
-         <input type=\"hidden\" name=\"request\" value=\"{request}\">\
-         <label>Username<input name=\"username\" autocomplete=\"username\" required autofocus></label>\
-         <label>Password<input name=\"password\" type=\"password\" autocomplete=\"current-password\" required></label>\
-         <button type=\"submit\">Sign in</button></form>"
-    );
-    render_page(product, status, &body)
+    let asked = Asked::Password { realm, request };
+    render_page(product, status, |frame| SignInPage {
+        frame,
+        message,
+        asked,
+    })
 }
 
 /// The second step of the page: what the person owes after their password.
@@ -168,35 +223,28 @@ fn render_second_factor(
     status: StatusCode,
     message: &str,
 ) -> HttpResponse {
-    let message = write_message(message);
-    let action = format!("/realms/{realm}/login");
-    let code_form = if owed.code {
-        format!(
-            "<p>Enter the code your authenticator application shows.</p>\
-             <form method=\"post\" action=\"{action}\">\
-             <input type=\"hidden\" name=\"request\" value=\"{request}\">\
-             <label>Code<input name=\"code\" inputmode=\"numeric\" autocomplete=\"one-time-code\" \
-             maxlength=\"6\" required autofocus></label>\
-             <button type=\"submit\">Continue</button></form>"
-        )
-    } else {
-        String::new()
-    };
-    let Some(options) = &owed.key else {
-        let body = format!("<h1>Sign in</h1>{message}{code_form}");
-        return render_page(product, status, &body);
-    };
-    let key_form = write_key_form(
-        &action,
-        Some(request),
-        KeyCeremonyKind::Proof,
+    let key = owed.key.as_ref().map(|options| KeyPrompt {
+        action: format!("/realms/{realm}/login"),
+        request: Some(request),
+        kind: KeyCeremonyKind::Proof,
         options,
-        "Use a security key",
-    );
-    let body = format!(
-        "<h1>Sign in</h1>{message}{code_form}<p>Have your security key at hand.</p>{key_form}"
-    );
-    render_scripted_page(product, status, &body, KEY_SCRIPT)
+        label: "Use a security key",
+    });
+    let script = match key {
+        Some(_) => PageScript::SecurityKey,
+        None => PageScript::Nothing,
+    };
+    let asked = Asked::SecondFactor {
+        realm,
+        request,
+        code: owed.code,
+        key,
+    };
+    write_page(product, status, script, |frame| SignInPage {
+        frame,
+        message,
+        asked,
+    })
 }
 
 /// Shows the second step again, with what the request still asks.
@@ -502,16 +550,41 @@ pub async fn submit_sign_in(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::Arc;
 
+    use actix_web::HttpResponse;
     use actix_web::body::MessageBody;
     use actix_web::http::StatusCode;
+    use actix_web::http::header::CACHE_CONTROL;
+    use askama::Template;
     use saffui_core::ports::random::{Random, RandomUnavailable};
     use saffui_core::testkit::memory::MemoryStorage;
+    use serde_json::json;
+    use uuid::Uuid;
 
-    use super::render_scripted_page;
-    use crate::api::rest::endpoints::login::key_form::KEY_SCRIPT;
+    use super::{
+        Asked, Frame, PageScript, SignInPage, answer_rendered, render_page, render_scripted_page,
+    };
+    use crate::api::rest::endpoints::login::key_form::{KeyCeremonyKind, KeyPrompt};
+
+    /// A value with each character HTML reads as markup, for a field of a page.
+    pub(crate) const HOSTILE: &str = "<x'\"&";
+
+    /// Checks that a page holds `held` hostile values, each written as text.
+    pub(crate) fn assert_written_as_text(page: HttpResponse, held: usize) {
+        let body = page.into_body().try_into_bytes().expect("a body");
+        let body = String::from_utf8_lossy(&body);
+        assert!(
+            !body.contains("<x"),
+            "a value reached the page as markup: {body}"
+        );
+        assert_eq!(
+            body.matches("&#60;x").count(),
+            held,
+            "each value reached the page: {body}"
+        );
+    }
 
     /// A source that never answers.
     struct SilentRandom;
@@ -522,12 +595,41 @@ mod tests {
         }
     }
 
+    /// The frame of a page drawn without a nonce: no style, no script.
+    fn build_frame_without_nonce() -> Frame {
+        Frame {
+            nonce: None,
+            script: PageScript::Nothing,
+        }
+    }
+
+    /// The step of a sign-in that asks a security key for `options`.
+    fn ask_key(options: &serde_json::Value) -> Asked<'_> {
+        Asked::SecondFactor {
+            realm: "acme",
+            request: Uuid::nil(),
+            code: false,
+            key: Some(KeyPrompt {
+                action: "/realms/acme/login".to_owned(),
+                request: Some(Uuid::nil()),
+                kind: KeyCeremonyKind::Proof,
+                options,
+                label: "Use a security key",
+            }),
+        }
+    }
+
     #[test]
     fn a_page_whose_nonce_could_not_be_drawn_runs_no_script_and_names_no_value() {
         let (mut product, _storage) = MemoryStorage::wire();
         product.random = Arc::new(SilentRandom);
+        let options = json!({ "publicKey": {} });
 
-        let page = render_scripted_page(&product, StatusCode::OK, "<p>Key</p>", KEY_SCRIPT);
+        let page = render_scripted_page(&product, StatusCode::OK, |frame| SignInPage {
+            frame,
+            message: "",
+            asked: ask_key(&options),
+        });
 
         let policy = page
             .headers()
@@ -541,5 +643,102 @@ mod tests {
         let body = String::from_utf8_lossy(&body);
         assert!(!body.contains("<script"), "{body}");
         assert!(!body.contains("<style"), "{body}");
+    }
+
+    #[test]
+    fn text_is_written_as_text_whatever_it_holds() {
+        let page = SignInPage {
+            frame: build_frame_without_nonce(),
+            message: "otpauth://totp/a:b?secret=X&issuer=\"<i>'",
+            asked: Asked::Nothing,
+        };
+
+        let written = page.render().expect("a page");
+
+        assert!(
+            written.contains(
+                "<p class=\"error\">otpauth://totp/a:b?secret=X&#38;issuer=&#34;&#60;i&#62;&#39;</p>"
+            ),
+            "{written}"
+        );
+    }
+
+    #[test]
+    fn the_options_of_a_key_cannot_leave_their_attribute() {
+        let options =
+            json!({ "publicKey": { "user": { "name": "\"><script>alert(1)</script>" } } });
+        let page = SignInPage {
+            frame: build_frame_without_nonce(),
+            message: "",
+            asked: ask_key(&options),
+        };
+
+        let form = page.render().expect("a page");
+
+        assert!(!form.contains("<script>"), "{form}");
+        assert!(form.contains("data-ceremony=\"get\""));
+        assert!(form.contains("&#34;publicKey&#34;"));
+        assert!(form.contains("name=\"request\" value=\"00000000-0000-0000-0000-000000000000\""));
+    }
+
+    #[test]
+    fn every_text_the_sign_in_page_shows_is_written_as_text() {
+        let (product, _storage) = MemoryStorage::wire();
+        let options = json!({ "user": HOSTILE });
+        let key = KeyPrompt {
+            action: HOSTILE.to_owned(),
+            request: Some(Uuid::nil()),
+            kind: KeyCeremonyKind::Proof,
+            options: &options,
+            label: HOSTILE,
+        };
+        let pages = [
+            (Asked::Nothing, 1),
+            (
+                Asked::Password {
+                    realm: HOSTILE,
+                    request: Uuid::nil(),
+                },
+                2,
+            ),
+            (
+                Asked::SecondFactor {
+                    realm: HOSTILE,
+                    request: Uuid::nil(),
+                    code: true,
+                    key: Some(key),
+                },
+                5,
+            ),
+        ];
+
+        for (asked, held) in pages {
+            let page = render_page(&product, StatusCode::OK, |frame| SignInPage {
+                frame,
+                message: HOSTILE,
+                asked,
+            });
+            assert_written_as_text(page, held);
+        }
+    }
+
+    #[test]
+    fn a_page_that_could_not_be_rendered_sends_nothing_of_itself() {
+        let answer = answer_rendered(
+            StatusCode::OK,
+            "default-src 'none'",
+            Err(askama::Error::Fmt),
+        );
+
+        assert_eq!(answer.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            answer
+                .headers()
+                .get(CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
+        let body = answer.into_body().try_into_bytes().expect("a body");
+        assert!(body.is_empty(), "{body:?}");
     }
 }

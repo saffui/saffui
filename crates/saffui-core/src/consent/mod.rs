@@ -9,6 +9,9 @@ pub mod store;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::clients::Client;
+use crate::oidc::authorize::leave_out_offline_access;
+
 /// How many consents of one person a list shows: a person allows few clients.
 pub const MOST_LISTED_CONSENTS: u32 = 500;
 
@@ -39,6 +42,28 @@ pub struct ConsentTerms {
     /// What the person allowed the client so far. `None` when they allowed
     /// it nothing.
     pub allowed: Option<Vec<String>>,
+}
+
+/// How an exchange holds what the person allowed, until it commits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConsentHold {
+    /// Against a withdrawal alone: other exchanges hold it beside.
+    Shared,
+    /// Against other exchanges too, which wait their turn: one that opens an
+    /// offline grant counts those the person holds with the client.
+    Exclusive,
+}
+
+/// What a client may be granted of the scopes a person allowed: all of them
+/// to a client that requires consent; to another, all but `offline_access`,
+/// which would outlive any consent the person could withdraw. It is left out
+/// in silence, as OpenID Connect Core 1.0, section 11, allows.
+pub(crate) fn grant_to_client(client: &Client, allowed: &[String]) -> Vec<String> {
+    if client.requires_consent {
+        allowed.to_vec()
+    } else {
+        leave_out_offline_access(allowed)
+    }
 }
 
 /// Whether the person must be asked before the client gets a code: always

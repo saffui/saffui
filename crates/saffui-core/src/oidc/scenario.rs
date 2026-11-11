@@ -26,6 +26,7 @@ use crate::testkit::memory::MemoryStorage;
 pub(crate) const CALLBACK: &str = "https://app.example.org/callback";
 pub(crate) const GOODBYE: &str = "https://app.example.org/goodbye";
 pub(crate) const PASSWORD: &str = "correct horse battery";
+pub(crate) const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 
 pub(crate) struct Scenario {
     pub(crate) app: App,
@@ -101,6 +102,127 @@ impl Scenario {
 
     pub(crate) fn copy_service_secret(&self) -> Secret {
         Secret::new(self.service_secret.expose().to_vec())
+    }
+
+    /// Registers `partner`, a public application that requires the consent
+    /// of each person: the only kind of client a grant offline is given to.
+    pub(crate) fn register_partner(&self) {
+        let partner = Application {
+            client_id: "partner",
+            redirect_uri: CALLBACK,
+            post_logout_redirect_uri: None,
+            public: true,
+            requires_consent: true,
+        };
+        complete(register_application(&self.app, self.scope, partner));
+    }
+
+    /// Signs `ada` in for the public client `client_id`, which asks her to
+    /// consent again (`prompt=consent`), and has her allow it `scope` on the
+    /// page. Returns the code the client is sent back with, and her ticket.
+    pub(crate) fn allow_on_the_page(
+        &self,
+        client_id: &str,
+        scope: &str,
+    ) -> (String, SessionTicket) {
+        use base64::Engine as _;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+        use super::authorize::{
+            Authorization, AuthorizationParameters, SignInAnswer, SignInStep, TypedSignIn,
+            begin_authorization, finish_sign_in,
+        };
+        use crate::consent::answer::{ConsentDecision, answer_consent};
+
+        let challenge = URL_SAFE_NO_PAD.encode(self.app.digester.sha256(VERIFIER.as_bytes()));
+        let parameters = AuthorizationParameters {
+            response_type: Some("code"),
+            client_id: Some(client_id),
+            redirect_uri: Some(CALLBACK),
+            scope: Some(scope),
+            nonce: Some("a-nonce"),
+            code_challenge: Some(&challenge),
+            code_challenge_method: Some("S256"),
+            prompt: Some("consent"),
+            ..AuthorizationParameters::default()
+        };
+        let Ok(Authorization::SignInRequired {
+            request,
+            browser_secret,
+        }) = complete(begin_authorization(&self.app, "acme", parameters, None))
+        else {
+            panic!("a person without a session signs in first");
+        };
+        let typed = TypedSignIn {
+            answer: SignInAnswer::Password {
+                name: "ada",
+                password: Secret::new(PASSWORD.as_bytes().to_vec()),
+            },
+            caller: None,
+            known_browsers: &[],
+        };
+        let step = complete(finish_sign_in(
+            &self.app,
+            "acme",
+            request,
+            &browser_secret,
+            typed,
+        ))
+        .expect("a signed-in person");
+        let SignInStep::ConsentRequired(signed_in) = step else {
+            panic!("asked to consent again, the person answers on the page: {step:?}");
+        };
+        let location = complete(answer_consent(
+            &self.app,
+            "acme",
+            request,
+            &browser_secret,
+            Some(&signed_in.ticket),
+            ConsentDecision::Allow,
+        ))
+        .expect("an allowed client");
+        let code = location
+            .split_once("code=")
+            .and_then(|(_, rest)| rest.split('&').next())
+            .expect("a code in the redirection")
+            .to_owned();
+        (code, signed_in.ticket)
+    }
+
+    /// Exchanges a code as the public client `client_id`.
+    pub(crate) fn exchange_as(&self, client_id: &str, code: &str) -> TokenResponse {
+        let exchange = TokenRequest {
+            grant_type: Some("authorization_code"),
+            client_id: Some(client_id),
+            code: Some(code),
+            redirect_uri: Some(CALLBACK),
+            code_verifier: Some(VERIFIER),
+            ..TokenRequest::default()
+        };
+        complete(grant_token(&self.app, "acme", exchange)).expect("tokens for the code")
+    }
+
+    /// As [`Self::allow_on_the_page`], and the code is exchanged.
+    pub(crate) fn sign_in_and_consent(&self, client_id: &str, scope: &str) -> SignedInApplication {
+        let (code, ticket) = self.allow_on_the_page(client_id, scope);
+        SignedInApplication {
+            tokens: self.exchange_as(client_id, &code),
+            ticket,
+            code,
+        }
+    }
+
+    /// Whether the service `billing` is told that a token stands.
+    pub(crate) fn is_token_active(&self, token: &str) -> bool {
+        complete(super::introspect::introspect_token(
+            &self.app,
+            "acme",
+            Some("billing"),
+            Some(self.copy_service_secret()),
+            Some(token),
+        ))
+        .expect("an answer")
+        .active
     }
 
     /// Ends the session of `ticket`, as a sign-out does.

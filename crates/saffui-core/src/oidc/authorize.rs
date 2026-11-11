@@ -17,6 +17,7 @@ use super::code::{AuthorizationCode, PendingAuthorization, PendingKeyProof};
 use super::discovery::name_issuer;
 use super::errors::OAuthError;
 use super::pkce::is_well_formed_challenge;
+use super::token::OFFLINE_ACCESS_SCOPE;
 use crate::app::App;
 use crate::clients::{Client, check_scope_token, read_named_client};
 use crate::consent::{ConsentTerms, is_consent_owed};
@@ -42,7 +43,7 @@ const PENDING_LIFETIME: Duration = Duration::minutes(10);
 const OPAQUE_VALUE_MAX_BYTES: usize = 512;
 
 /// What a client sent to the authorization endpoint, as read from the query.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Default)]
 pub struct AuthorizationParameters<'a> {
     pub response_type: Option<&'a str>,
     pub client_id: Option<&'a str>,
@@ -111,6 +112,28 @@ impl fmt::Debug for Authorization {
     }
 }
 
+// Written by hand: an identity token hint says who the person is.
+impl fmt::Debug for AuthorizationParameters<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AuthorizationParameters")
+            .field("response_type", &self.response_type)
+            .field("client_id", &self.client_id)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("scope", &self.scope)
+            .field("state", &self.state)
+            .field("nonce", &self.nonce)
+            .field("code_challenge", &self.code_challenge)
+            .field("code_challenge_method", &self.code_challenge_method)
+            .field("prompt", &self.prompt)
+            .field("max_age", &self.max_age)
+            .field("id_token_hint", &self.id_token_hint.map(|_| ".."))
+            .field("caller", &self.caller)
+            .field("known_browsers", &self.known_browsers)
+            .finish()
+    }
+}
+
 impl From<Failure> for AuthorizationRefusal {
     fn from(failure: Failure) -> Self {
         Self::Shown(failure)
@@ -143,7 +166,9 @@ struct ProofAsked {
 }
 
 /// Reads `prompt` and `max_age`. A value this realm does not know, `none`
-/// beside another, or an age that is not a number of seconds is refused.
+/// beside another, or an age that is not a count of seconds is refused. An
+/// age too long to be held is read as the longest that is: no session is
+/// that old, and it asks nothing more of one.
 fn read_proof_asked(prompt: Option<&str>, max_age: Option<&str>) -> Option<ProofAsked> {
     let mut asked = ProofAsked {
         fresh: false,
@@ -170,12 +195,25 @@ fn read_proof_asked(prompt: Option<&str>, max_age: Option<&str>) -> Option<Proof
     }
     // A parameter sent without a value is one that was not sent (RFC 6749, 3.1).
     if let Some(written) = max_age.filter(|written| !written.is_empty()) {
-        if written.len() > 10 || !written.bytes().all(|byte| byte.is_ascii_digit()) {
+        if !written.bytes().all(|byte| byte.is_ascii_digit()) {
             return None;
         }
-        asked.max_age = Some(written.parse().ok()?);
+        // Digits alone fail to parse only past the largest count held.
+        asked.max_age = Some(written.parse().unwrap_or(i64::MAX));
     }
     Some(asked)
+}
+
+/// What a code grants of the scopes asked when the person was shown no page
+/// in this request: all but `offline_access`, which only a consent given on
+/// the page of the request itself grants (OpenID Connect Core 1.0, section
+/// 11). A request that asked it without one is not refused for it.
+pub(crate) fn leave_out_offline_access(scopes: &[String]) -> Vec<String> {
+    scopes
+        .iter()
+        .filter(|scope| *scope != OFFLINE_ACCESS_SCOPE)
+        .cloned()
+        .collect()
 }
 
 /// Percent-encodes a value for a query string.
@@ -555,6 +593,7 @@ pub async fn begin_authorization(
                 browser_secret,
             });
         }
+        let scopes = leave_out_offline_access(&trusted.scopes);
         let location = issue_code(
             app,
             work.as_mut(),
@@ -562,7 +601,7 @@ pub async fn begin_authorization(
                 realm: &trusted.realm,
                 client_id: &trusted.client.client_id,
                 redirect_uri: &trusted.redirect_uri,
-                scopes: &trusted.scopes,
+                scopes: &scopes,
                 state: trusted.state.as_deref(),
                 nonce: trusted.nonce.as_deref(),
                 code_challenge: &trusted.code_challenge,
@@ -823,6 +862,7 @@ pub async fn finish_sign_in(
             device_mark: signed_in.device_mark,
         }));
     }
+    let scopes = leave_out_offline_access(&pending.scopes);
     let location = issue_code(
         app,
         work.as_mut(),
@@ -830,7 +870,7 @@ pub async fn finish_sign_in(
             realm: &realm,
             client_id: &pending.client_id,
             redirect_uri: &pending.redirect_uri,
-            scopes: &pending.scopes,
+            scopes: &scopes,
             state: pending.state.as_deref(),
             nonce: pending.nonce.as_deref(),
             code_challenge: &pending.code_challenge,
@@ -1100,6 +1140,12 @@ mod tests {
             identity["amr"],
             serde_json::json!(["pwd"]),
             "the password alone proved the person"
+        );
+        assert_eq!(identity["acr"], "1", "a password alone is one factor");
+        assert_eq!(access["acr"], "1");
+        assert_eq!(
+            access["auth_time"], identity["auth_time"],
+            "what a resource server weighs is in the access token too"
         );
     }
 
@@ -1734,7 +1780,7 @@ mod tests {
 
     #[test]
     fn a_session_answers_a_hint_only_for_the_person_it_names() {
-        let (app, _storage, _clock, secret) = start(false);
+        let (app, _storage, clock, secret) = start(false);
         let (_, scope) =
             complete(crate::tenancy::resolve::resolve_realm(&app, "acme")).expect("the realm");
         complete(create_person(&app, scope, "bob", PASSWORD));
@@ -1776,6 +1822,12 @@ mod tests {
                 "an access token is no hint"
             );
         }
+        clock.advance(Duration::from_mins(10));
+        assert_eq!(
+            ask_with(&of_ada, Some("none"), Some(&ada)),
+            "granted",
+            "a hint is read long after its token expired: the realm signed it"
+        );
     }
 
     #[test]
@@ -2001,6 +2053,11 @@ mod tests {
         let tokens = complete(grant_token(&scenario.app, "acme", request)).expect("tokens");
         let identity = read_claims(&tokens.id_token.expect("an identity token"));
         assert_eq!(identity["amr"], serde_json::json!(["pwd", "otp", "mfa"]));
+        assert_eq!(
+            identity["acr"], "2",
+            "a code after the password is two factors"
+        );
+        assert_eq!(read_claims(&tokens.access_token)["acr"], "2");
     }
 
     #[test]
@@ -2090,5 +2147,167 @@ mod tests {
         let tokens = complete(grant_token(&scenario.app, "acme", request)).expect("tokens");
         let identity = read_claims(&tokens.id_token.expect("an identity token"));
         assert_eq!(identity["amr"], serde_json::json!(["pwd", "pop", "mfa"]));
+        assert_eq!(
+            identity["acr"], "2",
+            "a key after the password is two factors"
+        );
+    }
+
+    /// Names where an answer leaves the browser.
+    fn read_outcome(answer: Result<Authorization, AuthorizationRefusal>) -> String {
+        match answer {
+            Ok(Authorization::Granted { .. }) => "granted".to_owned(),
+            Ok(Authorization::SignInRequired { .. }) => "sign in".to_owned(),
+            Ok(Authorization::ConsentRequired { .. }) => "consent".to_owned(),
+            Err(AuthorizationRefusal::Returned { location }) => {
+                read_query(&location, "error").expect("an error")
+            }
+            Err(AuthorizationRefusal::Shown(failure)) => panic!("shown: {failure:?}"),
+        }
+    }
+
+    #[test]
+    fn a_session_exactly_as_old_as_max_age_is_asked_again_and_a_longer_age_is_capped() {
+        let (app, _storage, clock, _secret) = start(false);
+        let (_location, ticket) = sign_in_through_the_flow(&app);
+        let challenge = challenge();
+        let ask_with = |max_age: &str| {
+            let parameters = AuthorizationParameters {
+                max_age: Some(max_age),
+                ..ask(&challenge)
+            };
+            read_outcome(complete(begin_authorization(
+                &app,
+                "acme",
+                parameters,
+                Some(&ticket),
+            )))
+        };
+
+        for too_long_to_hold in ["99999999999", "99999999999999999999999999999999"] {
+            assert_eq!(
+                ask_with(too_long_to_hold),
+                "granted",
+                "{too_long_to_hold} is read as the longest age, not refused"
+            );
+        }
+        clock.advance(Duration::from_secs(59));
+        assert_eq!(ask_with("60"), "granted");
+        clock.advance(Duration::from_secs(1));
+        assert_eq!(
+            ask_with("60"),
+            "sign in",
+            "proven sixty seconds ago is not younger than sixty seconds"
+        );
+        assert_eq!(ask_with("61"), "granted");
+    }
+
+    #[test]
+    fn the_parameters_of_a_request_print_no_identity_token_hint() {
+        let parameters = AuthorizationParameters {
+            client_id: Some("webapp"),
+            id_token_hint: Some("eyJhbGciOiJFUzI1NiJ9.e30.c2ln"),
+            ..AuthorizationParameters::default()
+        };
+
+        let printed = format!("{parameters:?}");
+
+        assert!(!printed.contains("eyJ"), "{printed}");
+        assert!(printed.contains("id_token_hint: Some"), "{printed}");
+        assert!(printed.contains("webapp"), "{printed}");
+    }
+
+    #[test]
+    fn a_ticket_of_an_offline_session_proves_nothing_whatever_its_secret() {
+        use crate::login::session::{Session, SessionKind, SessionState};
+        use crate::oidc::scenario::Scenario;
+
+        let scenario = Scenario::start();
+        scenario.register_partner();
+        let offline = scenario.sign_in_and_consent("partner", "openid offline_access");
+        let sid = read_claims(offline.tokens.id_token.as_deref().expect("an identity"))["sid"]
+            .as_str()
+            .and_then(|sid| Uuid::parse_str(sid).ok())
+            .expect("the offline session");
+        // One with a secret the browser would hold, written as no flow does.
+        let secret = vec![4_u8; 32];
+        let mut work =
+            complete(scenario.app.storage.begin(scenario.scope)).expect("a unit of work");
+        let read = complete(work.read_session(sid))
+            .expect("a read")
+            .expect("the offline session");
+        let kept = Session {
+            id: Uuid::from_u128(77),
+            secret_digest: scenario.app.digester.sha256(&secret).to_vec(),
+            state: SessionState::Active,
+            kind: SessionKind::Offline,
+            ..read.session
+        };
+        complete(work.insert_session(&kept)).expect("a session");
+        complete(work.commit()).expect("a commit");
+        let challenge = challenge();
+
+        for ticket in [
+            SessionTicket {
+                session: sid,
+                secret: Secret::new(vec![0; 32]),
+            },
+            SessionTicket {
+                session: kept.id,
+                secret: Secret::new(secret.clone()),
+            },
+        ] {
+            let answer = complete(begin_authorization(
+                &scenario.app,
+                "acme",
+                ask(&challenge),
+                Some(&ticket),
+            ));
+            assert_eq!(read_outcome(answer), "sign in", "{}", ticket.session);
+        }
+    }
+
+    #[test]
+    fn offline_access_is_granted_only_by_a_consent_given_on_the_page_of_the_request() {
+        use crate::oidc::scenario::Scenario;
+
+        let scenario = Scenario::start();
+        let granted_scope = |location: &str| {
+            let code = read_query(location, "code").expect("a code");
+            exchange(&scenario.app, &code, None, VERIFIER, CALLBACK)
+                .expect("tokens")
+                .scope
+        };
+
+        let signed_in = scenario.sign_in("openid offline_access");
+        assert_eq!(
+            signed_in.tokens.scope, "openid",
+            "asked with no page to answer on, it is left out in silence"
+        );
+        assert_eq!(
+            read_claims(&signed_in.tokens.access_token)["sid"],
+            signed_in.ticket.session.to_string(),
+            "the grant lives in the browser session"
+        );
+        let challenge = challenge();
+        let silent = AuthorizationParameters {
+            scope: Some("openid offline_access"),
+            prompt: Some("none"),
+            ..ask(&challenge)
+        };
+        let answered = complete(begin_authorization(
+            &scenario.app,
+            "acme",
+            silent,
+            Some(&signed_in.ticket),
+        ));
+        let Ok(Authorization::Granted { location }) = answered else {
+            panic!("a session answers at once: {answered:?}");
+        };
+        assert_eq!(granted_scope(&location), "openid");
+
+        scenario.register_partner();
+        let allowed = scenario.sign_in_and_consent("partner", "openid offline_access");
+        assert_eq!(allowed.tokens.scope, "openid offline_access");
     }
 }

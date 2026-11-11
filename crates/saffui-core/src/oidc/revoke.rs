@@ -2,10 +2,8 @@
 
 use super::discovery::name_issuer;
 use super::errors::OAuthFailure;
-use super::refresh::describe_family_end;
+use super::refresh::end_grant;
 use crate::app::App;
-use crate::audit::EventKind;
-use crate::audit::append::record_event;
 use crate::clients::authenticate::identify_client;
 use crate::error::{ErrorCode, Failure};
 use crate::secret::Secret;
@@ -13,9 +11,9 @@ use crate::tenancy::resolve::resolve_realm;
 use crate::tokens::verify::verify_access_token;
 
 /// Revokes a refresh token of the calling client, and with it everything
-/// that descends from the same grant. A token the client does not own, or
-/// that nobody knows, is answered like a revoked one: the caller learns
-/// nothing from asking.
+/// that descends from the same grant, its offline session included. A token
+/// the client does not own, or that nobody knows, is answered like a revoked
+/// one: the caller learns nothing from asking.
 ///
 /// # Errors
 ///
@@ -48,21 +46,16 @@ pub async fn revoke_token(
             return Ok(());
         }
         let token = &stored.token;
-        let ended = work
-            .revoke_refresh_family(token.family, app.now())
-            .await
-            .map_err(Failure::from)?;
-        if let Some(ended) = ended {
-            let told = describe_family_end(
-                &client.client_id,
-                token.family,
-                token.person,
-                token.session,
-                "asked",
-                &ended,
-            );
-            record_event(app, work.as_mut(), EventKind::TokenRevoked, told).await?;
-        }
+        end_grant(
+            app,
+            work.as_mut(),
+            &client.client_id,
+            token.family,
+            token.person,
+            token.session,
+            "asked",
+        )
+        .await?;
         work.commit().await.map_err(Failure::from)?;
         return Ok(());
     }
@@ -142,6 +135,40 @@ mod tests {
             1,
             "the family is said revoked once"
         );
+    }
+
+    #[test]
+    fn revoking_an_offline_grant_ends_its_session_and_leaves_the_browser_one() {
+        use crate::login::session::find_live_session;
+
+        let scenario = Scenario::start();
+        scenario.register_partner();
+        let offline = scenario.sign_in_and_consent("partner", "openid offline_access");
+        let after = scenario
+            .refresh_as(
+                "partner",
+                &offline.tokens.refresh_token.expect("a refresh token"),
+                None,
+            )
+            .expect("new tokens");
+        assert!(scenario.is_token_active(&after.access_token));
+
+        let next = after.refresh_token.expect("the next refresh token");
+        assert_eq!(revoke(&scenario, "partner", &next), Ok(()));
+
+        assert!(
+            !scenario.is_token_active(&after.access_token),
+            "a token of the offline session stops answering for the person"
+        );
+        let mut work =
+            complete(scenario.app.storage.begin(scenario.scope)).expect("a unit of work");
+        let browser = complete(find_live_session(
+            &scenario.app,
+            work.as_mut(),
+            &offline.ticket,
+        ))
+        .expect("a read");
+        assert!(browser.is_some(), "the browser session stands");
     }
 
     #[test]

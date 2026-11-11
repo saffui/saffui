@@ -4,22 +4,23 @@ use std::fmt;
 
 use serde::Serialize;
 use serde_json::json;
+use uuid::Uuid;
 
 use super::discovery::name_issuer;
 use super::errors::OAuthFailure;
 use super::pkce::matches_challenge;
-use super::refresh::{describe_family_end, rotate_refresh_token};
+use super::refresh::{end_grant, rotate_refresh_token};
 use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
 use crate::authz::grants::{ROLES_SCOPE, read_role_claims};
 use crate::clients::authenticate::{authenticate_client, identify_client};
-use crate::clients::check_scope_token;
-use crate::consent::{ConsentTerms, is_consent_owed};
+use crate::clients::{Client, check_scope_token};
+use crate::consent::{ConsentHold, ConsentTerms, grant_to_client, is_consent_owed};
 use crate::directory::Person;
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
-use crate::login::session::{Session, read_live_subject};
+use crate::login::session::{Session, open_offline_session, read_live_subject};
 use crate::ports::storage::UnitOfWork;
 use crate::secret::Secret;
 use crate::tenancy::resolve::resolve_realm;
@@ -28,6 +29,13 @@ use crate::tokens::mint::{
     AccessTokenSubject, IdentityTokenSubject, RefreshGrant, issue_refresh_token, mint_access_token,
     mint_identity_token, open_minting_key,
 };
+
+/// The scope by which a client asks to act while the person is away.
+pub const OFFLINE_ACCESS_SCOPE: &str = "offline_access";
+
+/// How many grants a person keeps offline with one client: one for each
+/// device they use it on, and room to spare. Past it, the oldest gives way.
+pub const MOST_OFFLINE_GRANTS_PER_CLIENT: u32 = 10;
 
 /// What a client sent to the token endpoint, already read from the request.
 #[derive(Default)]
@@ -230,20 +238,11 @@ async fn exchange_code(
         .await?
         .filter(|(_, person)| person.id == code.person)
         .ok_or_else(invalid)?;
-    // Held until the commit, before anything is locked: a withdrawal that
-    // comes meanwhile waits, then revokes the family this opens. One that
-    // came first left nothing to hold, and the code obtains nothing.
-    if client.requires_consent {
-        let terms = ConsentTerms {
-            requires_consent: true,
-            allowed: work
-                .hold_consent(person.id, &client.client_id)
-                .await
-                .map_err(Failure::from)?,
-        };
-        if is_consent_owed(&terms, false, &code.scopes) {
-            return Err(invalid());
-        }
+    // Whatever the code carries, a client that requires no consent is
+    // granted nothing offline.
+    let scopes = grant_to_client(&client, &code.scopes);
+    if !hold_consent_for(work.as_mut(), &client, person.id, &scopes).await? {
+        return Err(invalid());
     }
 
     // Presented again meanwhile, the code obtains nothing. Bound before
@@ -257,33 +256,102 @@ async fn exchange_code(
     if !bound {
         return Err(invalid());
     }
+    let (offline, given_way) =
+        open_offline_grant(app, work.as_mut(), &client.client_id, &scopes, &session).await?;
+    let held_in = offline.as_ref().unwrap_or(&session);
     let issuer = name_issuer(&app.settings, realm_name);
     let granted = Granted {
         issuer: &issuer,
         client_id: &client.client_id,
-        session: &session,
+        session: held_in,
         person: &person,
-        scopes: &code.scopes,
+        scopes: &scopes,
         nonce: code.nonce.as_deref(),
         family: RefreshGrant {
             family,
             client_id: &client.client_id,
-            session: &session,
-            scopes: &code.scopes,
+            session: held_in,
+            scopes: &scopes,
         },
     };
     let response = answer_for_person(app, work.as_mut(), granted).await?;
+    // One event, the chain locked once: an offline session opened here is
+    // said here, with the session it came from and those it took the place of.
+    let given_way: Vec<String> = given_way.iter().map(Uuid::to_string).collect();
     let told = json!({
         "client_id": client.client_id,
         "family": family.to_string(),
+        "from_session_id": offline.as_ref().map(|_| session.id.to_string()),
         "grant": "authorization_code",
+        "offline_sessions_ended": given_way,
         "person_id": person.id.to_string(),
         "scope": response.scope,
-        "session_id": session.id.to_string(),
+        "session_id": held_in.id.to_string(),
+        "session_kind": held_in.kind.name(),
     });
     record_event(app, work.as_mut(), EventKind::TokenIssued, told).await?;
     work.commit().await.map_err(Failure::from)?;
     Ok(response)
+}
+
+/// Holds what the person allowed a client that requires consent, until the
+/// commit and before anything is locked: a withdrawal that comes meanwhile
+/// waits, then revokes the family this opens; one that came first left
+/// nothing to hold. An exchange that opens an offline grant holds it alone:
+/// two of them for one person take turns, and the second counts the grant of
+/// the first against the bound. Answers whether every scope was allowed.
+async fn hold_consent_for(
+    work: &mut dyn UnitOfWork,
+    client: &Client,
+    person: Uuid,
+    scopes: &[String],
+) -> Result<bool, Failure> {
+    if !client.requires_consent {
+        return Ok(true);
+    }
+    let hold = if scopes.iter().any(|scope| scope == OFFLINE_ACCESS_SCOPE) {
+        ConsentHold::Exclusive
+    } else {
+        ConsentHold::Shared
+    };
+    let terms = ConsentTerms {
+        requires_consent: true,
+        allowed: work.hold_consent(person, &client.client_id, hold).await?,
+    };
+    Ok(!is_consent_owed(&terms, false, scopes))
+}
+
+/// Opens the offline session a grant of `client_id` lives in, when it is
+/// granted `offline_access`: only when the person allowed it on the page of
+/// its request, to a client that requires consent. Opened from the session
+/// they signed in with, it holds the grant from its first token, and the end
+/// of that session leaves it standing. The oldest of theirs with this client
+/// past the bound gives way first, with its tokens: the sessions before the
+/// tokens, as everywhere. Returns it, and those that gave way.
+async fn open_offline_grant(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    client_id: &str,
+    scopes: &[String],
+    from: &Session,
+) -> Result<(Option<Session>, Vec<Uuid>), Failure> {
+    if !scopes.iter().any(|scope| scope == OFFLINE_ACCESS_SCOPE) {
+        return Ok((None, Vec::new()));
+    }
+    let given_way = work
+        .end_oldest_offline_sessions(
+            from.person,
+            client_id,
+            MOST_OFFLINE_GRANTS_PER_CLIENT - 1,
+            app.now(),
+        )
+        .await?;
+    if !given_way.is_empty() {
+        work.revoke_refresh_tokens_of_sessions(&given_way, app.now())
+            .await?;
+    }
+    let opened = open_offline_session(app, work, from).await?;
+    Ok((Some(opened), given_way))
 }
 
 /// A code presented after it was spent was copied by someone: the refresh
@@ -303,18 +371,16 @@ async fn take_back_what_a_code_obtained(
     let Some(family) = replayed.family else {
         return Ok(());
     };
-    if let Some(ended) = work.revoke_refresh_family(family, now).await? {
-        let told = describe_family_end(
-            client_id,
-            family,
-            replayed.person,
-            replayed.session,
-            "code_replayed",
-            &ended,
-        );
-        record_event(app, work, EventKind::TokenRevoked, told).await?;
-    }
-    Ok(())
+    end_grant(
+        app,
+        work,
+        client_id,
+        family,
+        replayed.person,
+        replayed.session,
+        "code_replayed",
+    )
+    .await
 }
 
 pub(super) struct Granted<'a> {
@@ -354,7 +420,7 @@ pub(super) async fn answer_for_person(
             subject: &subject,
             client_id: granted.client_id,
             scopes: granted.scopes,
-            session: Some(granted.session.id),
+            session: Some(granted.session),
             roles: roles.as_ref(),
         },
     )?;
@@ -365,9 +431,7 @@ pub(super) async fn answer_for_person(
             client_id: granted.client_id,
             scopes: granted.scopes,
             nonce: granted.nonce,
-            session: granted.session.id,
-            authenticated_at: granted.session.authenticated_at,
-            methods: &granted.session.methods,
+            session: granted.session,
         };
         Some(mint_identity_token(app, &key, identity)?)
     } else {
@@ -637,6 +701,89 @@ mod tests {
         assert_eq!(
             refuse(&app, "nowhere", missing_code()).0,
             OAuthError::InvalidRequest
+        );
+    }
+
+    #[test]
+    fn a_code_presented_again_ends_the_offline_session_its_exchange_opened() {
+        use crate::oidc::scenario::{CALLBACK, Scenario};
+
+        let scenario = Scenario::start();
+        scenario.register_partner();
+        let granted = scenario.sign_in_and_consent("partner", "openid offline_access");
+        assert!(scenario.is_token_active(&granted.tokens.access_token));
+        let again = TokenRequest {
+            grant_type: Some("authorization_code"),
+            client_id: Some("partner"),
+            code: Some(&granted.code),
+            redirect_uri: Some(CALLBACK),
+            code_verifier: Some("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            ..TokenRequest::default()
+        };
+
+        let replayed = complete(grant_token(&scenario.app, "acme", again)).map(|_| ());
+
+        assert_eq!(
+            replayed.map_err(|failure| failure.error),
+            Err(OAuthError::InvalidGrant)
+        );
+        assert!(
+            !scenario.is_token_active(&granted.tokens.access_token),
+            "the offline session ended with what the code obtained"
+        );
+    }
+
+    #[test]
+    fn a_code_that_carries_offline_access_for_a_client_that_requires_no_consent_opens_nothing_offline()
+     {
+        use base64::Engine as _;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+        use crate::oidc::code::AuthorizationCode;
+        use crate::oidc::scenario::{CALLBACK, Scenario, VERIFIER};
+
+        let scenario = Scenario::start();
+        let signed_in = scenario.sign_in("openid");
+        let ada = scenario.find_ada();
+        let now = scenario.app.now();
+        let code = "a-code-no-page-gave";
+        // Written as no flow writes it: the page leaves the scope out first.
+        let mut work =
+            complete(scenario.app.storage.begin(scenario.scope)).expect("a unit of work");
+        complete(work.insert_authorization_code(&AuthorizationCode {
+            code_digest: scenario.app.digester.sha256(code.as_bytes()).to_vec(),
+            client_id: "webapp".to_owned(),
+            person: ada,
+            session: signed_in.ticket.session,
+            redirect_uri: CALLBACK.to_owned(),
+            scopes: vec!["openid".to_owned(), "offline_access".to_owned()],
+            nonce: None,
+            code_challenge:
+                URL_SAFE_NO_PAD.encode(scenario.app.digester.sha256(VERIFIER.as_bytes())),
+            authenticated_at: now,
+            expires_at: now + time::Duration::minutes(1),
+        }))
+        .expect("a code");
+        complete(work.commit()).expect("a commit");
+
+        let tokens = scenario.exchange_as("webapp", code);
+
+        assert_eq!(
+            tokens.scope, "openid",
+            "the scope is left out at the exchange too"
+        );
+        let issued = scenario
+            .storage
+            .read_audit_envelopes(scenario.scope.realm())
+            .into_iter()
+            .rev()
+            .find(|event| event["kind"] == "token.issued")
+            .expect("the exchange");
+        assert_eq!(issued["payload"]["session_kind"], "browser", "{issued}");
+        assert_eq!(
+            issued["payload"]["session_id"],
+            signed_in.ticket.session.to_string(),
+            "{issued}"
         );
     }
 

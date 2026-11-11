@@ -684,19 +684,22 @@ async fn the_migrations_go_to_public_whatever_schema_bears_the_name_of_the_runne
 
 /// A migration that waits for a table behind a long transaction keeps every
 /// table it locked before closed to writes as long, up to its bound: each
-/// migration of the consent blocks writes to one of the tables served before
-/// them, at most. Some migrations before them block two or more.
+/// migration from the consent on blocks writes to one of the tables served
+/// before its tranche, at most. Some migrations before them block two or more.
 #[tokio::test]
-async fn no_migration_of_the_consent_blocks_writes_to_two_tables_served_before_it() {
+async fn no_migration_from_the_consent_on_blocks_writes_to_two_tables_served_before_it() {
     let blocking_writes: &[&str] = &[
         "ShareLock",
         "ShareRowExclusiveLock",
         "ExclusiveLock",
         "AccessExclusiveLock",
     ];
+    // The first migration of each tranche: the tables a tranche makes are
+    // served by no node before it ships.
+    let tranches = ["0031_consent", "0034_offline_sessions"];
     let first = EMBEDDED
         .iter()
-        .position(|migration| migration.name == "0031_consent")
+        .position(|migration| migration.name == tranches[0])
         .expect("the first migration of the consent");
     let database = TestDatabase::create(&[]).await;
     let owner = database.plan(OWNER);
@@ -705,29 +708,25 @@ async fn no_migration_of_the_consent_blocks_writes_to_two_tables_served_before_i
         .batch_execute("SET search_path = public")
         .await
         .expect("the schema of the migrations");
-    apply_pending(&owner, &EMBEDDED[..first])
-        .await
-        .expect("the migrations before the consent");
-    let served: Vec<String> = client
-        .query(
-            "SELECT relname::text FROM pg_class
-             WHERE relkind IN ('r', 'p') AND relnamespace = 'public'::regnamespace",
-            &[],
-        )
-        .await
-        .expect("the tables")
-        .iter()
-        .map(|row| row.get(0))
-        .collect();
 
-    let consent = EMBEDDED
-        .iter()
-        .enumerate()
-        .filter(|(_, migration)| migration.name.contains("consent"));
-    for (applied, migration) in consent {
+    let mut served: Vec<String> = Vec::new();
+    for (applied, migration) in EMBEDDED.iter().enumerate().skip(first) {
         apply_pending(&owner, &EMBEDDED[..applied])
             .await
             .expect("the migrations before it");
+        if tranches.contains(&migration.name) {
+            served = client
+                .query(
+                    "SELECT relname::text FROM pg_class
+                     WHERE relkind IN ('r', 'p') AND relnamespace = 'public'::regnamespace",
+                    &[],
+                )
+                .await
+                .expect("the tables")
+                .iter()
+                .map(|row| row.get(0))
+                .collect();
+        }
         client.batch_execute("BEGIN").await.expect("a transaction");
         client
             .batch_execute(migration.sql)
@@ -757,43 +756,48 @@ async fn no_migration_of_the_consent_blocks_writes_to_two_tables_served_before_i
     }
 }
 
-/// The rule of consent binds the rows of clients written once it is set,
+/// A rule set on a table that serves binds the rows written once it is set,
 /// without scanning those already there under the lock that sets it: they
 /// are checked by the migration after, under a lock that blocks no write.
 #[tokio::test]
-async fn the_rule_of_consent_on_clients_is_checked_apart_from_the_lock_that_sets_it() {
-    let set_at = EMBEDDED
-        .iter()
-        .position(|migration| migration.name == "0032_consent_clients")
-        .expect("the migration that sets the rule");
-    let database = TestDatabase::create(&[]).await;
-    let owner = database.plan(OWNER);
-    let read_validated = async || -> bool {
-        owner
-            .connect_directly()
-            .await
-            .expect("a connection")
-            .query_one(
-                "SELECT convalidated FROM pg_constraint
-                 WHERE conname = 'clients_consent_for_applications'",
-                &[],
-            )
-            .await
-            .expect("the rule")
-            .get(0)
-    };
+async fn a_rule_set_on_a_served_table_is_checked_apart_from_the_lock_that_sets_it() {
+    for (set_by, rule) in [
+        ("0032_consent_clients", "clients_consent_for_applications"),
+        ("0034_offline_sessions", "sessions_kind_known"),
+        ("0034_offline_sessions", "sessions_kind_secret"),
+    ] {
+        let set_at = EMBEDDED
+            .iter()
+            .position(|migration| migration.name == set_by)
+            .expect("the migration that sets the rule");
+        let database = TestDatabase::create(&[]).await;
+        let owner = database.plan(OWNER);
+        let read_validated = async || -> bool {
+            owner
+                .connect_directly()
+                .await
+                .expect("a connection")
+                .query_one(
+                    "SELECT convalidated FROM pg_constraint WHERE conname = $1",
+                    &[&rule],
+                )
+                .await
+                .expect("the rule")
+                .get(0)
+        };
 
-    apply_pending(&owner, &EMBEDDED[..=set_at])
-        .await
-        .expect("the migrations up to the rule");
-    assert!(
-        !read_validated().await,
-        "set without checking the rows there"
-    );
-    apply_pending(&owner, EMBEDDED)
-        .await
-        .expect("the migrations after it");
-    assert!(read_validated().await, "checked after");
+        apply_pending(&owner, &EMBEDDED[..=set_at])
+            .await
+            .expect("the migrations up to the rule");
+        assert!(
+            !read_validated().await,
+            "{rule} set without checking the rows there"
+        );
+        apply_pending(&owner, &EMBEDDED[..=set_at + 1])
+            .await
+            .expect("the migration after it");
+        assert!(read_validated().await, "{rule} checked by the next one");
+    }
 }
 
 #[tokio::test]

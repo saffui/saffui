@@ -3,6 +3,8 @@
 
 use serde::Serialize;
 
+use super::token::OFFLINE_ACCESS_SCOPE;
+use crate::login::assurance::Assurance;
 use crate::ports::crypto::SignatureAlgorithm;
 use crate::settings::Settings;
 use crate::tenancy::RealmName;
@@ -30,6 +32,8 @@ pub struct ProviderMetadata {
     pub token_endpoint_auth_methods_supported: Vec<&'static str>,
     pub code_challenge_methods_supported: Vec<&'static str>,
     pub scopes_supported: Vec<&'static str>,
+    /// What `acr` may say: the levels a sign-in can reach.
+    pub acr_values_supported: Vec<&'static str>,
     pub authorization_response_iss_parameter_supported: bool,
     pub response_modes_supported: Vec<&'static str>,
     /// Three parameters whose absence from this document would mean yes.
@@ -68,7 +72,8 @@ pub fn describe_provider(settings: &Settings, realm: &RealmName) -> ProviderMeta
             "none",
         ],
         code_challenge_methods_supported: vec!["S256"],
-        scopes_supported: vec!["openid", "profile", "email", "roles"],
+        scopes_supported: vec!["openid", "profile", "email", "roles", OFFLINE_ACCESS_SCOPE],
+        acr_values_supported: Assurance::ALL.map(Assurance::name).to_vec(),
         authorization_response_iss_parameter_supported: true,
         response_modes_supported: vec!["query"],
         request_parameter_supported: false,
@@ -127,6 +132,8 @@ mod tests {
             ["authorization_code", "client_credentials", "refresh_token"]
         );
         assert_eq!(document.code_challenge_methods_supported, ["S256"]);
+        assert_eq!(document.acr_values_supported, ["1", "2"]);
+        assert!(document.scopes_supported.contains(&"offline_access"));
         assert!(
             !document.request_parameter_supported && !document.claims_parameter_supported,
             "an absent member would mean yes"

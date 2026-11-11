@@ -762,6 +762,8 @@ pub(crate) mod sessions {
     pub(crate) const EXPIRES_AT: Column = Column("expires_at");
     /// ARRAY
     pub(crate) const METHODS: Column = Column("methods");
+    /// text
+    pub(crate) const KIND: Column = Column("kind");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -772,6 +774,7 @@ pub(crate) mod sessions {
         AUTHENTICATED_AT,
         EXPIRES_AT,
         METHODS,
+        KIND,
     ];
 }
 

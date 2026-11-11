@@ -462,7 +462,8 @@ impl ClosedSessions {
 
 /// Ends the sessions of a person the password alone opened, but `kept`,
 /// with their refresh tokens: once a factor is set up, the password alone
-/// would not open them. Two statements, whatever their number.
+/// would not open them. An offline grant the password alone proved ends too,
+/// with its session. Two statements, whatever their number.
 async fn close_sessions_without_factor(
     app: &App,
     work: &mut dyn UnitOfWork,

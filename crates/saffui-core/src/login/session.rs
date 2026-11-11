@@ -21,6 +21,9 @@ use crate::secret::Secret;
 /// How long a session lasts, whatever is done with it.
 pub const SESSION_LIFETIME: Duration = Duration::hours(12);
 
+/// How long an offline session lasts, whatever is done with it.
+pub const OFFLINE_SESSION_LIFETIME: Duration = Duration::days(90);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionState {
     Active,
@@ -41,6 +44,32 @@ impl SessionState {
         [Self::Active, Self::Ended]
             .into_iter()
             .find(|state| state.name() == name)
+    }
+}
+
+/// Where a session lives: in a browser, behind its cookie, or offline, for
+/// the one grant of a client allowed to act while the person is away.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionKind {
+    Browser,
+    /// No cookie proves it: only the refresh tokens of its grant reach it.
+    Offline,
+}
+
+impl SessionKind {
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Browser => "browser",
+            Self::Offline => "offline",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        [Self::Browser, Self::Offline]
+            .into_iter()
+            .find(|kind| kind.name() == name)
     }
 }
 
@@ -79,6 +108,7 @@ pub struct Session {
     pub person: Uuid,
     pub secret_digest: Vec<u8>,
     pub state: SessionState,
+    pub kind: SessionKind,
     /// What the person proved themselves with, in the order they did.
     pub methods: Vec<AuthenticationMethod>,
     /// When the person proved who they are. Never moved by later requests.
@@ -149,6 +179,7 @@ pub async fn open_session(
         person,
         secret_digest: app.digester.sha256(&secret).to_vec(),
         state: SessionState::Active,
+        kind: SessionKind::Browser,
         methods: methods.to_vec(),
         authenticated_at: now,
         expires_at: now + SESSION_LIFETIME,
@@ -159,6 +190,28 @@ pub async fn open_session(
         secret: Secret::new(secret),
     };
     Ok((session, ticket))
+}
+
+/// Opens the offline session of one grant, from the session the person
+/// signed in with. It keeps what they proved and when: it never says more
+/// than the sign-in behind it. Its digest is empty, and nothing hashes to it.
+pub(crate) async fn open_offline_session(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    from: &Session,
+) -> Result<Session, Failure> {
+    let session = Session {
+        id: mint_id(app)?,
+        person: from.person,
+        secret_digest: Vec::new(),
+        state: SessionState::Active,
+        kind: SessionKind::Offline,
+        methods: from.methods.clone(),
+        authenticated_at: from.authenticated_at,
+        expires_at: app.now() + OFFLINE_SESSION_LIFETIME,
+    };
+    work.insert_session(&session).await?;
+    Ok(session)
 }
 
 /// As [`find_live_session`], with whether its person holds a factor: what
@@ -177,6 +230,7 @@ pub(crate) async fn read_proven_session(
     let proven = app.digester.equal_in_constant_time(&presented, expected);
     Ok(read.filter(|known| {
         proven
+            && known.session.kind == SessionKind::Browser
             && known.session.state == SessionState::Active
             && known.session.expires_at > app.now()
     }))

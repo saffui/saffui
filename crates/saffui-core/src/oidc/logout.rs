@@ -4,6 +4,8 @@
 //! arriving. The session ends at once only when the request carries an
 //! identity token of that very session. Otherwise the person is asked.
 
+use std::fmt;
+
 use super::authorize::write_query_value;
 use super::discovery::name_issuer;
 use crate::app::App;
@@ -16,11 +18,23 @@ use crate::tokens::verify::read_identity_hint;
 const STATE_MAX_BYTES: usize = 512;
 
 /// What a client sent to the end-session endpoint.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Default)]
 pub struct LogoutParameters<'a> {
     pub id_token_hint: Option<&'a str>,
     pub post_logout_redirect_uri: Option<&'a str>,
     pub state: Option<&'a str>,
+}
+
+// Written by hand: an identity token hint says who the person is.
+impl fmt::Debug for LogoutParameters<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LogoutParameters")
+            .field("id_token_hint", &self.id_token_hint.map(|_| ".."))
+            .field("post_logout_redirect_uri", &self.post_logout_redirect_uri)
+            .field("state", &self.state)
+            .finish()
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -301,5 +315,14 @@ mod tests {
             1,
             "{kinds:?}"
         );
+    }
+
+    #[test]
+    fn the_parameters_of_a_sign_out_print_no_identity_token_hint() {
+        let printed = format!("{:?}", hint("eyJhbGciOiJFUzI1NiJ9.e30.c2ln", Some(GOODBYE)));
+
+        assert!(!printed.contains("eyJ"), "{printed}");
+        assert!(printed.contains("id_token_hint: Some"), "{printed}");
+        assert!(printed.contains(GOODBYE), "{printed}");
     }
 }

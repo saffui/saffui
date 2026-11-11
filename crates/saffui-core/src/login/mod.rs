@@ -1,6 +1,7 @@
 //! Signing a person in: the password, the brake on guesses, and the session
 //! that remembers the answer.
 
+pub mod assurance;
 pub mod device;
 pub mod enroll;
 pub mod fairness;

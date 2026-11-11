@@ -1,6 +1,7 @@
 //! The consents of a person, as they and the administrators of the realm
 //! see them. Withdrawn, a consent takes with it what the client holds in the
-//! person's name: its refresh tokens are revoked in the same unit of work.
+//! person's name: its refresh tokens are revoked in the same unit of work,
+//! and the offline sessions they lived in end.
 
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -60,11 +61,17 @@ async fn withdraw_consent(
         .revoke_refresh_families_of_client(person, client_id, app.now(), MOST_NAMED_FAMILIES)
         .await?;
     let named: Vec<String> = revoked.named.iter().map(Uuid::to_string).collect();
+    let offline: Vec<String> = revoked
+        .offline_sessions
+        .iter()
+        .map(Uuid::to_string)
+        .collect();
     // The event comes last: the head of the chain stays locked until the commit.
     let withdrawn = json!({
         "actor": actor,
         "client_id": client_id,
         "person_id": person.to_string(),
+        "offline_sessions_ended": offline,
         "refresh_families": named,
         "refresh_families_revoked": revoked.families,
         "refresh_tokens_revoked": revoked.tokens,
@@ -170,6 +177,18 @@ mod tests {
     use crate::testkit::fixtures::{Application, register_application};
     use crate::tokens::store::RefreshToken;
 
+    /// The session an access token names.
+    fn read_session_of_token(token: &str) -> String {
+        use base64::Engine as _;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+        let payload = token.split('.').nth(1).expect("a compact token");
+        let claims: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).expect("base64url"))
+                .expect("claims");
+        claims["sid"].as_str().expect("a session").to_owned()
+    }
+
     #[test]
     fn a_withdrawal_is_one_entry_that_counts_every_family_and_names_a_bounded_few() {
         let scenario = Scenario::start();
@@ -234,6 +253,51 @@ mod tests {
             payload["refresh_families"].as_array().map(Vec::len),
             usize::try_from(MOST_NAMED_FAMILIES).ok(),
             "the first named, the rest counted"
+        );
+    }
+
+    #[test]
+    fn a_withdrawal_ends_the_offline_grant_of_its_client() {
+        use super::withdraw_my_consent;
+        use crate::oidc::errors::OAuthError;
+
+        let scenario = Scenario::start();
+        scenario.register_partner();
+        let granted = scenario.sign_in_and_consent("partner", "openid offline_access");
+        assert_eq!(granted.tokens.scope, "openid offline_access");
+        let refresh_token = granted.tokens.refresh_token.expect("a refresh token");
+
+        complete(withdraw_my_consent(
+            &scenario.app,
+            "acme",
+            Some(&granted.ticket),
+            "partner",
+        ))
+        .expect("a withdrawal");
+
+        assert_eq!(
+            scenario
+                .refresh_as("partner", &refresh_token, None)
+                .map(|tokens| tokens.scope),
+            Err(OAuthError::InvalidGrant),
+            "the grant ends with the consent"
+        );
+        assert!(
+            !scenario.is_token_active(&granted.tokens.access_token),
+            "its offline session ended: its tokens answer for nobody"
+        );
+        let withdrawn = scenario
+            .storage
+            .read_audit_envelopes(scenario.scope.realm())
+            .into_iter()
+            .rev()
+            .find(|event| event["kind"] == "consent.withdrawn")
+            .expect("the withdrawal");
+        let offline = read_session_of_token(&granted.tokens.access_token);
+        assert_eq!(
+            withdrawn["payload"]["offline_sessions_ended"],
+            serde_json::json!([offline]),
+            "{withdrawn}"
         );
     }
 }

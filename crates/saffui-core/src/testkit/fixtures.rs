@@ -130,8 +130,8 @@ pub struct Application<'a> {
     pub requires_consent: bool,
 }
 
-/// Registers an application allowed the scopes `openid`, `profile`, `email`
-/// and `roles`, and returns its secret unless it is public.
+/// Registers an application allowed the scopes `openid`, `profile`, `email`,
+/// `roles` and `offline_access`, and returns its secret unless it is public.
 ///
 /// # Panics
 ///
@@ -143,7 +143,7 @@ pub async fn register_application(
 ) -> Option<Secret> {
     use crate::clients::register::{NewClient, register_client};
 
-    let scopes = ["openid", "profile", "email", "roles"].map(str::to_owned);
+    let scopes = ["openid", "profile", "email", "roles", "offline_access"].map(str::to_owned);
     let callbacks = [wanted.redirect_uri.to_owned()];
     let goodbyes: Vec<String> = wanted
         .post_logout_redirect_uri
@@ -290,6 +290,113 @@ pub async fn run_code_flow(app: &App, flow: CodeFlow<'_>) -> SignedInApplication
     SignedInApplication {
         tokens,
         ticket: signed_in.ticket,
+        code,
+    }
+}
+
+/// The code verifier of the consented flows.
+const CONSENTED_VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+
+/// Runs a code flow up to its code, in which the client asks the person to
+/// consent again (`prompt=consent`) and the person allows it on the page.
+/// Returns the code, and the ticket of the session they signed in with.
+///
+/// # Panics
+///
+/// Panics when a step is refused.
+pub async fn allow_consented_code(
+    app: &App,
+    flow: &CodeFlow<'_>,
+) -> (String, crate::login::session::SessionTicket) {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+    use crate::consent::answer::{ConsentDecision, answer_consent};
+    use crate::oidc::authorize::{
+        Authorization, AuthorizationParameters, SignInAnswer, SignInStep, TypedSignIn,
+        begin_authorization, finish_sign_in,
+    };
+
+    let challenge = URL_SAFE_NO_PAD.encode(app.digester.sha256(CONSENTED_VERIFIER.as_bytes()));
+    let parameters = AuthorizationParameters {
+        response_type: Some("code"),
+        client_id: Some(flow.client_id),
+        redirect_uri: Some(flow.redirect_uri),
+        scope: Some(flow.scope),
+        code_challenge: Some(&challenge),
+        code_challenge_method: Some("S256"),
+        prompt: Some("consent"),
+        ..AuthorizationParameters::default()
+    };
+    let begun = begin_authorization(app, flow.realm, parameters, None)
+        .await
+        .expect("a pending request");
+    let Authorization::SignInRequired {
+        request,
+        browser_secret,
+    } = begun
+    else {
+        panic!("a person without a session must sign in: {begun:?}");
+    };
+    let typed = TypedSignIn {
+        answer: SignInAnswer::Password {
+            name: flow.username,
+            password: Secret::new(flow.password.as_bytes().to_vec()),
+        },
+        caller: None,
+        known_browsers: &[],
+    };
+    let step = finish_sign_in(app, flow.realm, request, &browser_secret, typed)
+        .await
+        .expect("a signed-in person");
+    let SignInStep::ConsentRequired(signed_in) = step else {
+        panic!("asked to consent again, the person answers on the page: {step:?}");
+    };
+    let location = answer_consent(
+        app,
+        flow.realm,
+        request,
+        &browser_secret,
+        Some(&signed_in.ticket),
+        ConsentDecision::Allow,
+    )
+    .await
+    .expect("an allowed client");
+    let code = location
+        .split_once("code=")
+        .and_then(|(_, rest)| rest.split('&').next())
+        .expect("a code in the redirection")
+        .to_owned();
+    (code, signed_in.ticket)
+}
+
+/// Runs a whole code flow in which the client asks the person to consent
+/// again (`prompt=consent`), and the person allows it on the page.
+///
+/// # Panics
+///
+/// Panics when a step is refused.
+pub async fn run_consented_code_flow(app: &App, flow: CodeFlow<'_>) -> SignedInApplication {
+    use crate::oidc::token::{TokenRequest, grant_token};
+
+    let (code, ticket) = allow_consented_code(app, &flow).await;
+    let exchange = TokenRequest {
+        grant_type: Some("authorization_code"),
+        client_id: Some(flow.client_id),
+        client_secret: flow
+            .client_secret
+            .map(|secret| Secret::new(secret.expose().to_vec())),
+        code: Some(&code),
+        redirect_uri: Some(flow.redirect_uri),
+        code_verifier: Some(CONSENTED_VERIFIER),
+        ..TokenRequest::default()
+    };
+    let tokens = grant_token(app, flow.realm, exchange)
+        .await
+        .expect("tokens for the code");
+    SignedInApplication {
+        tokens,
+        ticket,
         code,
     }
 }

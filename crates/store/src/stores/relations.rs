@@ -458,7 +458,7 @@ mod tests {
         let plan: Vec<String> = plan.iter().map(|row| row.get(0)).collect();
         assert!(
             plan.iter()
-                .any(|line| line.contains("(actual rows=100 loops=1)")),
+                .any(|line| read_actual_rows(line) == Some(("100", "1"))),
             "the hundred relations of the four kinds are found: {plan:#?}"
         );
         for line in plan
@@ -498,6 +498,31 @@ mod tests {
             plan.iter().any(|line| line.contains("hashed SubPlan")),
             "the kinds are a filter, each relation read once: {plan:#?}"
         );
+    }
+
+    /// The rows and loops of a node of a plan. Postgres 18 writes the rows
+    /// with two decimals (`rows=100.00`), earlier versions without.
+    fn read_actual_rows(line: &str) -> Option<(&str, &str)> {
+        let (rows, rest) = line.split_once("(actual rows=")?.1.split_once(' ')?;
+        let loops = rest.strip_prefix("loops=")?.split_once(')')?.0;
+        Some((rows.strip_suffix(".00").unwrap_or(rows), loops))
+    }
+
+    #[test]
+    fn the_rows_of_a_node_are_read_as_every_version_writes_them() {
+        assert_eq!(
+            read_actual_rows("  ->  Result (actual rows=100 loops=1)"),
+            Some(("100", "1"))
+        );
+        assert_eq!(
+            read_actual_rows("  ->  Result (actual rows=100.00 loops=1)"),
+            Some(("100", "1"))
+        );
+        assert_eq!(
+            read_actual_rows("Index Scan on relation_tuples kept (actual rows=33.33 loops=3)"),
+            Some(("33.33", "3"))
+        );
+        assert_eq!(read_actual_rows("  Buffers: shared hit=28"), None);
     }
 
     /// The table refuses a compiled form past twice what the product writes,

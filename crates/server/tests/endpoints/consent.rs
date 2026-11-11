@@ -149,7 +149,7 @@ async fn a_person_who_signed_in_is_asked_on_a_page_and_sent_back_with_a_code_onc
     let page = get(&product, &page_path, &[(COOKIE.as_str(), &both)]).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     assert!(
-        page.body.contains("Partner &lt;b&gt;Inc&lt;/b&gt;") && !page.body.contains("<b>Inc"),
+        page.body.contains("Partner &#60;b&#62;Inc&#60;/b&#62;") && !page.body.contains("<b>Inc"),
         "the name is text: {}",
         page.body
     );
@@ -356,7 +356,7 @@ async fn a_person_withdraws_on_their_account_page_what_they_allowed() {
     let listed = get(&product, CONSENTS, &cookie).await;
     assert_eq!(listed.status, StatusCode::OK, "{}", listed.body);
     assert!(
-        listed.body.contains("Partner &lt;b&gt;Inc&lt;/b&gt;"),
+        listed.body.contains("Partner &#60;b&#62;Inc&#60;/b&#62;"),
         "{}",
         listed.body
     );

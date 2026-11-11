@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{%- block body -%}
+{%- match shown -%}
+    {%- when Shown::SignedOut -%}
+        <h1>Signed out</h1>{# -#}
+        <p>You are signed out.</p>
+    {%- when Shown::Confirmation with { realm } -%}
+        <h1>Sign out</h1>{# -#}
+        <p>Do you want to sign out?</p>{# -#}
+        <form method="post" action="/realms/{{ realm }}/oauth2/logout">{# -#}
+            <button type="submit">Sign out</button>{# -#}
+        </form>
+{%- endmatch -%}
+{%- endblock %}

@@ -4,6 +4,7 @@
 use actix_web::http::StatusCode;
 use actix_web::http::header::{CACHE_CONTROL, LOCATION, SET_COOKIE};
 use actix_web::{HttpRequest, HttpResponse, get, post, web};
+use askama::Template;
 use saffui_core::app::App as Product;
 use saffui_core::error::{ErrorCode, Failure};
 use saffui_core::login::session::SessionTicket;
@@ -11,7 +12,7 @@ use saffui_core::oidc::logout::{Logout, LogoutParameters, begin_logout, confirm_
 use serde::Deserialize;
 
 use crate::api::rest::endpoints::login::page::{
-    is_posted_from_elsewhere, is_realm_label, render_page, render_refusal,
+    Frame, is_posted_from_elsewhere, is_realm_label, render_page, render_refusal,
 };
 use crate::extract::cookies::{is_served_over_tls, name_session_cookie, read_cookie, write_cookie};
 
@@ -20,6 +21,22 @@ pub struct LogoutQuery {
     id_token_hint: Option<String>,
     post_logout_redirect_uri: Option<String>,
     state: Option<String>,
+}
+
+/// The page that signs a person out, or asks them first.
+#[derive(Template)]
+#[template(path = "oidc/logout.html")]
+struct LogoutPage<'a> {
+    frame: Frame,
+    shown: Shown<'a>,
+}
+
+enum Shown<'a> {
+    SignedOut,
+    /// The question, and the form that answers it.
+    Confirmation {
+        realm: &'a str,
+    },
 }
 
 /// The `Set-Cookie` that takes the session cookie back from the browser.
@@ -36,11 +53,10 @@ fn read_ticket(product: &Product, realm: &str, http: &HttpRequest) -> Option<Ses
 }
 
 fn render_signed_out(product: &Product, realm: &str) -> HttpResponse {
-    let mut page = render_page(
-        product,
-        StatusCode::OK,
-        "<h1>Signed out</h1><p>You are signed out.</p>",
-    );
+    let mut page = render_page(product, StatusCode::OK, |frame| LogoutPage {
+        frame,
+        shown: Shown::SignedOut,
+    });
     if let Some(Ok(cookie)) = clear_session_cookie(product, realm).map(|cookie| cookie.parse()) {
         page.headers_mut().append(SET_COOKIE, cookie);
     }
@@ -76,12 +92,10 @@ pub async fn begin(
         Ok(Logout::SignedOut { location: None }) => render_signed_out(&product, &realm),
         // Nothing a client sent is written on this page: the form carries no field.
         Ok(Logout::ConfirmationRequired) if is_realm_label(&realm) => {
-            let body = format!(
-                "<h1>Sign out</h1><p>Do you want to sign out?</p>\
-                 <form method=\"post\" action=\"/realms/{realm}/oauth2/logout\">\
-                 <button type=\"submit\">Sign out</button></form>"
-            );
-            render_page(&product, StatusCode::OK, &body)
+            render_page(&product, StatusCode::OK, |frame| LogoutPage {
+                frame,
+                shown: Shown::Confirmation { realm: &realm },
+            })
         }
         // A name that is not a realm label resolved to no realm: this is never reached.
         Ok(Logout::ConfirmationRequired) => {

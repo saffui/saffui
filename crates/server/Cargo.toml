@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 actix-web.workspace = true
 api.workspace = true
+askama.workspace = true
 base64.workspace = true
 futures-util.workspace = true
 saffui-core.workspace = true

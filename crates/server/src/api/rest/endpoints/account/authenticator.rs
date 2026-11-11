@@ -4,6 +4,7 @@
 
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, get, post, web};
+use askama::Template;
 use saffui_core::app::App as Product;
 use saffui_core::error::{ErrorCode, Failure};
 use saffui_core::login::device::{DeviceMark, read_device_marks};
@@ -14,9 +15,8 @@ use saffui_core::login::session::SessionTicket;
 use saffui_core::secret::Secret;
 use serde::Deserialize;
 
-use crate::api::rest::endpoints::login::key_form::escape_text;
 use crate::api::rest::endpoints::login::page::{
-    is_posted_from_elsewhere, is_realm_label, render_page, render_refusal,
+    Frame, is_posted_from_elsewhere, is_realm_label, render_page, render_refusal,
 };
 use crate::extract::cookies::{
     is_served_over_tls, name_device_cookie, name_session_cookie, read_cookie,
@@ -49,20 +49,41 @@ pub(crate) fn read_ticket(
     read_cookie(http, &name).and_then(|value| SessionTicket::parse(&value))
 }
 
-fn write_confirmation_form(realm: &str, message: &str) -> String {
-    let message = if message.is_empty() {
-        String::new()
-    } else {
-        format!("<p class=\"error\">{message}</p>")
-    };
-    format!(
-        "{message}<form method=\"post\" action=\"/realms/{realm}/account/authenticator/confirm\">\
-         <label>Your password<input name=\"password\" type=\"password\" \
-         autocomplete=\"current-password\" required></label>\
-         <label>The code your application shows<input name=\"code\" inputmode=\"numeric\" \
-         autocomplete=\"one-time-code\" maxlength=\"6\" required></label>\
-         <button type=\"submit\">Confirm</button></form>"
-    )
+/// The page of the authenticator application.
+#[derive(Template)]
+#[template(path = "account/authenticator.html")]
+struct AuthenticatorPage<'a> {
+    frame: Frame,
+    shown: Shown<'a>,
+}
+
+/// What the page shows under its heading.
+enum Shown<'a> {
+    /// Why the page refuses, and no form.
+    Refusal {
+        message: &'a str,
+    },
+    Enrolled,
+    /// The offer to set one up.
+    Offer {
+        realm: &'a str,
+    },
+    /// The secret, shown once, and the form that confirms it.
+    Secret {
+        realm: &'a str,
+        uri: &'a str,
+        typed_secret: &'a str,
+    },
+    /// The form again, with why the last confirmation was refused.
+    Confirmation {
+        realm: &'a str,
+        message: &'a str,
+    },
+    Confirmed,
+}
+
+fn render_shown(product: &Product, status: StatusCode, shown: Shown<'_>) -> HttpResponse {
+    render_page(product, status, |frame| AuthenticatorPage { frame, shown })
 }
 
 /// A refusal of these pages: the status of its kind, its message, no form.
@@ -72,11 +93,8 @@ fn refuse_request(product: &Product, failure: &Failure) -> HttpResponse {
         ErrorCode::SecondFactorProofRequired => StatusCode::FORBIDDEN,
         _ => return render_refusal(product, failure),
     };
-    let body = format!(
-        "<h1>Authenticator application</h1><p class=\"error\">{}</p>",
-        failure.code.message()
-    );
-    render_page(product, status, &body)
+    let message = failure.code.message();
+    render_shown(product, status, Shown::Refusal { message })
 }
 
 #[get("/realms/{realm}/account/authenticator")]
@@ -87,20 +105,9 @@ pub async fn show_authenticator(
 ) -> HttpResponse {
     let ticket = read_ticket(&product, &realm, &http);
     match describe_enrollment(&product, &realm, ticket.as_ref()).await {
-        Ok(EnrollmentState::Enrolled) => render_page(
-            &product,
-            StatusCode::OK,
-            "<h1>Authenticator application</h1><p>An authenticator application is set up \
-             for this account. An administrator can remove it if you lost it.</p>",
-        ),
+        Ok(EnrollmentState::Enrolled) => render_shown(&product, StatusCode::OK, Shown::Enrolled),
         Ok(EnrollmentState::NotEnrolled | EnrollmentState::Pending) if is_realm_label(&realm) => {
-            let body = format!(
-                "<h1>Authenticator application</h1><p>A code from an application on your \
-                 phone will be asked each time you sign in.</p>\
-                 <form method=\"post\" action=\"/realms/{realm}/account/authenticator\">\
-                 <button type=\"submit\">Set up an authenticator application</button></form>"
-            );
-            render_page(&product, StatusCode::OK, &body)
+            render_shown(&product, StatusCode::OK, Shown::Offer { realm: &realm })
         }
         Ok(_) => refuse_request(&product, &Failure::new(ErrorCode::RealmNotFound)),
         Err(failure) => refuse_request(&product, &failure),
@@ -123,22 +130,16 @@ pub async fn begin_enrollment(
         Ok(offered) => {
             // Shown once, on a page no cache keeps. The secret serves for
             // nothing until the form below confirms it.
-            let body = format!(
-                "<h1>Authenticator application</h1>\
-                 <p>Add this account to your application, with this address or this key.</p>\
-                 <p><code id=\"uri\">{}</code></p><p>Key: <code id=\"secret\">{}</code></p>{}",
-                escape_text(&offered.uri),
-                escape_text(&offered.typed_secret),
-                write_confirmation_form(&realm, "")
-            );
-            render_page(&product, StatusCode::OK, &body)
+            let shown = Shown::Secret {
+                realm: &realm,
+                uri: &offered.uri,
+                typed_secret: &offered.typed_secret,
+            };
+            render_shown(&product, StatusCode::OK, shown)
         }
         Err(failure) if failure.code == ErrorCode::AuthenticatorAlreadyEnrolled => {
-            let body = format!(
-                "<h1>Authenticator application</h1><p class=\"error\">{}</p>",
-                failure.code.message()
-            );
-            render_page(&product, StatusCode::CONFLICT, &body)
+            let message = failure.code.message();
+            render_shown(&product, StatusCode::CONFLICT, Shown::Refusal { message })
         }
         Err(failure) => refuse_request(&product, &failure),
     }
@@ -159,11 +160,11 @@ pub async fn confirm_enrollment(
         return refuse_request(&product, &Failure::new(ErrorCode::SessionRequired));
     }
     let Some(form) = read_posted_form::<ConfirmationForm>(&http, payload).await else {
-        let body = format!(
-            "<h1>Authenticator application</h1>{}",
-            write_confirmation_form(&realm, ErrorCode::RequestInvalid.message())
-        );
-        return render_page(&product, StatusCode::BAD_REQUEST, &body);
+        let shown = Shown::Confirmation {
+            realm: &realm,
+            message: ErrorCode::RequestInvalid.message(),
+        };
+        return render_shown(&product, StatusCode::BAD_REQUEST, shown);
     };
     let confirmed = confirm_totp_enrollment(
         &product,
@@ -176,12 +177,7 @@ pub async fn confirm_enrollment(
     )
     .await;
     match confirmed {
-        Ok(()) => render_page(
-            &product,
-            StatusCode::OK,
-            "<h1>Authenticator application</h1><p>Your authenticator application is set up. \
-             A code will be asked the next time you sign in.</p>",
-        ),
+        Ok(()) => render_shown(&product, StatusCode::OK, Shown::Confirmed),
         // The secret still waits: the person tries again, without seeing it again.
         Err(failure)
             if matches!(
@@ -194,18 +190,15 @@ pub async fn confirm_enrollment(
             } else {
                 StatusCode::UNAUTHORIZED
             };
-            let body = format!(
-                "<h1>Authenticator application</h1>{}",
-                write_confirmation_form(&realm, failure.code.message())
-            );
-            render_page(&product, status, &body)
+            let shown = Shown::Confirmation {
+                realm: &realm,
+                message: failure.code.message(),
+            };
+            render_shown(&product, status, shown)
         }
         Err(failure) if failure.code == ErrorCode::AuthenticatorAlreadyEnrolled => {
-            let body = format!(
-                "<h1>Authenticator application</h1><p class=\"error\">{}</p>",
-                failure.code.message()
-            );
-            render_page(&product, StatusCode::CONFLICT, &body)
+            let message = failure.code.message();
+            render_shown(&product, StatusCode::CONFLICT, Shown::Refusal { message })
         }
         Err(failure) => refuse_request(&product, &failure),
     }

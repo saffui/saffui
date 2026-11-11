@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{%- block body -%}
+<h1>Sign in</h1>
+{%- if !message.is_empty() -%}
+    <p class="error">{{ message }}</p>
+{%- endif -%}
+{%- match asked -%}
+    {%- when Asked::Nothing -%}
+    {%- when Asked::Password with { realm, request } -%}
+        <form method="post" action="/realms/{{ realm }}/login">{# -#}
+            <input type="hidden" name="request" value="{{ request }}">{# -#}
+            <label>Username<input name="username" autocomplete="username" required autofocus></label>{# -#}
+            <label>Password<input name="password" type="password" {# -#}
+                autocomplete="current-password" required></label>{# -#}
+            <button type="submit">Sign in</button>{# -#}
+        </form>
+    {%- when Asked::SecondFactor with { realm, request, code, key } -%}
+        {%- if code -%}
+            <p>Enter the code your authenticator application shows.</p>{# -#}
+            <form method="post" action="/realms/{{ realm }}/login">{# -#}
+                <input type="hidden" name="request" value="{{ request }}">{# -#}
+                <label>Code<input name="code" inputmode="numeric" autocomplete="one-time-code" {# -#}
+                    maxlength="6" required autofocus></label>{# -#}
+                <button type="submit">Continue</button>{# -#}
+            </form>
+        {%- endif -%}
+        {%- if let Some(key) = key -%}
+            <p>Have your security key at hand.</p>
+            {%- include "key_form.html" -%}
+        {%- endif -%}
+{%- endmatch -%}
+{%- endblock %}

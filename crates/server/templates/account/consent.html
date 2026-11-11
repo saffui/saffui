@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{%- block body -%}
+<h1>Your consents</h1>
+{%- match shown -%}
+    {%- when Shown::Refusal with { message } -%}
+        <p class="error">{{ message }}</p>
+    {%- when Shown::Nothing -%}
+        <p>You allowed no application anything.</p>
+    {%- when Shown::Listed with { realm, listed } -%}
+        <ul>
+        {%- for held in listed -%}
+            <li><strong>{{ held.client_name }}</strong>: {# -#}
+                {%- for scope in held.consent.scopes -%}
+                    {%- if !loop.first %}, {% endif -%}
+                    {{ scope }}
+                {%- endfor -%}
+                <form method="post" action="/realms/{{ realm }}/account/consents/withdraw">{# -#}
+                    <input type="hidden" name="client_id" value="{{ held.consent.client_id }}">{# -#}
+                    <button type="submit">Withdraw</button>{# -#}
+                </form>{# -#}
+            </li>
+        {%- endfor -%}
+        </ul>
+    {%- when Shown::Withdrawn -%}
+        <p>The application no longer acts in your name.</p>
+{%- endmatch -%}
+{%- endblock %}

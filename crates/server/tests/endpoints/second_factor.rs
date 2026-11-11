@@ -522,11 +522,11 @@ async fn only_a_writer_of_people_resumes_the_codes_of_a_person() {
 fn read_key_options(page: &str) -> serde_json::Value {
     let written = read_between(page, "data-options=\"", "\"").expect("the options of a key");
     let text = written
-        .replace("&quot;", "\"")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
+        .replace("&#34;", "\"")
+        .replace("&#60;", "<")
+        .replace("&#62;", ">")
         .replace("&#39;", "'")
-        .replace("&amp;", "&");
+        .replace("&#38;", "&");
     serde_json::from_str(&text).expect("options written as JSON")
 }
 

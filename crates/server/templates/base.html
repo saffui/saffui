@@ -1,0 +1,21 @@
+{#- The frame of every hosted page. A blank between two tags can show on a
+    page, so each line ends in a tag that trims the blanks after it: an empty
+    comment where no other tag stands. -#}
+<!doctype html><html lang="en"><head><meta charset="utf-8">{# -#}
+<meta name="viewport" content="width=device-width, initial-scale=1">{# -#}
+<title>Account</title>
+{%- if let Some(nonce) = frame.style_nonce() -%}
+    <style nonce="{{ nonce }}">{# -#}
+        body{font-family:system-ui,sans-serif;max-width:22rem;margin:4rem auto;padding:0 1rem}{# -#}
+        label{display:block;margin-top:1rem}{# -#}
+        input{width:100%;padding:.5rem;box-sizing:border-box}{# -#}
+        button{margin-top:1.5rem;padding:.6rem 1rem}{# -#}
+        .error{color:#a3341f}{# -#}
+    </style>
+{%- endif -%}
+</head><body>
+{%- block body %}{% endblock -%}
+{%- if let Some(nonce) = frame.script_nonce() -%}
+    <script nonce="{{ nonce }}">{% include "key_script.js" %}</script>
+{%- endif -%}
+</body></html>

@@ -81,9 +81,16 @@ pub async fn show_consent(
             let _ = write!(items, "<li>{}</li>", escape_text(scope));
             items
         });
+    let offline = prompt.offline_access.map_or(String::new(), |lasts| {
+        format!(
+            "<p>It may also go on acting in your name while you are away, for {} days, \
+             even after you sign out. You can withdraw this from your account.</p>",
+            lasts.whole_days()
+        )
+    });
     let body = format!(
         "<h1>Allow access</h1><p><strong>{}</strong> asks to act in your name with:</p>\
-         <ul>{scopes}</ul>\
+         <ul>{scopes}</ul>{offline}\
          <form method=\"post\" action=\"/realms/{realm}/consent\">\
          <input type=\"hidden\" name=\"request\" value=\"{request}\">\
          <button type=\"submit\" name=\"decision\" value=\"allow\">Allow</button> \

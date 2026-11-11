@@ -764,6 +764,7 @@ async fn a_rule_set_on_a_served_table_is_checked_apart_from_the_lock_that_sets_i
     for (set_by, rule) in [
         ("0032_consent_clients", "clients_consent_for_applications"),
         ("0034_offline_sessions", "sessions_kind_known"),
+        ("0034_offline_sessions", "sessions_kind_secret"),
     ] {
         let set_at = EMBEDDED
             .iter()

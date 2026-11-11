@@ -25,7 +25,7 @@ async fn start(name: &str) -> (saffui_core::app::App, RealmScope) {
     let (product, _storage) = MemoryStorage::wire();
     let scope = create_realm(&product, "acme").await;
     create_person(&product, scope, "ada", PASSWORD).await;
-    let scopes = ["openid".to_owned(), "email".to_owned()];
+    let scopes = ["openid", "email", "offline_access"].map(str::to_owned);
     let callbacks = [CALLBACK.to_owned()];
     let mut work = product.storage.begin(scope).await.expect("a unit of work");
     register_client(
@@ -49,11 +49,12 @@ async fn start(name: &str) -> (saffui_core::app::App, RealmScope) {
     (product, scope)
 }
 
-fn write_authorize_path(product: &saffui_core::app::App) -> String {
+/// Where `partner` sends a browser to ask for `scope`, written for a query.
+fn write_authorize_path(product: &saffui_core::app::App, scope: &str) -> String {
     let challenge = URL_SAFE_NO_PAD.encode(product.digester.sha256(VERIFIER.as_bytes()));
     format!(
         "/realms/acme/oauth2/authorize?response_type=code&client_id=partner\
-         &redirect_uri=https%3A%2F%2Fapp.example.test%2Fcallback&scope=openid%20email\
+         &redirect_uri=https%3A%2F%2Fapp.example.test%2Fcallback&scope={scope}\
          &state=xyz&code_challenge={challenge}&code_challenge_method=S256"
     )
 }
@@ -77,7 +78,14 @@ impl Waiting {
 }
 
 async fn sign_in_for_partner(product: &saffui_core::app::App) -> (Waiting, Answer) {
-    let sent_to_login = get(product, &write_authorize_path(product), &[]).await;
+    sign_in_for_partner_asking(product, "openid%20email").await
+}
+
+async fn sign_in_for_partner_asking(
+    product: &saffui_core::app::App,
+    scope: &str,
+) -> (Waiting, Answer) {
+    let sent_to_login = get(product, &write_authorize_path(product, scope), &[]).await;
     assert_eq!(sent_to_login.status, StatusCode::SEE_OTHER);
     let request = sent_to_login
         .read_location_parameter("request")
@@ -454,4 +462,30 @@ async fn an_administrator_reads_what_a_person_allowed_and_a_writer_of_people_wit
     )
     .await;
     assert_eq!(nobody.status, StatusCode::NOT_FOUND);
+}
+
+#[actix_web::test]
+async fn the_page_says_in_words_what_offline_access_lets_the_client_do() {
+    let (product, _) = start("Partner").await;
+    let (waiting, _) = sign_in_for_partner_asking(&product, "openid%20offline_access").await;
+
+    let page = get(
+        &product,
+        &format!("{CONSENT}?request={}", waiting.request),
+        &[(COOKIE.as_str(), &waiting.send_both())],
+    )
+    .await;
+
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body.contains("for 90 days, even after you sign out")
+            && page.body.contains("withdraw this from your account"),
+        "{}",
+        page.body
+    );
+    assert!(
+        !page.body.contains("offline_access"),
+        "said in words, not as a word of the protocol: {}",
+        page.body
+    );
 }

@@ -4,6 +4,7 @@ use std::fmt;
 
 use serde::Serialize;
 use serde_json::json;
+use uuid::Uuid;
 
 use super::discovery::name_issuer;
 use super::errors::OAuthFailure;
@@ -19,7 +20,7 @@ use crate::consent::{ConsentTerms, is_consent_owed};
 use crate::directory::Person;
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
-use crate::login::session::{Session, SessionKind, open_offline_session, read_live_subject};
+use crate::login::session::{Session, open_offline_session, read_live_subject};
 use crate::ports::storage::UnitOfWork;
 use crate::secret::Secret;
 use crate::tenancy::resolve::resolve_realm;
@@ -31,6 +32,10 @@ use crate::tokens::mint::{
 
 /// The scope by which a client asks to act while the person is away.
 pub const OFFLINE_ACCESS_SCOPE: &str = "offline_access";
+
+/// How many grants a person keeps offline with one client: one for each
+/// device they use it on, and room to spare. Past it, the oldest gives way.
+pub const MOST_OFFLINE_GRANTS_PER_CLIENT: u32 = 10;
 
 /// What a client sent to the token endpoint, already read from the request.
 #[derive(Default)]
@@ -260,18 +265,14 @@ async fn exchange_code(
     if !bound {
         return Err(invalid());
     }
-    // A code carries `offline_access` only when the person allowed it on the
-    // page of its request. The grant then lives in a session of its own, from
-    // its first token: the end of the browser session leaves it standing.
-    let offline = if code
-        .scopes
-        .iter()
-        .any(|scope| scope == OFFLINE_ACCESS_SCOPE)
-    {
-        Some(open_offline_session(app, work.as_mut(), &session).await?)
-    } else {
-        None
-    };
+    let (offline, given_way) = open_offline_grant(
+        app,
+        work.as_mut(),
+        &client.client_id,
+        &code.scopes,
+        &session,
+    )
+    .await?;
     let held_in = offline.as_ref().unwrap_or(&session);
     let issuer = name_issuer(&app.settings, realm_name);
     let granted = Granted {
@@ -289,37 +290,52 @@ async fn exchange_code(
         },
     };
     let response = answer_for_person(app, work.as_mut(), granted).await?;
-    if let Some(offline) = &offline {
-        record_offline_opening(app, work.as_mut(), &session, offline).await?;
-    }
+    // One event, the chain locked once: an offline session opened here is
+    // said here, with the session it came from and those it took the place of.
+    let given_way: Vec<String> = given_way.iter().map(Uuid::to_string).collect();
     let told = json!({
         "client_id": client.client_id,
         "family": family.to_string(),
+        "from_session_id": offline.as_ref().map(|_| session.id.to_string()),
         "grant": "authorization_code",
+        "offline_sessions_ended": given_way,
         "person_id": person.id.to_string(),
         "scope": response.scope,
         "session_id": held_in.id.to_string(),
+        "session_kind": held_in.kind.name(),
     });
     record_event(app, work.as_mut(), EventKind::TokenIssued, told).await?;
     work.commit().await.map_err(Failure::from)?;
     Ok(response)
 }
 
-/// Says in the chain that a grant opened its offline session, and from which
-/// session of the person.
-async fn record_offline_opening(
+/// Opens the offline session a grant of `client_id` lives in, when its code
+/// carries `offline_access`: only when the person allowed it on the page of
+/// its request, to a client that requires consent. Opened from the session
+/// they signed in with, it holds the grant from its first token, and the end
+/// of that session leaves it standing. The oldest of theirs with this client
+/// past the bound gives way first: the sessions before the tokens, as
+/// everywhere. Returns it, and those that gave way.
+async fn open_offline_grant(
     app: &App,
     work: &mut dyn UnitOfWork,
+    client_id: &str,
+    scopes: &[String],
     from: &Session,
-    offline: &Session,
-) -> Result<(), Failure> {
-    let opened = json!({
-        "from_session_id": from.id.to_string(),
-        "kind": SessionKind::Offline.name(),
-        "person_id": offline.person.to_string(),
-        "session_id": offline.id.to_string(),
-    });
-    record_event(app, work, EventKind::SessionOpened, opened).await
+) -> Result<(Option<Session>, Vec<Uuid>), Failure> {
+    if !scopes.iter().any(|scope| scope == OFFLINE_ACCESS_SCOPE) {
+        return Ok((None, Vec::new()));
+    }
+    let given_way = work
+        .end_oldest_offline_sessions(
+            from.person,
+            client_id,
+            MOST_OFFLINE_GRANTS_PER_CLIENT - 1,
+            app.now(),
+        )
+        .await?;
+    let opened = open_offline_session(app, work, from).await?;
+    Ok((Some(opened), given_way))
 }
 
 /// A code presented after it was spent was copied by someone: the refresh
@@ -677,11 +693,12 @@ mod tests {
         use crate::oidc::scenario::{CALLBACK, Scenario};
 
         let scenario = Scenario::start();
-        let granted = scenario.sign_in_and_consent("webapp", "openid offline_access");
+        scenario.register_partner();
+        let granted = scenario.sign_in_and_consent("partner", "openid offline_access");
         assert!(scenario.is_token_active(&granted.tokens.access_token));
         let again = TokenRequest {
             grant_type: Some("authorization_code"),
-            client_id: Some("webapp"),
+            client_id: Some("partner"),
             code: Some(&granted.code),
             redirect_uri: Some(CALLBACK),
             code_verifier: Some("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),

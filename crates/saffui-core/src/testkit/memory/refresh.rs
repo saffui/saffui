@@ -5,7 +5,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::MemoryUnitOfWork;
-use crate::login::session::{SessionKind, SessionState};
+use crate::login::session::{Session, SessionKind, SessionState};
 use crate::ports::storage::StorageError;
 use crate::tokens::store::{
     EndedFamily, RefreshStore, RefreshToken, RevokedFamilies, StoredRefreshToken,
@@ -51,22 +51,66 @@ impl MemoryUnitOfWork {
         revoked
     }
 
-    /// Ends the active offline sessions the `revoked` tokens lived in, and
-    /// returns them.
-    fn end_offline_sessions_of(&mut self, revoked: &[StoredRefreshToken]) -> Vec<Uuid> {
-        let lived_in: BTreeSet<Uuid> = revoked.iter().map(|stored| stored.token.session).collect();
+    /// Ends the active offline sessions `chosen` names, and returns them.
+    fn end_offline_sessions_where(&mut self, chosen: impl Fn(&Session) -> bool) -> Vec<Uuid> {
         let mut ended = Vec::new();
         if let Some(sessions) = self.working.sessions.get_mut(&self.scope.realm().as_uuid()) {
             for session in sessions.iter_mut().filter(|session| {
-                lived_in.contains(&session.id)
-                    && session.kind == SessionKind::Offline
+                session.kind == SessionKind::Offline
                     && session.state == SessionState::Active
+                    && chosen(session)
             }) {
                 session.state = SessionState::Ended;
                 ended.push(session.id);
             }
         }
         ended
+    }
+
+    /// The sessions a token of `client_id` lives in, whatever became of it.
+    fn list_sessions_of_client(&mut self, client_id: &str) -> BTreeSet<Uuid> {
+        self.refresh_tokens_of_the_realm()
+            .iter()
+            .filter(|stored| stored.token.client_id == client_id)
+            .map(|stored| stored.token.session)
+            .collect()
+    }
+
+    /// Revokes a family no revoked token refuses yet, as Postgres does: its
+    /// tokens that could still be spent and its latest are written revoked.
+    /// Returns what the family told and how many tokens were written.
+    fn revoke_live_family(
+        &mut self,
+        family: Uuid,
+        now: OffsetDateTime,
+    ) -> Option<(EndedFamily, u64)> {
+        if self.read_revoked_families().contains_key(&family) {
+            return None;
+        }
+        let live: Vec<StoredRefreshToken> = self
+            .refresh_tokens_of_the_realm()
+            .iter()
+            .filter(|stored| stored.token.family == family && stored.revoked_at.is_none())
+            .cloned()
+            .collect();
+        let latest = live.iter().max_by_key(|stored| stored.token.issued_at)?;
+        let ended = EndedFamily {
+            tokens: u64::try_from(live.len()).unwrap_or(u64::MAX),
+            last_issued_at: latest.token.issued_at,
+            last_used_at: live.iter().filter_map(|stored| stored.used_at).max(),
+        };
+        let latest = latest.token.token_digest.clone();
+        let mut written = 0;
+        for stored in self.refresh_tokens_of_the_realm() {
+            if stored.token.family == family
+                && stored.revoked_at.is_none()
+                && (stored.used_at.is_none() || stored.token.token_digest == latest)
+            {
+                stored.revoked_at = Some(now);
+                written += 1;
+            }
+        }
+        Some((ended, written))
     }
 }
 
@@ -131,15 +175,66 @@ impl RefreshStore for MemoryUnitOfWork {
     ) -> Result<Option<EndedFamily>, StorageError> {
         let outcome = self.refuse_in_snapshot();
         self.record_refusal(outcome)?;
-        let revoked = self.revoke_refresh_tokens_where(now, |token| token.family == family);
-        let offline_session = self.end_offline_sessions_of(&revoked).into_iter().next();
-        let last_issued_at = revoked.iter().map(|stored| stored.token.issued_at).max();
-        Ok(last_issued_at.map(|last_issued_at| EndedFamily {
-            tokens: u64::try_from(revoked.len()).unwrap_or(u64::MAX),
-            last_issued_at,
-            last_used_at: revoked.iter().filter_map(|stored| stored.used_at).max(),
-            offline_session,
-        }))
+        Ok(self.revoke_live_family(family, now).map(|(ended, _)| ended))
+    }
+
+    async fn end_offline_session_of_family(
+        &mut self,
+        family: Uuid,
+    ) -> Result<Option<Uuid>, StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        let lived_in = self
+            .refresh_tokens_of_the_realm()
+            .iter()
+            .find(|stored| stored.token.family == family && stored.revoked_at.is_none())
+            .map(|stored| stored.token.session);
+        let Some(lived_in) = lived_in else {
+            return Ok(None);
+        };
+        Ok(self
+            .end_offline_sessions_where(|session| session.id == lived_in)
+            .into_iter()
+            .next())
+    }
+
+    async fn end_oldest_offline_sessions(
+        &mut self,
+        person: Uuid,
+        client_id: &str,
+        kept: u32,
+        now: OffsetDateTime,
+    ) -> Result<Vec<Uuid>, StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        let holding = self.list_sessions_of_client(client_id);
+        let mut held: Vec<(OffsetDateTime, Uuid)> = self
+            .working
+            .sessions
+            .get(&self.scope.realm().as_uuid())
+            .map(|sessions| {
+                sessions
+                    .iter()
+                    .filter(|session| {
+                        session.person == person
+                            && session.kind == SessionKind::Offline
+                            && session.state == SessionState::Active
+                            && session.expires_at > now
+                            && holding.contains(&session.id)
+                    })
+                    .map(|session| (session.expires_at, session.id))
+                    .collect()
+            })
+            .unwrap_or_default();
+        held.sort_by(|one, other| other.0.cmp(&one.0).then(one.1.cmp(&other.1)));
+        let past: BTreeSet<Uuid> = held
+            .into_iter()
+            .skip(usize::try_from(kept).unwrap_or(usize::MAX))
+            .map(|(_, session)| session)
+            .collect();
+        let mut ended = self.end_offline_sessions_where(|session| past.contains(&session.id));
+        ended.sort_unstable();
+        Ok(ended)
     }
 
     async fn revoke_refresh_families_of_client(
@@ -151,20 +246,34 @@ impl RefreshStore for MemoryUnitOfWork {
     ) -> Result<RevokedFamilies, StorageError> {
         let outcome = self.refuse_in_snapshot();
         self.record_refusal(outcome)?;
-        // Read before: a family revoked already is not counted again.
-        let revoked_before = self.read_revoked_families();
-        let revoked = self.revoke_refresh_tokens_where(now, |token| {
-            token.person == person && token.client_id == client_id
-        });
-        let ended: BTreeSet<Uuid> = revoked
+        // The sessions first, as Postgres does.
+        let holding = self.list_sessions_of_client(client_id);
+        let offline_sessions = self
+            .end_offline_sessions_where(|session| {
+                session.person == person && holding.contains(&session.id)
+            })
+            .len();
+        let families: BTreeSet<Uuid> = self
+            .refresh_tokens_of_the_realm()
             .iter()
+            .filter(|stored| {
+                stored.token.person == person
+                    && stored.token.client_id == client_id
+                    && stored.revoked_at.is_none()
+            })
             .map(|stored| stored.token.family)
-            .filter(|family| !revoked_before.contains_key(family))
             .collect();
-        let offline_sessions = self.end_offline_sessions_of(&revoked).len();
+        let mut ended = BTreeSet::new();
+        let mut tokens = 0;
+        for family in families {
+            if let Some((_, written)) = self.revoke_live_family(family, now) {
+                ended.insert(family);
+                tokens += written;
+            }
+        }
         Ok(RevokedFamilies {
             families: u64::try_from(ended.len()).unwrap_or(u64::MAX),
-            tokens: u64::try_from(revoked.len()).unwrap_or(u64::MAX),
+            tokens,
             named: ended
                 .into_iter()
                 .take(usize::try_from(most).unwrap_or(usize::MAX))

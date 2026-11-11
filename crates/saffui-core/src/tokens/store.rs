@@ -41,30 +41,29 @@ impl StoredRefreshToken {
     }
 }
 
-/// What the tokens a revocation took back still tell. A family revoked for
-/// the first time is revoked whole: this is then the whole family.
+/// What the tokens of a family still told when it was revoked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EndedFamily {
-    /// One for the grant, and one for each rotation.
+    /// One for the grant, and one for each rotation, counted: only those that
+    /// could still be spent, and the latest, are written revoked.
     pub tokens: u64,
     pub last_issued_at: OffsetDateTime,
     /// `None` when none of them was ever spent.
     pub last_used_at: Option<OffsetDateTime>,
-    /// The offline session the family lived in, ended with it. `None` for a
-    /// family of a browser session, which stands.
-    pub offline_session: Option<Uuid>,
 }
 
 /// What a revocation of every token of a client for a person took back.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RevokedFamilies {
-    /// The families it ended: one with a token revoked before is not counted.
+    /// The families it ended: one with a token revoked before is left alone.
     pub families: u64,
-    /// Every token it revoked, a late one of a family revoked before included.
+    /// The tokens it wrote revoked: those that could still be spent, and the
+    /// latest of each family. One refuses its whole family.
     pub tokens: u64,
     /// The first of the families it ended, by identifier.
     pub named: Vec<Uuid>,
-    /// The offline sessions their families lived in, ended with them.
+    /// The offline sessions the client held tokens in for the person,
+    /// ended before the families.
     pub offline_sessions: u64,
 }
 
@@ -88,21 +87,29 @@ pub trait RefreshStore {
         token_digest: &[u8],
     ) -> Result<Option<StoredRefreshToken>, StorageError>;
 
-    /// Revokes every token of a family that is not revoked yet, used or not,
-    /// and says what they tell, or `None` when none was left. A token a
-    /// rotation writes while this runs is not counted, and is refused all the
-    /// same: its family has revoked tokens. An offline session the family
-    /// lived in ends in the same operation: it lived for that grant alone.
+    /// Ends the active offline session a family lives in, if it lives in
+    /// one, and returns it: it lived for that grant alone. Called before the
+    /// family is revoked, so that a session is locked before its tokens.
+    async fn end_offline_session_of_family(
+        &mut self,
+        family: Uuid,
+    ) -> Result<Option<Uuid>, StorageError>;
+
+    /// Revokes a family no revoked token refuses yet, in one statement. One
+    /// revoked token refuses it whole: only those of its tokens that could
+    /// still be spent, and its latest, are written. Says what the family
+    /// told, or `None` when it was refused already. A token a rotation writes
+    /// while this runs is refused all the same.
     async fn revoke_refresh_family(
         &mut self,
         family: Uuid,
         now: OffsetDateTime,
     ) -> Result<Option<EndedFamily>, StorageError>;
 
-    /// Revokes every live token a client holds for a person, in each of their
-    /// sessions, in one statement that counts what it took back and names
-    /// `most` of the families at most. The offline sessions those tokens
-    /// lived in end in the same statement.
+    /// Ends the offline sessions a client holds tokens in for a person, then
+    /// revokes, as [`Self::revoke_refresh_family`] does, each family of that
+    /// client in their sessions: two statements, the sessions locked before
+    /// their tokens. Counts what it took back, and names `most` families.
     async fn revoke_refresh_families_of_client(
         &mut self,
         person: Uuid,
@@ -110,6 +117,18 @@ pub trait RefreshStore {
         now: OffsetDateTime,
         most: u32,
     ) -> Result<RevokedFamilies, StorageError>;
+
+    /// Ends the active offline sessions a client holds tokens in for a
+    /// person, but the `kept` that expire last, in one statement on the
+    /// sessions alone, and returns those it ended. Expired at `now`, a
+    /// session is not counted.
+    async fn end_oldest_offline_sessions(
+        &mut self,
+        person: Uuid,
+        client_id: &str,
+        kept: u32,
+        now: OffsetDateTime,
+    ) -> Result<Vec<Uuid>, StorageError>;
 
     /// Revokes every token of a session that is not revoked yet. Returns how many.
     async fn revoke_refresh_tokens_of_session(

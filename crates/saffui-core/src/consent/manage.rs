@@ -245,14 +245,7 @@ mod tests {
         use crate::oidc::errors::OAuthError;
 
         let scenario = Scenario::start();
-        let partner = Application {
-            client_id: "partner",
-            redirect_uri: CALLBACK,
-            post_logout_redirect_uri: None,
-            public: true,
-            requires_consent: true,
-        };
-        complete(register_application(&scenario.app, scenario.scope, partner));
+        scenario.register_partner();
         let granted = scenario.sign_in_and_consent("partner", "openid offline_access");
         assert_eq!(granted.tokens.scope, "openid offline_access");
         let refresh_token = granted.tokens.refresh_token.expect("a refresh token");

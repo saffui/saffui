@@ -208,7 +208,7 @@ fn read_proof_asked(prompt: Option<&str>, max_age: Option<&str>) -> Option<Proof
 /// in this request: all but `offline_access`, which only a consent given on
 /// the page of the request itself grants (OpenID Connect Core 1.0, section
 /// 11). A request that asked it without one is not refused for it.
-fn leave_out_offline_access(scopes: &[String]) -> Vec<String> {
+pub(crate) fn leave_out_offline_access(scopes: &[String]) -> Vec<String> {
     scopes
         .iter()
         .filter(|scope| *scope != OFFLINE_ACCESS_SCOPE)
@@ -2223,7 +2223,8 @@ mod tests {
         use crate::oidc::scenario::Scenario;
 
         let scenario = Scenario::start();
-        let offline = scenario.sign_in_and_consent("webapp", "openid offline_access");
+        scenario.register_partner();
+        let offline = scenario.sign_in_and_consent("partner", "openid offline_access");
         let sid = read_claims(offline.tokens.id_token.as_deref().expect("an identity"))["sid"]
             .as_str()
             .and_then(|sid| Uuid::parse_str(sid).ok())
@@ -2305,7 +2306,8 @@ mod tests {
         };
         assert_eq!(granted_scope(&location), "openid");
 
-        let allowed = scenario.sign_in_and_consent("webapp", "openid offline_access");
+        scenario.register_partner();
+        let allowed = scenario.sign_in_and_consent("partner", "openid offline_access");
         assert_eq!(allowed.tokens.scope, "openid offline_access");
     }
 }

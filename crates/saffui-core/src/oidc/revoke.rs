@@ -142,14 +142,19 @@ mod tests {
         use crate::login::session::find_live_session;
 
         let scenario = Scenario::start();
-        let offline = scenario.sign_in_and_consent("webapp", "openid offline_access");
+        scenario.register_partner();
+        let offline = scenario.sign_in_and_consent("partner", "openid offline_access");
         let after = scenario
-            .refresh(&offline.tokens.refresh_token.expect("a refresh token"))
+            .refresh_as(
+                "partner",
+                &offline.tokens.refresh_token.expect("a refresh token"),
+                None,
+            )
             .expect("new tokens");
         assert!(scenario.is_token_active(&after.access_token));
 
         let next = after.refresh_token.expect("the next refresh token");
-        assert_eq!(revoke(&scenario, "webapp", &next), Ok(()));
+        assert_eq!(revoke(&scenario, "partner", &next), Ok(()));
 
         assert!(
             !scenario.is_token_active(&after.access_token),

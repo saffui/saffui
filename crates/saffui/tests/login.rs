@@ -132,7 +132,7 @@ fn prepare_realm_with_operator(
 
     let application = json!({
         "client_id": "portal",
-        "scopes": ["openid", "profile", "email", "roles", "offline_access"],
+        "scopes": ["openid", "profile", "email", "roles"],
         "redirect_uris": ["https://app.example.test/callback"],
         "post_logout_redirect_uris": ["https://app.example.test/goodbye"],
         "public": true,
@@ -1604,7 +1604,24 @@ fn read_last_withdrawal(database: &TestDatabase) -> Value {
 )]
 fn prompt_none_is_answered_at_once_and_an_offline_grant_outlives_the_sign_out() {
     let database = database::create_database(EMBEDDED);
-    let node = prepare_realm(&database, support::saffui_command());
+    let (node, operator) = prepare_realm_with_operator(&database, support::saffui_command());
+    let bearer = ask_operator_token(&node, &operator);
+    // A grant offline is given only to a client each person must allow.
+    let partner = json!({
+        "client_id": "partner",
+        "scopes": ["openid", "offline_access"],
+        "redirect_uris": ["https://app.example.test/callback"],
+        "public": true,
+        "consent": true,
+    });
+    let created = send_json(
+        &node,
+        "POST",
+        "/admin/v1/realms/acme/clients",
+        &bearer,
+        &partner,
+    );
+    assert_eq!(created.status, 201, "{}", created.body);
     let origin = ("Origin", node::PUBLIC_ORIGIN);
     let error_of = |answer: &http::Answer| {
         read_header(answer, "location").and_then(|location| read_parameter(location, "error"))
@@ -1621,11 +1638,9 @@ fn prompt_none_is_answered_at_once_and_an_offline_grant_outlives_the_sign_out() 
         "{location}"
     );
 
-    // Asked to consent again, the person allows on the page what is asked.
-    let asking = format!(
-        "{}&prompt=consent",
-        write_authorize_path_asking("openid%20offline_access")
-    );
+    // The person allows on the page what is asked.
+    let asking = write_authorize_path_asking("openid%20offline_access")
+        .replace("client_id=portal", "client_id=partner");
     let begun = http::get(node.data, &asking).expect("an answer");
     let flow = read_cookie(&begun, "saffui_flow_").expect("a flow cookie");
     let login = read_header(&begun, "location").expect("a location");
@@ -1661,7 +1676,17 @@ fn prompt_none_is_answered_at_once_and_an_offline_grant_outlives_the_sign_out() 
     let code = read_header(&allowed, "location")
         .and_then(|location| read_parameter(location, "code"))
         .expect("a code");
-    let granted = exchange_code(&node, &code, VERIFIER);
+    let granted = http::send_request(
+        node.data,
+        "POST",
+        TOKEN,
+        &[FORM],
+        &format!(
+            "grant_type=authorization_code&client_id=partner&code={code}\
+             &redirect_uri=https%3A%2F%2Fapp.example.test%2Fcallback&code_verifier={VERIFIER}"
+        ),
+    )
+    .expect("an answer");
     assert_eq!(granted.status, 200, "{}", granted.body);
     let granted = read_json(&granted.body);
     assert_eq!(granted["scope"], "openid offline_access");
@@ -1710,7 +1735,14 @@ fn prompt_none_is_answered_at_once_and_an_offline_grant_outlives_the_sign_out() 
         Some("login_required"),
         "the browser session ended"
     );
-    let refreshed = refresh(&node, offline);
+    let refreshed = http::send_request(
+        node.data,
+        "POST",
+        TOKEN,
+        &[FORM],
+        &format!("grant_type=refresh_token&client_id=partner&refresh_token={offline}"),
+    )
+    .expect("an answer");
     assert_eq!(refreshed.status, 200, "{}", refreshed.body);
     let refreshed = read_json(&refreshed.body);
     assert_eq!(refreshed["scope"], "openid offline_access");

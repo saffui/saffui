@@ -132,11 +132,59 @@ async fn postgres_passes_the_known_browsers_contract() {
     check_known_browsers_contract(&app).await;
 }
 
+/// Writes into `family`, under the owner, `count` tokens used before `now`,
+/// a second apart, older than any other of the family.
+async fn plant_used_tokens(
+    database: &pgcore::testkit::TestDatabase,
+    scope: saffui_core::tenancy::RealmScope,
+    planted: &saffui_core::tokens::store::RefreshToken,
+    count: i32,
+    now: time::OffsetDateTime,
+) {
+    let mut owner = database
+        .plan("saffui_owner")
+        .connect_directly()
+        .await
+        .expect("a connection");
+    let (tenant, realm) = (scope.tenant().as_uuid(), scope.realm().as_uuid());
+    let writing = owner.transaction().await.expect("a transaction");
+    writing
+        .execute(
+            "SELECT set_config('saffui.tenant', $1, true), set_config('saffui.realm', $2, true)",
+            &[&tenant.to_string(), &realm.to_string()],
+        )
+        .await
+        .expect("the scope");
+    writing
+        .execute(
+            "INSERT INTO refresh_tokens (tenant_id, realm_id, token_digest, family_id, client_id,
+                 person_id, session_id, scopes, issued_at, expires_at, used_at)
+             SELECT $1, $2, sha256(convert_to($3::uuid::text || ':' || n, 'UTF8')), $3, $4, $5, $6,
+                    '{openid}',
+                    $7::timestamptz - n * interval '1 second', $7 + interval '30 minutes',
+                    $7 - n * interval '1 second'
+             FROM generate_series(1, $8) AS n",
+            &[
+                &tenant,
+                &realm,
+                &planted.family,
+                &planted.client_id,
+                &planted.person,
+                &planted.session,
+                &now,
+                &count,
+            ],
+        )
+        .await
+        .expect("the used tokens of a family");
+    writing.commit().await.expect("a commit");
+}
+
 /// A rotation still in flight when its family is revoked writes a token the
-/// revocation cannot see. The family stands revoked for that token all the
-/// same: it is not spent, and reads as revoked.
-#[tokio::test]
-async fn a_token_written_while_its_family_was_revoked_is_not_spent() {
+/// revocation cannot see, and spends the latest one it waits on. The family
+/// stands revoked for that token all the same: it is not spent, and reads as
+/// revoked, whatever the length of the family before.
+async fn race_a_rotation_against_a_revocation(used_before: i32) {
     use std::time::Duration as Wait;
 
     use saffui_core::ids::mint_id;
@@ -145,7 +193,7 @@ async fn a_token_written_while_its_family_was_revoked_is_not_spent() {
     use saffui_core::tokens::store::RefreshToken;
     use time::Duration;
 
-    let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
     let scope = create_realm(&app, "race").await;
     let ada = create_person(&app, scope, "ada", "correct horse battery").await;
     let now = app.now();
@@ -175,6 +223,7 @@ async fn a_token_written_while_its_family_was_revoked_is_not_spent() {
     work.insert_session(&session).await.expect("a session");
     work.insert_refresh_token(&first).await.expect("a token");
     work.commit().await.expect("a commit");
+    plant_used_tokens(&database, scope, &first, used_before, now).await;
 
     // The rotation spends the first token and writes the next, uncommitted.
     let mut rotation = app.storage.begin(scope).await.expect("a unit of work");
@@ -204,8 +253,8 @@ async fn a_token_written_while_its_family_was_revoked_is_not_spent() {
             .await
             .expect("the revocation")
             .map(|ended| ended.map(|ended| ended.tokens)),
-        Ok(Some(1)),
-        "the revocation sees only the token it waited on"
+        Ok(Some(u64::try_from(used_before).expect("a count") + 1)),
+        "the revocation counts what it saw, the token it waited on included"
     );
 
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
@@ -222,6 +271,134 @@ async fn a_token_written_while_its_family_was_revoked_is_not_spent() {
         .expect("the token");
     assert!(stored.revoked_at.is_some(), "it reads as revoked");
     assert!(!stored.is_live(now));
+}
+
+#[tokio::test]
+async fn a_token_written_while_its_family_was_revoked_is_not_spent() {
+    race_a_rotation_against_a_revocation(0).await;
+}
+
+#[tokio::test]
+async fn a_token_written_while_a_family_of_thousands_was_revoked_is_not_spent() {
+    race_a_rotation_against_a_revocation(3_000).await;
+}
+
+/// A revocation writes the tokens that could still be spent and the latest
+/// of a family, never one row for each rotation it went through: a family of
+/// thousands of tokens costs two rows, whether one family or all those of a
+/// client are taken back.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "two long families, planted then read from top to bottom"
+)]
+async fn revoking_a_family_writes_a_row_or_two_however_many_rotations_it_had() {
+    use saffui_core::ids::mint_id;
+    use saffui_core::login::session::{AuthenticationMethod, Session, SessionKind, SessionState};
+    use saffui_core::testkit::fixtures::{create_person, create_realm};
+    use saffui_core::tokens::store::{EndedFamily, RefreshToken};
+    use time::Duration;
+
+    let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let scope = create_realm(&app, "long-families").await;
+    let ada = create_person(&app, scope, "ada", "correct horse battery").await;
+    let now = app.now();
+    let session = Session {
+        id: mint_id(&app).expect("an identifier"),
+        person: ada.id,
+        secret_digest: vec![7; 32],
+        state: SessionState::Active,
+        kind: SessionKind::Browser,
+        methods: vec![AuthenticationMethod::Password],
+        authenticated_at: now,
+        expires_at: now + Duration::hours(1),
+    };
+    let current = |digest: u8| RefreshToken {
+        token_digest: vec![digest; 32],
+        family: mint_id(&app).expect("an identifier"),
+        client_id: "webapp".to_owned(),
+        person: ada.id,
+        session: session.id,
+        scopes: vec!["openid".to_owned()],
+        issued_at: now,
+        expires_at: now + Duration::minutes(30),
+    };
+    let (one, another) = (current(1), current(2));
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.insert_session(&session).await.expect("a session");
+    work.insert_refresh_token(&one).await.expect("a token");
+    work.insert_refresh_token(&another).await.expect("a token");
+    work.commit().await.expect("a commit");
+    plant_used_tokens(&database, scope, &one, 4_000, now).await;
+    plant_used_tokens(&database, scope, &another, 4_000, now).await;
+    // How many tokens of a family are written revoked, and one used token of
+    // it that is not.
+    let read_written = async |family| -> (i64, Option<Vec<u8>>) {
+        let mut owner = database
+            .plan("saffui_owner")
+            .connect_directly()
+            .await
+            .expect("a connection");
+        let reading = owner.transaction().await.expect("a transaction");
+        reading
+            .execute(
+                "SELECT set_config('saffui.tenant', $1, true), set_config('saffui.realm', $2, true)",
+                &[
+                    &scope.tenant().as_uuid().to_string(),
+                    &scope.realm().as_uuid().to_string(),
+                ],
+            )
+            .await
+            .expect("the scope");
+        let row = reading
+            .query_one(
+                "SELECT (SELECT count(*) FROM refresh_tokens
+                         WHERE family_id = $1 AND revoked_at IS NOT NULL),
+                        (SELECT token_digest FROM refresh_tokens
+                         WHERE family_id = $1 AND used_at IS NOT NULL AND revoked_at IS NULL
+                         LIMIT 1)",
+                &[&family],
+            )
+            .await
+            .expect("a count");
+        (row.get(0), row.get(1))
+    };
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.revoke_refresh_family(one.family, now).await,
+        Ok(Some(EndedFamily {
+            tokens: 4_001,
+            last_issued_at: now,
+            last_used_at: Some(now - Duration::seconds(1)),
+        })),
+        "everything the family told is counted"
+    );
+    let withdrawn = work
+        .revoke_refresh_families_of_client(ada.id, "webapp", now, 10)
+        .await
+        .expect("a withdrawal");
+    work.commit().await.expect("a commit");
+
+    assert_eq!(
+        (withdrawn.families, withdrawn.tokens),
+        (1, 1),
+        "the other family, and its latest alone"
+    );
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    for family in [one.family, another.family] {
+        let (written, used) = read_written(family).await;
+        assert_eq!(written, 1, "the latest alone is written");
+        let stored = work
+            .read_refresh_token(&used.expect("a used token not written"))
+            .await
+            .expect("a read")
+            .expect("a used token");
+        assert!(
+            stored.revoked_at.is_some(),
+            "a used token not written reads revoked with its family"
+        );
+    }
 }
 
 /// Two sign-outs of one session at once: the second waits for the first,
@@ -271,7 +448,8 @@ async fn of_two_endings_of_one_session_at_once_one_ends_it() {
 
 /// The schema keeps the methods and the kinds this binary names, and no
 /// other: a session proven by nothing, by a name nobody gave, or living
-/// nowhere this binary knows, is not written.
+/// nowhere this binary knows, is not written. A session of a browser holds
+/// a secret, and an offline one none.
 #[tokio::test]
 async fn a_session_is_written_with_the_methods_and_the_kind_this_binary_names_and_no_other() {
     use saffui_core::login::session::{AuthenticationMethod, SessionKind};
@@ -294,13 +472,21 @@ async fn a_session_is_written_with_the_methods_and_the_kind_this_binary_names_an
     let every_one = format!("{{{}}}", named.join(","));
 
     let (browser, offline) = (SessionKind::Browser.name(), SessionKind::Offline.name());
+    let (secret, none) = (vec![7_u8; 32], Vec::new());
 
-    for (methods, kind, refused) in [
-        (every_one.as_str(), browser, None),
-        ("{pwd}", offline, None),
-        ("{pwd,hwk}", browser, Some(SqlState::CHECK_VIOLATION)),
-        ("{}", browser, Some(SqlState::CHECK_VIOLATION)),
-        ("{pwd}", "paper", Some(SqlState::CHECK_VIOLATION)),
+    for (methods, kind, digest, refused) in [
+        (every_one.as_str(), browser, &secret, None),
+        ("{pwd}", offline, &none, None),
+        (
+            "{pwd,hwk}",
+            browser,
+            &secret,
+            Some(SqlState::CHECK_VIOLATION),
+        ),
+        ("{}", browser, &secret, Some(SqlState::CHECK_VIOLATION)),
+        ("{pwd}", "paper", &secret, Some(SqlState::CHECK_VIOLATION)),
+        ("{pwd}", browser, &none, Some(SqlState::CHECK_VIOLATION)),
+        ("{pwd}", offline, &secret, Some(SqlState::CHECK_VIOLATION)),
     ] {
         let writing = owner.transaction().await.expect("a transaction");
         writing
@@ -314,15 +500,16 @@ async fn a_session_is_written_with_the_methods_and_the_kind_this_binary_names_an
             .execute(
                 "INSERT INTO sessions (tenant_id, realm_id, session_id, person_id, secret_digest,
                      state, kind, methods, authenticated_at, expires_at)
-                 VALUES ($1, $2, gen_random_uuid(), $3, '\\x00', 'active', $4, $5::text::text[],
+                 VALUES ($1, $2, gen_random_uuid(), $3, $4, 'active', $5, $6::text::text[],
                      now(), now() + interval '1 hour')",
-                &[&tenant, &realm, &ada.id, &kind, &methods],
+                &[&tenant, &realm, &ada.id, digest, &kind, &methods],
             )
             .await;
         assert_eq!(
             written.err().and_then(|error| error.code().cloned()),
             refused,
-            "{methods} {kind}"
+            "{methods} {kind} {} bytes of secret",
+            digest.len()
         );
     }
 }
@@ -568,6 +755,15 @@ async fn wait_for_a_waiter<T>(
     observer: &tokio_postgres::Client,
     task: &tokio::task::JoinHandle<T>,
 ) -> bool {
+    wait_for_waiters(observer, task, 1).await
+}
+
+/// As [`wait_for_a_waiter`], until `waiters` sessions wait on locks at once.
+async fn wait_for_waiters<T>(
+    observer: &tokio_postgres::Client,
+    task: &tokio::task::JoinHandle<T>,
+    waiters: i64,
+) -> bool {
     use std::time::{Duration as Wait, Instant};
 
     let deadline = Instant::now() + Wait::from_secs(3);
@@ -581,7 +777,7 @@ async fn wait_for_a_waiter<T>(
             .await
             .expect("a count")
             .get(0);
-        if waiting > 0 {
+        if waiting >= waiters {
             return true;
         }
         tokio::time::sleep(Wait::from_millis(10)).await;
@@ -679,4 +875,136 @@ async fn an_exchange_that_comes_during_a_withdrawal_finds_no_consent_to_hold() {
     withdrawal.commit().await.expect("a commit");
 
     assert_eq!(exchange.await.expect("the exchange"), Ok(None));
+}
+
+/// A factor set up and an offline token replayed at once. The first ends the
+/// sessions the password alone opened, then their tokens; the second ends the
+/// offline session of its family, then its tokens. Both lock the session
+/// first: neither waits on the other in a circle, and both finish.
+#[tokio::test]
+#[expect(clippy::too_many_lines, reason = "one race, read from top to bottom")]
+async fn a_factor_set_up_and_an_offline_replay_at_once_both_finish() {
+    use saffui_core::login::enroll::{begin_totp_enrollment, confirm_totp_enrollment};
+    use saffui_core::oidc::errors::OAuthError;
+    use saffui_core::oidc::token::{TokenRequest, grant_token};
+    use saffui_core::secret::Secret;
+    use saffui_core::testkit::crypto::PredictableCodes;
+    use saffui_core::testkit::fixtures::{
+        Application, CodeFlow, create_person, create_realm, register_application,
+        run_consented_code_flow,
+    };
+
+    const PASSWORD: &str = "correct horse battery";
+
+    let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let observer = database
+        .plan(pgcore::APP_ROLE)
+        .connect_directly()
+        .await
+        .expect("a connection");
+    let scope = create_realm(&app, "acme").await;
+    create_person(&app, scope, "ada", PASSWORD).await;
+    let partner = Application {
+        client_id: "partner",
+        redirect_uri: CALLBACK,
+        post_logout_redirect_uri: None,
+        public: true,
+        requires_consent: true,
+    };
+    register_application(&app, scope, partner).await;
+    let flow = CodeFlow {
+        realm: "acme",
+        client_id: "partner",
+        client_secret: None,
+        redirect_uri: CALLBACK,
+        scope: "openid offline_access",
+        username: "ada",
+        password: PASSWORD,
+    };
+    let granted = run_consented_code_flow(&app, flow).await;
+    let first = granted.tokens.refresh_token.expect("a refresh token");
+    let refresh = |token: String| {
+        let app = app.clone();
+        async move {
+            let request = TokenRequest {
+                grant_type: Some("refresh_token"),
+                client_id: Some("partner"),
+                refresh_token: Some(&token),
+                ..TokenRequest::default()
+            };
+            grant_token(&app, "acme", request)
+                .await
+                .map(|_| ())
+                .map_err(|failure| failure.error)
+        }
+    };
+    assert_eq!(refresh(first.clone()).await, Ok(()), "a rotation");
+    let offered = begin_totp_enrollment(&app, "acme", Some(&granted.ticket))
+        .await
+        .expect("a secret to enroll");
+    let seconds = u64::try_from(app.now().unix_timestamp()).expect("after 1970");
+    let code = PredictableCodes::compute_from_text(&offered.typed_secret, seconds);
+
+    // The offline session is held, so that both come to wait on it in turn.
+    let mut owner = database
+        .plan("saffui_owner")
+        .connect_directly()
+        .await
+        .expect("a connection");
+    let holder = owner.transaction().await.expect("a transaction");
+    holder
+        .execute(
+            "SELECT set_config('saffui.tenant', $1, true), set_config('saffui.realm', $2, true)",
+            &[
+                &scope.tenant().as_uuid().to_string(),
+                &scope.realm().as_uuid().to_string(),
+            ],
+        )
+        .await
+        .expect("the scope");
+    let held = holder
+        .query(
+            "SELECT session_id FROM sessions WHERE kind = 'offline' FOR UPDATE",
+            &[],
+        )
+        .await
+        .expect("the offline session");
+    assert_eq!(held.len(), 1, "one offline session");
+    let enrollment = {
+        let app = app.clone();
+        let ticket = saffui_core::login::session::SessionTicket {
+            session: granted.ticket.session,
+            secret: Secret::new(granted.ticket.secret.expose().to_vec()),
+        };
+        tokio::spawn(async move {
+            confirm_totp_enrollment(
+                &app,
+                "acme",
+                Some(&ticket),
+                Secret::new(PASSWORD.as_bytes().to_vec()),
+                &code,
+                None,
+                &[],
+            )
+            .await
+            .map_err(|failure| failure.code)
+        })
+    };
+    assert!(
+        wait_for_waiters(&observer, &enrollment, 1).await,
+        "the setting up of the factor waits on the session"
+    );
+    let replay = tokio::spawn(refresh(first));
+    assert!(
+        wait_for_waiters(&observer, &replay, 2).await,
+        "the replay waits on the session too, holding no token"
+    );
+    holder.rollback().await.expect("the session let go");
+
+    assert_eq!(enrollment.await.expect("the enrollment"), Ok(()));
+    assert_eq!(
+        replay.await.expect("the replay"),
+        Err(OAuthError::InvalidGrant),
+        "refused for what it is, not for a lock"
+    );
 }

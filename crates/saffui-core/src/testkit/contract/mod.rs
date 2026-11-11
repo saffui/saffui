@@ -1116,14 +1116,18 @@ pub async fn check_refresh_contract(app: &App) {
     assert!(!used.is_live(now));
 
     // A family is revoked whole, used tokens included, and once. The browser
-    // session it lived in stands; an offline one ends with its family.
+    // session it lived in stands; an offline one is ended for its family.
+    assert_eq!(
+        work.end_offline_session_of_family(family).await,
+        Ok(None),
+        "a family of a browser session leaves it standing"
+    );
     assert_eq!(
         work.revoke_refresh_family(family, now).await,
         Ok(Some(EndedFamily {
             tokens: 2,
             last_issued_at: second.issued_at,
             last_used_at: Some(now),
-            offline_session: None,
         })),
         "how many, the latest issued and the latest used"
     );
@@ -1133,12 +1137,20 @@ pub async fn check_refresh_contract(app: &App) {
         "nothing is left to revoke"
     );
     assert_eq!(
+        work.end_offline_session_of_family(offline_family).await,
+        Ok(Some(offline_session.id))
+    );
+    assert_eq!(
+        work.end_offline_session_of_family(offline_family).await,
+        Ok(None),
+        "an offline session is ended once"
+    );
+    assert_eq!(
         work.revoke_refresh_family(offline_family, now).await,
         Ok(Some(EndedFamily {
             tokens: 1,
             last_issued_at: now,
             last_used_at: None,
-            offline_session: Some(offline_session.id),
         }))
     );
     for (session, state) in [
@@ -1217,6 +1229,89 @@ pub async fn check_refresh_contract(app: &App) {
             .await,
         Ok(Some(again))
     );
+    drop(work);
+    check_that_the_oldest_offline_sessions_give_way(app).await;
+}
+
+/// Past what a person keeps offline with one client, the oldest of their
+/// offline sessions with it give way: none of another client, of a browser,
+/// or that expired already, and none twice.
+async fn check_that_the_oldest_offline_sessions_give_way(app: &App) {
+    use time::Duration;
+
+    use crate::login::session::{AuthenticationMethod, Session, SessionKind, SessionState};
+    use crate::testkit::fixtures::{create_person, create_realm};
+    use crate::tokens::store::RefreshToken;
+
+    let scope = create_realm(app, "contract-offline-bound").await;
+    let ada = create_person(app, scope, "ada", "correct horse battery").await;
+    let now = app.now();
+    let open = |kind: SessionKind, ends_in: Duration| Session {
+        id: mint_id(app).expect("an identifier"),
+        person: ada.id,
+        secret_digest: match kind {
+            SessionKind::Browser => vec![7; 32],
+            SessionKind::Offline => Vec::new(),
+        },
+        state: SessionState::Active,
+        kind,
+        methods: vec![AuthenticationMethod::Password],
+        authenticated_at: now,
+        expires_at: now + ends_in,
+    };
+    let held = [
+        (open(SessionKind::Offline, Duration::days(1)), "webapp"),
+        (open(SessionKind::Offline, Duration::days(2)), "webapp"),
+        (open(SessionKind::Offline, Duration::days(3)), "webapp"),
+        (open(SessionKind::Offline, Duration::minutes(-1)), "webapp"),
+        (open(SessionKind::Browser, Duration::hours(1)), "webapp"),
+        (open(SessionKind::Offline, Duration::hours(12)), "portal"),
+    ];
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    for (digest, (session, client_id)) in (1_u8..).zip(&held) {
+        work.insert_session(session).await.expect("a session");
+        work.insert_refresh_token(&RefreshToken {
+            token_digest: vec![digest; 32],
+            family: mint_id(app).expect("an identifier"),
+            client_id: (*client_id).to_owned(),
+            person: ada.id,
+            session: session.id,
+            scopes: vec!["openid".to_owned()],
+            issued_at: now,
+            expires_at: session.expires_at,
+        })
+        .await
+        .expect("a token");
+    }
+    work.commit().await.expect("a commit");
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.end_oldest_offline_sessions(ada.id, "webapp", 2, now)
+            .await,
+        Ok(vec![held[0].0.id]),
+        "the oldest of the three that stand gives way"
+    );
+    assert_eq!(
+        work.end_oldest_offline_sessions(ada.id, "webapp", 2, now)
+            .await,
+        Ok(Vec::new()),
+        "two stand: none gives way"
+    );
+    for (rank, (session, _)) in held.iter().enumerate() {
+        let read = work
+            .read_session(session.id)
+            .await
+            .expect("a read")
+            .expect("the session");
+        let state = if rank == 0 {
+            SessionState::Ended
+        } else {
+            SessionState::Active
+        };
+        assert_eq!(read.session.state, state, "session {rank}");
+    }
+    work.commit().await.expect("a commit");
 }
 
 /// What any storage owes to the browsers people signed in from: one is read
@@ -3221,13 +3316,14 @@ async fn check_that_a_client_loses_its_tokens_of_a_person(
             .await,
         Ok(RevokedFamilies {
             families: 3,
-            tokens: 5,
+            tokens: 3,
             named: vec![families[0].min(families[1]).min(families[5])],
             offline_sessions: 1,
         }),
-        "in each session of the person; the family revoked before is not counted, its late \
-         token is; the first family by identifier is named, and no more; the offline session \
-         of the client ends, not the one of another"
+        "in each session of the person; a used token that is not the latest is not written \
+         again, and the family revoked before is left as it was, its late token too; the \
+         first family by identifier is named, and no more; the offline session of the client \
+         ends, not the one of another"
     );
     assert_eq!(
         work.revoke_refresh_families_of_client(ada, "webapp", now, 1)

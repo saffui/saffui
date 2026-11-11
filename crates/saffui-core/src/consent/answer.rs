@@ -3,19 +3,25 @@
 //! person the request waits for.
 
 use serde_json::json;
+use time::Duration;
 use uuid::Uuid;
 
 use super::Consent;
 use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
-use crate::clients::{neutralize_unshowable, read_named_client};
+use crate::clients::{Client, neutralize_unshowable, read_named_client};
 use crate::error::{ErrorCode, Failure};
-use crate::login::session::{Session, SessionTicket, find_answering_session};
-use crate::oidc::authorize::{CodeGrant, issue_code, write_return_location};
+use crate::login::session::{
+    OFFLINE_SESSION_LIFETIME, Session, SessionTicket, find_answering_session,
+};
+use crate::oidc::authorize::{
+    CodeGrant, issue_code, leave_out_offline_access, write_return_location,
+};
 use crate::oidc::code::PendingAuthorization;
 use crate::oidc::discovery::name_issuer;
 use crate::oidc::errors::OAuthError;
+use crate::oidc::token::OFFLINE_ACCESS_SCOPE;
 use crate::ports::storage::UnitOfWork;
 use crate::secret::Secret;
 use crate::tenancy::RealmName;
@@ -28,6 +34,9 @@ pub struct ConsentPrompt {
     /// show as it is replaced. Text on the page, never markup.
     pub client_name: String,
     pub scopes: Vec<String>,
+    /// How long the client may act while the person is away, when allowing
+    /// grants it: past their sign-out, until they withdraw it from their account.
+    pub offline_access: Option<Duration>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,6 +47,19 @@ pub enum ConsentDecision {
 
 fn expire() -> Failure {
     Failure::new(ErrorCode::AuthorizationRequestExpired)
+}
+
+/// What allowing a client on the page grants of the scopes asked: all of
+/// them to a client that requires consent; to another, all but
+/// `offline_access`, which would outlive any consent the person could
+/// withdraw. It is left out in silence, as OpenID Connect Core 1.0, section
+/// 11, allows.
+fn grant_on_the_page(client: &Client, asked: &[String]) -> Vec<String> {
+    if client.requires_consent {
+        asked.to_vec()
+    } else {
+        leave_out_offline_access(asked)
+    }
 }
 
 /// Checks that a request read or taken waits for a consent, from this
@@ -89,9 +111,14 @@ pub async fn describe_consent(
         .await?
         .filter(|client| client.enabled && client.allows_authorization_code)
         .ok_or(Failure::new(ErrorCode::ClientNotFound))?;
+    let granted = grant_on_the_page(&client, &pending.scopes);
     Ok(ConsentPrompt {
         client_name: neutralize_unshowable(&client.name),
-        scopes: pending.scopes,
+        scopes: leave_out_offline_access(&granted),
+        offline_access: granted
+            .iter()
+            .any(|scope| scope == OFFLINE_ACCESS_SCOPE)
+            .then_some(OFFLINE_SESSION_LIFETIME),
     })
 }
 
@@ -149,12 +176,14 @@ async fn allow_client(
         .filter(|client| client.enabled && client.allows_authorization_code)
         .ok_or(Failure::new(ErrorCode::ClientNotFound))?;
     // Kept only for a client that requires it: to another, `prompt=consent`
-    // asks once, and nothing stands to be withdrawn.
+    // asks once, nothing stands to be withdrawn, and so nothing is granted
+    // that outlives the browser session.
+    let given = grant_on_the_page(&client, &pending.scopes);
     if client.requires_consent {
         work.add_consent(&Consent {
             person: session.person,
             client_id: client.client_id.clone(),
-            scopes: pending.scopes.clone(),
+            scopes: given.clone(),
             granted_at: app.now(),
         })
         .await?;
@@ -166,7 +195,7 @@ async fn allow_client(
             realm,
             client_id: &client.client_id,
             redirect_uri: &pending.redirect_uri,
-            scopes: &pending.scopes,
+            scopes: &given,
             state: pending.state.as_deref(),
             nonce: pending.nonce.as_deref(),
             code_challenge: &pending.code_challenge,
@@ -181,7 +210,7 @@ async fn allow_client(
         "client_id": client.client_id,
         "kept": client.requires_consent,
         "person_id": session.person.to_string(),
-        "scopes": pending.scopes,
+        "scopes": given,
         "session_id": session.id.to_string(),
     });
     record_event(app, work, EventKind::ConsentGranted, granted).await?;
@@ -447,6 +476,7 @@ mod tests {
             Ok(ConsentPrompt {
                 client_name: "Partner <b>Inc</b>".to_owned(),
                 scopes: vec!["openid".to_owned()],
+                offline_access: None,
             }),
             "the name is given as it was written: the page writes it as text"
         );
@@ -1415,6 +1445,108 @@ mod tests {
         assert_eq!(
             read_outcome(ask_partner(&scenario, "openid offline_access", None)),
             "invalid_scope"
+        );
+    }
+
+    /// Asks `client_id` to have `ada` consent again to `scope`, and signs her
+    /// in: the request then waits on the page.
+    fn sign_in_asked_again(
+        scenario: &Scenario,
+        client_id: &str,
+        scope: &str,
+    ) -> (Uuid, Secret, SessionTicket) {
+        let asked = Asked {
+            client_id,
+            scope,
+            prompt: Some("consent"),
+            hint: None,
+        };
+        let Ok(Authorization::SignInRequired {
+            request,
+            browser_secret,
+        }) = ask(scenario, &asked, None)
+        else {
+            panic!("a person without a session signs in first");
+        };
+        let step = sign_in_again(scenario, request, &browser_secret).expect("a signed-in person");
+        let SignInStep::ConsentRequired(signed_in) = step else {
+            panic!("asked again, the person answers on the page: {step:?}");
+        };
+        (request, browser_secret, signed_in.ticket)
+    }
+
+    #[test]
+    fn a_client_that_requires_no_consent_is_given_nothing_offline_even_allowed_on_the_page() {
+        let scenario = Scenario::start();
+        let (request, browser_secret, ticket) =
+            sign_in_asked_again(&scenario, "webapp", "openid offline_access");
+
+        let prompt = complete(describe_consent(
+            &scenario.app,
+            "acme",
+            request,
+            &browser_secret,
+            Some(&ticket),
+        ))
+        .expect("the page");
+        assert_eq!(
+            prompt.scopes,
+            ["openid"],
+            "nothing is offered it would not give"
+        );
+        assert_eq!(prompt.offline_access, None);
+        let location = answer(
+            &scenario,
+            request,
+            &browser_secret,
+            Some(&ticket),
+            ConsentDecision::Allow,
+        )
+        .expect("an allowed client");
+        let tokens = scenario.exchange_as("webapp", &read_code(&location).expect("a code"));
+
+        assert_eq!(
+            tokens.scope, "openid",
+            "nobody could withdraw a grant offline from this client"
+        );
+        let issued = scenario
+            .storage
+            .read_audit_envelopes(scenario.scope.realm())
+            .into_iter()
+            .rev()
+            .find(|event| event["kind"] == "token.issued")
+            .expect("the exchange");
+        assert_eq!(issued["payload"]["session_kind"], "browser", "{issued}");
+        assert_eq!(
+            issued["payload"]["session_id"],
+            ticket.session.to_string(),
+            "the grant lives in the browser session: {issued}"
+        );
+    }
+
+    #[test]
+    fn the_page_says_how_long_a_client_that_requires_consent_may_act_offline() {
+        use crate::login::session::OFFLINE_SESSION_LIFETIME;
+
+        let scenario = Scenario::start();
+        scenario.register_partner();
+        let (request, browser_secret, ticket) =
+            sign_in_asked_again(&scenario, "partner", "openid offline_access");
+
+        assert_eq!(
+            complete(describe_consent(
+                &scenario.app,
+                "acme",
+                request,
+                &browser_secret,
+                Some(&ticket),
+            )),
+            Ok(ConsentPrompt {
+                client_name: "partner".to_owned(),
+                scopes: vec!["openid".to_owned()],
+                offline_access: Some(OFFLINE_SESSION_LIFETIME),
+            }),
+            "said in words, not as a scope"
         );
     }
 }

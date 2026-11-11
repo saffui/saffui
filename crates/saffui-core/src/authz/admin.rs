@@ -234,6 +234,7 @@ mod tests {
     #[test]
     fn a_token_issued_for_a_person_opens_nothing_whatever_its_client_may_do() {
         use crate::ids::mint_id;
+        use crate::login::session::{AuthenticationMethod, Session, SessionKind, SessionState};
         use crate::oidc::discovery::name_issuer;
         use crate::tenancy::RealmName;
         use crate::tokens::mint::{AccessTokenSubject, mint_access_token, open_minting_key};
@@ -245,6 +246,17 @@ mod tests {
         let person = mint_id(&app).expect("an identifier").to_string();
         let scopes = ["admin".to_owned()];
         // What a person would hold had they signed in through that client.
+        let now = app.now();
+        let session = Session {
+            id: mint_id(&app).expect("an identifier"),
+            person: uuid::Uuid::parse_str(&person).expect("an identifier"),
+            secret_digest: vec![1; 32],
+            state: SessionState::Active,
+            kind: SessionKind::Browser,
+            methods: vec![AuthenticationMethod::Password],
+            authenticated_at: now,
+            expires_at: now + time::Duration::hours(1),
+        };
         let mut work = complete(app.storage.begin(scope)).expect("a unit of work");
         let key = complete(open_minting_key(&app, work.as_mut())).expect("the key of the realm");
         let lent = mint_access_token(
@@ -255,7 +267,7 @@ mod tests {
                 subject: &person,
                 client_id: "operator",
                 scopes: &scopes,
-                session: Some(mint_id(&app).expect("an identifier")),
+                session: Some(&session),
                 roles: None,
             },
         )

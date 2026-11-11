@@ -7,7 +7,7 @@ use pgcore::{APP_ROLE, MAINTENANCE_ROLE, RETENTION_ROLE};
 use saffui_core::app::App;
 use saffui_core::directory::Person;
 use saffui_core::ids::mint_id;
-use saffui_core::login::session::{AuthenticationMethod, Session, SessionState};
+use saffui_core::login::session::{AuthenticationMethod, Session, SessionKind, SessionState};
 use saffui_core::login::store::KnownBrowser;
 use saffui_core::oidc::code::{AuthorizationCode, PendingAuthorization};
 use saffui_core::ports::storage::{StorageError, StorageUnavailable};
@@ -60,6 +60,7 @@ async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
             person: person.id,
             secret_digest: vec![digest; 32],
             state: SessionState::Active,
+            kind: SessionKind::Browser,
             methods: vec![AuthenticationMethod::Password],
             authenticated_at: now - Duration::hours(12),
             expires_at,
@@ -616,6 +617,7 @@ async fn plant_expired_sessions(
         person: person.id,
         secret_digest: vec![digest; 32],
         state: SessionState::Active,
+        kind: SessionKind::Browser,
         methods: vec![AuthenticationMethod::Password],
         authenticated_at: now - Duration::hours(13),
         expires_at: now - Duration::hours(1),
@@ -988,4 +990,75 @@ async fn keep_a_browser_again_while_its_batch_waits(
         .await
         .expect("a connection");
     assert_eq!(count_rows(&maintenance).await[4], 2, "both browsers stay");
+}
+
+/// An offline session lives far longer than one of a browser, and goes at
+/// its end as one does, with its tokens. Ended before, it is kept until then.
+#[tokio::test]
+async fn an_offline_session_is_purged_at_its_end_with_its_tokens_and_kept_until_then() {
+    let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let now = app.now();
+    let scope = create_realm(&app, "retention-offline").await;
+    let identify = || mint_id(&app).expect("an identifier");
+    let person = Person {
+        id: identify(),
+        username: "ada".to_owned(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        enabled: true,
+        created_at: now,
+    };
+    let offline = |state, ends_in| Session {
+        id: identify(),
+        person: person.id,
+        secret_digest: Vec::new(),
+        state,
+        kind: SessionKind::Offline,
+        methods: vec![AuthenticationMethod::Password],
+        authenticated_at: now - Duration::days(90),
+        expires_at: now + ends_in,
+    };
+    let past = offline(SessionState::Active, Duration::minutes(-1));
+    let ended_early = offline(SessionState::Ended, Duration::days(30));
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.insert_person(&person).await.expect("a person");
+    for (digest, session) in [(1_u8, &past), (2, &ended_early)] {
+        work.insert_session(session).await.expect("a session");
+        work.insert_refresh_token(&RefreshToken {
+            token_digest: vec![digest; 32],
+            family: identify(),
+            client_id: "portal".to_owned(),
+            person: person.id,
+            session: session.id,
+            scopes: vec!["openid".to_owned(), "offline_access".to_owned()],
+            issued_at: now - Duration::days(1),
+            expires_at: session.expires_at,
+        })
+        .await
+        .expect("a refresh token");
+    }
+    work.commit().await.expect("a commit");
+    let retention = PgRetention::new(database.plan(RETENTION_ROLE));
+
+    run_retention_pass(&retention, now, TIME_ENOUGH)
+        .await
+        .expect("a pass")
+        .expect("this node's pass");
+
+    let maintenance = database
+        .plan(MAINTENANCE_ROLE)
+        .connect_directly()
+        .await
+        .expect("a connection");
+    assert_eq!(
+        count_session_and_tokens(&maintenance, &past).await,
+        (0, 0),
+        "past its end, with its tokens"
+    );
+    assert_eq!(
+        count_session_and_tokens(&maintenance, &ended_early).await,
+        (1, 1),
+        "ended before its end, kept until then"
+    );
 }

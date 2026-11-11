@@ -103,6 +103,103 @@ impl Scenario {
         Secret::new(self.service_secret.expose().to_vec())
     }
 
+    /// Signs `ada` in for the public client `client_id`, which asks her to
+    /// consent again (`prompt=consent`); she allows it `scope` on the page,
+    /// and the code is exchanged.
+    pub(crate) fn sign_in_and_consent(&self, client_id: &str, scope: &str) -> SignedInApplication {
+        use base64::Engine as _;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+        use super::authorize::{
+            Authorization, AuthorizationParameters, SignInAnswer, SignInStep, TypedSignIn,
+            begin_authorization, finish_sign_in,
+        };
+        use crate::consent::answer::{ConsentDecision, answer_consent};
+
+        const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+
+        let challenge = URL_SAFE_NO_PAD.encode(self.app.digester.sha256(VERIFIER.as_bytes()));
+        let parameters = AuthorizationParameters {
+            response_type: Some("code"),
+            client_id: Some(client_id),
+            redirect_uri: Some(CALLBACK),
+            scope: Some(scope),
+            nonce: Some("a-nonce"),
+            code_challenge: Some(&challenge),
+            code_challenge_method: Some("S256"),
+            prompt: Some("consent"),
+            ..AuthorizationParameters::default()
+        };
+        let Ok(Authorization::SignInRequired {
+            request,
+            browser_secret,
+        }) = complete(begin_authorization(&self.app, "acme", parameters, None))
+        else {
+            panic!("a person without a session signs in first");
+        };
+        let typed = TypedSignIn {
+            answer: SignInAnswer::Password {
+                name: "ada",
+                password: Secret::new(PASSWORD.as_bytes().to_vec()),
+            },
+            caller: None,
+            known_browsers: &[],
+        };
+        let step = complete(finish_sign_in(
+            &self.app,
+            "acme",
+            request,
+            &browser_secret,
+            typed,
+        ))
+        .expect("a signed-in person");
+        let SignInStep::ConsentRequired(signed_in) = step else {
+            panic!("asked to consent again, the person answers on the page: {step:?}");
+        };
+        let location = complete(answer_consent(
+            &self.app,
+            "acme",
+            request,
+            &browser_secret,
+            Some(&signed_in.ticket),
+            ConsentDecision::Allow,
+        ))
+        .expect("an allowed client");
+        let code = location
+            .split_once("code=")
+            .and_then(|(_, rest)| rest.split('&').next())
+            .expect("a code in the redirection")
+            .to_owned();
+        let exchange = TokenRequest {
+            grant_type: Some("authorization_code"),
+            client_id: Some(client_id),
+            code: Some(&code),
+            redirect_uri: Some(CALLBACK),
+            code_verifier: Some(VERIFIER),
+            ..TokenRequest::default()
+        };
+        let tokens =
+            complete(grant_token(&self.app, "acme", exchange)).expect("tokens for the code");
+        SignedInApplication {
+            tokens,
+            ticket: signed_in.ticket,
+            code,
+        }
+    }
+
+    /// Whether the service `billing` is told that a token stands.
+    pub(crate) fn is_token_active(&self, token: &str) -> bool {
+        complete(super::introspect::introspect_token(
+            &self.app,
+            "acme",
+            Some("billing"),
+            Some(self.copy_service_secret()),
+            Some(token),
+        ))
+        .expect("an answer")
+        .active
+    }
+
     /// Ends the session of `ticket`, as a sign-out does.
     pub(crate) fn end_session(&self, ticket: &SessionTicket) {
         let mut work = complete(self.app.storage.begin(self.scope)).expect("a unit of work");

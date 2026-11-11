@@ -622,7 +622,9 @@ pub async fn check_persons_contract(app: &App) {
 pub async fn check_sign_in_contract(app: &App) {
     use time::Duration;
 
-    use crate::login::session::{AuthenticationMethod, ReadSession, Session, SessionState};
+    use crate::login::session::{
+        AuthenticationMethod, ReadSession, Session, SessionKind, SessionState,
+    };
     use crate::testkit::fixtures::{create_person, create_realm};
 
     let scope = create_realm(app, "contract-sign-in").await;
@@ -630,27 +632,40 @@ pub async fn check_sign_in_contract(app: &App) {
     let ada = create_person(app, scope, "ada", "correct horse battery").await;
     let now = app.now();
 
-    // A session is read back equal, in its realm only.
+    // A session is read back equal, in its realm only. An offline one has
+    // no secret, and says what it is.
     let session = Session {
         id: mint_id(app).expect("an identifier"),
         person: ada.id,
         secret_digest: vec![3; 32],
         state: SessionState::Active,
+        kind: SessionKind::Browser,
         methods: vec![AuthenticationMethod::Password],
         authenticated_at: now,
         expires_at: now + Duration::hours(1),
     };
+    let offline = Session {
+        id: mint_id(app).expect("an identifier"),
+        secret_digest: Vec::new(),
+        kind: SessionKind::Offline,
+        ..session.clone()
+    };
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
     work.insert_session(&session).await.expect("a session");
+    work.insert_session(&offline)
+        .await
+        .expect("an offline session");
     work.commit().await.expect("a commit");
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
-    assert_eq!(
-        work.read_session(session.id).await,
-        Ok(Some(ReadSession {
-            session: session.clone(),
-            person_holds_factor: false,
-        }))
-    );
+    for kept in [&session, &offline] {
+        assert_eq!(
+            work.read_session(kept.id).await,
+            Ok(Some(ReadSession {
+                session: kept.clone(),
+                person_holds_factor: false,
+            }))
+        );
+    }
     let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
     assert_eq!(elsewhere.read_session(session.id).await, Ok(None));
 
@@ -699,7 +714,7 @@ pub async fn check_sign_in_contract(app: &App) {
 pub async fn check_codes_contract(app: &App) {
     use time::Duration;
 
-    use crate::login::session::{AuthenticationMethod, Session, SessionState};
+    use crate::login::session::{AuthenticationMethod, Session, SessionKind, SessionState};
     use crate::oidc::code::PendingAuthorization;
     use crate::testkit::fixtures::{create_person, create_realm};
 
@@ -714,6 +729,7 @@ pub async fn check_codes_contract(app: &App) {
         person: ada.id,
         secret_digest: vec![3; 32],
         state: SessionState::Active,
+        kind: SessionKind::Browser,
         methods: vec![AuthenticationMethod::Password],
         authenticated_at: now,
         expires_at: now + Duration::hours(1),
@@ -982,7 +998,7 @@ async fn check_what_a_replayed_code_finds(
 pub async fn check_refresh_contract(app: &App) {
     use time::Duration;
 
-    use crate::login::session::{AuthenticationMethod, Session, SessionState};
+    use crate::login::session::{AuthenticationMethod, Session, SessionKind, SessionState};
     use crate::testkit::fixtures::{create_person, create_realm};
     use crate::tokens::store::{EndedFamily, RefreshToken};
 
@@ -995,11 +1011,17 @@ pub async fn check_refresh_contract(app: &App) {
         person: ada.id,
         secret_digest: vec![7; 32],
         state: SessionState::Active,
+        kind: SessionKind::Browser,
         methods: vec![AuthenticationMethod::Password],
         authenticated_at: now,
         expires_at: now + Duration::hours(1),
     };
     let (first_session, second_session) = (open(), open());
+    let offline_session = Session {
+        secret_digest: Vec::new(),
+        kind: SessionKind::Offline,
+        ..open()
+    };
     let mint = |digest: u8, family: Uuid, session: &Session, lifetime: Duration| RefreshToken {
         token_digest: vec![digest; 32],
         family,
@@ -1019,6 +1041,8 @@ pub async fn check_refresh_contract(app: &App) {
     };
     let stale = mint(3, other_family, &second_session, Duration::seconds(-1));
     let apart = mint(4, other_family, &second_session, Duration::minutes(30));
+    let offline_family = mint_id(app).expect("an identifier");
+    let held_offline = mint(8, offline_family, &offline_session, Duration::minutes(30));
 
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
     work.insert_session(&first_session)
@@ -1027,7 +1051,10 @@ pub async fn check_refresh_contract(app: &App) {
     work.insert_session(&second_session)
         .await
         .expect("a second session");
-    for token in [&first, &second, &stale, &apart] {
+    work.insert_session(&offline_session)
+        .await
+        .expect("an offline session");
+    for token in [&first, &second, &stale, &apart, &held_offline] {
         work.insert_refresh_token(token).await.expect("a token");
     }
     work.commit().await.expect("a commit");
@@ -1088,13 +1115,15 @@ pub async fn check_refresh_contract(app: &App) {
     assert_eq!(used.used_at, Some(now));
     assert!(!used.is_live(now));
 
-    // A family is revoked whole, used tokens included, and once.
+    // A family is revoked whole, used tokens included, and once. The browser
+    // session it lived in stands; an offline one ends with its family.
     assert_eq!(
         work.revoke_refresh_family(family, now).await,
         Ok(Some(EndedFamily {
             tokens: 2,
             last_issued_at: second.issued_at,
             last_used_at: Some(now),
+            offline_session: None,
         })),
         "how many, the latest issued and the latest used"
     );
@@ -1103,6 +1132,26 @@ pub async fn check_refresh_contract(app: &App) {
         Ok(None),
         "nothing is left to revoke"
     );
+    assert_eq!(
+        work.revoke_refresh_family(offline_family, now).await,
+        Ok(Some(EndedFamily {
+            tokens: 1,
+            last_issued_at: now,
+            last_used_at: None,
+            offline_session: Some(offline_session.id),
+        }))
+    );
+    for (session, state) in [
+        (&first_session, SessionState::Active),
+        (&offline_session, SessionState::Ended),
+    ] {
+        let read = work
+            .read_session(session.id)
+            .await
+            .expect("a read")
+            .expect("the session");
+        assert_eq!(read.session.state, state, "{:?}", session.kind);
+    }
     assert_eq!(
         work.spend_refresh_token(&second.token_digest, "webapp", now)
             .await,
@@ -1335,7 +1384,7 @@ async fn ask_whether_holder(
 ) -> [bool; 2] {
     use time::Duration;
 
-    use crate::login::session::{AuthenticationMethod, Session, SessionState};
+    use crate::login::session::{AuthenticationMethod, Session, SessionKind, SessionState};
 
     let now = app.now();
     let session = Session {
@@ -1343,6 +1392,7 @@ async fn ask_whether_holder(
         person,
         secret_digest: vec![8; 32],
         state: SessionState::Active,
+        kind: SessionKind::Browser,
         methods: vec![AuthenticationMethod::Password],
         authenticated_at: now,
         expires_at: now + Duration::hours(1),
@@ -1485,7 +1535,7 @@ pub async fn check_authenticators_contract(app: &App) {
 pub async fn check_ended_sessions_contract(app: &App) {
     use time::Duration;
 
-    use crate::login::session::{AuthenticationMethod, Session, SessionState};
+    use crate::login::session::{AuthenticationMethod, Session, SessionKind, SessionState};
     use crate::testkit::fixtures::{create_person, create_realm};
     use crate::tokens::store::RefreshToken;
 
@@ -1500,6 +1550,7 @@ pub async fn check_ended_sessions_contract(app: &App) {
         person,
         secret_digest: vec![9; 32],
         state: SessionState::Active,
+        kind: SessionKind::Browser,
         methods: methods.to_vec(),
         authenticated_at: now,
         expires_at: now + Duration::hours(1),
@@ -3075,7 +3126,7 @@ async fn check_that_a_request_waits_for_one_consent(app: &App, scope: RealmScope
 
 /// The live tokens of one client for one person go together, in every
 /// session of theirs and no other; each family is counted once, and named
-/// within the bound.
+/// within the bound. The offline sessions they lived in end with them.
 #[expect(
     clippy::too_many_lines,
     reason = "one contract, read from top to bottom"
@@ -3088,7 +3139,7 @@ async fn check_that_a_client_loses_its_tokens_of_a_person(
 ) {
     use time::Duration;
 
-    use crate::login::session::{AuthenticationMethod, Session, SessionState};
+    use crate::login::session::{AuthenticationMethod, Session, SessionKind, SessionState};
     use crate::tokens::store::{RefreshToken, RevokedFamilies};
 
     let now = app.now();
@@ -3097,11 +3148,17 @@ async fn check_that_a_client_loses_its_tokens_of_a_person(
         person,
         secret_digest: vec![7; 32],
         state: SessionState::Active,
+        kind: SessionKind::Browser,
         methods: vec![AuthenticationMethod::Password],
         authenticated_at: now,
         expires_at: now + Duration::hours(1),
     };
-    let sessions = [open(ada), open(ada), open(bob)];
+    let offline = |person: Uuid| Session {
+        secret_digest: Vec::new(),
+        kind: SessionKind::Offline,
+        ..open(person)
+    };
+    let sessions = [open(ada), open(ada), open(bob), offline(ada), offline(ada)];
     let mint = |digest: u8, family: Uuid, client_id: &str, session: &Session| RefreshToken {
         token_digest: vec![digest; 32],
         family,
@@ -3112,7 +3169,7 @@ async fn check_that_a_client_loses_its_tokens_of_a_person(
         issued_at: now,
         expires_at: now + Duration::minutes(30),
     };
-    let families: Vec<Uuid> = (0..5)
+    let families: Vec<Uuid> = (0..7)
         .map(|_| mint_id(app).expect("an identifier"))
         .collect();
     let first = mint(1, families[0], "webapp", &sessions[0]);
@@ -3124,12 +3181,22 @@ async fn check_that_a_client_loses_its_tokens_of_a_person(
     let of_portal = mint(4, families[2], "portal", &sessions[0]);
     let of_bob = mint(5, families[3], "webapp", &sessions[2]);
     let told_before = mint(6, families[4], "webapp", &sessions[1]);
+    let held_offline = mint(8, families[5], "webapp", &sessions[3]);
+    let offline_of_portal = mint(9, families[6], "portal", &sessions[4]);
 
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
     for session in &sessions {
         work.insert_session(session).await.expect("a session");
     }
-    for token in [&first, &elsewhere, &of_portal, &of_bob, &told_before] {
+    for token in [
+        &first,
+        &elsewhere,
+        &of_portal,
+        &of_bob,
+        &told_before,
+        &held_offline,
+        &offline_of_portal,
+    ] {
         work.insert_refresh_token(token).await.expect("a token");
     }
     work.spend_refresh_token(&first.token_digest, "webapp", now)
@@ -3153,12 +3220,14 @@ async fn check_that_a_client_loses_its_tokens_of_a_person(
         work.revoke_refresh_families_of_client(ada, "webapp", now, 1)
             .await,
         Ok(RevokedFamilies {
-            families: 2,
-            tokens: 4,
-            named: vec![families[0].min(families[1])],
+            families: 3,
+            tokens: 5,
+            named: vec![families[0].min(families[1]).min(families[5])],
+            offline_sessions: 1,
         }),
         "in each session of the person; the family revoked before is not counted, its late \
-         token is; the first family by identifier is named, and no more"
+         token is; the first family by identifier is named, and no more; the offline session \
+         of the client ends, not the one of another"
     );
     assert_eq!(
         work.revoke_refresh_families_of_client(ada, "webapp", now, 1)
@@ -3167,6 +3236,7 @@ async fn check_that_a_client_loses_its_tokens_of_a_person(
             families: 0,
             tokens: 0,
             named: Vec::new(),
+            offline_sessions: 0,
         }),
         "what is revoked is not revoked again"
     );
@@ -3175,8 +3245,10 @@ async fn check_that_a_client_loses_its_tokens_of_a_person(
         (&rotated, false),
         (&elsewhere, false),
         (&late, false),
+        (&held_offline, false),
         (&of_portal, true),
         (&of_bob, true),
+        (&offline_of_portal, true),
     ] {
         let stored = work
             .read_refresh_token(&token.token_digest)
@@ -3189,6 +3261,18 @@ async fn check_that_a_client_loses_its_tokens_of_a_person(
             "token {}",
             token.token_digest[0]
         );
+    }
+    for (session, state) in [
+        (&sessions[0], SessionState::Active),
+        (&sessions[3], SessionState::Ended),
+        (&sessions[4], SessionState::Active),
+    ] {
+        let read = work
+            .read_session(session.id)
+            .await
+            .expect("a read")
+            .expect("the session");
+        assert_eq!(read.session.state, state, "{:?}", session.kind);
     }
     work.commit().await.expect("a commit");
 }

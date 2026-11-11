@@ -14,13 +14,14 @@ use crate::clients::authenticate::identify_client;
 use crate::error::{ErrorCode, Failure};
 use crate::instant::write_instant;
 use crate::login::session::read_live_subject;
+use crate::ports::storage::UnitOfWork;
 use crate::tenancy::{RealmName, RealmScope};
 use crate::tokens::mint::RefreshGrant;
 use crate::tokens::store::EndedFamily;
 
 /// The event of a family taken back. It names the session, and keeps what
 /// the tokens told: they go with their session, and a theft is traced later.
-pub(super) fn describe_family_end(
+fn describe_family_end(
     client_id: &str,
     family: Uuid,
     person: Uuid,
@@ -33,11 +34,31 @@ pub(super) fn describe_family_end(
         "family": family.to_string(),
         "last_issued_at": write_instant(ended.last_issued_at),
         "last_used_at": ended.last_used_at.map(write_instant),
+        "offline_session_ended": ended.offline_session.map(|ended| ended.to_string()),
         "person_id": person.to_string(),
         "reason": reason,
         "session_id": session.to_string(),
         "tokens": ended.tokens,
     })
+}
+
+/// Ends one grant of `client_id`: every token of its family, and the offline
+/// session it lived in, if any. Said in the chain once, with `reason`: a
+/// family ended before is not said again, however often it comes back.
+pub(super) async fn end_grant(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    client_id: &str,
+    family: Uuid,
+    person: Uuid,
+    session: Uuid,
+    reason: &str,
+) -> Result<(), Failure> {
+    let Some(ended) = work.revoke_refresh_family(family, app.now()).await? else {
+        return Ok(());
+    };
+    let told = describe_family_end(client_id, family, person, session, reason, &ended);
+    record_event(app, work, EventKind::TokenRevoked, told).await
 }
 
 pub(super) async fn rotate_refresh_token(
@@ -68,8 +89,7 @@ pub(super) async fn rotate_refresh_token(
     let Some(spent) = spent else {
         // A token presented after it was used is a token someone copied.
         // Which of the two holders is the thief cannot be told: neither keeps
-        // what descends from it. A family revoked already is written no more,
-        // however often its tokens come back.
+        // what descends from it.
         let replayed = work
             .read_refresh_token(&digest)
             .await
@@ -81,21 +101,16 @@ pub(super) async fn rotate_refresh_token(
             });
         if let Some(replayed) = replayed {
             let token = &replayed.token;
-            let ended = work
-                .revoke_refresh_family(token.family, now)
-                .await
-                .map_err(Failure::from)?;
-            if let Some(ended) = ended {
-                let told = describe_family_end(
-                    &client.client_id,
-                    token.family,
-                    token.person,
-                    token.session,
-                    "replayed",
-                    &ended,
-                );
-                record_event(app, work.as_mut(), EventKind::TokenRevoked, told).await?;
-            }
+            end_grant(
+                app,
+                work.as_mut(),
+                &client.client_id,
+                token.family,
+                token.person,
+                token.session,
+                "replayed",
+            )
+            .await?;
             work.commit().await.map_err(Failure::from)?;
         }
         return Err(invalid());
@@ -441,6 +456,111 @@ mod tests {
             "a confidential client that presents no secret is not identified"
         );
         assert!(scenario.refresh(&presented).is_ok());
+    }
+
+    #[test]
+    fn an_offline_grant_outlives_the_sign_out_never_its_ninety_days_and_keeps_one_sid() {
+        use crate::oidc::logout::confirm_logout;
+
+        let scenario = Scenario::start();
+        let signed_in = scenario.sign_in_and_consent("webapp", "openid offline_access");
+        assert_eq!(signed_in.tokens.scope, "openid offline_access");
+        let first = read_claims(signed_in.tokens.id_token.as_deref().expect("an identity"));
+        assert_ne!(
+            first["sid"],
+            signed_in.ticket.session.to_string(),
+            "the grant lives in a session of its own from its first token"
+        );
+        let opened = scenario
+            .storage
+            .read_audit_envelopes(scenario.scope.realm())
+            .into_iter()
+            .rev()
+            .find(|event| event["kind"] == "session.opened")
+            .expect("the offline session is said opened");
+        assert_eq!(opened["payload"]["kind"], "offline", "{opened}");
+        assert_eq!(opened["payload"]["session_id"], first["sid"], "{opened}");
+        assert_eq!(
+            opened["payload"]["from_session_id"],
+            signed_in.ticket.session.to_string(),
+            "{opened}"
+        );
+        let presented = signed_in.tokens.refresh_token.expect("a refresh token");
+
+        complete(confirm_logout(&scenario.app, "acme", &signed_in.ticket)).expect("a sign-out");
+        scenario.clock.advance(Duration::from_hours(13));
+        let after = scenario
+            .refresh(&presented)
+            .expect("the grant outlives the browser session");
+
+        let identity = read_claims(after.id_token.as_deref().expect("an identity token"));
+        assert_eq!(
+            identity["sid"], first["sid"],
+            "one session for the whole grant"
+        );
+        assert_eq!(read_claims(&after.access_token)["sid"], first["sid"]);
+        assert_eq!(
+            identity["auth_time"], first["auth_time"],
+            "an offline session says when the person signed in, not more"
+        );
+        assert_eq!(identity["acr"], "1");
+        let mut token = after.refresh_token.expect("the next refresh token");
+        for _ in 0..3 {
+            scenario.clock.advance(Duration::from_hours(24 * 25));
+            token = scenario
+                .refresh(&token)
+                .expect("used within its thirty days")
+                .refresh_token
+                .expect("the next refresh token");
+        }
+        scenario.clock.advance(Duration::from_hours(24 * 25));
+        assert_eq!(
+            scenario.refresh(&token).map(|tokens| tokens.scope),
+            Err(OAuthError::InvalidGrant),
+            "an offline session ends after ninety days, used or not"
+        );
+    }
+
+    #[test]
+    fn an_offline_token_presented_twice_ends_its_session_and_leaves_the_browser_one() {
+        use crate::login::session::find_live_session;
+
+        let scenario = Scenario::start();
+        let signed_in = scenario.sign_in_and_consent("webapp", "openid offline_access");
+        let first = signed_in.tokens.refresh_token.expect("a refresh token");
+        let after = scenario.refresh(&first).expect("new tokens");
+        assert!(scenario.is_token_active(&after.access_token));
+
+        assert_eq!(
+            scenario.refresh(&first).map(|tokens| tokens.scope),
+            Err(OAuthError::InvalidGrant)
+        );
+
+        assert!(
+            !scenario.is_token_active(&after.access_token),
+            "the offline session ended with its grant: its tokens answer for nobody"
+        );
+        let mut work =
+            complete(scenario.app.storage.begin(scenario.scope)).expect("a unit of work");
+        let browser = complete(find_live_session(
+            &scenario.app,
+            work.as_mut(),
+            &signed_in.ticket,
+        ))
+        .expect("a read");
+        assert!(browser.is_some(), "the browser session stands");
+        let revoked = scenario
+            .storage
+            .read_audit_envelopes(scenario.scope.realm())
+            .into_iter()
+            .find(|event| event["kind"] == "token.revoked")
+            .expect("the replay");
+        assert_eq!(revoked["payload"]["reason"], "replayed", "{revoked}");
+        assert_eq!(
+            revoked["payload"]["offline_session_ended"],
+            read_claims(&after.access_token)["sid"],
+            "{revoked}"
+        );
     }
 
     #[test]

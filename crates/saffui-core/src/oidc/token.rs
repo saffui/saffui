@@ -8,7 +8,7 @@ use serde_json::json;
 use super::discovery::name_issuer;
 use super::errors::OAuthFailure;
 use super::pkce::matches_challenge;
-use super::refresh::{describe_family_end, rotate_refresh_token};
+use super::refresh::{end_grant, rotate_refresh_token};
 use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
@@ -19,7 +19,7 @@ use crate::consent::{ConsentTerms, is_consent_owed};
 use crate::directory::Person;
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
-use crate::login::session::{Session, read_live_subject};
+use crate::login::session::{Session, SessionKind, open_offline_session, read_live_subject};
 use crate::ports::storage::UnitOfWork;
 use crate::secret::Secret;
 use crate::tenancy::resolve::resolve_realm;
@@ -28,6 +28,9 @@ use crate::tokens::mint::{
     AccessTokenSubject, IdentityTokenSubject, RefreshGrant, issue_refresh_token, mint_access_token,
     mint_identity_token, open_minting_key,
 };
+
+/// The scope by which a client asks to act while the person is away.
+pub const OFFLINE_ACCESS_SCOPE: &str = "offline_access";
 
 /// What a client sent to the token endpoint, already read from the request.
 #[derive(Default)]
@@ -257,33 +260,66 @@ async fn exchange_code(
     if !bound {
         return Err(invalid());
     }
+    // A code carries `offline_access` only when the person allowed it on the
+    // page of its request. The grant then lives in a session of its own, from
+    // its first token: the end of the browser session leaves it standing.
+    let offline = if code
+        .scopes
+        .iter()
+        .any(|scope| scope == OFFLINE_ACCESS_SCOPE)
+    {
+        Some(open_offline_session(app, work.as_mut(), &session).await?)
+    } else {
+        None
+    };
+    let held_in = offline.as_ref().unwrap_or(&session);
     let issuer = name_issuer(&app.settings, realm_name);
     let granted = Granted {
         issuer: &issuer,
         client_id: &client.client_id,
-        session: &session,
+        session: held_in,
         person: &person,
         scopes: &code.scopes,
         nonce: code.nonce.as_deref(),
         family: RefreshGrant {
             family,
             client_id: &client.client_id,
-            session: &session,
+            session: held_in,
             scopes: &code.scopes,
         },
     };
     let response = answer_for_person(app, work.as_mut(), granted).await?;
+    if let Some(offline) = &offline {
+        record_offline_opening(app, work.as_mut(), &session, offline).await?;
+    }
     let told = json!({
         "client_id": client.client_id,
         "family": family.to_string(),
         "grant": "authorization_code",
         "person_id": person.id.to_string(),
         "scope": response.scope,
-        "session_id": session.id.to_string(),
+        "session_id": held_in.id.to_string(),
     });
     record_event(app, work.as_mut(), EventKind::TokenIssued, told).await?;
     work.commit().await.map_err(Failure::from)?;
     Ok(response)
+}
+
+/// Says in the chain that a grant opened its offline session, and from which
+/// session of the person.
+async fn record_offline_opening(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    from: &Session,
+    offline: &Session,
+) -> Result<(), Failure> {
+    let opened = json!({
+        "from_session_id": from.id.to_string(),
+        "kind": SessionKind::Offline.name(),
+        "person_id": offline.person.to_string(),
+        "session_id": offline.id.to_string(),
+    });
+    record_event(app, work, EventKind::SessionOpened, opened).await
 }
 
 /// A code presented after it was spent was copied by someone: the refresh
@@ -303,18 +339,16 @@ async fn take_back_what_a_code_obtained(
     let Some(family) = replayed.family else {
         return Ok(());
     };
-    if let Some(ended) = work.revoke_refresh_family(family, now).await? {
-        let told = describe_family_end(
-            client_id,
-            family,
-            replayed.person,
-            replayed.session,
-            "code_replayed",
-            &ended,
-        );
-        record_event(app, work, EventKind::TokenRevoked, told).await?;
-    }
-    Ok(())
+    end_grant(
+        app,
+        work,
+        client_id,
+        family,
+        replayed.person,
+        replayed.session,
+        "code_replayed",
+    )
+    .await
 }
 
 pub(super) struct Granted<'a> {
@@ -354,7 +388,7 @@ pub(super) async fn answer_for_person(
             subject: &subject,
             client_id: granted.client_id,
             scopes: granted.scopes,
-            session: Some(granted.session.id),
+            session: Some(granted.session),
             roles: roles.as_ref(),
         },
     )?;
@@ -365,9 +399,7 @@ pub(super) async fn answer_for_person(
             client_id: granted.client_id,
             scopes: granted.scopes,
             nonce: granted.nonce,
-            session: granted.session.id,
-            authenticated_at: granted.session.authenticated_at,
-            methods: &granted.session.methods,
+            session: granted.session,
         };
         Some(mint_identity_token(app, &key, identity)?)
     } else {
@@ -637,6 +669,34 @@ mod tests {
         assert_eq!(
             refuse(&app, "nowhere", missing_code()).0,
             OAuthError::InvalidRequest
+        );
+    }
+
+    #[test]
+    fn a_code_presented_again_ends_the_offline_session_its_exchange_opened() {
+        use crate::oidc::scenario::{CALLBACK, Scenario};
+
+        let scenario = Scenario::start();
+        let granted = scenario.sign_in_and_consent("webapp", "openid offline_access");
+        assert!(scenario.is_token_active(&granted.tokens.access_token));
+        let again = TokenRequest {
+            grant_type: Some("authorization_code"),
+            client_id: Some("webapp"),
+            code: Some(&granted.code),
+            redirect_uri: Some(CALLBACK),
+            code_verifier: Some("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            ..TokenRequest::default()
+        };
+
+        let replayed = complete(grant_token(&scenario.app, "acme", again)).map(|_| ());
+
+        assert_eq!(
+            replayed.map_err(|failure| failure.error),
+            Err(OAuthError::InvalidGrant)
+        );
+        assert!(
+            !scenario.is_token_active(&granted.tokens.access_token),
+            "the offline session ended with what the code obtained"
         );
     }
 

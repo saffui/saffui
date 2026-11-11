@@ -1,6 +1,7 @@
 //! The consents of a person, as they and the administrators of the realm
 //! see them. Withdrawn, a consent takes with it what the client holds in the
-//! person's name: its refresh tokens are revoked in the same unit of work.
+//! person's name: its refresh tokens are revoked in the same unit of work,
+//! and the offline sessions they lived in end.
 
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -65,6 +66,7 @@ async fn withdraw_consent(
         "actor": actor,
         "client_id": client_id,
         "person_id": person.to_string(),
+        "offline_sessions_ended": revoked.offline_sessions,
         "refresh_families": named,
         "refresh_families_revoked": revoked.families,
         "refresh_tokens_revoked": revoked.tokens,
@@ -234,6 +236,56 @@ mod tests {
             payload["refresh_families"].as_array().map(Vec::len),
             usize::try_from(MOST_NAMED_FAMILIES).ok(),
             "the first named, the rest counted"
+        );
+    }
+
+    #[test]
+    fn a_withdrawal_ends_the_offline_grant_of_its_client() {
+        use super::withdraw_my_consent;
+        use crate::oidc::errors::OAuthError;
+
+        let scenario = Scenario::start();
+        let partner = Application {
+            client_id: "partner",
+            redirect_uri: CALLBACK,
+            post_logout_redirect_uri: None,
+            public: true,
+            requires_consent: true,
+        };
+        complete(register_application(&scenario.app, scenario.scope, partner));
+        let granted = scenario.sign_in_and_consent("partner", "openid offline_access");
+        assert_eq!(granted.tokens.scope, "openid offline_access");
+        let refresh_token = granted.tokens.refresh_token.expect("a refresh token");
+
+        complete(withdraw_my_consent(
+            &scenario.app,
+            "acme",
+            Some(&granted.ticket),
+            "partner",
+        ))
+        .expect("a withdrawal");
+
+        assert_eq!(
+            scenario
+                .refresh_as("partner", &refresh_token, None)
+                .map(|tokens| tokens.scope),
+            Err(OAuthError::InvalidGrant),
+            "the grant ends with the consent"
+        );
+        assert!(
+            !scenario.is_token_active(&granted.tokens.access_token),
+            "its offline session ended: its tokens answer for nobody"
+        );
+        let withdrawn = scenario
+            .storage
+            .read_audit_envelopes(scenario.scope.realm())
+            .into_iter()
+            .rev()
+            .find(|event| event["kind"] == "consent.withdrawn")
+            .expect("the withdrawal");
+        assert_eq!(
+            withdrawn["payload"]["offline_sessions_ended"], 1,
+            "{withdrawn}"
         );
     }
 }

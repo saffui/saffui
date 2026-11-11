@@ -1406,4 +1406,15 @@ mod tests {
         );
         assert_eq!(scenario.storage.count_consent_reads(), consents + 1);
     }
+
+    #[test]
+    fn a_client_not_allowed_offline_access_is_refused_it_and_never_gets_it() {
+        let scenario = Scenario::start();
+        register_partner(&scenario, "Partner");
+
+        assert_eq!(
+            read_outcome(ask_partner(&scenario, "openid offline_access", None)),
+            "invalid_scope"
+        );
+    }
 }

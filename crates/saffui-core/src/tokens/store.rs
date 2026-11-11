@@ -50,6 +50,9 @@ pub struct EndedFamily {
     pub last_issued_at: OffsetDateTime,
     /// `None` when none of them was ever spent.
     pub last_used_at: Option<OffsetDateTime>,
+    /// The offline session the family lived in, ended with it. `None` for a
+    /// family of a browser session, which stands.
+    pub offline_session: Option<Uuid>,
 }
 
 /// What a revocation of every token of a client for a person took back.
@@ -61,6 +64,8 @@ pub struct RevokedFamilies {
     pub tokens: u64,
     /// The first of the families it ended, by identifier.
     pub named: Vec<Uuid>,
+    /// The offline sessions their families lived in, ended with them.
+    pub offline_sessions: u64,
 }
 
 #[async_trait]
@@ -86,7 +91,8 @@ pub trait RefreshStore {
     /// Revokes every token of a family that is not revoked yet, used or not,
     /// and says what they tell, or `None` when none was left. A token a
     /// rotation writes while this runs is not counted, and is refused all the
-    /// same: its family has revoked tokens.
+    /// same: its family has revoked tokens. An offline session the family
+    /// lived in ends in the same operation: it lived for that grant alone.
     async fn revoke_refresh_family(
         &mut self,
         family: Uuid,
@@ -95,7 +101,8 @@ pub trait RefreshStore {
 
     /// Revokes every live token a client holds for a person, in each of their
     /// sessions, in one statement that counts what it took back and names
-    /// `most` of the families at most.
+    /// `most` of the families at most. The offline sessions those tokens
+    /// lived in end in the same statement.
     async fn revoke_refresh_families_of_client(
         &mut self,
         person: Uuid,

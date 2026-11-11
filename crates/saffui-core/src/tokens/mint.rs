@@ -1,7 +1,7 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::{Value, json};
-use time::{Duration, OffsetDateTime};
+use time::Duration;
 use uuid::Uuid;
 
 use super::jws::sign_compact;
@@ -16,6 +16,7 @@ use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
 use crate::keys::SigningKey;
 use crate::keys::jwks::open_signing_key;
+use crate::login::assurance::Assurance;
 use crate::login::session::{AuthenticationMethod, Session};
 use crate::ports::crypto::SignatureAlgorithm;
 use crate::ports::storage::UnitOfWork;
@@ -31,7 +32,7 @@ pub struct AccessTokenSubject<'a> {
     pub client_id: &'a str,
     pub scopes: &'a [String],
     /// The session behind the token, when a person is.
-    pub session: Option<Uuid>,
+    pub session: Option<&'a Session>,
     /// What the token says of the roles of the person, when it was asked.
     pub roles: Option<&'a RoleClaims>,
 }
@@ -43,10 +44,9 @@ pub struct IdentityTokenSubject<'a> {
     pub client_id: &'a str,
     pub scopes: &'a [String],
     pub nonce: Option<&'a str>,
-    pub session: Uuid,
-    pub authenticated_at: OffsetDateTime,
-    /// What the person proved themselves with.
-    pub methods: &'a [AuthenticationMethod],
+    /// The session behind the token: when the person proved who they are,
+    /// and with what.
+    pub session: &'a Session,
 }
 
 /// The key of the realm, opened once for every token of one answer.
@@ -115,7 +115,11 @@ pub fn mint_access_token(
         "jti": mint_id(app)?.to_string(),
     });
     if let Some(session) = subject.session {
-        claims["sid"] = Value::String(session.to_string());
+        claims["sid"] = Value::String(session.id.to_string());
+        // What a resource server weighs before an action that asks for more
+        // (RFC 9068, section 2.2.1).
+        claims["auth_time"] = json!(session.authenticated_at.unix_timestamp());
+        claims["acr"] = json!(Assurance::reached_by(session).name());
     }
     if let Some(roles) = subject.roles {
         claims["realm_access"] = roles.write_realm_access();
@@ -148,13 +152,14 @@ pub fn mint_identity_token(
         "iat": issued_at,
         "exp": issued_at.saturating_add_unsigned(IDENTITY_TOKEN_LIFETIME_SECONDS),
         // When the person proved who they are, not when this token was made.
-        "auth_time": subject.authenticated_at.unix_timestamp(),
-        "sid": subject.session.to_string(),
+        "auth_time": subject.session.authenticated_at.unix_timestamp(),
+        "sid": subject.session.id.to_string(),
     });
     if let Some(nonce) = subject.nonce {
         claims["nonce"] = Value::String(nonce.to_owned());
     }
-    claims["amr"] = write_methods(subject.methods);
+    claims["amr"] = write_methods(&subject.session.methods);
+    claims["acr"] = json!(Assurance::reached_by(subject.session).name());
     write_person_claims(&mut claims, person, subject.scopes);
     sign_claims(app, key, IDENTITY_TOKEN_TYPE, &claims)
 }

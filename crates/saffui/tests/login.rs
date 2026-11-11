@@ -2,7 +2,8 @@
 //! application, the person signs in on the hosted page, and the application
 //! exchanges its code for tokens anyone can verify, roles included; a
 //! service asks the point of decision about the person; a client that
-//! requires consent is allowed, then withdrawn.
+//! requires consent is allowed, then withdrawn; a client that shows nothing
+//! is answered at once, and a grant allowed offline outlives the sign-out.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -131,7 +132,7 @@ fn prepare_realm_with_operator(
 
     let application = json!({
         "client_id": "portal",
-        "scopes": ["openid", "profile", "email", "roles"],
+        "scopes": ["openid", "profile", "email", "roles", "offline_access"],
         "redirect_uris": ["https://app.example.test/callback"],
         "post_logout_redirect_uris": ["https://app.example.test/goodbye"],
         "public": true,
@@ -1590,4 +1591,135 @@ fn read_last_withdrawal(database: &TestDatabase) -> Value {
                 .get(0);
             serde_json::from_str(&envelope).expect("an envelope of JSON")
         })
+}
+
+/// A journey through the real binary: a client that says to show nothing is
+/// answered at once, with a code or with what it would need; a grant the
+/// person allowed on the page to act while they are away outlives their
+/// sign-out, under one session from its first token.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one journey, read from top to bottom"
+)]
+fn prompt_none_is_answered_at_once_and_an_offline_grant_outlives_the_sign_out() {
+    let database = database::create_database(EMBEDDED);
+    let node = prepare_realm(&database, support::saffui_command());
+    let origin = ("Origin", node::PUBLIC_ORIGIN);
+    let error_of = |answer: &http::Answer| {
+        read_header(answer, "location").and_then(|location| read_parameter(location, "error"))
+    };
+
+    // Nobody is signed in, and the client said to show nothing.
+    let silent = format!("{}&prompt=none", write_authorize_path());
+    let refused = http::get(node.data, &silent).expect("an answer");
+    assert_eq!(refused.status, 303, "{}", refused.body);
+    let location = read_header(&refused, "location").expect("a location");
+    assert!(
+        location
+            .starts_with("https://app.example.test/callback?error=login_required&state=xyz&iss="),
+        "{location}"
+    );
+
+    // Asked to consent again, the person allows on the page what is asked.
+    let asking = format!(
+        "{}&prompt=consent",
+        write_authorize_path_asking("openid%20offline_access")
+    );
+    let begun = http::get(node.data, &asking).expect("an answer");
+    let flow = read_cookie(&begun, "saffui_flow_").expect("a flow cookie");
+    let login = read_header(&begun, "location").expect("a location");
+    let request = read_parameter(login, "request").expect("a request");
+    let form = format!(
+        "request={request}&username=ada&password={}",
+        PASSWORD.replace(' ', "+")
+    );
+    let signed_in = http::send_request(
+        node.data,
+        "POST",
+        "/realms/acme/login",
+        &[FORM, ("Cookie", &flow), origin],
+        &form,
+    )
+    .expect("an answer");
+    assert_eq!(
+        read_header(&signed_in, "location"),
+        Some(format!("/realms/acme/consent?request={request}").as_str()),
+        "{}",
+        signed_in.head
+    );
+    let session = read_cookie(&signed_in, "saffui_session_acme=").expect("a session");
+    let allowed = http::send_request(
+        node.data,
+        "POST",
+        "/realms/acme/consent",
+        &[FORM, ("Cookie", &format!("{flow}; {session}")), origin],
+        &format!("request={request}&decision=allow"),
+    )
+    .expect("an answer");
+    assert_eq!(allowed.status, 303, "{}", allowed.body);
+    let code = read_header(&allowed, "location")
+        .and_then(|location| read_parameter(location, "code"))
+        .expect("a code");
+    let granted = exchange_code(&node, &code, VERIFIER);
+    assert_eq!(granted.status, 200, "{}", granted.body);
+    let granted = read_json(&granted.body);
+    assert_eq!(granted["scope"], "openid offline_access");
+    let identity = granted["id_token"].as_str().expect("an identity token");
+    let (_, first) = verify_with_published_keys(&node, identity);
+    assert_eq!(first["acr"], "1", "what the sign-in reached");
+    let offline = granted["refresh_token"].as_str().expect("a refresh token");
+
+    // Signed in, the person is shown nothing, unless the sign-in is too
+    // old; a level no other factor of theirs can reach asks nothing more.
+    let with_cookie = |path: &str| {
+        http::send_request(node.data, "GET", path, &[("Cookie", &session)], "").expect("an answer")
+    };
+    for (path, error) in [
+        (silent.clone(), None),
+        (format!("{silent}&max_age=0"), Some("login_required")),
+        (format!("{silent}&acr_values=2"), None),
+    ] {
+        let answered = with_cookie(&path);
+        assert_eq!(answered.status, 303, "{}", answered.body);
+        assert_eq!(error_of(&answered).as_deref(), error, "{path}");
+    }
+
+    // The hint names the offline session, not this browser: the person is
+    // asked, and confirms. The browser session ends; the grant stands.
+    let asked = with_cookie(&format!(
+        "/realms/acme/oauth2/logout?id_token_hint={identity}"
+    ));
+    assert_eq!(asked.status, 200, "{}", asked.body);
+    assert!(
+        asked.body.contains("Do you want to sign out?"),
+        "{}",
+        asked.body
+    );
+    let signed_out = http::send_request(
+        node.data,
+        "POST",
+        "/realms/acme/oauth2/logout",
+        &[FORM, ("Cookie", &session), origin],
+        "",
+    )
+    .expect("an answer");
+    assert_eq!(signed_out.status, 200, "{}", signed_out.body);
+    assert_eq!(
+        error_of(&with_cookie(&silent)).as_deref(),
+        Some("login_required"),
+        "the browser session ended"
+    );
+    let refreshed = refresh(&node, offline);
+    assert_eq!(refreshed.status, 200, "{}", refreshed.body);
+    let refreshed = read_json(&refreshed.body);
+    assert_eq!(refreshed["scope"], "openid offline_access");
+    let (_, after) = verify_with_published_keys(
+        &node,
+        refreshed["id_token"].as_str().expect("an identity token"),
+    );
+    assert_eq!(
+        after["sid"], first["sid"],
+        "one session for the whole grant"
+    );
 }

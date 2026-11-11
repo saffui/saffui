@@ -1,6 +1,7 @@
 //! Refresh tokens.
 
 use async_trait::async_trait;
+use saffui_core::login::session::{SessionKind, SessionState};
 use saffui_core::ports::storage::StorageError;
 use saffui_core::tokens::store::{
     EndedFamily, RefreshStore, RefreshToken, RevokedFamilies, StoredRefreshToken,
@@ -44,19 +45,26 @@ const READ_TOKEN: &str = "
     WHERE tenant_id = $1 AND realm_id = $2 AND token_digest = $3";
 
 /// Constant SQL: what is live of a family is found by the index of live
-/// tokens alone, revoked, and summed up in the same statement.
+/// tokens alone, revoked, and summed up in the same statement. The offline
+/// session the family lived in ends with it: it lived for that grant alone.
 const REVOKE_FAMILY: &str = "
     WITH revoked AS (
         UPDATE refresh_tokens SET revoked_at = $4
         WHERE tenant_id = $1 AND realm_id = $2 AND family_id = $3 AND revoked_at IS NULL
-        RETURNING issued_at, used_at)
-    SELECT count(*), max(issued_at), max(used_at) FROM revoked";
+        RETURNING session_id, issued_at, used_at),
+    closed AS (
+        UPDATE sessions SET state = $6
+        WHERE tenant_id = $1 AND realm_id = $2 AND kind = $5 AND state = $7
+          AND session_id IN (SELECT session_id FROM revoked)
+        RETURNING session_id)
+    SELECT count(*), max(issued_at), max(used_at), (SELECT session_id FROM closed LIMIT 1)
+    FROM revoked";
 
 /// Constant SQL: the tokens of a person are reached through their sessions,
 /// each by an index, revoked, and counted in the same statement, which
 /// answers one row however many families end. It reads the table as it
 /// stood before it ran: a family with a token revoked before is revoked
-/// again, and not counted.
+/// again, and not counted. The offline sessions they lived in end with them.
 const REVOKE_FAMILIES_OF_CLIENT: &str = "
     WITH revoked AS (
         UPDATE refresh_tokens SET revoked_at = $5
@@ -65,15 +73,21 @@ const REVOKE_FAMILIES_OF_CLIENT: &str = "
           AND session_id = ANY (ARRAY(
               SELECT session_id FROM sessions
               WHERE tenant_id = $1 AND realm_id = $2 AND person_id = $3))
-        RETURNING family_id),
+        RETURNING family_id, session_id),
     ended AS (
         SELECT family_id FROM (SELECT DISTINCT family_id FROM revoked) AS touched
         WHERE NOT EXISTS (
             SELECT 1 FROM refresh_tokens AS kin
             WHERE kin.tenant_id = $1 AND kin.realm_id = $2
-              AND kin.family_id = touched.family_id AND kin.revoked_at IS NOT NULL))
+              AND kin.family_id = touched.family_id AND kin.revoked_at IS NOT NULL)),
+    closed AS (
+        UPDATE sessions SET state = $8
+        WHERE tenant_id = $1 AND realm_id = $2 AND person_id = $3 AND kind = $7 AND state = $9
+          AND session_id IN (SELECT session_id FROM revoked)
+        RETURNING session_id)
     SELECT (SELECT count(*) FROM ended), (SELECT count(*) FROM revoked),
-           ARRAY(SELECT family_id FROM ended ORDER BY family_id LIMIT $6)";
+           ARRAY(SELECT family_id FROM ended ORDER BY family_id LIMIT $6),
+           (SELECT count(*) FROM closed)";
 
 /// Reads a token from the first eight columns of a row: what it is, then
 /// what became of it follows.
@@ -147,8 +161,16 @@ impl RefreshStore for PgUnitOfWork {
         now: OffsetDateTime,
     ) -> Result<Option<EndedFamily>, StorageError> {
         let (tenant, realm) = self.scope_keys();
+        let (offline, ended, active) = (
+            SessionKind::Offline.name(),
+            SessionState::Ended.name(),
+            SessionState::Active.name(),
+        );
         let rows = self
-            .read_raw(REVOKE_FAMILY, &[&tenant, &realm, &family, &now])
+            .read_raw(
+                REVOKE_FAMILY,
+                &[&tenant, &realm, &family, &now, &offline, &ended, &active],
+            )
             .await?;
         let Some(row) = rows.first() else {
             return Ok(None);
@@ -160,6 +182,7 @@ impl RefreshStore for PgUnitOfWork {
                 tokens,
                 last_issued_at,
                 last_used_at: row.get(2),
+                offline_session: row.get(3),
             }))
     }
 
@@ -171,10 +194,25 @@ impl RefreshStore for PgUnitOfWork {
         most: u32,
     ) -> Result<RevokedFamilies, StorageError> {
         let (tenant, realm) = self.scope_keys();
+        let (offline, ended, active) = (
+            SessionKind::Offline.name(),
+            SessionState::Ended.name(),
+            SessionState::Active.name(),
+        );
         let rows = self
             .read_raw(
                 REVOKE_FAMILIES_OF_CLIENT,
-                &[&tenant, &realm, &person, &client_id, &now, &i64::from(most)],
+                &[
+                    &tenant,
+                    &realm,
+                    &person,
+                    &client_id,
+                    &now,
+                    &i64::from(most),
+                    &offline,
+                    &ended,
+                    &active,
+                ],
             )
             .await?;
         let row = rows.first().ok_or(StorageError::Failed)?;
@@ -185,6 +223,7 @@ impl RefreshStore for PgUnitOfWork {
             families: count(0)?,
             tokens: count(1)?,
             named: row.get(2),
+            offline_sessions: count(3)?,
         })
     }
 
@@ -255,7 +294,7 @@ mod tests {
                      VALUES ('{tenant}', '{realm}', '{realm}', 'ada', false, true, now());
                  INSERT INTO sessions VALUES ('{tenant}', '{realm}', '{realm}', '{realm}', '\\x00',
                                               'active', now(), now() + interval '1 hour',
-                                              '{{pwd}}');
+                                              '{{pwd}}', 'browser');
                  INSERT INTO refresh_tokens
                      SELECT '{tenant}', '{realm}', int4send(n), uuid_in(md5((n % 1000)::text)::cstring),
                             'webapp', '{realm}', '{realm}', '{{openid}}', now(),
@@ -297,7 +336,15 @@ mod tests {
         let revoke = owner
             .query(
                 &explain(REVOKE_FAMILY),
-                &[&tenant, &realm, &tenant, &OffsetDateTime::now_utc()],
+                &[
+                    &tenant,
+                    &realm,
+                    &tenant,
+                    &OffsetDateTime::now_utc(),
+                    &"offline",
+                    &"ended",
+                    &"active",
+                ],
             )
             .await
             .expect("the plan of a revocation");

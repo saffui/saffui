@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use saffui_core::login::session::{AuthenticationMethod, ReadSession, Session, SessionState};
+use saffui_core::login::session::{
+    AuthenticationMethod, ReadSession, Session, SessionKind, SessionState,
+};
 use saffui_core::login::store::SessionStore;
 use saffui_core::ports::storage::StorageError;
 use uuid::Uuid;
@@ -15,6 +17,7 @@ use crate::work::PgUnitOfWork;
 impl SessionStore for PgUnitOfWork {
     async fn insert_session(&mut self, session: &Session) -> Result<(), StorageError> {
         let state = session.state.name();
+        let kind = session.kind.name();
         let methods: Vec<&str> = session.methods.iter().map(|method| method.name()).collect();
         let insert = Insert::into(
             sessions::TABLE,
@@ -23,6 +26,7 @@ impl SessionStore for PgUnitOfWork {
                 col(sessions::PERSON_ID, &session.person),
                 col(sessions::SECRET_DIGEST, &session.secret_digest),
                 col(sessions::STATE, &state),
+                col(sessions::KIND, &kind),
                 col(sessions::METHODS, &methods),
                 col(sessions::AUTHENTICATED_AT, &session.authenticated_at),
                 col(sessions::EXPIRES_AT, &session.expires_at),
@@ -39,7 +43,7 @@ impl SessionStore for PgUnitOfWork {
         let rows = self
             .read_raw(
                 "SELECT s.person_id, s.secret_digest, s.state, s.authenticated_at, s.expires_at,
-                        s.methods,
+                        s.methods, s.kind,
                         EXISTS (SELECT 1 FROM totp_authenticators AS t
                                 WHERE t.tenant_id = $1 AND t.realm_id = $2
                                   AND t.person_id = s.person_id AND t.confirmed_at IS NOT NULL)
@@ -55,12 +59,14 @@ impl SessionStore for PgUnitOfWork {
             .map(|row| {
                 let state: String = row.get(2);
                 let methods: Vec<String> = row.get(5);
+                let kind: String = row.get(6);
                 let session = Session {
                     id,
                     person: row.get(0),
                     secret_digest: row.get(1),
                     // The schema holds the same list: a name unknown here was not written by this binary.
                     state: SessionState::parse(&state).ok_or(StorageError::Failed)?,
+                    kind: SessionKind::parse(&kind).ok_or(StorageError::Failed)?,
                     methods: methods
                         .iter()
                         .map(|name| AuthenticationMethod::parse(name).ok_or(StorageError::Failed))
@@ -70,7 +76,7 @@ impl SessionStore for PgUnitOfWork {
                 };
                 Ok(ReadSession {
                     session,
-                    person_holds_factor: row.get(6),
+                    person_holds_factor: row.get(7),
                 })
             })
             .transpose()

@@ -21,8 +21,9 @@ use crate::ports::storage::StorageError;
 pub const FAILURE_COUNTERS_KEPT: Duration = Duration::days(2);
 
 /// How long a code is kept after it expired. Presented again, a spent code
-/// takes back the refresh tokens it obtained, and none outlives the
-/// session it was issued in.
+/// takes back the refresh tokens it obtained, for as long as the session it
+/// was issued in may last. An offline grant outlives that session: a code
+/// presented later still obtains nothing, and takes nothing back.
 pub const CODES_KEPT: Duration = SESSION_LIFETIME;
 
 /// Where each table of a pass stops: rows older than these go.

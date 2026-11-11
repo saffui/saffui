@@ -140,7 +140,7 @@ async fn a_token_written_while_its_family_was_revoked_is_not_spent() {
     use std::time::Duration as Wait;
 
     use saffui_core::ids::mint_id;
-    use saffui_core::login::session::{AuthenticationMethod, Session, SessionState};
+    use saffui_core::login::session::{AuthenticationMethod, Session, SessionKind, SessionState};
     use saffui_core::testkit::fixtures::{create_person, create_realm};
     use saffui_core::tokens::store::RefreshToken;
     use time::Duration;
@@ -154,6 +154,7 @@ async fn a_token_written_while_its_family_was_revoked_is_not_spent() {
         person: ada.id,
         secret_digest: vec![7; 32],
         state: SessionState::Active,
+        kind: SessionKind::Browser,
         methods: vec![AuthenticationMethod::Password],
         authenticated_at: now,
         expires_at: now + Duration::hours(1),
@@ -230,7 +231,7 @@ async fn of_two_endings_of_one_session_at_once_one_ends_it() {
     use std::time::Duration as Wait;
 
     use saffui_core::ids::mint_id;
-    use saffui_core::login::session::{AuthenticationMethod, Session, SessionState};
+    use saffui_core::login::session::{AuthenticationMethod, Session, SessionKind, SessionState};
     use saffui_core::testkit::fixtures::{create_person, create_realm};
     use time::Duration;
 
@@ -243,6 +244,7 @@ async fn of_two_endings_of_one_session_at_once_one_ends_it() {
         person: ada.id,
         secret_digest: vec![7; 32],
         state: SessionState::Active,
+        kind: SessionKind::Browser,
         methods: vec![AuthenticationMethod::Password],
         authenticated_at: now,
         expires_at: now + Duration::hours(1),
@@ -267,11 +269,12 @@ async fn of_two_endings_of_one_session_at_once_one_ends_it() {
     assert_eq!(second.await.expect("the second ending"), Ok(false));
 }
 
-/// The schema keeps the methods this binary names, and no other: a session
-/// proven by nothing, or by a name nobody gave, is not written.
+/// The schema keeps the methods and the kinds this binary names, and no
+/// other: a session proven by nothing, by a name nobody gave, or living
+/// nowhere this binary knows, is not written.
 #[tokio::test]
-async fn a_session_is_written_with_the_methods_this_binary_names_and_no_other() {
-    use saffui_core::login::session::AuthenticationMethod;
+async fn a_session_is_written_with_the_methods_and_the_kind_this_binary_names_and_no_other() {
+    use saffui_core::login::session::{AuthenticationMethod, SessionKind};
     use saffui_core::testkit::fixtures::{create_person, create_realm};
     use tokio_postgres::error::SqlState;
 
@@ -290,10 +293,14 @@ async fn a_session_is_written_with_the_methods_this_binary_names_and_no_other() 
         .collect();
     let every_one = format!("{{{}}}", named.join(","));
 
-    for (methods, refused) in [
-        (every_one.as_str(), None),
-        ("{pwd,hwk}", Some(SqlState::CHECK_VIOLATION)),
-        ("{}", Some(SqlState::CHECK_VIOLATION)),
+    let (browser, offline) = (SessionKind::Browser.name(), SessionKind::Offline.name());
+
+    for (methods, kind, refused) in [
+        (every_one.as_str(), browser, None),
+        ("{pwd}", offline, None),
+        ("{pwd,hwk}", browser, Some(SqlState::CHECK_VIOLATION)),
+        ("{}", browser, Some(SqlState::CHECK_VIOLATION)),
+        ("{pwd}", "paper", Some(SqlState::CHECK_VIOLATION)),
     ] {
         let writing = owner.transaction().await.expect("a transaction");
         writing
@@ -306,16 +313,16 @@ async fn a_session_is_written_with_the_methods_this_binary_names_and_no_other() 
         let written = writing
             .execute(
                 "INSERT INTO sessions (tenant_id, realm_id, session_id, person_id, secret_digest,
-                     state, methods, authenticated_at, expires_at)
-                 VALUES ($1, $2, gen_random_uuid(), $3, '\\x00', 'active', $4::text::text[],
+                     state, kind, methods, authenticated_at, expires_at)
+                 VALUES ($1, $2, gen_random_uuid(), $3, '\\x00', 'active', $4, $5::text::text[],
                      now(), now() + interval '1 hour')",
-                &[&tenant, &realm, &ada.id, &methods],
+                &[&tenant, &realm, &ada.id, &kind, &methods],
             )
             .await;
         assert_eq!(
             written.err().and_then(|error| error.code().cloned()),
             refused,
-            "{methods}"
+            "{methods} {kind}"
         );
     }
 }
@@ -504,7 +511,7 @@ async fn allow_partner_once(
     use saffui_core::authz::admin::authorize_admin_call;
     use saffui_core::authz::capability::Capability;
     use saffui_core::consent::Consent;
-    use saffui_core::login::session::{AuthenticationMethod, Session, SessionState};
+    use saffui_core::login::session::{AuthenticationMethod, Session, SessionKind, SessionState};
     use saffui_core::testkit::fixtures::{
         Application, create_administrator, create_person, create_realm, register_application,
     };
@@ -536,6 +543,7 @@ async fn allow_partner_once(
         person: ada.id,
         secret_digest: vec![7; 32],
         state: SessionState::Active,
+        kind: SessionKind::Browser,
         methods: vec![AuthenticationMethod::Password],
         authenticated_at: now,
         expires_at: now + time::Duration::hours(1),

@@ -5,6 +5,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::MemoryUnitOfWork;
+use crate::login::session::{SessionKind, SessionState};
 use crate::ports::storage::StorageError;
 use crate::tokens::store::{
     EndedFamily, RefreshStore, RefreshToken, RevokedFamilies, StoredRefreshToken,
@@ -48,6 +49,24 @@ impl MemoryUnitOfWork {
             }
         }
         revoked
+    }
+
+    /// Ends the active offline sessions the `revoked` tokens lived in, and
+    /// returns them.
+    fn end_offline_sessions_of(&mut self, revoked: &[StoredRefreshToken]) -> Vec<Uuid> {
+        let lived_in: BTreeSet<Uuid> = revoked.iter().map(|stored| stored.token.session).collect();
+        let mut ended = Vec::new();
+        if let Some(sessions) = self.working.sessions.get_mut(&self.scope.realm().as_uuid()) {
+            for session in sessions.iter_mut().filter(|session| {
+                lived_in.contains(&session.id)
+                    && session.kind == SessionKind::Offline
+                    && session.state == SessionState::Active
+            }) {
+                session.state = SessionState::Ended;
+                ended.push(session.id);
+            }
+        }
+        ended
     }
 }
 
@@ -113,11 +132,13 @@ impl RefreshStore for MemoryUnitOfWork {
         let outcome = self.refuse_in_snapshot();
         self.record_refusal(outcome)?;
         let revoked = self.revoke_refresh_tokens_where(now, |token| token.family == family);
+        let offline_session = self.end_offline_sessions_of(&revoked).into_iter().next();
         let last_issued_at = revoked.iter().map(|stored| stored.token.issued_at).max();
         Ok(last_issued_at.map(|last_issued_at| EndedFamily {
             tokens: u64::try_from(revoked.len()).unwrap_or(u64::MAX),
             last_issued_at,
             last_used_at: revoked.iter().filter_map(|stored| stored.used_at).max(),
+            offline_session,
         }))
     }
 
@@ -140,6 +161,7 @@ impl RefreshStore for MemoryUnitOfWork {
             .map(|stored| stored.token.family)
             .filter(|family| !revoked_before.contains_key(family))
             .collect();
+        let offline_sessions = self.end_offline_sessions_of(&revoked).len();
         Ok(RevokedFamilies {
             families: u64::try_from(ended.len()).unwrap_or(u64::MAX),
             tokens: u64::try_from(revoked.len()).unwrap_or(u64::MAX),
@@ -147,6 +169,7 @@ impl RefreshStore for MemoryUnitOfWork {
                 .into_iter()
                 .take(usize::try_from(most).unwrap_or(usize::MAX))
                 .collect(),
+            offline_sessions: u64::try_from(offline_sessions).unwrap_or(u64::MAX),
         })
     }
 

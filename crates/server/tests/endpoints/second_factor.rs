@@ -1014,3 +1014,116 @@ async fn an_administrator_takes_the_security_keys_away_and_the_password_is_enoug
         signed_in.body
     );
 }
+
+#[actix_web::test]
+async fn the_step_that_asks_only_a_code_runs_no_script() {
+    let started = start().await;
+    enroll(&started).await;
+
+    let (_, _, asked) = give_password_in_a_new_browser(&started).await;
+
+    assert_eq!(asked.status, StatusCode::OK, "{}", asked.body);
+    assert!(asked.body.contains("name=\"code\""), "{}", asked.body);
+    assert!(!asked.body.contains("<script"), "{}", asked.body);
+    let policy = asked
+        .read_header("content-security-policy")
+        .expect("a policy");
+    assert!(policy.contains("style-src 'nonce-"), "{policy}");
+    assert!(!policy.contains("script-src"), "{policy}");
+}
+
+#[actix_web::test]
+async fn a_form_shown_without_a_message_holds_no_empty_paragraph_of_error() {
+    let started = start().await;
+    let cookie = [(COOKIE.as_str(), started.session.as_str())];
+    let sent_to_login = get(
+        &started.product,
+        &write_authorize_path(&started.product),
+        &[],
+    )
+    .await;
+    let login = sent_to_login.location.clone().expect("the sign-in page");
+    let flow = sent_to_login
+        .read_cookie("__Host-saffui_flow_")
+        .expect("a flow cookie");
+
+    let pages = [
+        get(
+            &started.product,
+            &login,
+            &[(COOKIE.as_str(), flow.as_str())],
+        )
+        .await,
+        post(&started.product, AUTHENTICATOR, &cookie, "").await,
+        get(&started.product, SECURITY_KEY, &cookie).await,
+    ];
+
+    for page in pages {
+        assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+        assert!(page.body.contains("<form"), "{}", page.body);
+        assert!(
+            !page.body.contains("<p class=\"error\"></p>"),
+            "{}",
+            page.body
+        );
+    }
+}
+
+#[actix_web::test]
+async fn the_note_of_the_key_page_reads_as_an_error_only_when_it_refuses() {
+    let started = start().await;
+    let cookie = [(COOKIE.as_str(), started.session.as_str())];
+    let asked = post(
+        &started.product,
+        SECURITY_KEY,
+        &cookie,
+        "password=correct+horse+battery",
+    )
+    .await;
+    let answer = write_key_field(&TrustingKeys::answer_enrollment(
+        &read_key_options(&asked.body),
+        "k1",
+    ));
+
+    let silent = post(&started.product, CONFIRM_KEY, &cookie, "key=").await;
+    let added = post(&started.product, CONFIRM_KEY, &cookie, &answer).await;
+
+    assert_eq!(silent.status, StatusCode::BAD_REQUEST);
+    assert!(
+        silent
+            .body
+            .contains("<p class=\"error\">The security key did not answer.</p>"),
+        "{}",
+        silent.body
+    );
+    assert_eq!(added.status, StatusCode::OK, "{}", added.body);
+    assert!(
+        added.body.contains("<p>Your security key is set up."),
+        "{}",
+        added.body
+    );
+    assert!(!added.body.contains("class=\"error\""), "{}", added.body);
+}
+
+#[actix_web::test]
+async fn an_account_with_two_security_keys_is_told_how_many_it_holds() {
+    let started = start().await;
+    add_key(&started, "k1").await;
+    let proven = sign_in_with_key(&started, "k1", 1).await;
+    add_key_in(&started, &proven, "k2").await;
+
+    let page = get(
+        &started.product,
+        SECURITY_KEY,
+        &[(COOKIE.as_str(), proven.as_str())],
+    )
+    .await;
+
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body
+            .contains("<p>2 security keys are set up for this account.</p>"),
+        "{}",
+        page.body
+    );
+}

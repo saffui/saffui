@@ -110,3 +110,42 @@ pub async fn withdraw_consent(
         Err(failure) => refuse_request(&product, &failure),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use actix_web::http::StatusCode;
+    use saffui_core::consent::{Consent, ListedConsent};
+    use saffui_core::testkit::memory::MemoryStorage;
+    use uuid::Uuid;
+
+    use super::{Shown, render_shown};
+    use crate::api::rest::endpoints::login::page::tests::{HOSTILE, assert_written_as_text};
+
+    #[test]
+    fn every_text_the_page_of_consents_shows_is_written_as_text() {
+        let (product, _storage) = MemoryStorage::wire();
+        let listed = [ListedConsent {
+            consent: Consent {
+                person: Uuid::nil(),
+                client_id: HOSTILE.to_owned(),
+                scopes: vec![HOSTILE.to_owned(), HOSTILE.to_owned()],
+                granted_at: product.now(),
+            },
+            client_name: HOSTILE.to_owned(),
+        }];
+        let pages = [
+            (Shown::Refusal { message: HOSTILE }, 1),
+            (
+                Shown::Listed {
+                    realm: HOSTILE,
+                    listed: &listed,
+                },
+                5,
+            ),
+        ];
+
+        for (shown, held) in pages {
+            assert_written_as_text(render_shown(&product, StatusCode::OK, shown), held);
+        }
+    }
+}

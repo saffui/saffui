@@ -1,6 +1,6 @@
-{#- The frame of every hosted page. A blank between two tags can show on a
-    page, so each line ends in a tag that trims the blanks after it: an empty
-    comment where no other tag stands. -#}
+{#- The frame of every hosted page. No blank between two lines reaches the
+    page: each line break is trimmed, by the tag that ends the line or by the
+    `{%-` that opens the next. -#}
 <!doctype html><html lang="en"><head><meta charset="utf-8">{# -#}
 <meta name="viewport" content="width=device-width, initial-scale=1">{# -#}
 <title>Account</title>

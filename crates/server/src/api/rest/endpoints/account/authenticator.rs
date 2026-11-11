@@ -203,3 +203,40 @@ pub async fn confirm_enrollment(
         Err(failure) => refuse_request(&product, &failure),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use actix_web::http::StatusCode;
+    use saffui_core::testkit::memory::MemoryStorage;
+
+    use super::{Shown, render_shown};
+    use crate::api::rest::endpoints::login::page::tests::{HOSTILE, assert_written_as_text};
+
+    #[test]
+    fn every_text_the_authenticator_page_shows_is_written_as_text() {
+        let (product, _storage) = MemoryStorage::wire();
+        let pages = [
+            (Shown::Refusal { message: HOSTILE }, 1),
+            (Shown::Offer { realm: HOSTILE }, 1),
+            (
+                Shown::Secret {
+                    realm: HOSTILE,
+                    uri: HOSTILE,
+                    typed_secret: HOSTILE,
+                },
+                3,
+            ),
+            (
+                Shown::Confirmation {
+                    realm: HOSTILE,
+                    message: HOSTILE,
+                },
+                2,
+            ),
+        ];
+
+        for (shown, held) in pages {
+            assert_written_as_text(render_shown(&product, StatusCode::OK, shown), held);
+        }
+    }
+}

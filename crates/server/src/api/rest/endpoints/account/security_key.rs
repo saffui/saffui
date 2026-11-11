@@ -261,3 +261,59 @@ pub async fn finish_enrollment(
         Err(failure) => refuse_request(&product, &failure),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use actix_web::http::StatusCode;
+    use saffui_core::testkit::memory::MemoryStorage;
+    use serde_json::json;
+
+    use super::{Shown, StartAgain, render_shown};
+    use crate::api::rest::endpoints::login::key_form::{KeyCeremonyKind, KeyPrompt};
+    use crate::api::rest::endpoints::login::page::tests::{HOSTILE, assert_written_as_text};
+
+    #[test]
+    fn every_text_the_security_key_page_shows_is_written_as_text() {
+        let (product, _storage) = MemoryStorage::wire();
+        let options = json!({ "user": HOSTILE });
+        let key = KeyPrompt {
+            action: HOSTILE.to_owned(),
+            request: None,
+            kind: KeyCeremonyKind::Enrollment,
+            options: &options,
+            label: HOSTILE,
+        };
+        let pages = [
+            (
+                Shown::Held {
+                    realm: HOSTILE,
+                    held: 2,
+                    served: true,
+                },
+                1,
+            ),
+            (
+                Shown::PasswordForm {
+                    realm: HOSTILE,
+                    message: HOSTILE,
+                },
+                2,
+            ),
+            (Shown::Key(key), 3),
+            (
+                Shown::Note {
+                    realm: HOSTILE,
+                    status: StatusCode::BAD_REQUEST,
+                    note: HOSTILE,
+                    start_again: StartAgain::Offered,
+                },
+                2,
+            ),
+            (Shown::Refusal { message: HOSTILE }, 1),
+        ];
+
+        for (shown, held) in pages {
+            assert_written_as_text(render_shown(&product, StatusCode::OK, shown), held);
+        }
+    }
+}

@@ -126,3 +126,25 @@ pub async fn confirm(
     }
     render_signed_out(&product, &realm)
 }
+
+#[cfg(test)]
+mod tests {
+    use actix_web::http::StatusCode;
+    use saffui_core::testkit::memory::MemoryStorage;
+
+    use super::{LogoutPage, Shown};
+    use crate::api::rest::endpoints::login::page::render_page;
+    use crate::api::rest::endpoints::login::page::tests::{HOSTILE, assert_written_as_text};
+
+    #[test]
+    fn every_text_the_sign_out_page_shows_is_written_as_text() {
+        let (product, _storage) = MemoryStorage::wire();
+
+        let page = render_page(&product, StatusCode::OK, |frame| LogoutPage {
+            frame,
+            shown: Shown::Confirmation { realm: HOSTILE },
+        });
+
+        assert_written_as_text(page, 1);
+    }
+}

@@ -550,9 +550,10 @@ pub async fn submit_sign_in(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::Arc;
 
+    use actix_web::HttpResponse;
     use actix_web::body::MessageBody;
     use actix_web::http::StatusCode;
     use actix_web::http::header::CACHE_CONTROL;
@@ -562,8 +563,28 @@ mod tests {
     use serde_json::json;
     use uuid::Uuid;
 
-    use super::{Asked, Frame, PageScript, SignInPage, answer_rendered, render_scripted_page};
+    use super::{
+        Asked, Frame, PageScript, SignInPage, answer_rendered, render_page, render_scripted_page,
+    };
     use crate::api::rest::endpoints::login::key_form::{KeyCeremonyKind, KeyPrompt};
+
+    /// A value with each character HTML reads as markup, for a field of a page.
+    pub(crate) const HOSTILE: &str = "<x'\"&";
+
+    /// Checks that a page holds `held` hostile values, each written as text.
+    pub(crate) fn assert_written_as_text(page: HttpResponse, held: usize) {
+        let body = page.into_body().try_into_bytes().expect("a body");
+        let body = String::from_utf8_lossy(&body);
+        assert!(
+            !body.contains("<x"),
+            "a value reached the page as markup: {body}"
+        );
+        assert_eq!(
+            body.matches("&#60;x").count(),
+            held,
+            "each value reached the page: {body}"
+        );
+    }
 
     /// A source that never answers.
     struct SilentRandom;
@@ -575,7 +596,7 @@ mod tests {
     }
 
     /// The frame of a page drawn without a nonce: no style, no script.
-    fn frame_without_nonce() -> Frame {
+    fn build_frame_without_nonce() -> Frame {
         Frame {
             nonce: None,
             script: PageScript::Nothing,
@@ -627,7 +648,7 @@ mod tests {
     #[test]
     fn text_is_written_as_text_whatever_it_holds() {
         let page = SignInPage {
-            frame: frame_without_nonce(),
+            frame: build_frame_without_nonce(),
             message: "otpauth://totp/a:b?secret=X&issuer=\"<i>'",
             asked: Asked::Nothing,
         };
@@ -647,7 +668,7 @@ mod tests {
         let options =
             json!({ "publicKey": { "user": { "name": "\"><script>alert(1)</script>" } } });
         let page = SignInPage {
-            frame: frame_without_nonce(),
+            frame: build_frame_without_nonce(),
             message: "",
             asked: ask_key(&options),
         };
@@ -658,6 +679,47 @@ mod tests {
         assert!(form.contains("data-ceremony=\"get\""));
         assert!(form.contains("&#34;publicKey&#34;"));
         assert!(form.contains("name=\"request\" value=\"00000000-0000-0000-0000-000000000000\""));
+    }
+
+    #[test]
+    fn every_text_the_sign_in_page_shows_is_written_as_text() {
+        let (product, _storage) = MemoryStorage::wire();
+        let options = json!({ "user": HOSTILE });
+        let key = KeyPrompt {
+            action: HOSTILE.to_owned(),
+            request: Some(Uuid::nil()),
+            kind: KeyCeremonyKind::Proof,
+            options: &options,
+            label: HOSTILE,
+        };
+        let pages = [
+            (Asked::Nothing, 1),
+            (
+                Asked::Password {
+                    realm: HOSTILE,
+                    request: Uuid::nil(),
+                },
+                2,
+            ),
+            (
+                Asked::SecondFactor {
+                    realm: HOSTILE,
+                    request: Uuid::nil(),
+                    code: true,
+                    key: Some(key),
+                },
+                5,
+            ),
+        ];
+
+        for (asked, held) in pages {
+            let page = render_page(&product, StatusCode::OK, |frame| SignInPage {
+                frame,
+                message: HOSTILE,
+                asked,
+            });
+            assert_written_as_text(page, held);
+        }
     }
 
     #[test]

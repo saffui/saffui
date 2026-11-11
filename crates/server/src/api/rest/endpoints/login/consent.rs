@@ -142,3 +142,35 @@ pub async fn submit_consent(
         Err(failure) => render_refusal(&product, &failure),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use actix_web::http::StatusCode;
+    use saffui_core::consent::answer::ConsentPrompt;
+    use saffui_core::login::session::OFFLINE_SESSION_LIFETIME;
+    use saffui_core::testkit::memory::MemoryStorage;
+    use uuid::Uuid;
+
+    use super::ConsentPage;
+    use crate::api::rest::endpoints::login::page::render_page;
+    use crate::api::rest::endpoints::login::page::tests::{HOSTILE, assert_written_as_text};
+
+    #[test]
+    fn every_text_the_consent_page_shows_is_written_as_text() {
+        let (product, _storage) = MemoryStorage::wire();
+        let prompt = ConsentPrompt {
+            client_name: HOSTILE.to_owned(),
+            scopes: vec![HOSTILE.to_owned(), HOSTILE.to_owned()],
+            offline_access: Some(OFFLINE_SESSION_LIFETIME),
+        };
+
+        let page = render_page(&product, StatusCode::OK, |frame| ConsentPage {
+            frame,
+            realm: HOSTILE,
+            request: Uuid::nil(),
+            prompt: &prompt,
+        });
+
+        assert_written_as_text(page, 4);
+    }
+}

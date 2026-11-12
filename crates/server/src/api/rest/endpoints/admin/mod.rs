@@ -5,6 +5,7 @@ pub mod audit;
 pub mod client;
 pub mod group;
 mod listing;
+pub mod mapper;
 pub mod policy;
 pub mod realm;
 pub mod relation;

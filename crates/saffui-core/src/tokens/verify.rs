@@ -1,3 +1,4 @@
+use serde_json::Value;
 use uuid::Uuid;
 
 use super::jws::verify_compact;
@@ -15,6 +16,9 @@ pub struct AccessTokenClaims {
     pub subject: String,
     pub client_id: String,
     pub scopes: Vec<String>,
+    /// What the token is for: the realm that issued it first, then the
+    /// resources its mappers named.
+    pub audiences: Vec<String>,
     pub token_id: String,
     pub issued_at: i64,
     pub expires_at: i64,
@@ -27,9 +31,9 @@ pub struct AccessTokenClaims {
 /// # Errors
 ///
 /// Returns [`ErrorCode::TokenInvalid`] for a token that was not signed by a
-/// key of this realm, that is not an access token, that names another issuer,
-/// that expired, or that claims to come from the future. Returns the storage
-/// failure when the keys cannot be read.
+/// key of this realm, that is not an access token, that names another issuer
+/// or no audience, that expired, or that claims to come from the future.
+/// Returns the storage failure when the keys cannot be read.
 pub async fn verify_access_token(
     app: &App,
     work: &mut dyn UnitOfWork,
@@ -53,6 +57,15 @@ pub async fn verify_access_token(
         return Err(invalid());
     }
     let read_text = |name: &str| claims[name].as_str().map(str::to_owned).ok_or_else(invalid);
+    let audiences = match &claims["aud"] {
+        Value::String(one) => vec![one.clone()],
+        Value::Array(all) if !all.is_empty() => all
+            .iter()
+            .map(|audience| audience.as_str().map(str::to_owned))
+            .collect::<Option<Vec<String>>>()
+            .ok_or_else(invalid)?,
+        _ => return Err(invalid()),
+    };
     Ok(AccessTokenClaims {
         subject: read_text("sub")?,
         client_id: read_text("client_id")?,
@@ -61,6 +74,7 @@ pub async fn verify_access_token(
             .filter(|scope| !scope.is_empty())
             .map(str::to_owned)
             .collect(),
+        audiences,
         token_id: read_text("jti")?,
         issued_at,
         expires_at,
@@ -121,4 +135,86 @@ pub async fn read_identity_hint(
         session,
         subject: subject.to_owned(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Value, json};
+
+    use super::verify_access_token;
+    use crate::app::App;
+    use crate::error::ErrorCode;
+    use crate::keys::jwks::open_signing_key;
+    use crate::ports::crypto::SignatureAlgorithm;
+    use crate::ports::storage::UnitOfWork;
+    use crate::testkit::drive::complete;
+    use crate::testkit::fixtures::create_realm;
+    use crate::testkit::memory::MemoryStorage;
+    use crate::tokens::ACCESS_TOKEN_TYPE;
+    use crate::tokens::jws::sign_compact;
+
+    const ISSUER: &str = "https://id.example.test/realms/acme";
+
+    /// Signs an access token of the realm that names `audience`, and reads
+    /// back the audiences the verifier finds in it.
+    fn verify_audience(
+        app: &App,
+        work: &mut dyn UnitOfWork,
+        audience: &Value,
+    ) -> Result<Vec<String>, ErrorCode> {
+        let (key, private_key) = complete(open_signing_key(app, work, SignatureAlgorithm::Es256))
+            .expect("the key of the realm");
+        let now = app.now().unix_timestamp();
+        let claims = json!({
+            "iss": ISSUER,
+            "sub": "billing",
+            "aud": audience,
+            "client_id": "billing",
+            "scope": "invoices:read",
+            "iat": now,
+            "exp": now + 300,
+            "jti": "a-token",
+        });
+        let token = sign_compact(
+            app.signer.as_ref(),
+            &key,
+            &private_key,
+            ACCESS_TOKEN_TYPE,
+            &claims,
+        )
+        .expect("a token");
+        complete(verify_access_token(app, work, ISSUER, &token))
+            .map(|verified| verified.audiences)
+            .map_err(|failure| failure.code)
+    }
+
+    #[test]
+    fn a_token_names_one_audience_or_a_list_of_them_and_nothing_else() {
+        let (app, _storage) = MemoryStorage::wire();
+        let scope = complete(create_realm(&app, "acme"));
+        let mut work = complete(app.storage.begin(scope)).expect("a unit of work");
+
+        assert_eq!(
+            verify_audience(&app, work.as_mut(), &json!(ISSUER)),
+            Ok(vec![ISSUER.to_owned()])
+        );
+        assert_eq!(
+            verify_audience(
+                &app,
+                work.as_mut(),
+                &json!([ISSUER, "https://api.example.org"])
+            ),
+            Ok(vec![
+                ISSUER.to_owned(),
+                "https://api.example.org".to_owned()
+            ])
+        );
+        for wrong in [json!([]), json!([ISSUER, 5]), json!(5), Value::Null] {
+            assert_eq!(
+                verify_audience(&app, work.as_mut(), &wrong),
+                Err(ErrorCode::TokenInvalid),
+                "{wrong}"
+            );
+        }
+    }
 }

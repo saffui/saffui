@@ -580,3 +580,87 @@ async fn a_statement_under_one_scope_removes_no_consent_of_another_realm() {
         .collect();
     assert_eq!(left, [scopes[1].realm().as_uuid()]);
 }
+
+/// The serving role may update one column of a client, for the lock of its
+/// row, and the attributes of a person: row security keeps the first where
+/// it is and both in their realm, and nothing else of either changes.
+#[tokio::test]
+async fn the_rights_to_update_a_client_and_a_person_reach_one_column_of_their_realm() {
+    use saffui_core::testkit::fixtures::{create_person, create_realm, create_service_client};
+
+    let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let acme = create_realm(&app, "acme").await;
+    let globex = create_realm(&app, "globex").await;
+    create_service_client(&app, acme, "billing", &["invoices:read"]).await;
+    create_person(&app, acme, "ada", "correct horse battery").await;
+    let bob = create_person(&app, globex, "bob", "correct horse battery").await;
+    let session = connect(&database, APP_ROLE).await;
+    let open_acme = format!(
+        "BEGIN; SELECT set_config('saffui.tenant', '{}', true), \
+         set_config('saffui.realm', '{}', true)",
+        acme.tenant().as_uuid(),
+        acme.realm().as_uuid()
+    );
+    let refuse = async |statement: String| {
+        session
+            .batch_execute(&open_acme)
+            .await
+            .expect("a scoped transaction");
+        let refused = session
+            .execute(&statement, &[])
+            .await
+            .expect_err("a statement the serving role may not run");
+        session.batch_execute("ROLLBACK").await.expect("a rollback");
+        refused
+    };
+
+    let moved = refuse(format!(
+        "UPDATE clients SET realm_id = '{}' WHERE client_id = 'billing'",
+        globex.realm().as_uuid()
+    ))
+    .await;
+    let read_message = |error: &tokio_postgres::Error| {
+        error
+            .as_db_error()
+            .map(|refusal| refusal.message().to_owned())
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        moved.code(),
+        Some(&SqlState::INSUFFICIENT_PRIVILEGE),
+        "{moved}"
+    );
+    assert!(
+        read_message(&moved).contains("row-level security"),
+        "row security keeps the row where it is: {moved}"
+    );
+    for statement in [
+        "UPDATE clients SET name = 'x'",
+        "UPDATE persons SET email_verified = true",
+    ] {
+        let refused = refuse(statement.to_owned()).await;
+        assert_eq!(
+            refused.code(),
+            Some(&SqlState::INSUFFICIENT_PRIVILEGE),
+            "{statement}: {refused}"
+        );
+        assert!(
+            read_message(&refused).contains("permission denied"),
+            "{statement}: {refused}"
+        );
+    }
+
+    session
+        .batch_execute(&open_acme)
+        .await
+        .expect("a scoped transaction");
+    let reached = session
+        .execute(
+            "UPDATE persons SET attributes = '{}' WHERE person_id = $1",
+            &[&bob.id],
+        )
+        .await
+        .expect("an update that reaches nothing");
+    session.batch_execute("ROLLBACK").await.expect("a rollback");
+    assert_eq!(reached, 0, "a person of another realm");
+}

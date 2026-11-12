@@ -1,12 +1,13 @@
 //! From the types of the core to what the administration API says.
 
 use api::{
-    ClientView, ConsentView, GrantView, GroupView, HeldRoleView, PolicyView, RealmView, RoleView,
-    UserView,
+    ClientView, ConsentView, GrantView, GroupView, HeldRoleView, MapperView, PolicyView, RealmView,
+    RoleView, UserView,
 };
 use saffui_core::authz::grants::{Grant, HeldRole};
 use saffui_core::authz::policy::Policy;
 use saffui_core::authz::roles::{Group, Role};
+use saffui_core::claims::Mapper;
 use saffui_core::clients::Client;
 use saffui_core::consent::ListedConsent;
 use saffui_core::directory::Person;
@@ -116,5 +117,23 @@ pub(super) fn show_policy(policy: &Policy) -> PolicyView {
         combine: policy.combine.name().to_owned(),
         conditions: policy.conditions.clone(),
         created_at: write_instant(policy.created_at),
+    }
+}
+
+pub(super) fn show_mapper(mapper: &Mapper) -> MapperView {
+    MapperView {
+        id: mapper.id.to_string(),
+        client_id: mapper.client_id.clone(),
+        name: mapper.name.clone(),
+        // A closed enum of texts: it is always written.
+        definition: serde_json::to_value(&mapper.kind).unwrap_or_default(),
+        claim: mapper.claim.clone(),
+        targets: mapper
+            .targets
+            .iter()
+            .map(|target| target.name().to_owned())
+            .collect(),
+        scope: mapper.scope.clone(),
+        created_at: write_instant(mapper.created_at),
     }
 }

@@ -13,7 +13,9 @@ use super::refresh::{end_grant, rotate_refresh_token};
 use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
-use crate::authz::grants::{ROLES_SCOPE, read_role_claims};
+use crate::claims::ClaimTarget;
+use crate::claims::gather::gather_claim_inputs;
+use crate::claims::rules::{ClaimGrant, write_claims};
 use crate::clients::authenticate::{authenticate_client, identify_client};
 use crate::clients::{Client, check_scope_token};
 use crate::consent::{ConsentHold, ConsentTerms, grant_to_client, is_consent_owed};
@@ -161,6 +163,14 @@ async fn grant_to_service(
     let granted = narrow_scopes(request.scope, &client.scopes)?;
 
     let issuer = name_issuer(&app.settings, realm_name);
+    let grant = ClaimGrant {
+        person: None,
+        client_id: &client.client_id,
+        scopes: &granted,
+    };
+    let targets = [ClaimTarget::AccessToken];
+    let inputs = gather_claim_inputs(work.as_mut(), &grant, &targets, app.now()).await?;
+    let written = write_claims(ClaimTarget::AccessToken, &grant, &inputs)?;
     let key = open_minting_key(app, work.as_mut()).await?;
     let minted = mint_access_token(
         app,
@@ -171,7 +181,7 @@ async fn grant_to_service(
             client_id: &client.client_id,
             scopes: &granted,
             session: None,
-            roles: None,
+            claims: Some(&written),
         },
     )?;
     let told = json!({ "client_id": client.client_id, "grant": "client_credentials", "scope": minted.scope });
@@ -404,13 +414,20 @@ pub(super) async fn answer_for_person(
 ) -> Result<TokenResponse, Failure> {
     let subject = granted.person.id.to_string();
     // Read each time a token is made, a refresh included: a role taken away
-    // is gone from the next token.
-    let roles = if granted.scopes.iter().any(|scope| scope == ROLES_SCOPE) {
-        let read = read_role_claims(work, granted.person.id, granted.client_id, app.now()).await?;
-        Some(read)
-    } else {
-        None
+    // or an attribute changed is gone from the next token.
+    let grant = ClaimGrant {
+        person: Some(granted.person),
+        client_id: granted.client_id,
+        scopes: granted.scopes,
     };
+    let says_identity = granted.scopes.iter().any(|scope| scope == "openid");
+    let targets: &[ClaimTarget] = if says_identity {
+        &[ClaimTarget::AccessToken, ClaimTarget::IdToken]
+    } else {
+        &[ClaimTarget::AccessToken]
+    };
+    let inputs = gather_claim_inputs(work, &grant, targets, app.now()).await?;
+    let for_access = write_claims(ClaimTarget::AccessToken, &grant, &inputs)?;
     let key = open_minting_key(app, work).await?;
     let minted = mint_access_token(
         app,
@@ -421,15 +438,16 @@ pub(super) async fn answer_for_person(
             client_id: granted.client_id,
             scopes: granted.scopes,
             session: Some(granted.session),
-            roles: roles.as_ref(),
+            claims: Some(&for_access),
         },
     )?;
-    let id_token = if granted.scopes.iter().any(|scope| scope == "openid") {
+    let id_token = if says_identity {
+        let for_identity = write_claims(ClaimTarget::IdToken, &grant, &inputs)?;
         let identity = IdentityTokenSubject {
             issuer: granted.issuer,
             person: granted.person,
             client_id: granted.client_id,
-            scopes: granted.scopes,
+            claims: &for_identity,
             nonce: granted.nonce,
             session: granted.session,
         };

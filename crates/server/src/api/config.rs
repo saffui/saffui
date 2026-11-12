@@ -84,6 +84,8 @@ pub fn register_data_plane(
                     .service(admin::user::revoke_user_role)
                     .service(admin::user::list_user_consents)
                     .service(admin::user::withdraw_user_consent)
+                    .service(admin::user::read_user_attributes)
+                    .service(admin::user::replace_user_attributes)
                     .service(admin::relation::read_schema)
                     .service(admin::relation::write_schema)
                     .service(admin::relation::list_relations)
@@ -95,6 +97,9 @@ pub fn register_data_plane(
                     .service(admin::policy::list_policies)
                     .service(admin::policy::create_policy)
                     .service(admin::policy::delete_policy)
+                    .service(admin::mapper::list_mappers)
+                    .service(admin::mapper::add_mapper)
+                    .service(admin::mapper::remove_mapper)
                     .service(admin::audit::verify_audit_chain),
             );
     }

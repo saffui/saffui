@@ -3386,3 +3386,148 @@ async fn check_that_a_client_loses_its_tokens_of_a_person(
     }
     work.commit().await.expect("a commit");
 }
+
+/// What any storage owes to the mappers of a client and to the attributes of
+/// a person: kept, read back in the byte order of their names, the largest
+/// document the rules admit kept as it was written, and nothing reached
+/// outside the realm.
+///
+/// # Panics
+///
+/// Panics when the storage breaks the contract.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one contract, read from top to bottom"
+)]
+pub async fn check_claims_contract(app: &App) {
+    use serde_json::{Map, json};
+
+    use crate::claims::rules::{MAX_DOCUMENT_BYTES, check_attributes};
+    use crate::claims::{ClaimTarget, LockedClient, Mapper, MapperKind, PersonProperty};
+    use crate::testkit::fixtures::{
+        Application, create_person, create_realm, fill_attributes, register_application,
+    };
+
+    let scope = create_realm(app, "contract-claims").await;
+    let other = create_realm(app, "contract-claims-other").await;
+    for (realm, client_id) in [(scope, "portal"), (scope, "billing"), (other, "portal")] {
+        let application = Application {
+            client_id,
+            redirect_uri: "https://app.example.org/cb",
+            post_logout_redirect_uri: None,
+            public: true,
+            requires_consent: false,
+        };
+        register_application(app, realm, application).await;
+    }
+    let ada = create_person(app, scope, "ada", "correct horse battery").await;
+    let now = app.now();
+    let make = |name: &str, client_id: &str, kind: MapperKind| Mapper {
+        id: mint_id(app).expect("an identifier"),
+        client_id: client_id.to_owned(),
+        name: name.to_owned(),
+        claim: (!matches!(kind, MapperKind::Audience { .. })).then(|| "a_claim".to_owned()),
+        kind,
+        targets: vec![ClaimTarget::AccessToken, ClaimTarget::Userinfo],
+        scope: Some("billing".to_owned()),
+        created_at: now,
+    };
+    let audience = make(
+        "Zeta",
+        "portal",
+        MapperKind::Audience {
+            audience: "https://api.example.org".to_owned(),
+        },
+    );
+    let property = make(
+        "alpha",
+        "portal",
+        MapperKind::Property {
+            property: PersonProperty::EmailVerified,
+        },
+    );
+    let of_billing = make("alpha", "billing", MapperKind::FullName);
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let locked = LockedClient {
+        scopes: ["openid", "profile", "email", "roles", "offline_access"]
+            .map(str::to_owned)
+            .to_vec(),
+        capabilities: Vec::new(),
+    };
+    assert_eq!(work.lock_client("portal").await, Ok(Some(locked)));
+    assert_eq!(work.lock_client("nobody").await, Ok(None));
+    // Written out of the order they are read back in.
+    for mapper in [&property, &of_billing, &audience] {
+        assert_eq!(work.insert_mapper(mapper).await, Ok(true));
+    }
+    assert_eq!(
+        work.insert_mapper(&Mapper {
+            id: mint_id(app).expect("an identifier"),
+            ..audience.clone()
+        })
+        .await,
+        Ok(false),
+        "a name is taken once per client"
+    );
+    assert_eq!(
+        work.list_mappers("portal").await,
+        Ok(vec![audience.clone(), property.clone()]),
+        "in the byte order of their names"
+    );
+    assert_eq!(work.delete_mapper("billing", property.id).await, Ok(false));
+    assert_eq!(work.delete_mapper("portal", property.id).await, Ok(true));
+    assert_eq!(
+        work.list_mappers("portal").await,
+        Ok(vec![audience.clone()])
+    );
+
+    assert_eq!(
+        work.read_person_attributes(ada.id).await,
+        Ok(Some(Map::new())),
+        "a person starts with no attribute"
+    );
+    let attributes =
+        json!({ "department": ["research"], "given_name": "Ada", "contractor": false });
+    let attributes = attributes.as_object().expect("an object");
+    assert_eq!(
+        work.lock_person_attributes(ada.id).await,
+        Ok(Some(Map::new()))
+    );
+    assert_eq!(
+        work.write_person_attributes(ada.id, attributes).await,
+        Ok(())
+    );
+    assert_eq!(
+        work.read_person_attributes(ada.id).await,
+        Ok(Some(attributes.clone()))
+    );
+    let nobody = mint_id(app).expect("an identifier");
+    assert_eq!(work.read_person_attributes(nobody).await, Ok(None));
+    assert_eq!(work.lock_person_attributes(nobody).await, Ok(None));
+    work.commit().await.expect("a commit");
+
+    // Measured once, by the rules: the store keeps what they admit.
+    let largest = fill_attributes(MAX_DOCUMENT_BYTES);
+    assert_eq!(check_attributes(&largest), Ok(()));
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.write_person_attributes(ada.id, &largest).await,
+        Ok(()),
+        "the largest document the rules admit"
+    );
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(work.read_person_attributes(ada.id).await, Ok(Some(largest)));
+    drop(work);
+
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(elsewhere.list_mappers("portal").await, Ok(Vec::new()));
+    assert_eq!(
+        elsewhere.delete_mapper("portal", audience.id).await,
+        Ok(false)
+    );
+    assert_eq!(elsewhere.lock_client("billing").await, Ok(None));
+    assert_eq!(elsewhere.read_person_attributes(ada.id).await, Ok(None));
+    assert_eq!(elsewhere.lock_person_attributes(ada.id).await, Ok(None));
+}

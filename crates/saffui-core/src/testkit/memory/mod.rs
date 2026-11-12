@@ -6,6 +6,7 @@
 //! held by SQL is proven on Postgres, never here.
 
 mod audit;
+mod claims;
 mod clients;
 mod consents;
 mod keys;
@@ -32,6 +33,7 @@ use crate::authz::grants::{Membership, RoleGrant};
 use crate::authz::policy::Policy;
 use crate::authz::relations::{AdmittedRelation, RelationTuple, StoredSchema};
 use crate::authz::roles::{Group, Role};
+use crate::claims::Mapper;
 use crate::clients::Client;
 use crate::consent::Consent;
 use crate::directory::Person;
@@ -100,6 +102,10 @@ pub(crate) struct State {
     pub(crate) policies: HashMap<Uuid, Vec<Policy>>,
     /// By realm, person and client: ordered by client within a person.
     pub(crate) consents: BTreeMap<(Uuid, Uuid, String), Consent>,
+    /// The mappers of the clients of each realm, by realm.
+    pub(crate) mappers: HashMap<Uuid, Vec<Mapper>>,
+    /// The attributes of a person, by realm then person.
+    pub(crate) attributes: HashMap<(Uuid, Uuid), serde_json::Map<String, serde_json::Value>>,
 }
 
 /// A code as the double keeps it: spent codes stay, so that a replay is told.
@@ -119,6 +125,10 @@ pub(crate) struct CountedReads {
     pub(crate) pending_authorizations: AtomicUsize,
     /// A client alone, by its identifier.
     pub(crate) clients: AtomicUsize,
+    /// The attributes of a person, read without taking them.
+    pub(crate) attributes: AtomicUsize,
+    /// The roles a person holds at an instant.
+    pub(crate) held_roles: AtomicUsize,
 }
 
 #[derive(Default)]
@@ -249,6 +259,18 @@ impl MemoryStorage {
     #[must_use]
     pub fn count_client_reads(&self) -> usize {
         self.reads.clients.load(Ordering::Relaxed)
+    }
+
+    /// How many statements read the attributes of a person without taking them.
+    #[must_use]
+    pub fn count_attribute_reads(&self) -> usize {
+        self.reads.attributes.load(Ordering::Relaxed)
+    }
+
+    /// How many statements read the roles a person holds.
+    #[must_use]
+    pub fn count_held_role_reads(&self) -> usize {
+        self.reads.held_roles.load(Ordering::Relaxed)
     }
 
     #[must_use]
@@ -400,14 +422,21 @@ impl UnitOfWork for MemoryUnitOfWork {
 mod tests {
     use super::MemoryStorage;
     use crate::testkit::contract::{
-        check_audit_contract, check_authenticators_contract, check_clients_contract,
-        check_codes_contract, check_consents_contract, check_ended_sessions_contract,
-        check_grants_contract, check_keys_contract, check_known_browsers_contract,
-        check_member_groups_contract, check_persons_contract, check_policies_contract,
-        check_refresh_contract, check_relations_contract, check_roles_contract,
-        check_security_keys_contract, check_sign_in_contract, check_tenancy_contract,
+        check_audit_contract, check_authenticators_contract, check_claims_contract,
+        check_clients_contract, check_codes_contract, check_consents_contract,
+        check_ended_sessions_contract, check_grants_contract, check_keys_contract,
+        check_known_browsers_contract, check_member_groups_contract, check_persons_contract,
+        check_policies_contract, check_refresh_contract, check_relations_contract,
+        check_roles_contract, check_security_keys_contract, check_sign_in_contract,
+        check_tenancy_contract,
     };
     use crate::testkit::drive::complete;
+
+    #[test]
+    fn the_double_passes_the_claims_contract() {
+        let (app, _storage) = MemoryStorage::wire();
+        complete(check_claims_contract(&app));
+    }
 
     #[test]
     fn the_double_passes_the_tenancy_contract() {

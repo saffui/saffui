@@ -4,6 +4,7 @@
 pub mod app;
 pub mod audit;
 pub mod authz;
+pub mod claims;
 pub mod clients;
 pub mod consent;
 pub mod directory;

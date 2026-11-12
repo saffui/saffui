@@ -95,6 +95,18 @@ impl From<Failure> for OAuthFailure {
     }
 }
 
+impl OAuthFailure {
+    /// What the client is told beside the name of the error: the sentence of
+    /// the error, or of the catalog when its own mappers are the cause.
+    #[must_use]
+    pub fn describe(&self) -> &'static str {
+        match self.cause.code {
+            ErrorCode::ClaimsTooLarge => self.cause.code.message(),
+            _ => self.error.describe(),
+        }
+    }
+}
+
 impl From<ErrorCode> for OAuthFailure {
     fn from(code: ErrorCode) -> Self {
         Failure::new(code).into()

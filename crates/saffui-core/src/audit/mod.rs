@@ -45,6 +45,9 @@ pub enum EventKind {
     PolicyDeleted,
     ConsentGranted,
     ConsentWithdrawn,
+    MapperCreated,
+    MapperDeleted,
+    PersonAttributesWritten,
 }
 
 impl EventKind {
@@ -82,6 +85,9 @@ impl EventKind {
             Self::PolicyDeleted => "policy.deleted",
             Self::ConsentGranted => "consent.granted",
             Self::ConsentWithdrawn => "consent.withdrawn",
+            Self::MapperCreated => "client.mapper_created",
+            Self::MapperDeleted => "client.mapper_deleted",
+            Self::PersonAttributesWritten => "person.attributes_written",
         }
     }
 }

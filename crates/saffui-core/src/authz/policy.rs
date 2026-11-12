@@ -14,6 +14,7 @@ use super::roles::{describe_actor, is_role_name};
 use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
+use crate::claims::rules::is_policy_attribute;
 use crate::clients::{is_unshowable, read_named_client};
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
@@ -97,7 +98,7 @@ pub struct Policy {
 }
 
 /// What a subject attribute names.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubjectAttribute {
     /// The identifier of the person, or of the client that acts as itself.
@@ -109,6 +110,9 @@ pub enum SubjectAttribute {
     ClientId,
     /// The scopes of the token, as a list.
     Scope,
+    /// An attribute an administrator wrote of the person, by its name: one
+    /// of those that start with `policy.`, and no other.
+    Attribute(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -172,10 +176,12 @@ pub struct SubjectFacts {
     pub scopes: Vec<String>,
     pub roles: Vec<Uuid>,
     pub groups: Vec<Uuid>,
+    /// What an administrator wrote of the person. Empty for a client.
+    pub attributes: Map<String, Value>,
 }
 
 impl SubjectFacts {
-    fn read(&self, attribute: SubjectAttribute) -> Option<Value> {
+    fn read(&self, attribute: &SubjectAttribute) -> Option<Value> {
         match attribute {
             SubjectAttribute::Id => Some(json!(self.id)),
             SubjectAttribute::Username => self.username.as_ref().map(|name| json!(name)),
@@ -183,6 +189,12 @@ impl SubjectFacts {
             SubjectAttribute::EmailVerified => self.email_verified.map(Value::Bool),
             SubjectAttribute::ClientId => Some(json!(self.client_id)),
             SubjectAttribute::Scope => Some(json!(self.scopes)),
+            // Refused at the reading too: a policy kept before the rule reads nothing.
+            SubjectAttribute::Attribute(name) => self
+                .attributes
+                .get(name)
+                .filter(|_| is_policy_attribute(name))
+                .cloned(),
         }
     }
 }
@@ -211,7 +223,7 @@ impl Truth {
 
 fn read_operand(operand: &Operand, facts: &Facts<'_>) -> Option<Value> {
     match operand {
-        Operand::Subject(attribute) => facts.subject.read(*attribute),
+        Operand::Subject(attribute) => facts.subject.read(attribute),
         Operand::Resource(name) => facts
             .resource
             .get(name)
@@ -313,9 +325,38 @@ pub fn read_conditions(document: &Value) -> Result<Vec<Condition>, Failure> {
     Vec::<Condition>::deserialize(document).map_err(|_| Failure::new(ErrorCode::PolicyInvalid))
 }
 
+/// A policy and its conditions, read once for a question: conditions that
+/// no longer read leave the policy unable to tell.
+pub struct ReadPolicy<'a> {
+    pub policy: &'a Policy,
+    pub conditions: Option<Vec<Condition>>,
+}
+
+impl<'a> ReadPolicy<'a> {
+    #[must_use]
+    pub fn read(policy: &'a Policy) -> Self {
+        Self {
+            policy,
+            conditions: read_conditions(&policy.conditions).ok(),
+        }
+    }
+
+    /// Whether a condition reads an attribute written of the person.
+    #[must_use]
+    pub fn reads_person_attributes(&self) -> bool {
+        let is_attribute =
+            |operand: &Operand| matches!(operand, Operand::Subject(SubjectAttribute::Attribute(_)));
+        self.conditions.iter().flatten().any(|condition| {
+            matches!(condition, Condition::Attribute { left, right, .. }
+                if is_attribute(left) || right.as_ref().is_some_and(is_attribute))
+        })
+    }
+}
+
 #[must_use]
-pub fn evaluate_policy(policy: &Policy, facts: &Facts<'_>) -> PolicyOutcome {
-    let Ok(conditions) = read_conditions(&policy.conditions) else {
+pub fn evaluate_policy(read: &ReadPolicy<'_>, facts: &Facts<'_>) -> PolicyOutcome {
+    let policy = read.policy;
+    let Some(conditions) = &read.conditions else {
         return PolicyOutcome::Undecided;
     };
     if conditions.is_empty() {
@@ -360,11 +401,12 @@ pub enum PolicyVerdict {
 }
 
 #[must_use]
-pub fn weigh_policies(policies: &[Policy], facts: &Facts<'_>) -> PolicyVerdict {
+pub fn weigh_policies(policies: &[ReadPolicy<'_>], facts: &Facts<'_>) -> PolicyVerdict {
     let mut permitted = None;
     let mut undecided = None;
-    for policy in policies {
-        match evaluate_policy(policy, facts) {
+    for read in policies {
+        let policy = read.policy;
+        match evaluate_policy(read, facts) {
             PolicyOutcome::Applies(Effect::Deny) => {
                 return PolicyVerdict::Deny(policy.name.clone());
             }
@@ -430,6 +472,9 @@ async fn check_conditions(
             } => {
                 let named = |operand: &Operand| match operand {
                     Operand::Resource(name) => is_attribute_name(name),
+                    Operand::Subject(SubjectAttribute::Attribute(name)) => {
+                        is_policy_attribute(name)
+                    }
                     Operand::Subject(_) => true,
                     Operand::Value(value) => is_storable_value(value),
                 };
@@ -633,9 +678,9 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        Combine, Effect, Facts, NewPolicy, Policy, PolicyOutcome, PolicyVerdict, SubjectFacts,
-        Truth, create_policy, delete_policy, evaluate_condition, evaluate_policy, list_policies,
-        read_conditions, weigh_policies,
+        Combine, Effect, Facts, NewPolicy, Policy, PolicyOutcome, PolicyVerdict, ReadPolicy,
+        SubjectFacts, Truth, create_policy, delete_policy, evaluate_condition, evaluate_policy,
+        list_policies, read_conditions, weigh_policies,
     };
     use crate::authz::capability::Capability;
     use crate::authz::relations::{SchemaRefusal, write_relation_schema};
@@ -658,6 +703,14 @@ mod tests {
             scopes: vec!["openid".to_owned(), "invoices".to_owned()],
             roles: vec![APPROVER],
             groups: Vec::new(),
+            attributes: json!({
+                "policy.department": ["research", "audit"],
+                "policy.level": "senior",
+                "level": "senior",
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
         }
     }
 
@@ -805,6 +858,76 @@ mod tests {
     }
 
     #[test]
+    fn a_policy_reads_the_attributes_whose_name_starts_with_policy_and_no_other() {
+        let read = |name: &str| json!({ "subject": { "attribute": name } });
+        let none = json!({});
+
+        assert_eq!(
+            ask(
+                &attribute(
+                    &json!({ "value": "audit" }),
+                    "in",
+                    Some(read("policy.department"))
+                ),
+                &none
+            ),
+            Truth::Holds,
+            "a value among those of a list the person holds"
+        );
+        assert_eq!(
+            ask(
+                &attribute(
+                    &read("policy.level"),
+                    "equals",
+                    Some(json!({ "value": "junior" }))
+                ),
+                &none
+            ),
+            Truth::Fails
+        );
+        assert_eq!(
+            ask(
+                &attribute(&read("policy.clearance"), "present", None),
+                &none
+            ),
+            Truth::Fails,
+            "an attribute the person does not hold"
+        );
+        assert_eq!(
+            ask(
+                &attribute(&read("level"), "equals", Some(json!({ "value": "senior" }))),
+                &none
+            ),
+            Truth::Unknown,
+            "held, but outside the space: whoever writes people could have written it"
+        );
+
+        let scenario = Scenario::start();
+        let caller = scenario.name_operator(&[Capability::PolicyWrite]);
+        let write = |name: &str| {
+            let conditions = json!([attribute(&read(name), "present", None)]);
+            complete(create_policy(
+                &scenario.app,
+                &caller,
+                NewPolicy {
+                    client_id: "billing",
+                    name: "readers",
+                    resource_type: "invoice",
+                    action: "approve",
+                    effect: Effect::Permit,
+                    combine: Combine::All,
+                    conditions: &conditions,
+                },
+            ))
+            .map(|_| ())
+            .map_err(|failure| failure.code)
+        };
+        assert_eq!(write("level"), Err(ErrorCode::PolicyInvalid));
+        assert_eq!(write("policy."), Err(ErrorCode::PolicyInvalid));
+        assert_eq!(write("policy.level"), Ok(()));
+    }
+
+    #[test]
     fn a_role_a_group_and_a_window_of_time_are_read_from_the_subject_and_the_instant() {
         let none = json!({});
 
@@ -860,7 +983,8 @@ mod tests {
             resource: &resource,
             now: noon(),
         };
-        weigh_policies(policies, &facts)
+        let read: Vec<ReadPolicy<'_>> = policies.iter().map(ReadPolicy::read).collect();
+        weigh_policies(&read, &facts)
     }
 
     #[test]
@@ -880,7 +1004,8 @@ mod tests {
             Some(json!({ "value": 1 })),
         );
         let outcome = |combine, conditions: Value| {
-            evaluate_policy(&policy("p", Effect::Permit, combine, conditions), &facts)
+            let written = policy("p", Effect::Permit, combine, conditions);
+            evaluate_policy(&ReadPolicy::read(&written), &facts)
         };
 
         assert_eq!(

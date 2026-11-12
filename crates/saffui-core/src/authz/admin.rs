@@ -61,8 +61,12 @@ pub async fn authorize_admin_call(
         })?;
     // A token issued for a person carries their session. People hold no
     // right on this plane: the capabilities read below are those of a client,
-    // and they are not lent to whoever signed in through it.
-    if claims.session.is_some() || !claims.scopes.iter().any(|scope| scope == ADMIN_SCOPE) {
+    // and they are not lent to whoever signed in through it. A token made for
+    // a resource server too could be replayed here by that server.
+    if claims.session.is_some()
+        || !claims.scopes.iter().any(|scope| scope == ADMIN_SCOPE)
+        || claims.audiences != [issuer.as_str()]
+    {
         return Err(unauthenticated());
     }
 
@@ -268,7 +272,7 @@ mod tests {
                 client_id: "operator",
                 scopes: &scopes,
                 session: Some(&session),
-                roles: None,
+                claims: None,
             },
         )
         .expect("a token");
@@ -281,5 +285,139 @@ mod tests {
                 "{capability:?}"
             );
         }
+    }
+
+    #[test]
+    fn an_administrator_given_an_audience_keeps_the_plane_and_its_other_tokens_carry_it() {
+        use base64::Engine as _;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+        use crate::claims::manage::create_mapper;
+        use crate::claims::{ClaimTarget, MapperKind, NewMapper};
+
+        let (app, _storage) = MemoryStorage::wire();
+        let scope = complete(create_realm(&app, "acme"));
+        let secret = register(
+            &app,
+            scope,
+            "operator",
+            &["admin", "invoices:read"],
+            &Capability::ALL,
+        );
+        let token = get_token(&app, "acme", "operator", &secret);
+        let caller = complete(authorize_admin_call(
+            &app,
+            "acme",
+            Some(&token),
+            Capability::ClientWrite,
+        ))
+        .expect("an administrator");
+        let audience = NewMapper {
+            name: "api",
+            kind: MapperKind::Audience {
+                audience: "https://api.example.org".to_owned(),
+            },
+            claim: None,
+            targets: &[ClaimTarget::AccessToken],
+            scope: None,
+        };
+        complete(create_mapper(&app, &caller, "operator", audience)).expect("a mapper");
+
+        let for_the_plane = get_token(&app, "acme", "operator", &secret);
+        let for_invoices = complete(grant_token(
+            &app,
+            "acme",
+            TokenRequest {
+                grant_type: Some("client_credentials"),
+                scope: Some("invoices:read"),
+                client_id: Some("operator"),
+                client_secret: Some(Secret::new(secret.expose().to_vec())),
+                ..TokenRequest::default()
+            },
+        ))
+        .expect("a token")
+        .access_token;
+
+        assert_eq!(
+            decide(&app, "acme", Some(&for_the_plane), Capability::RealmRead),
+            Ok("operator".to_owned()),
+            "a token with the admin scope is for the realm alone"
+        );
+        let payload = for_invoices.split('.').nth(1).expect("a compact token");
+        let claims: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).expect("base64url"))
+                .expect("claims");
+        assert_eq!(
+            claims["aud"],
+            serde_json::json!([
+                "https://id.example.test/realms/acme",
+                "https://api.example.org"
+            ])
+        );
+    }
+
+    #[test]
+    fn a_token_made_for_a_resource_server_too_opens_nothing_on_the_plane() {
+        use crate::keys::jwks::open_signing_key;
+        use crate::ports::crypto::SignatureAlgorithm;
+        use crate::tokens::ACCESS_TOKEN_TYPE;
+        use crate::tokens::jws::sign_compact;
+
+        const ISSUER: &str = "https://id.example.test/realms/acme";
+        let (app, _storage) = MemoryStorage::wire();
+        let scope = complete(create_realm(&app, "acme"));
+        register(&app, scope, "operator", &["admin"], &Capability::ALL);
+        let now = app.now().unix_timestamp();
+        let mut work = complete(app.storage.begin(scope)).expect("a unit of work");
+        let (key, private_key) = complete(open_signing_key(
+            &app,
+            work.as_mut(),
+            SignatureAlgorithm::Es256,
+        ))
+        .expect("the key of the realm");
+        drop(work);
+        let sign = |audience: serde_json::Value| {
+            let claims = serde_json::json!({
+                "iss": ISSUER,
+                "sub": "operator",
+                "aud": audience,
+                "client_id": "operator",
+                "scope": "admin",
+                "iat": now,
+                "exp": now + 300,
+                "jti": "a-token-made-elsewhere",
+            });
+            sign_compact(
+                app.signer.as_ref(),
+                &key,
+                &private_key,
+                ACCESS_TOKEN_TYPE,
+                &claims,
+            )
+            .expect("a token")
+        };
+
+        assert_eq!(
+            decide(
+                &app,
+                "acme",
+                Some(&sign(serde_json::json!([
+                    ISSUER,
+                    "https://api.example.org"
+                ]))),
+                Capability::RealmRead
+            ),
+            Err(ErrorCode::AdminAuthenticationFailed),
+            "the resource server it was also made for could replay it here"
+        );
+        assert_eq!(
+            decide(
+                &app,
+                "acme",
+                Some(&sign(serde_json::json!(ISSUER))),
+                Capability::RealmRead
+            ),
+            Ok("operator".to_owned())
+        );
     }
 }

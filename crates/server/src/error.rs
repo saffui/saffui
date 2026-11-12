@@ -5,7 +5,7 @@
 use actix_web::http::StatusCode;
 use actix_web::http::header::{CACHE_CONTROL, PRAGMA, WWW_AUTHENTICATE};
 use actix_web::{HttpRequest, HttpResponse};
-use saffui_core::error::{ErrorKind, Failure};
+use saffui_core::error::{ErrorCode, ErrorKind, Failure};
 use saffui_core::oidc::errors::{OAuthError, OAuthFailure};
 use serde::Serialize;
 
@@ -29,16 +29,38 @@ fn choose_status(kind: ErrorKind) -> StatusCode {
     }
 }
 
+/// How the journal tells a refusal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Journaled {
+    /// The service failed.
+    AsError,
+    /// A client met a bound its own setting reaches: the detail names it.
+    AsWarning,
+    Not,
+}
+
+fn choose_journaling(code: ErrorCode) -> Journaled {
+    match (code, code.kind()) {
+        (_, ErrorKind::Unavailable | ErrorKind::Internal) => Journaled::AsError,
+        (ErrorCode::ClaimsTooLarge | ErrorCode::HeldTooMany, _) => Journaled::AsWarning,
+        _ => Journaled::Not,
+    }
+}
+
+/// Writes a refusal to the journal, the detail included, when it is one to tell.
+fn journal_failure(failure: &Failure) {
+    let (code, detail) = (failure.code.slug(), failure.detail.as_deref());
+    match choose_journaling(failure.code) {
+        Journaled::AsError => tracing::error!(code, detail, "a request failed"),
+        Journaled::AsWarning => tracing::warn!(code, detail, "a request met a bound"),
+        Journaled::Not => {}
+    }
+}
+
 /// Renders a refusal in the dialect of the administration plane.
 pub(crate) fn render_failure(failure: &Failure) -> HttpResponse {
     let kind = failure.code.kind();
-    if matches!(kind, ErrorKind::Unavailable | ErrorKind::Internal) {
-        tracing::error!(
-            code = failure.code.slug(),
-            detail = failure.detail.as_deref(),
-            "a request failed"
-        );
-    }
+    journal_failure(failure);
     let mut response = HttpResponse::build(choose_status(kind));
     // A caller that was not authenticated is told which scheme to come back with.
     if kind == ErrorKind::Unauthenticated {
@@ -87,13 +109,7 @@ pub(crate) fn render_protocol_failure(
         OAuthError::TemporarilyUnavailable => StatusCode::SERVICE_UNAVAILABLE,
         _ => StatusCode::BAD_REQUEST,
     };
-    if status.is_server_error() {
-        tracing::error!(
-            code = failure.cause.code.slug(),
-            detail = failure.cause.detail.as_deref(),
-            "a protocol request failed"
-        );
-    }
+    journal_failure(&failure.cause);
     let mut response = HttpResponse::build(status);
     response
         .insert_header((CACHE_CONTROL, "no-store"))
@@ -104,6 +120,28 @@ pub(crate) fn render_protocol_failure(
     }
     response.json(OAuthErrorBody {
         error: failure.error.name(),
-        error_description: failure.error.describe(),
+        error_description: failure.describe(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use saffui_core::error::ErrorCode;
+
+    use super::{Journaled, choose_journaling};
+
+    #[test]
+    fn a_failure_of_the_service_is_an_error_a_bound_a_client_meets_a_warning() {
+        assert_eq!(
+            choose_journaling(ErrorCode::StorageUnavailable),
+            Journaled::AsError
+        );
+        assert_eq!(choose_journaling(ErrorCode::Internal), Journaled::AsError);
+        for bound in [ErrorCode::ClaimsTooLarge, ErrorCode::HeldTooMany] {
+            assert_eq!(choose_journaling(bound), Journaled::AsWarning, "{bound:?}");
+        }
+        for refusal in [ErrorCode::RequestInvalid, ErrorCode::TokenInvalid] {
+            assert_eq!(choose_journaling(refusal), Journaled::Not, "{refusal:?}");
+        }
+    }
 }

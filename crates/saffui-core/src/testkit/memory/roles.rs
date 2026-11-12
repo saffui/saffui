@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
 use time::OffsetDateTime;
@@ -219,6 +220,7 @@ impl RoleStore for MemoryUnitOfWork {
         now: OffsetDateTime,
         most: u32,
     ) -> Result<Vec<HeldRole>, StorageError> {
+        self.reads.held_roles.fetch_add(1, Ordering::Relaxed);
         let realm = self.realm();
         let roles = read_realm(&self.working.roles, realm);
         let grants = read_realm(&self.working.role_grants, realm);

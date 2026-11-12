@@ -232,6 +232,45 @@ pub struct NewPolicy {
     pub conditions: serde_json::Value,
 }
 
+/// A mapper of a client: what its tokens say beyond their scopes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MapperView {
+    pub id: String,
+    pub client_id: String,
+    pub name: String,
+    /// The kind and its settings, as `{"kind": "attribute", "attribute": "department"}`.
+    pub definition: serde_json::Value,
+    pub claim: Option<String>,
+    /// Among `access_token`, `id_token` and `userinfo`.
+    pub targets: Vec<String>,
+    /// The scope a grant must carry for it to apply. An audience without one
+    /// applies to every grant; a mapper about the person names one, or says nothing.
+    pub scope: Option<String>,
+    pub created_at: String,
+}
+
+/// A mapper to give a client.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NewMapper {
+    pub name: String,
+    pub definition: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim: Option<String>,
+    pub targets: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+}
+
+/// The attributes of a person a caller reaches, read and replaced whole.
+/// Those whose name starts with `policy.` are read with `policy:read`,
+/// written with `policy:write`, and taken away only by a caller that holds both.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Attributes {
+    pub attributes: serde_json::Map<String, serde_json::Value>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelationSchemaView {
     pub source: String,

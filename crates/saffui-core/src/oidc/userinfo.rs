@@ -1,14 +1,16 @@
 //! The userinfo endpoint: what an access token allows to be said of the
 //! person it was issued for.
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use super::discovery::name_issuer;
 use crate::app::App;
+use crate::claims::ClaimTarget;
+use crate::claims::gather::gather_claim_inputs;
+use crate::claims::rules::{ClaimGrant, write_claims};
 use crate::error::{ErrorCode, Failure};
 use crate::login::session::read_live_subject;
 use crate::tenancy::resolve::resolve_realm;
-use crate::tokens::mint::write_person_claims;
 use crate::tokens::verify::verify_access_token;
 
 /// Tells who an access token was issued for, as far as its scopes allow.
@@ -16,9 +18,12 @@ use crate::tokens::verify::verify_access_token;
 /// # Errors
 ///
 /// Returns [`ErrorCode::TokenInvalid`] for a token that does not verify,
-/// that was issued to a client for itself, or whose session ended or whose
-/// person was disabled. Returns [`ErrorCode::TokenScopeInsufficient`] for a
-/// token without the `openid` scope, or the storage failure.
+/// that is not for this realm, that was issued to a client for itself, or
+/// whose session ended or whose person was disabled. Returns
+/// [`ErrorCode::TokenScopeInsufficient`] for a token without the `openid`
+/// scope, [`ErrorCode::HeldTooMany`] for a person whose roles a mapper says
+/// and who holds them by more ways than are read,
+/// [`ErrorCode::ClaimsTooLarge`], or the storage failure.
 pub async fn read_user_info(app: &App, realm: &str, token: &str) -> Result<Value, Failure> {
     let invalid = || Failure::new(ErrorCode::TokenInvalid);
     // An unknown realm issued no token: the one presented is invalid.
@@ -32,6 +37,9 @@ pub async fn read_user_info(app: &App, realm: &str, token: &str) -> Result<Value
     let mut work = app.storage.begin(scope).await?;
     let issuer = name_issuer(&app.settings, &realm_name);
     let claims = verify_access_token(app, work.as_mut(), &issuer, token).await?;
+    if !claims.audiences.contains(&issuer) {
+        return Err(invalid());
+    }
 
     let session = claims.session.ok_or_else(invalid)?;
     let (_, person) = read_live_subject(app, work.as_mut(), session)
@@ -42,9 +50,17 @@ pub async fn read_user_info(app: &App, realm: &str, token: &str) -> Result<Value
         return Err(Failure::new(ErrorCode::TokenScopeInsufficient));
     }
 
-    let mut told = json!({ "sub": claims.subject });
-    write_person_claims(&mut told, &person, &claims.scopes);
-    Ok(told)
+    // Read now, as for a token made now: the three never disagree.
+    let grant = ClaimGrant {
+        person: Some(&person),
+        client_id: &claims.client_id,
+        scopes: &claims.scopes,
+    };
+    let targets = [ClaimTarget::Userinfo];
+    let inputs = gather_claim_inputs(work.as_mut(), &grant, &targets, app.now()).await?;
+    let mut told = write_claims(ClaimTarget::Userinfo, &grant, &inputs)?.claims;
+    told.insert("sub".to_owned(), Value::String(claims.subject));
+    Ok(Value::Object(told))
 }
 
 #[cfg(test)]
@@ -111,6 +127,64 @@ mod tests {
         assert_eq!(
             ask(&scenario, "nowhere", &signed_in.access_token),
             Err(ErrorCode::TokenInvalid)
+        );
+    }
+
+    #[test]
+    fn a_token_that_is_not_for_the_realm_tells_nothing() {
+        use crate::keys::jwks::open_signing_key;
+        use crate::ports::crypto::SignatureAlgorithm;
+        use crate::tokens::ACCESS_TOKEN_TYPE;
+        use crate::tokens::jws::sign_compact;
+
+        const ISSUER: &str = "https://id.example.test/realms/acme";
+        let scenario = Scenario::start();
+        let signed_in = scenario.sign_in("openid");
+        let ada = scenario.find_ada();
+        let now = scenario.app.now().unix_timestamp();
+        let mut work =
+            complete(scenario.app.storage.begin(scenario.scope)).expect("a unit of work");
+        let (key, private_key) = complete(open_signing_key(
+            &scenario.app,
+            work.as_mut(),
+            SignatureAlgorithm::Es256,
+        ))
+        .expect("the key of the realm");
+        drop(work);
+        let sign = |audience: serde_json::Value| {
+            let claims = json!({
+                "iss": ISSUER,
+                "sub": ada.to_string(),
+                "aud": audience,
+                "client_id": "webapp",
+                "scope": "openid",
+                "iat": now,
+                "exp": now + 300,
+                "jti": "a-token-made-elsewhere",
+                "sid": signed_in.ticket.session.to_string(),
+            });
+            sign_compact(
+                scenario.app.signer.as_ref(),
+                &key,
+                &private_key,
+                ACCESS_TOKEN_TYPE,
+                &claims,
+            )
+            .expect("a token")
+        };
+
+        assert_eq!(
+            ask(&scenario, "acme", &sign(json!("https://api.example.org"))),
+            Err(ErrorCode::TokenInvalid),
+            "a token for a resource server alone"
+        );
+        assert!(
+            ask(
+                &scenario,
+                "acme",
+                &sign(json!([ISSUER, "https://api.example.org"]))
+            )
+            .is_ok()
         );
     }
 

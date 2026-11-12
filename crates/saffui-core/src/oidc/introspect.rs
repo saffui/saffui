@@ -7,7 +7,7 @@ use serde_json::Value;
 use super::discovery::name_issuer;
 use super::errors::OAuthFailure;
 use crate::app::App;
-use crate::authz::grants::{ROLES_SCOPE, RoleClaims, read_role_claims};
+use crate::authz::grants::{ROLES_SCOPE, RoleClaims, name_client_held_for, read_role_claims};
 use crate::clients::authenticate::authenticate_client;
 use crate::error::{ErrorCode, Failure};
 use crate::login::session::read_live_subject;
@@ -27,6 +27,9 @@ pub struct Introspection {
     pub sub: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub iss: Option<String>,
+    /// A text for one audience, a list for more (RFC 7662, section 2.2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aud: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exp: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -87,7 +90,10 @@ pub async fn introspect_token(
             let asked = claims.scopes.iter().any(|scope| scope == ROLES_SCOPE);
             let roles = match person {
                 Some(person) if asked => {
-                    Some(read_role_claims(work.as_mut(), person, &claims.client_id, now).await?)
+                    let read = read_role_claims(work.as_mut(), person, &claims.client_id, now)
+                        .await
+                        .map_err(|failure| name_client_held_for(failure, &claims.client_id))?;
+                    Some(read)
                 }
                 _ => None,
             };
@@ -106,6 +112,10 @@ pub async fn introspect_token(
                 scope: Some(claims.scopes.join(" ")),
                 sub: Some(claims.subject),
                 iss: Some(issuer),
+                aud: Some(match claims.audiences.as_slice() {
+                    [one] => Value::String(one.clone()),
+                    all => serde_json::json!(all),
+                }),
                 exp: Some(expires_at),
                 iat: Some(claims.issued_at),
                 jti: Some(claims.token_id),
@@ -192,12 +202,47 @@ mod tests {
             Some(300)
         );
         assert!(told.sub.is_some() && told.sid.is_some() && told.jti.is_some());
+        assert_eq!(
+            told.aud,
+            Some(serde_json::json!("https://id.example.test/realms/acme"))
+        );
 
         scenario.end_session(&signed_in.ticket);
         assert_eq!(
             ask(&scenario, &signed_in.tokens.access_token),
             Introspection::default(),
             "a token whose session ended does not stand, and nothing is said of it"
+        );
+    }
+
+    #[test]
+    fn a_client_is_told_every_audience_of_a_token_the_realm_first() {
+        use crate::authz::capability::Capability;
+        use crate::claims::manage::create_mapper;
+        use crate::claims::{ClaimTarget, MapperKind, NewMapper};
+
+        let scenario = Scenario::start();
+        let operator = scenario.name_operator(&[Capability::ClientWrite]);
+        let audience = NewMapper {
+            name: "api",
+            kind: MapperKind::Audience {
+                audience: "https://api.example.org".to_owned(),
+            },
+            claim: None,
+            targets: &[ClaimTarget::AccessToken],
+            scope: None,
+        };
+        complete(create_mapper(&scenario.app, &operator, "webapp", audience)).expect("a mapper");
+        let signed_in = scenario.sign_in("openid");
+
+        let told = ask(&scenario, &signed_in.tokens.access_token);
+
+        assert_eq!(
+            told.aud,
+            Some(serde_json::json!([
+                "https://id.example.test/realms/acme",
+                "https://api.example.org"
+            ]))
         );
     }
 

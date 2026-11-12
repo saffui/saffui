@@ -1,8 +1,9 @@
 use actix_web::{HttpResponse, delete, get, post, put, web};
-use api::NewUser;
+use api::{Attributes, NewUser};
 use saffui_core::app::App as Product;
 use saffui_core::authz::capability::Capability;
 use saffui_core::authz::grants::{self, RoleHolder};
+use saffui_core::claims::attributes::{read_attributes, write_attributes};
 use saffui_core::consent::manage::{list_person_consents, withdraw_person_consent};
 use saffui_core::directory::create::{NewPerson, create_person};
 use saffui_core::directory::list::list_persons;
@@ -259,6 +260,48 @@ pub async fn withdraw_user_consent(
         return render_failure(&Failure::new(ErrorCode::ConsentNotFound));
     };
     match withdraw_person_consent(&product, &caller, person, &client_id).await {
+        Ok(()) => HttpResponse::NoContent().finish(),
+        Err(failure) => render_failure(&failure),
+    }
+}
+
+/// What an administrator wrote of a person beyond their name and address.
+#[get(
+    "/admin/v1/realms/{realm}/users/{person}/attributes",
+    wrap = "RequireCapability(Capability::UserRead)"
+)]
+pub async fn read_user_attributes(
+    caller: Caller,
+    product: web::Data<Product>,
+    path: web::Path<(String, String)>,
+) -> HttpResponse {
+    let (_realm, person) = path.into_inner();
+    let Ok(person) = uuid::Uuid::parse_str(&person) else {
+        return render_failure(&Failure::new(ErrorCode::PersonNotFound));
+    };
+    match read_attributes(&product, &caller, person).await {
+        Ok(attributes) => HttpResponse::Ok().json(Attributes { attributes }),
+        Err(failure) => render_failure(&failure),
+    }
+}
+
+/// Replaces the attributes of a person the caller may write: those that
+/// policies read ask for `policy:write` too.
+#[put(
+    "/admin/v1/realms/{realm}/users/{person}/attributes",
+    wrap = "RequireCapability(Capability::UserWrite)"
+)]
+pub async fn replace_user_attributes(
+    caller: Caller,
+    product: web::Data<Product>,
+    path: web::Path<(String, String)>,
+    wanted: web::Json<Attributes>,
+) -> HttpResponse {
+    let (_realm, person) = path.into_inner();
+    let Ok(person) = uuid::Uuid::parse_str(&person) else {
+        return render_failure(&Failure::new(ErrorCode::PersonNotFound));
+    };
+    match write_attributes(&product, &caller, person, &wanted.attributes).await {
         Ok(()) => HttpResponse::NoContent().finish(),
         Err(failure) => render_failure(&failure),
     }

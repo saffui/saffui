@@ -4,12 +4,12 @@
 use pgcore::pool::PoolSettings;
 use saffui_core::consent::ConsentHold;
 use saffui_core::testkit::contract::{
-    check_authenticators_contract, check_clients_contract, check_codes_contract,
-    check_consents_contract, check_ended_sessions_contract, check_grants_contract,
-    check_keys_contract, check_known_browsers_contract, check_member_groups_contract,
-    check_persons_contract, check_policies_contract, check_refresh_contract,
-    check_relations_contract, check_roles_contract, check_security_keys_contract,
-    check_sign_in_contract, check_tenancy_contract,
+    check_authenticators_contract, check_claims_contract, check_clients_contract,
+    check_codes_contract, check_consents_contract, check_ended_sessions_contract,
+    check_grants_contract, check_keys_contract, check_known_browsers_contract,
+    check_member_groups_contract, check_persons_contract, check_policies_contract,
+    check_refresh_contract, check_relations_contract, check_roles_contract,
+    check_security_keys_contract, check_sign_in_contract, check_tenancy_contract,
 };
 
 mod support;
@@ -19,6 +19,13 @@ async fn postgres_passes_the_tenancy_contract() {
     let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
 
     check_tenancy_contract(&app).await;
+}
+
+#[tokio::test]
+async fn postgres_passes_the_claims_contract() {
+    let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
+
+    check_claims_contract(&app).await;
 }
 
 #[tokio::test]

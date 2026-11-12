@@ -8,8 +8,8 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
-use super::grants::{read_held_roles, read_member_groups};
-use super::policy::{Facts, PolicyVerdict, SubjectFacts, weigh_policies};
+use super::grants::{name_client_held_for, read_held_roles, read_member_groups};
+use super::policy::{Facts, PolicyVerdict, ReadPolicy, SubjectFacts, weigh_policies};
 use super::relations::check::{MAX_DURATION, Walk, WalkBudget, walk_relations};
 use super::relations::schema::{CompiledSchema, compile_schema};
 use super::relations::{ObjectRef, is_object_id, read_compiled_schema};
@@ -227,11 +227,14 @@ async fn decide_by_policies(
     if policies.is_empty() {
         return Ok(Decision::deny("no_policy", None));
     }
+    let read: Vec<ReadPolicy<'_>> = policies.iter().map(ReadPolicy::read).collect();
     let now = app.now();
     let mut facts = subject.facts;
     if let Some(person) = subject.person {
+        let held_for = |failure| name_client_held_for(failure, client_id);
         let mut roles: Vec<Uuid> = read_held_roles(work, person, now)
-            .await?
+            .await
+            .map_err(held_for)?
             .into_iter()
             .filter(|held| {
                 held.client_id
@@ -243,14 +246,23 @@ async fn decide_by_policies(
         roles.sort_unstable();
         roles.dedup();
         facts.roles = roles;
-        facts.groups = read_member_groups(work, person, now).await?;
+        facts.groups = read_member_groups(work, person, now)
+            .await
+            .map_err(held_for)?;
+        // Read only for a policy that reads them: most decide by roles alone.
+        if read.iter().any(ReadPolicy::reads_person_attributes) {
+            facts.attributes = work
+                .read_person_attributes(person)
+                .await?
+                .unwrap_or_default();
+        }
     }
     let facts = Facts {
         subject: &facts,
         resource: request.attributes,
         now,
     };
-    Ok(match weigh_policies(&policies, &facts) {
+    Ok(match weigh_policies(&read, &facts) {
         PolicyVerdict::Permit(name) => Decision::permit("policy", Some(name)),
         PolicyVerdict::Deny(name) => Decision::deny("policy", Some(name)),
         PolicyVerdict::Undecided(name) => Decision::deny("undecided", Some(name)),
@@ -347,6 +359,8 @@ mod tests {
         write_relation_schema,
     };
     use crate::authz::roles::{NewRole, create_role};
+    use crate::claims::attributes::write_attributes;
+    use crate::error::ErrorCode;
     use crate::oidc::errors::OAuthError;
     use crate::oidc::scenario::Scenario;
     use crate::secret::Secret;
@@ -619,6 +633,157 @@ mod tests {
         assert_eq!(
             told(&started.ask("approve", ("invoice", None), &json!({}))),
             ("deny", "undecided", Some("large-invoices"))
+        );
+    }
+
+    #[test]
+    fn an_attribute_written_of_the_person_is_read_by_the_policies_at_the_question() {
+        let started = Started::open();
+        started.write_policy(
+            "auditors",
+            "billing",
+            Effect::Permit,
+            &json!([{ "attribute": { "left": { "subject": { "attribute": "policy.team" } }, "operator": "equals", "right": { "value": "audit" } } }]),
+        );
+        assert_eq!(
+            told(&started.ask("approve", ("invoice", None), &json!({}))),
+            ("deny", "undecided", Some("auditors")),
+            "nothing was written of ada"
+        );
+
+        let written = json!({ "policy.team": "audit" });
+        complete(write_attributes(
+            &started.scenario.app,
+            &started.caller,
+            started.scenario.find_ada(),
+            written.as_object().expect("an object"),
+        ))
+        .expect("attributes");
+
+        assert_eq!(
+            told(&started.ask("approve", ("invoice", None), &json!({}))),
+            ("permit", "policy", Some("auditors")),
+            "read now, not from the token made before"
+        );
+    }
+
+    #[test]
+    fn the_attributes_of_the_person_are_read_only_for_a_policy_that_reads_them() {
+        let started = Started::open();
+        started.write_policy(
+            "auditors",
+            "billing",
+            Effect::Permit,
+            &json!([{ "time": { "not_before": "2020-01-01T00:00:00Z" } }]),
+        );
+        let reads = || started.scenario.storage.count_attribute_reads();
+        let before = reads();
+
+        started.ask("approve", ("invoice", None), &json!({}));
+
+        assert_eq!(reads(), before, "no condition reads them");
+        let written = NewPolicy {
+            client_id: "billing",
+            name: "of-the-team",
+            resource_type: "receipt",
+            action: "approve",
+            effect: Effect::Permit,
+            combine: Combine::All,
+            conditions: &json!([{ "attribute": { "left": { "subject": { "attribute": "policy.team" } }, "operator": "present" } }]),
+        };
+        complete(create_policy(
+            &started.scenario.app,
+            &started.caller,
+            written,
+        ))
+        .expect("a policy");
+        started.ask("approve", ("receipt", None), &json!({}));
+        assert_eq!(reads(), before + 1);
+    }
+
+    #[test]
+    fn an_attribute_named_on_the_right_of_a_condition_is_read_too() {
+        let started = Started::open();
+        started.write_policy(
+            "in-team",
+            "billing",
+            Effect::Permit,
+            &json!([{ "attribute": { "left": { "value": "audit" }, "operator": "in", "right": { "subject": { "attribute": "policy.teams" } } } }]),
+        );
+        let written = json!({ "policy.teams": ["audit", "research"] });
+        complete(write_attributes(
+            &started.scenario.app,
+            &started.caller,
+            started.scenario.find_ada(),
+            written.as_object().expect("an object"),
+        ))
+        .expect("attributes");
+
+        assert_eq!(
+            told(&started.ask("approve", ("invoice", None), &json!({}))),
+            ("permit", "policy", Some("in-team"))
+        );
+    }
+
+    #[test]
+    fn a_policy_on_the_name_of_the_person_reads_no_attribute() {
+        let started = Started::open();
+        started.write_policy(
+            "ada-only",
+            "billing",
+            Effect::Permit,
+            &json!([{ "attribute": { "left": { "subject": "username" }, "operator": "equals", "right": { "value": "ada" } } }]),
+        );
+        let before = started.scenario.storage.count_attribute_reads();
+
+        let decided = started.ask("approve", ("invoice", None), &json!({}));
+
+        assert_eq!(told(&decided), ("permit", "policy", Some("ada-only")));
+        assert_eq!(started.scenario.storage.count_attribute_reads(), before);
+    }
+
+    #[test]
+    fn a_question_about_a_person_who_holds_too_many_roles_is_refused_by_name_of_the_client() {
+        use crate::authz::grants::MAX_HELD;
+        use crate::testkit::fixtures::grant_many_roles;
+
+        let started = Started::open();
+        started.write_policy(
+            "auditors",
+            "billing",
+            Effect::Permit,
+            &json!([{ "time": { "not_before": "2020-01-01T00:00:00Z" } }]),
+        );
+        complete(grant_many_roles(
+            &started.scenario.app,
+            started.scenario.scope,
+            started.scenario.find_ada(),
+            MAX_HELD + 1,
+        ));
+        let attributes = Map::new();
+
+        let refused = complete(decide(
+            &started.scenario.app,
+            "acme",
+            Some("billing"),
+            Some(started.scenario.copy_service_secret()),
+            DecisionRequest {
+                subject_token: Some(&started.token),
+                action: "approve",
+                resource_type: "invoice",
+                resource_id: None,
+                attributes: &attributes,
+            },
+        ))
+        .expect_err("too many roles to read");
+
+        assert_eq!(refused.cause.code, ErrorCode::HeldTooMany);
+        assert!(
+            refused
+                .cause
+                .detail
+                .is_some_and(|detail| detail.contains("billing")),
+            "the client that asks"
         );
     }
 

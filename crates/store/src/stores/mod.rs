@@ -3,6 +3,7 @@
 mod audit;
 mod authenticators;
 mod browsers;
+mod claims;
 mod clients;
 mod codes;
 mod consents;

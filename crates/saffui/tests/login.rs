@@ -1206,6 +1206,110 @@ fn a_person_carries_their_roles_into_the_tokens_of_an_application_for_as_long_as
     assert_eq!(held["items"][0]["client_id"], "portal");
 }
 
+/// A journey through the real binary: an operator gives `portal` mappers and
+/// `ada` attributes over the network, and the identity token, the access
+/// token and the userinfo answer say them, read from the database.
+#[test]
+fn mappers_and_attributes_written_by_an_operator_reach_the_tokens_and_userinfo() {
+    let database = database::create_database(EMBEDDED);
+    let (node, operator) = prepare_realm_with_operator(&database, support::saffui_command());
+    let bearer = ask_operator_token(&node, &operator);
+    let person = find_only_person(&node, &bearer);
+    let attributes = format!("/admin/v1/realms/acme/users/{person}/attributes");
+
+    let written = send_json(
+        &node,
+        "PUT",
+        &attributes,
+        &bearer,
+        &json!({ "attributes": { "department": "research", "given_name": "Ada" } }),
+    );
+    assert_eq!(written.status, 204, "{}", written.body);
+    let refused = send_json(
+        &node,
+        "PUT",
+        &attributes,
+        &bearer,
+        &json!({ "attributes": { "age": 36 } }),
+    );
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert_eq!(read_json(&refused.body)["code"], "user.attributes_invalid");
+    for mapper in [
+        json!({
+            "name": "department",
+            "definition": { "kind": "attribute", "attribute": "department" },
+            "claim": "dept",
+            "targets": ["id_token", "userinfo"],
+            "scope": "profile",
+        }),
+        json!({
+            "name": "api",
+            "definition": { "kind": "audience", "audience": "https://api.example.test" },
+            "targets": ["access_token"],
+        }),
+    ] {
+        make(
+            &node,
+            "/admin/v1/realms/acme/clients/portal/mappers",
+            &bearer,
+            &mapper,
+        );
+    }
+    let reserved = send_json(
+        &node,
+        "POST",
+        "/admin/v1/realms/acme/clients/portal/mappers",
+        &bearer,
+        &json!({
+            "name": "sneaky",
+            "definition": { "kind": "attribute", "attribute": "department" },
+            "claim": "Email_verified",
+            "targets": ["id_token"],
+            "scope": "profile",
+        }),
+    );
+    assert_eq!(
+        reserved.status, 400,
+        "a mapper never writes what the person alone says: {}",
+        reserved.body
+    );
+
+    let (back, _session) = sign_in_through(
+        &node,
+        PASSWORD,
+        None,
+        &write_authorize_path_asking("openid%20profile"),
+    );
+    assert_eq!(back.status, 303, "{}", back.body);
+    let code = read_parameter(read_header(&back, "location").expect("a location"), "code")
+        .expect("a code");
+    let exchanged = exchange_code(&node, &code, VERIFIER);
+    assert_eq!(exchanged.status, 200, "{}", exchanged.body);
+    let tokens = read_json(&exchanged.body);
+    let (_, identity) = verify_with_published_keys(
+        &node,
+        tokens["id_token"].as_str().expect("an identity token"),
+    );
+    assert_eq!(identity["dept"], "research");
+    assert_eq!(identity["given_name"], "Ada");
+    let access = tokens["access_token"].as_str().expect("an access token");
+    let (_, access_claims) = verify_with_published_keys(&node, access);
+    assert_eq!(
+        access_claims["aud"],
+        json!([
+            "http://localhost:8080/realms/acme",
+            "https://api.example.test"
+        ]),
+        "the realm first, then the audience of the mapper"
+    );
+    assert!(access_claims.get("dept").is_none(), "{access_claims}");
+    let told = ask_user_info(&node, access);
+    assert_eq!(told.status, 200, "{}", told.body);
+    let told = read_json(&told.body);
+    assert_eq!(told["dept"], "research", "{told}");
+    assert_eq!(told["given_name"], "Ada", "{told}");
+}
+
 /// The schema of relations of the decision journey: a person owns a document.
 const DECISION_SCHEMA: &str = "definition user {}
 definition document {

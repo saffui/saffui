@@ -5,6 +5,8 @@ use super::register::{NewClient, register_client};
 use super::store::ListWindow;
 use crate::app::App;
 use crate::authz::admin::AdminCaller;
+use crate::authz::capability::check_capabilities_held;
+use crate::claims::rules::check_scope_capabilities;
 use crate::error::{ErrorCode, Failure};
 use crate::secret::Secret;
 use crate::tenancy::RealmScope;
@@ -49,20 +51,17 @@ pub async fn find_client(app: &App, scope: RealmScope, client_id: &str) -> Resul
 /// # Errors
 ///
 /// Returns [`ErrorCode::CapabilityMissing`] when the caller would grant a
-/// capability it does not hold itself: nobody hands out more than they have.
-/// Otherwise as [`register_client`].
+/// capability it does not hold itself, or a scope that makes tokens say what
+/// it may not read: nobody hands out more than they have. Otherwise as
+/// [`register_client`].
 pub async fn create_client(
     app: &App,
     caller: &AdminCaller,
     wanted: NewClient<'_>,
 ) -> Result<(Client, Option<Secret>), Failure> {
-    if wanted
-        .capabilities
-        .iter()
-        .any(|granted| !caller.client.capabilities.contains(granted))
-    {
-        return Err(Failure::new(ErrorCode::CapabilityMissing));
-    }
+    let held = &caller.client.capabilities;
+    check_capabilities_held(held, wanted.capabilities)?;
+    check_scope_capabilities(wanted.scopes, held)?;
     let mut work = app.storage.begin(caller.scope).await?;
     let wanted = NewClient {
         created_by: Some(&caller.client.client_id),

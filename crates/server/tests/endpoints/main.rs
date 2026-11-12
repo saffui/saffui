@@ -3,6 +3,7 @@
 
 mod admin;
 mod certs;
+mod claims;
 mod consent;
 mod decisions;
 mod discovery;

@@ -46,6 +46,7 @@ pub enum ErrorCode {
     PersonNotFound = 206,
     AuthenticatorNotFound = 207,
     SecurityKeyNotFound = 208,
+    AttributesInvalid = 209,
     ClientAuthenticationFailed = 300,
     ClientIdentifierInvalid = 301,
     ClientIdentifierTaken = 302,
@@ -58,6 +59,11 @@ pub enum ErrorCode {
     CapabilityUnknown = 309,
     RedirectUriInvalid = 310,
     RedirectUriMismatch = 311,
+    MapperInvalid = 312,
+    MapperNameTaken = 313,
+    MapperNotFound = 314,
+    MapperLimitReached = 315,
+    MapperOverlaps = 316,
     AdminAuthenticationFailed = 400,
     CapabilityMissing = 401,
     SignInFailed = 402,
@@ -75,6 +81,7 @@ pub enum ErrorCode {
     GrantInvalid = 501,
     TokenScopeInsufficient = 502,
     TokenTypeUnsupported = 503,
+    ClaimsTooLarge = 504,
     TenantNameInvalid = 600,
     RoleNameInvalid = 900,
     RoleNameTaken = 901,
@@ -123,7 +130,11 @@ impl ErrorCode {
             | Self::HeldTooMany
             | Self::PolicyNameTaken
             | Self::ResourceTypeTaken
-            | Self::NamedByPolicy => ErrorKind::Conflict,
+            | Self::NamedByPolicy
+            | Self::MapperNameTaken
+            | Self::MapperLimitReached
+            | Self::MapperOverlaps
+            | Self::ClaimsTooLarge => ErrorKind::Conflict,
             Self::RealmNotFound
             | Self::ClientNotFound
             | Self::PersonNotFound
@@ -135,7 +146,8 @@ impl ErrorCode {
             | Self::MembershipNotFound
             | Self::RelationNotFound
             | Self::PolicyNotFound
-            | Self::ConsentNotFound => ErrorKind::NotFound,
+            | Self::ConsentNotFound
+            | Self::MapperNotFound => ErrorKind::NotFound,
             Self::ClientAuthenticationFailed
             | Self::TokenInvalid
             | Self::AdminAuthenticationFailed
@@ -173,7 +185,9 @@ impl ErrorCode {
             | Self::RedirectUriMismatch
             | Self::AuthorizationRequestExpired
             | Self::GrantInvalid
-            | Self::TokenTypeUnsupported => ErrorKind::Invalid,
+            | Self::TokenTypeUnsupported
+            | Self::AttributesInvalid
+            | Self::MapperInvalid => ErrorKind::Invalid,
         }
     }
 
@@ -210,10 +224,16 @@ impl ErrorCode {
             Self::CapabilityUnknown => "client.capability_unknown",
             Self::RedirectUriInvalid => "client.redirect_uri_invalid",
             Self::RedirectUriMismatch => "client.redirect_uri_mismatch",
+            Self::MapperInvalid => "client.mapper_invalid",
+            Self::MapperNameTaken => "client.mapper_name_taken",
+            Self::MapperNotFound => "client.mapper_not_found",
+            Self::MapperLimitReached => "client.mapper_limit_reached",
+            Self::MapperOverlaps => "client.mapper_overlaps",
             Self::TokenInvalid => "token.invalid",
             Self::GrantInvalid => "token.grant_invalid",
             Self::TokenScopeInsufficient => "token.scope_insufficient",
             Self::TokenTypeUnsupported => "token.type_unsupported",
+            Self::ClaimsTooLarge => "token.claims_too_large",
             Self::AdminAuthenticationFailed => "auth.admin_authentication_failed",
             Self::CapabilityMissing => "auth.capability_missing",
             Self::SignInFailed => "auth.sign_in_failed",
@@ -229,6 +249,7 @@ impl ErrorCode {
             Self::SecurityKeysNotServed => "auth.security_keys_not_served",
             Self::ConsentNotFound => "auth.consent_not_found",
             Self::SecurityKeyNotFound => "user.security_key_not_found",
+            Self::AttributesInvalid => "user.attributes_invalid",
             Self::TenantNameInvalid => "tenant.name_invalid",
             Self::RoleNameInvalid => "authz.role_name_invalid",
             Self::RoleNameTaken => "authz.role_name_taken",
@@ -364,6 +385,19 @@ impl ErrorCode {
                 "A type of resource is decided by the schema of relations or by policies, never by both."
             }
             Self::NamedByPolicy => "A policy names this role or group: remove the policy first.",
+            Self::AttributesInvalid => {
+                "Attributes are at most 64 in 16 KiB, each a text, a truth value or a list of texts, under a name of letters, digits, dots, hyphens or underscores."
+            }
+            Self::MapperInvalid => {
+                "The mapper cannot be read, or names a claim the protocol or a scope writes."
+            }
+            Self::MapperNameTaken => "This client already has a mapper of this name.",
+            Self::MapperNotFound => "No such mapper.",
+            Self::MapperLimitReached => "A client has at most 50 mappers.",
+            Self::MapperOverlaps => {
+                "Another mapper of this client writes this claim or reads this source for one of these targets."
+            }
+            Self::ClaimsTooLarge => "The mappers of this client write more than a token can carry.",
         }
     }
 }
@@ -426,7 +460,7 @@ mod tests {
 
     use super::ErrorCode;
 
-    const ALL: [ErrorCode; 68] = [
+    const ALL: [ErrorCode; 75] = [
         ErrorCode::Internal,
         ErrorCode::StorageUnavailable,
         ErrorCode::Conflict,
@@ -495,6 +529,13 @@ mod tests {
         ErrorCode::PolicyNotFound,
         ErrorCode::ResourceTypeTaken,
         ErrorCode::NamedByPolicy,
+        ErrorCode::AttributesInvalid,
+        ErrorCode::MapperInvalid,
+        ErrorCode::MapperNameTaken,
+        ErrorCode::MapperNotFound,
+        ErrorCode::MapperLimitReached,
+        ErrorCode::MapperOverlaps,
+        ErrorCode::ClaimsTooLarge,
     ];
 
     #[test]

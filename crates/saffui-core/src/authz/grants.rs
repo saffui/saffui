@@ -282,6 +282,20 @@ pub(crate) async fn read_held_roles(
     Ok(held)
 }
 
+/// Names, in the detail of a refusal for too many roles or groups, the
+/// client they were read for: the journal tells whose tokens or questions
+/// meet the bound.
+pub(crate) fn name_client_held_for(failure: Failure, client_id: &str) -> Failure {
+    if failure.code == ErrorCode::HeldTooMany {
+        Failure::with_detail(
+            ErrorCode::HeldTooMany,
+            format!("read for the client {client_id}"),
+        )
+    } else {
+        failure
+    }
+}
+
 /// Reads the groups a person is a member of at `now`.
 ///
 /// # Errors
@@ -335,9 +349,9 @@ impl RoleClaims {
     /// roles of another client are not said. A role held two ways lasts as
     /// long as the longer one.
     #[must_use]
-    pub fn gather(held: &[HeldRole], client_id: &str) -> Self {
+    pub fn gather<'a>(held: impl IntoIterator<Item = &'a HeldRole>, client_id: &str) -> Self {
         let mut lasting: BTreeMap<Uuid, (&HeldRole, Option<OffsetDateTime>)> = BTreeMap::new();
-        let said = held.iter().filter(|way| {
+        let said = held.into_iter().filter(|way| {
             way.client_id
                 .as_deref()
                 .is_none_or(|owner| owner == client_id)

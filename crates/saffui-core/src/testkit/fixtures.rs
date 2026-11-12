@@ -120,6 +120,65 @@ pub async fn create_person(
     create(app, scope, wanted).await.expect("a person")
 }
 
+/// As many attributes as a person may have, whose compact JSON is `bytes`
+/// long: at `MAX_DOCUMENT_BYTES`, the largest the rules admit.
+///
+/// # Panics
+///
+/// Panics for a length they cannot fill.
+#[must_use]
+pub fn fill_attributes(bytes: usize) -> serde_json::Map<String, serde_json::Value> {
+    use crate::claims::rules::MAX_ATTRIBUTES;
+
+    let text = |length: usize| serde_json::Value::String("x".repeat(length));
+    let mut attributes: serde_json::Map<String, serde_json::Value> = (0..MAX_ATTRIBUTES)
+        .map(|index| (format!("attr-{index:02}"), text(240)))
+        .collect();
+    let written = serde_json::to_vec(&attributes).expect("JSON").len();
+    let short = bytes
+        .checked_sub(written)
+        .expect("a length 64 attributes reach");
+    attributes.insert("attr-00".to_owned(), text(240 + short));
+    attributes
+}
+
+/// Gives a person `count` roles of the realm, written straight to the
+/// storage in one unit of work: more than the use cases would take time for.
+///
+/// # Panics
+///
+/// Panics when the storage refuses.
+pub async fn grant_many_roles(app: &App, scope: RealmScope, person: uuid::Uuid, count: u32) {
+    use crate::authz::grants::{Grant, RoleGrant, RoleHolder};
+    use crate::authz::roles::Role;
+
+    let now = app.now();
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    for index in 0..count {
+        let role = Role {
+            id: uuid::Uuid::from_u128(u128::from(index) + 1),
+            client_id: None,
+            name: format!("role-{index:04}"),
+            description: None,
+            created_at: now,
+        };
+        assert_eq!(work.insert_role(&role).await, Ok(true));
+        let given = RoleGrant {
+            role: role.id,
+            holder: RoleHolder::Person(person),
+            grant: Grant {
+                valid_from: now,
+                valid_until: None,
+                granted_by: "operator".to_owned(),
+                reason: None,
+                granted_at: now,
+            },
+        };
+        work.write_role_grant(&given).await.expect("a grant");
+    }
+    work.commit().await.expect("a commit");
+}
+
 /// An application to register.
 pub struct Application<'a> {
     pub client_id: &'a str,

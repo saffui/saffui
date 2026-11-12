@@ -1,6 +1,8 @@
 //! The capabilities of the administration plane: a closed vocabulary. A name
 //! that is not written here grants nothing, and there is no wildcard.
 
+use crate::error::{ErrorCode, Failure};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Capability {
     RealmRead,
@@ -50,6 +52,20 @@ impl Capability {
         Self::ALL
             .into_iter()
             .find(|capability| capability.name() == name)
+    }
+}
+
+/// Checks that a caller holds every capability an action asks: nobody hands
+/// out more than they have.
+///
+/// # Errors
+///
+/// Returns [`ErrorCode::CapabilityMissing`].
+pub fn check_capabilities_held(held: &[Capability], asked: &[Capability]) -> Result<(), Failure> {
+    if asked.iter().all(|capability| held.contains(capability)) {
+        Ok(())
+    } else {
+        Err(Failure::new(ErrorCode::CapabilityMissing))
     }
 }
 

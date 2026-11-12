@@ -212,6 +212,36 @@ pub(crate) mod authz_policies {
     ];
 }
 
+pub(crate) mod client_mappers {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "client_mappers",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// uuid
+    pub(crate) const MAPPER_ID: Column = Column("mapper_id");
+    /// text
+    pub(crate) const CLIENT_ID: Column = Column("client_id");
+    /// text
+    pub(crate) const NAME: Column = Column("name");
+    /// jsonb
+    pub(crate) const DEFINITION: Column = Column("definition");
+    /// text, nullable
+    pub(crate) const CLAIM: Column = Column("claim");
+    /// ARRAY
+    pub(crate) const TARGETS: Column = Column("targets");
+    /// text, nullable
+    pub(crate) const SCOPE: Column = Column("scope");
+    /// timestamp with time zone
+    pub(crate) const CREATED_AT: Column = Column("created_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[
+        MAPPER_ID, CLIENT_ID, NAME, DEFINITION, CLAIM, TARGETS, SCOPE, CREATED_AT,
+    ];
+}
+
 pub(crate) mod clients {
     use super::{Column, ScopeKeys, Table};
 
@@ -499,6 +529,8 @@ pub(crate) mod persons {
     pub(crate) const ENABLED: Column = Column("enabled");
     /// timestamp with time zone
     pub(crate) const CREATED_AT: Column = Column("created_at");
+    /// jsonb
+    pub(crate) const ATTRIBUTES: Column = Column("attributes");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -509,6 +541,7 @@ pub(crate) mod persons {
         DISPLAY_NAME,
         ENABLED,
         CREATED_AT,
+        ATTRIBUTES,
     ];
 }
 
@@ -861,6 +894,7 @@ pub(crate) const TABLES: &[(Table, &[Column])] = &[
     (authorization_requests::TABLE, authorization_requests::ALL),
     (authz_definitions::TABLE, authz_definitions::ALL),
     (authz_policies::TABLE, authz_policies::ALL),
+    (client_mappers::TABLE, client_mappers::ALL),
     (clients::TABLE, clients::ALL),
     (code_attempts::TABLE, code_attempts::ALL),
     (consents::TABLE, consents::ALL),

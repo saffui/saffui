@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::authz::capability::Capability;
 use crate::error::{ErrorCode, Failure};
+use crate::ports::crypto::SignatureAlgorithm;
 use crate::ports::storage::{StorageError, UnitOfWork};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,6 +43,8 @@ pub struct Client {
     pub scopes: Vec<String>,
     /// What the client may do on the administration plane of its realm.
     pub capabilities: Vec<Capability>,
+    /// The algorithm of its identity tokens. None: the default of the realm.
+    pub id_token_signed_response_alg: Option<SignatureAlgorithm>,
     pub enabled: bool,
     pub created_at: OffsetDateTime,
 }

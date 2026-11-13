@@ -12,7 +12,7 @@ use crate::authz::capability::Capability;
 use crate::clients::register::{NewServiceClient, register_service_client};
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
-use crate::keys::generate::create_first_keys;
+use crate::keys::generate::{create_first_keys, generate_first_keys};
 use crate::ports::storage::StorageError;
 use crate::secret::Secret;
 
@@ -37,7 +37,7 @@ pub struct Provisioned {
 /// Creates a tenant and its first realm, both or neither. The creation is
 /// the first event of the chain of the realm, and the realm is born with its
 /// keys, all written by the same unit of work: a realm never exists without
-/// them.
+/// them. The keys are made before it opens.
 ///
 /// # Errors
 ///
@@ -87,6 +87,8 @@ pub async fn provision_realm_with_client(
         created_at,
     };
 
+    let first_keys = generate_first_keys(app).await?;
+
     let mut work = app
         .storage
         .begin(RealmScope::bind(tenant.id, realm.id))
@@ -100,7 +102,7 @@ pub async fn provision_realm_with_client(
         })?;
     let created = json!({ "name": realm.name.as_str(), "tenant_name": tenant.name });
     record_event(app, work.as_mut(), EventKind::RealmCreated, created).await?;
-    create_first_keys(app, work.as_mut()).await?;
+    create_first_keys(app, work.as_mut(), first_keys).await?;
     let secret = match first_client {
         Some(client) => {
             let service = NewServiceClient {
@@ -158,7 +160,7 @@ mod tests {
             .iter()
             .filter_map(|event| event["kind"].as_str())
             .collect();
-        assert_eq!(kinds, ["realm.created", "key.created"]);
+        assert_eq!(kinds, ["realm.created", "key.created", "key.created"]);
         assert_eq!(recorded[0]["payload"]["name"], "acme");
         assert_eq!(recorded[0]["payload"]["tenant_name"], "Acme");
         assert_eq!(
@@ -167,8 +169,12 @@ mod tests {
             "the events were written by the unit of work that created the realm"
         );
         assert_eq!(
-            recorded[1]["payload"]["alg"], "ES256",
-            "the first key signs in ES256"
+            [
+                &recorded[1]["payload"]["alg"],
+                &recorded[2]["payload"]["alg"]
+            ],
+            ["ES256", "RS256"],
+            "a realm is born with a key of ES256 and one of RS256"
         );
     }
 
@@ -238,7 +244,15 @@ mod tests {
             .iter()
             .filter_map(|event| event["kind"].as_str().map(str::to_owned))
             .collect();
-        assert_eq!(kinds, ["realm.created", "key.created", "client.created"]);
+        assert_eq!(
+            kinds,
+            [
+                "realm.created",
+                "key.created",
+                "key.created",
+                "client.created"
+            ]
+        );
         assert_eq!(storage.count_units_of_work(), 1, "one unit of work for all");
     }
 

@@ -66,6 +66,12 @@ pub(crate) fn describe_actor(caller: &AdminCaller) -> Value {
     json!({ "client_id": caller.client.client_id })
 }
 
+/// Who asked when the operator did, from the command line, through the
+/// database and outside the administration plane.
+pub(crate) fn describe_operator() -> Value {
+    json!({ "operator": "command line" })
+}
+
 pub struct NewRole<'a> {
     pub name: &'a str,
     /// The client whose role it is. Absent, it is a role of the realm.

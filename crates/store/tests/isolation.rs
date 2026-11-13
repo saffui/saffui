@@ -581,17 +581,33 @@ async fn a_statement_under_one_scope_removes_no_consent_of_another_realm() {
     assert_eq!(left, [scopes[1].realm().as_uuid()]);
 }
 
-/// The serving role may update one column of a client, for the lock of its
-/// row, and the attributes of a person: row security keeps the first where
-/// it is and both in their realm, and nothing else of either changes.
+/// The serving role may update two columns of a client, its realm for the
+/// lock of its row and the capabilities the operator grants, and the
+/// attributes of a person: row security keeps the first where it is and each
+/// in its realm, the schema keeps the capabilities to its list and to the
+/// clients that act as themselves, and nothing else of either changes.
 #[tokio::test]
-async fn the_rights_to_update_a_client_and_a_person_reach_one_column_of_their_realm() {
-    use saffui_core::testkit::fixtures::{create_person, create_realm, create_service_client};
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario, read from top to bottom"
+)]
+async fn the_rights_to_update_a_client_and_a_person_reach_their_columns_in_their_realm() {
+    use saffui_core::testkit::fixtures::{
+        Application, create_person, create_realm, create_service_client, register_application,
+    };
 
     let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
     let acme = create_realm(&app, "acme").await;
     let globex = create_realm(&app, "globex").await;
     create_service_client(&app, acme, "billing", &["invoices:read"]).await;
+    let webapp = Application {
+        client_id: "webapp",
+        redirect_uri: "https://app.example.org/callback",
+        post_logout_redirect_uri: None,
+        public: true,
+        requires_consent: false,
+    };
+    register_application(&app, acme, webapp).await;
     create_person(&app, acme, "ada", "correct horse battery").await;
     let bob = create_person(&app, globex, "bob", "correct horse battery").await;
     let session = connect(&database, APP_ROLE).await;
@@ -634,8 +650,34 @@ async fn the_rights_to_update_a_client_and_a_person_reach_one_column_of_their_re
         read_message(&moved).contains("row-level security"),
         "row security keeps the row where it is: {moved}"
     );
+    for (statement, rule) in [
+        (
+            "UPDATE clients SET capabilities = '{key:read}' WHERE client_id = 'webapp'",
+            "clients_capabilities_for_services",
+        ),
+        (
+            "UPDATE clients SET capabilities = '{key:*}' WHERE client_id = 'billing'",
+            "clients_capabilities_known",
+        ),
+    ] {
+        let refused = refuse(statement.to_owned()).await;
+        assert_eq!(
+            refused.code(),
+            Some(&SqlState::CHECK_VIOLATION),
+            "{statement}: {refused}"
+        );
+        assert_eq!(
+            refused
+                .as_db_error()
+                .and_then(|refusal| refusal.constraint()),
+            Some(rule),
+            "{statement}"
+        );
+    }
     for statement in [
         "UPDATE clients SET name = 'x'",
+        "UPDATE clients SET scopes = '{}'",
+        "UPDATE clients SET secret_digest = NULL",
         "UPDATE persons SET email_verified = true",
     ] {
         let refused = refuse(statement.to_owned()).await;
@@ -661,6 +703,14 @@ async fn the_rights_to_update_a_client_and_a_person_reach_one_column_of_their_re
         )
         .await
         .expect("an update that reaches nothing");
+    let granted = session
+        .execute(
+            "UPDATE clients SET capabilities = '{key:write}' WHERE client_id = 'billing'",
+            &[],
+        )
+        .await
+        .expect("a capability granted to a service");
     session.batch_execute("ROLLBACK").await.expect("a rollback");
     assert_eq!(reached, 0, "a person of another realm");
+    assert_eq!(granted, 1, "the column the operator writes");
 }

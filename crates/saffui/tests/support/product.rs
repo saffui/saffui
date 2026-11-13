@@ -47,6 +47,7 @@ pub fn wire_app(database: &TestDatabase, root_key: &Secret) -> App {
         security_keys: Arc::new(WebauthnSecurityKeys::for_origin("https://id.example.test")),
         hashing_shares: Arc::new(saffui_core::login::fairness::HashingShares::new(2)),
         decision_shares: Arc::default(),
+        key_shares: Arc::default(),
         signer: Arc::new(JoseSigner::new(provider)),
         decoy_hash: Arc::new(std::sync::OnceLock::new()),
     }

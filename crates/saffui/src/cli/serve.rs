@@ -33,7 +33,7 @@ use crate::config::serving::{
     DATA_PLANE, DRAIN_DELAY, OPS_PLANE, ServingSettingsError, Setting, resolve_serving_settings,
 };
 use crate::telemetry;
-use crate::wiring::{StartupRefusal, WiringError, wire_product};
+use crate::wiring::{Sealing, StartupRefusal, WiringError, wire_product};
 
 #[derive(Args)]
 pub(crate) struct ServeOptions {
@@ -188,7 +188,7 @@ fn serve_until_signal(options: &ServeOptions) -> Result<(), ServeError> {
         settings_of_the_product,
         &database,
         pool,
-        &root_key,
+        Sealing::UnderRootKey(&root_key),
         password_hashers,
     )
     .map_err(ServeError::Wiring)?;

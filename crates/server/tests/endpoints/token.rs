@@ -124,9 +124,13 @@ async fn the_token_is_signed_by_the_key_the_realm_publishes() {
     let key_set: Value = test::call_and_read_body_json(&app, request).await;
 
     assert_eq!(header["typ"], "at+jwt");
-    assert_eq!(key_set["keys"].as_array().map(Vec::len), Some(1));
-    assert_eq!(key_set["keys"][0]["kid"], header["kid"]);
-    assert_eq!(key_set["keys"][0]["use"], "sig");
+    assert_eq!(header["alg"], "ES256");
+    let signing = key_set["keys"]
+        .as_array()
+        .and_then(|keys| keys.iter().find(|key| key["kid"] == header["kid"]))
+        .expect("the key that signed is published");
+    assert_eq!(signing["alg"], "ES256");
+    assert_eq!(signing["use"], "sig");
 }
 
 #[actix_web::test]

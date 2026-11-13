@@ -275,6 +275,8 @@ pub(crate) mod clients {
     pub(crate) const POST_LOGOUT_REDIRECT_URIS: Column = Column("post_logout_redirect_uris");
     /// boolean
     pub(crate) const REQUIRES_CONSENT: Column = Column("requires_consent");
+    /// text, nullable
+    pub(crate) const ID_TOKEN_SIGNED_RESPONSE_ALG: Column = Column("id_token_signed_response_alg");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -291,6 +293,7 @@ pub(crate) mod clients {
         REDIRECT_URIS,
         POST_LOGOUT_REDIRECT_URIS,
         REQUIRES_CONSENT,
+        ID_TOKEN_SIGNED_RESPONSE_ALG,
     ];
 }
 
@@ -830,6 +833,8 @@ pub(crate) mod signing_keys {
     pub(crate) const SEALED_PRIVATE_KEY: Column = Column("sealed_private_key");
     /// timestamp with time zone
     pub(crate) const CREATED_AT: Column = Column("created_at");
+    /// text
+    pub(crate) const STATUS: Column = Column("status");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -839,6 +844,7 @@ pub(crate) mod signing_keys {
         PUBLIC_JWK,
         SEALED_PRIVATE_KEY,
         CREATED_AT,
+        STATUS,
     ];
 }
 

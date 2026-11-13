@@ -38,6 +38,8 @@ pub struct ClientView {
     pub consent: bool,
     pub scopes: Vec<String>,
     pub capabilities: Vec<String>,
+    /// The algorithm of its identity tokens. Null: the default of the realm.
+    pub id_token_signed_response_alg: Option<String>,
     pub enabled: bool,
     pub created_at: String,
 }
@@ -67,6 +69,9 @@ pub struct NewClient {
     /// Whether each person is asked before it gets a code in their name.
     #[serde(default)]
     pub consent: bool,
+    /// The algorithm of its identity tokens, among those the realm signs in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id_token_signed_response_alg: Option<String>,
 }
 
 /// A client that was just created, with the one showing of its secret.
@@ -262,6 +267,24 @@ pub struct NewMapper {
     pub scope: Option<String>,
 }
 
+/// A signing key of a realm: its public half and whether it still signs.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct KeyView {
+    pub kid: String,
+    pub alg: String,
+    /// `active` signs and verifies, `retired` only verifies.
+    pub status: String,
+    pub public_jwk: serde_json::Value,
+    pub created_at: String,
+}
+
+/// A key to make: it replaces the active key of its algorithm.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NewKey {
+    pub alg: String,
+}
+
 /// The attributes of a person a caller reaches, read and replaced whole.
 /// Those whose name starts with `policy.` are read with `policy:read`,
 /// written with `policy:write`, and taken away only by a caller that holds both.
@@ -327,6 +350,7 @@ mod tests {
                 consent: false,
                 scopes: Vec::new(),
                 capabilities: Vec::new(),
+                id_token_signed_response_alg: None,
                 enabled: true,
                 created_at: "2026-10-31T00:00:00Z".to_owned(),
             },

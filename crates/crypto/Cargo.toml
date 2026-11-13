@@ -61,7 +61,8 @@ secrecy.workspace = true
 # The places a value is sealed for are named by the identifiers of the core.
 uuid.workspace = true
 async-trait.workspace = true
-# Hashes run on blocking threads, a semaphore bounding how many at once.
+# Hashes and signing keys are made on blocking threads, a semaphore bounding
+# how many at once.
 tokio = { workspace = true, features = ["sync"] }
 argon2.workspace = true
 bcrypt.workspace = true

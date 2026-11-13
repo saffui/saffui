@@ -23,13 +23,15 @@ use crate::directory::Person;
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
 use crate::login::session::{Session, open_offline_session, read_live_subject};
+use crate::ports::crypto::SignatureAlgorithm;
 use crate::ports::storage::UnitOfWork;
 use crate::secret::Secret;
 use crate::tenancy::resolve::resolve_realm;
 use crate::tenancy::{RealmName, RealmScope};
+use crate::tokens::DEFAULT_ALGORITHM;
 use crate::tokens::mint::{
     AccessTokenSubject, IdentityTokenSubject, RefreshGrant, issue_refresh_token, mint_access_token,
-    mint_identity_token, open_minting_key,
+    mint_identity_token, open_minting_key, open_minting_keys,
 };
 
 /// The scope by which a client asks to act while the person is away.
@@ -171,7 +173,7 @@ async fn grant_to_service(
     let targets = [ClaimTarget::AccessToken];
     let inputs = gather_claim_inputs(work.as_mut(), &grant, &targets, app.now()).await?;
     let written = write_claims(ClaimTarget::AccessToken, &grant, &inputs)?;
-    let key = open_minting_key(app, work.as_mut()).await?;
+    let key = open_minting_key(app, work.as_mut(), DEFAULT_ALGORITHM).await?;
     let minted = mint_access_token(
         app,
         &key,
@@ -277,6 +279,9 @@ async fn exchange_code(
         person: &person,
         scopes: &scopes,
         nonce: code.nonce.as_deref(),
+        id_token_algorithm: client
+            .id_token_signed_response_alg
+            .unwrap_or(DEFAULT_ALGORITHM),
         family: RefreshGrant {
             family,
             client_id: &client.client_id,
@@ -401,6 +406,8 @@ pub(super) struct Granted<'a> {
     /// What this answer carries. The refresh token keeps its own.
     pub(super) scopes: &'a [String],
     pub(super) nonce: Option<&'a str>,
+    /// The algorithm the client registered for its identity tokens.
+    pub(super) id_token_algorithm: SignatureAlgorithm,
     pub(super) family: RefreshGrant<'a>,
 }
 
@@ -428,7 +435,14 @@ pub(super) async fn answer_for_person(
     };
     let inputs = gather_claim_inputs(work, &grant, targets, app.now()).await?;
     let for_access = write_claims(ClaimTarget::AccessToken, &grant, &inputs)?;
-    let key = open_minting_key(app, work).await?;
+    // Signed in the algorithm the client registered, and in no other.
+    let identity_algorithm = if says_identity {
+        granted.id_token_algorithm
+    } else {
+        DEFAULT_ALGORITHM
+    };
+    let (key, identity_key) =
+        open_minting_keys(app, work, DEFAULT_ALGORITHM, identity_algorithm).await?;
     let minted = mint_access_token(
         app,
         &key,
@@ -451,7 +465,11 @@ pub(super) async fn answer_for_person(
             nonce: granted.nonce,
             session: granted.session,
         };
-        Some(mint_identity_token(app, &key, identity)?)
+        Some(mint_identity_token(
+            app,
+            identity_key.as_ref().unwrap_or(&key),
+            identity,
+        )?)
     } else {
         None
     };

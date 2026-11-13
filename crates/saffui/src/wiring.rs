@@ -9,6 +9,7 @@ use crypto::adapters::otp::ProviderOneTimeCodes;
 use crypto::adapters::password::BoundedPasswordHasher;
 use crypto::adapters::random::ProviderRandom;
 use crypto::adapters::seal::EnvelopeSealer;
+use crypto::adapters::sealing_refused::RefusingSealer;
 use crypto::adapters::sign::JoseSigner;
 use crypto::adapters::webauthn::{KeyService, WebauthnSecurityKeys};
 use deadpool_postgres::Pool;
@@ -22,6 +23,7 @@ use saffui_core::app::App;
 use saffui_core::authz::shares::DecisionShares;
 use saffui_core::login::fairness::HashingShares;
 use saffui_core::ports::clock::Clock;
+use saffui_core::ports::crypto::Sealer;
 use saffui_core::ports::storage::StorageUnavailable;
 use saffui_core::secret::Secret;
 use saffui_core::settings::Settings;
@@ -34,6 +36,14 @@ impl Clock for SystemClock {
     fn now(&self) -> OffsetDateTime {
         OffsetDateTime::now_utc()
     }
+}
+
+/// What seals the secrets of the deployment.
+#[derive(Clone, Copy)]
+pub(crate) enum Sealing<'a> {
+    UnderRootKey(&'a Secret),
+    /// For a command that seals and opens nothing, run without the root key.
+    Refused,
 }
 
 pub(crate) struct Wired {
@@ -72,19 +82,24 @@ pub(crate) enum StartupRefusal {
     RetentionRole,
 }
 
-/// Wires the product on its database, under the root key of the deployment.
+/// Wires the product on its database, its secrets sealed as `sealing` says.
 /// No connection is opened yet.
 pub(crate) fn wire_product(
     settings: Settings,
     database: &ConnectionPlan,
     pool: PoolSettings,
-    root_key: &Secret,
+    sealing: Sealing<'_>,
     password_hashers: usize,
 ) -> Result<Wired, WiringError> {
     // Before anything draws: a library that fails its own vector draws nothing.
     let provider = open_provider().map_err(|_| WiringError::Library)?;
-    let sealer =
-        EnvelopeSealer::new(Arc::clone(&provider), root_key).map_err(|_| WiringError::RootKey)?;
+    let sealer: Arc<dyn Sealer> = match sealing {
+        Sealing::UnderRootKey(root_key) => Arc::new(
+            EnvelopeSealer::new(Arc::clone(&provider), root_key)
+                .map_err(|_| WiringError::RootKey)?,
+        ),
+        Sealing::Refused => Arc::new(RefusingSealer),
+    };
     let hasher = BoundedPasswordHasher::new(Arc::clone(&provider), password_hashers)
         .map_err(|_| WiringError::Hasher)?;
     let connections = pool.max_size;
@@ -100,12 +115,13 @@ pub(crate) fn wire_product(
             clock: Arc::new(SystemClock),
             random: Arc::new(ProviderRandom::new(Arc::clone(&provider))),
             digester: Arc::new(ProviderDigester::new(Arc::clone(&provider))),
-            sealer: Arc::new(sealer),
+            sealer,
             hasher: Arc::new(hasher),
             one_time_codes: Arc::new(ProviderOneTimeCodes::new(Arc::clone(&provider))),
             security_keys: Arc::new(security_keys),
             hashing_shares: Arc::new(HashingShares::new(password_hashers)),
             decision_shares: Arc::new(DecisionShares::for_pool(connections)),
+            key_shares: Arc::default(),
             decoy_hash: Arc::new(OnceLock::new()),
             signer: Arc::new(JoseSigner::new(provider)),
         },

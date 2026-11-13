@@ -241,6 +241,7 @@ mod tests {
         use crate::login::session::{AuthenticationMethod, Session, SessionKind, SessionState};
         use crate::oidc::discovery::name_issuer;
         use crate::tenancy::RealmName;
+        use crate::tokens::DEFAULT_ALGORITHM;
         use crate::tokens::mint::{AccessTokenSubject, mint_access_token, open_minting_key};
 
         let (app, _storage) = MemoryStorage::wire();
@@ -262,7 +263,8 @@ mod tests {
             expires_at: now + time::Duration::hours(1),
         };
         let mut work = complete(app.storage.begin(scope)).expect("a unit of work");
-        let key = complete(open_minting_key(&app, work.as_mut())).expect("the key of the realm");
+        let key = complete(open_minting_key(&app, work.as_mut(), DEFAULT_ALGORITHM))
+            .expect("the key of the realm");
         let lent = mint_access_token(
             &app,
             &key,

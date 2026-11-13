@@ -700,6 +700,7 @@ async fn no_migration_from_the_consent_on_blocks_writes_to_two_tables_served_bef
         "0031_consent",
         "0034_offline_sessions",
         "0036_person_attributes",
+        "0039_signing_key_status",
     ];
     let first = EMBEDDED
         .iter()
@@ -770,6 +771,13 @@ async fn a_rule_set_on_a_served_table_is_checked_apart_from_the_lock_that_sets_i
         ("0034_offline_sessions", "sessions_kind_known"),
         ("0034_offline_sessions", "sessions_kind_secret"),
         ("0036_person_attributes", "persons_attributes_object"),
+        ("0039_signing_key_status", "signing_keys_status_known"),
+        ("0039_signing_key_status", "signing_keys_algorithm_check"),
+        (
+            "0040_id_token_algorithm",
+            "clients_id_token_algorithm_known",
+        ),
+        ("0040_id_token_algorithm", "clients_capabilities_known"),
     ] {
         let set_at = EMBEDDED
             .iter()

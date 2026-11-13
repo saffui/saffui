@@ -142,8 +142,9 @@ fn an_operator_administers_its_realm_and_a_client_it_created_does_not() {
     );
     let report = read_json(&verdict.body);
     assert_eq!(report["intact"], true, "{}", verdict.body);
-    // Realm, key, operator, its token, the client it created, that client's token.
-    assert_eq!(report["events"], 6);
+    // Realm, its two keys, operator, its token, the client it created, that
+    // client's token.
+    assert_eq!(report["events"], 7);
 }
 
 #[test]

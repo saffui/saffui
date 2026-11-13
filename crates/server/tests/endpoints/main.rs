@@ -10,6 +10,7 @@ mod discovery;
 mod headers;
 mod health;
 mod introspect;
+mod keys;
 mod login;
 mod roles;
 mod second_factor;

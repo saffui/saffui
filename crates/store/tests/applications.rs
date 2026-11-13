@@ -27,6 +27,7 @@ async fn an_application_with_a_capability_a_service_without_a_secret_and_a_flow_
         requires_consent: true,
         scopes: vec!["openid".to_owned()],
         capabilities: Vec::new(),
+        id_token_signed_response_alg: None,
         enabled: true,
         created_at: app.now(),
     };

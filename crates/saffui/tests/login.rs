@@ -450,6 +450,7 @@ fn a_code_is_worth_nothing_without_its_verifier_and_a_wrong_password_opens_no_se
         [
             "realm.created",
             "key.created",
+            "key.created",
             "client.created",
             "token.issued",
             "person.created",

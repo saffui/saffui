@@ -5,6 +5,7 @@ use saffui_core::authz::capability::Capability;
 use saffui_core::clients::manage;
 use saffui_core::clients::register::NewClient as WantedClient;
 use saffui_core::error::{ErrorCode, Failure};
+use saffui_core::ports::crypto::SignatureAlgorithm;
 
 use super::listing::{ListParameters, answer_page};
 use super::views::show_client;
@@ -54,6 +55,13 @@ pub async fn create_client(
             .iter()
             .map(|name| Capability::parse(name).ok_or(Failure::new(ErrorCode::CapabilityUnknown)))
             .collect::<Result<Vec<_>, _>>()?;
+        let id_token_algorithm = wanted
+            .id_token_signed_response_alg
+            .as_deref()
+            .map(|name| {
+                SignatureAlgorithm::parse(name).ok_or(Failure::new(ErrorCode::AlgorithmUnknown))
+            })
+            .transpose()?;
         let client = WantedClient {
             client_id: &wanted.client_id,
             name: wanted.name.as_deref().unwrap_or(&wanted.client_id),
@@ -63,6 +71,7 @@ pub async fn create_client(
             post_logout_redirect_uris: &wanted.post_logout_redirect_uris,
             public: wanted.public,
             requires_consent: wanted.consent,
+            id_token_signed_response_alg: id_token_algorithm,
             created_by: None,
         };
         manage::create_client(&product, &caller, client).await

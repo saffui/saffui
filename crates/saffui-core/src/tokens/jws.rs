@@ -90,21 +90,24 @@ mod tests {
     use uuid::Uuid;
 
     use super::{sign_compact, verify_compact};
-    use crate::keys::SigningKey;
+    use crate::keys::{KeyStatus, SigningKey};
     use crate::ports::crypto::{SignatureAlgorithm, Signer};
     use crate::secret::Secret;
     use crate::testkit::crypto::WeakSigner;
+    use crate::testkit::drive::complete;
 
     fn generate(signer: &WeakSigner) -> (SigningKey, Secret) {
-        let generated = signer
-            .generate_key(SignatureAlgorithm::Es256)
-            .expect("a key");
+        generate_in(signer, SignatureAlgorithm::Es256)
+    }
+
+    fn generate_in(signer: &WeakSigner, algorithm: SignatureAlgorithm) -> (SigningKey, Secret) {
+        let generated = complete(signer.generate_key(algorithm, Box::new(()))).expect("a key");
         let key = SigningKey {
             id: Uuid::nil(),
             key_id: generated.key_id,
             algorithm: generated.algorithm,
+            status: KeyStatus::Active,
             public_jwk: generated.public_jwk,
-            sealed_private_key: Vec::new(),
             created_at: OffsetDateTime::UNIX_EPOCH,
         };
         (key, generated.private_key)
@@ -159,5 +162,39 @@ mod tests {
             None
         );
         assert_eq!(verify_compact(&signer, "not a token", keys), None);
+    }
+
+    #[test]
+    fn the_kid_chooses_the_key_and_never_its_algorithm() {
+        let signer = WeakSigner::default();
+        let (key, private_key) = generate_in(&signer, SignatureAlgorithm::Rs256);
+        let keys = std::slice::from_ref(&key);
+        // Signed whole by the key itself: only the algorithm it names may be wrong.
+        let sign_naming = |algorithm: &str| {
+            let header = json!({ "alg": algorithm, "kid": key.key_id, "typ": "at+jwt" });
+            let mut token = format!(
+                "{}.{}",
+                URL_SAFE_NO_PAD.encode(header.to_string()),
+                URL_SAFE_NO_PAD.encode("{}")
+            );
+            let signature = signer
+                .sign(key.algorithm, &private_key, token.as_bytes())
+                .expect("a signature");
+            token.push('.');
+            token.push_str(&URL_SAFE_NO_PAD.encode(signature));
+            token
+        };
+
+        assert!(
+            verify_compact(&signer, &sign_naming("RS256"), keys).is_some(),
+            "the algorithm of the key is read"
+        );
+        for named in ["PS256", "ES256", "ES384", "EdDSA"] {
+            assert_eq!(
+                verify_compact(&signer, &sign_naming(named), keys),
+                None,
+                "an RS256 key is not read for {named}"
+            );
+        }
     }
 }

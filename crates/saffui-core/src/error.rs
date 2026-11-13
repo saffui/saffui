@@ -37,6 +37,12 @@ pub enum ErrorCode {
     RealmNotFound = 100,
     RealmNameInvalid = 101,
     RealmNameTaken = 102,
+    KeyNotFound = 103,
+    KeyStillActive = 104,
+    KeyAlgorithmUnavailable = 105,
+    AlgorithmUnknown = 106,
+    SigningKeyLimitReached = 131,
+    KeyMakingBusy = 132,
     UsernameInvalid = 200,
     UsernameTaken = 201,
     EmailInvalid = 202,
@@ -116,9 +122,10 @@ impl ErrorCode {
             Self::Internal | Self::RandomUnavailable | Self::CryptoUnavailable => {
                 ErrorKind::Internal
             }
-            Self::StorageUnavailable | Self::HashingBusy | Self::SignInRequestsTooFrequent => {
-                ErrorKind::Unavailable
-            }
+            Self::StorageUnavailable
+            | Self::HashingBusy
+            | Self::SignInRequestsTooFrequent
+            | Self::KeyMakingBusy => ErrorKind::Unavailable,
             Self::Conflict
             | Self::RealmNameTaken
             | Self::ClientIdentifierTaken
@@ -134,7 +141,9 @@ impl ErrorCode {
             | Self::MapperNameTaken
             | Self::MapperLimitReached
             | Self::MapperOverlaps
-            | Self::ClaimsTooLarge => ErrorKind::Conflict,
+            | Self::ClaimsTooLarge
+            | Self::KeyStillActive
+            | Self::SigningKeyLimitReached => ErrorKind::Conflict,
             Self::RealmNotFound
             | Self::ClientNotFound
             | Self::PersonNotFound
@@ -147,7 +156,8 @@ impl ErrorCode {
             | Self::RelationNotFound
             | Self::PolicyNotFound
             | Self::ConsentNotFound
-            | Self::MapperNotFound => ErrorKind::NotFound,
+            | Self::MapperNotFound
+            | Self::KeyNotFound => ErrorKind::NotFound,
             Self::ClientAuthenticationFailed
             | Self::TokenInvalid
             | Self::AdminAuthenticationFailed
@@ -187,7 +197,9 @@ impl ErrorCode {
             | Self::GrantInvalid
             | Self::TokenTypeUnsupported
             | Self::AttributesInvalid
-            | Self::MapperInvalid => ErrorKind::Invalid,
+            | Self::MapperInvalid
+            | Self::KeyAlgorithmUnavailable
+            | Self::AlgorithmUnknown => ErrorKind::Invalid,
         }
     }
 
@@ -205,6 +217,12 @@ impl ErrorCode {
             Self::RealmNotFound => "realm.not_found",
             Self::RealmNameInvalid => "realm.name_invalid",
             Self::RealmNameTaken => "realm.name_taken",
+            Self::KeyNotFound => "realm.key_not_found",
+            Self::KeyStillActive => "realm.key_still_active",
+            Self::KeyAlgorithmUnavailable => "realm.key_algorithm_unavailable",
+            Self::AlgorithmUnknown => "realm.algorithm_unknown",
+            Self::SigningKeyLimitReached => "realm.signing_key_limit_reached",
+            Self::KeyMakingBusy => "realm.key_making_busy",
             Self::UsernameInvalid => "user.username_invalid",
             Self::UsernameTaken => "user.username_taken",
             Self::EmailInvalid => "user.email_invalid",
@@ -287,6 +305,13 @@ impl ErrorCode {
                 "A realm name is 1 to 63 lowercase letters, digits or hyphens, and neither starts nor ends with a hyphen."
             }
             Self::RealmNameTaken => "This realm name is already taken.",
+            Self::KeyNotFound => "No such key.",
+            Self::KeyStillActive => "A key that signs is not removed: rotate it first.",
+            Self::KeyAlgorithmUnavailable => "The realm has no active key of this algorithm.",
+            Self::AlgorithmUnknown => "This signature algorithm is not served.",
+            Self::SigningKeyLimitReached => {
+                "The realm holds as many keys as it may: remove a retired key first."
+            }
             Self::UsernameInvalid => {
                 "A username is 1 to 64 letters, digits, dots, hyphens or underscores, and starts and ends with a letter or a digit."
             }
@@ -298,7 +323,9 @@ impl ErrorCode {
             }
             Self::PasswordUnacceptable => "A password is 8 to 1024 bytes long.",
             Self::SignInFailed => "The name or the password is wrong.",
-            Self::HashingBusy => "The service is busy. Try again in a moment.",
+            Self::HashingBusy | Self::KeyMakingBusy => {
+                "The service is busy. Try again in a moment."
+            }
             Self::AuthorizationRequestExpired => {
                 "This sign-in has expired. Start again from the application."
             }
@@ -460,7 +487,7 @@ mod tests {
 
     use super::ErrorCode;
 
-    const ALL: [ErrorCode; 75] = [
+    const ALL: [ErrorCode; 81] = [
         ErrorCode::Internal,
         ErrorCode::StorageUnavailable,
         ErrorCode::Conflict,
@@ -536,6 +563,12 @@ mod tests {
         ErrorCode::MapperLimitReached,
         ErrorCode::MapperOverlaps,
         ErrorCode::ClaimsTooLarge,
+        ErrorCode::KeyNotFound,
+        ErrorCode::KeyStillActive,
+        ErrorCode::KeyAlgorithmUnavailable,
+        ErrorCode::AlgorithmUnknown,
+        ErrorCode::SigningKeyLimitReached,
+        ErrorCode::KeyMakingBusy,
     ];
 
     #[test]

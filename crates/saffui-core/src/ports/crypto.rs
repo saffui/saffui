@@ -99,16 +99,31 @@ pub trait Sealer: Send + Sync {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SignatureAlgorithm {
     Es256,
+    Es384,
+    Rs256,
+    Ps256,
+    /// On Ed25519.
+    EdDsa,
 }
 
 impl SignatureAlgorithm {
-    pub const ALL: [Self; 1] = [Self::Es256];
+    pub const ALL: [Self; 5] = [
+        Self::Es256,
+        Self::Es384,
+        Self::Rs256,
+        Self::Ps256,
+        Self::EdDsa,
+    ];
 
     /// The name the algorithm has in a token header and in a published key.
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
             Self::Es256 => "ES256",
+            Self::Es384 => "ES384",
+            Self::Rs256 => "RS256",
+            Self::Ps256 => "PS256",
+            Self::EdDsa => "EdDSA",
         }
     }
 
@@ -132,16 +147,41 @@ pub struct GeneratedSigningKey {
     pub public_jwk: serde_json::Value,
 }
 
+/// What the caller of a key holds while it is made, such as the share of its
+/// tenant: kept with the work and dropped when the key is made, not when the
+/// caller gives up.
+pub type KeyMakingGuard = Box<dyn Send>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum KeyMakingFailure {
+    /// Every key maker of the node is at work: the request is refused at
+    /// once, instead of waiting behind the keys of other tenants.
+    #[error("every key maker is at work")]
+    Busy,
+    #[error("the key could not be made")]
+    Failed,
+}
+
+#[async_trait]
 pub trait Signer: Send + Sync {
-    /// Generates a key pair for `algorithm`.
+    /// Whether this build signs in `algorithm`. One it does not is neither
+    /// offered, made, published nor read.
+    fn signs_in(&self, algorithm: SignatureAlgorithm) -> bool;
+
+    /// Generates a key pair for `algorithm`, away from the threads that
+    /// serve requests: an RSA key takes a while to find. `guard` is kept
+    /// until the key is made.
     ///
     /// # Errors
     ///
-    /// Fails when the library cannot generate or encode the key.
-    fn generate_key(
+    /// Returns [`KeyMakingFailure::Busy`] when every maker is at work, and
+    /// fails when the library cannot generate or encode the key, or for an
+    /// algorithm this build does not sign in.
+    async fn generate_key(
         &self,
         algorithm: SignatureAlgorithm,
-    ) -> Result<GeneratedSigningKey, CryptoFailure>;
+        guard: KeyMakingGuard,
+    ) -> Result<GeneratedSigningKey, KeyMakingFailure>;
 
     /// Signs `message`. The signature is in the form a JWS carries: for
     /// ES256, the 64 bytes of `r` then `s`.

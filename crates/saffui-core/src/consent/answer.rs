@@ -250,6 +250,7 @@ mod tests {
                 post_logout_redirect_uris: &[],
                 public: true,
                 requires_consent: true,
+                id_token_signed_response_alg: None,
                 created_by: None,
             },
         ))
@@ -749,6 +750,7 @@ mod tests {
             requires_consent: true,
             scopes: vec!["openid".to_owned()],
             capabilities: Vec::new(),
+            id_token_signed_response_alg: None,
             enabled: true,
             created_at: scenario.app.now(),
         };

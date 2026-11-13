@@ -3,6 +3,7 @@ use std::sync::atomic::Ordering;
 use async_trait::async_trait;
 
 use super::MemoryUnitOfWork;
+use crate::authz::capability::Capability;
 use crate::clients::Client;
 use crate::clients::store::{ClientStore, ListWindow};
 use crate::ports::storage::StorageError;
@@ -23,6 +24,32 @@ impl MemoryUnitOfWork {
         }
         clients.push(client.clone());
         Ok(())
+    }
+
+    fn change_capabilities(
+        &mut self,
+        client_id: &str,
+        capabilities: &[Capability],
+    ) -> Result<bool, StorageError> {
+        self.refuse_in_snapshot()?;
+        let held = self
+            .working
+            .clients
+            .get_mut(&self.scope.realm().as_uuid())
+            .and_then(|clients| {
+                clients
+                    .iter_mut()
+                    .find(|client| client.client_id == client_id)
+            });
+        let Some(client) = held else {
+            return Ok(false);
+        };
+        // As the schema does: an application holds no capability.
+        if client.allows_authorization_code && !capabilities.is_empty() {
+            return Err(StorageError::Failed);
+        }
+        client.capabilities = capabilities.to_vec();
+        Ok(true)
     }
 }
 
@@ -65,5 +92,14 @@ impl ClientStore for MemoryUnitOfWork {
             .get(&self.scope.realm().as_uuid())
             .map_or(0, Vec::len);
         u64::try_from(held).map_err(|_| StorageError::Failed)
+    }
+
+    async fn write_client_capabilities(
+        &mut self,
+        client_id: &str,
+        capabilities: &[Capability],
+    ) -> Result<bool, StorageError> {
+        let outcome = self.change_capabilities(client_id, capabilities);
+        self.record_refusal(outcome)
     }
 }

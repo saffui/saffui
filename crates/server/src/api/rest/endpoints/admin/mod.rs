@@ -4,6 +4,7 @@
 pub mod audit;
 pub mod client;
 pub mod group;
+pub mod key;
 mod listing;
 pub mod mapper;
 pub mod policy;

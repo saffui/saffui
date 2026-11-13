@@ -11,6 +11,8 @@ use crate::audit::append::record_event;
 use crate::authz::capability::Capability;
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
+use crate::keys::rotate::list_active_algorithms;
+use crate::ports::crypto::SignatureAlgorithm;
 use crate::ports::storage::{StorageError, UnitOfWork};
 use crate::secret::Secret;
 
@@ -27,6 +29,8 @@ pub struct NewClient<'a> {
     pub public: bool,
     /// Each person is asked before the client gets a code in their name.
     pub requires_consent: bool,
+    /// The algorithm of its identity tokens. The realm must have a key of it.
+    pub id_token_signed_response_alg: Option<SignatureAlgorithm>,
     /// The client of the administration plane that asks, when one does.
     pub created_by: Option<&'a str>,
 }
@@ -84,6 +88,14 @@ pub async fn register_client(
     if !wanted.redirect_uris.is_empty() && !wanted.capabilities.is_empty() {
         return Err(Failure::new(ErrorCode::RequestInvalid));
     }
+    // A token is never signed in another algorithm than the one registered:
+    // one the realm cannot sign in now is refused here, not at a sign-in.
+    if let Some(algorithm) = wanted.id_token_signed_response_alg {
+        let keys = work.list_signing_keys().await?;
+        if !list_active_algorithms(app.signer.as_ref(), &keys).contains(&algorithm) {
+            return Err(Failure::new(ErrorCode::KeyAlgorithmUnavailable));
+        }
+    }
 
     let secret = if wanted.public {
         None
@@ -110,6 +122,7 @@ pub async fn register_client(
         requires_consent: wanted.requires_consent,
         scopes: wanted.scopes.to_vec(),
         capabilities: wanted.capabilities.to_vec(),
+        id_token_signed_response_alg: wanted.id_token_signed_response_alg,
         enabled: true,
         created_at: app.now(),
     };
@@ -135,6 +148,9 @@ pub async fn register_client(
     });
     if let Some(actor) = wanted.created_by {
         created["actor"] = json!({ "client_id": actor });
+    }
+    if let Some(algorithm) = client.id_token_signed_response_alg {
+        created["id_token_signed_response_alg"] = json!(algorithm.name());
     }
     record_event(app, work, EventKind::ClientCreated, created).await?;
     Ok((client, secret))
@@ -163,6 +179,7 @@ pub async fn register_service_client(
             post_logout_redirect_uris: &[],
             public: false,
             requires_consent: false,
+            id_token_signed_response_alg: None,
             created_by: None,
         },
     )
@@ -272,6 +289,7 @@ mod tests {
                 post_logout_redirect_uris: &[],
                 public: true,
                 requires_consent: false,
+                id_token_signed_response_alg: None,
                 created_by: Some("operator"),
             },
         ))
@@ -313,6 +331,7 @@ mod tests {
                     post_logout_redirect_uris: &[],
                     public,
                     requires_consent: false,
+                    id_token_signed_response_alg: None,
                     created_by: None,
                 },
             ))
@@ -354,6 +373,7 @@ mod tests {
                     post_logout_redirect_uris: &goodbyes,
                     public: false,
                     requires_consent: false,
+                    id_token_signed_response_alg: None,
                     created_by: None,
                 },
             ))
@@ -397,6 +417,7 @@ mod tests {
                     post_logout_redirect_uris: &[],
                     public: false,
                     requires_consent: true,
+                    id_token_signed_response_alg: None,
                     created_by: None,
                 },
             ))

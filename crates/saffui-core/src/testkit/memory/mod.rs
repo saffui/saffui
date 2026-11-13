@@ -37,7 +37,7 @@ use crate::claims::Mapper;
 use crate::clients::Client;
 use crate::consent::Consent;
 use crate::directory::Person;
-use crate::keys::SigningKey;
+use crate::keys::SealedSigningKey;
 use crate::login::session::Session;
 use crate::oidc::code::{AuthorizationCode, PendingAuthorization};
 use crate::ports::crypto::WrappedDataKey;
@@ -55,7 +55,7 @@ pub(crate) struct State {
     /// The newest data key of each realm, by realm.
     pub(crate) data_keys: HashMap<Uuid, WrappedDataKey>,
     /// The signing keys of each realm, oldest first, by realm.
-    pub(crate) signing_keys: HashMap<Uuid, Vec<SigningKey>>,
+    pub(crate) signing_keys: HashMap<Uuid, Vec<SealedSigningKey>>,
     /// The clients of each realm, by realm.
     pub(crate) clients: HashMap<Uuid, Vec<Client>>,
     /// The people of each realm, by realm.
@@ -129,6 +129,10 @@ pub(crate) struct CountedReads {
     pub(crate) attributes: AtomicUsize,
     /// The roles a person holds at an instant.
     pub(crate) held_roles: AtomicUsize,
+    /// The data key of a realm.
+    pub(crate) data_keys: AtomicUsize,
+    /// The private halves of signing keys, one by one.
+    pub(crate) private_keys: AtomicUsize,
 }
 
 #[derive(Default)]
@@ -137,6 +141,8 @@ pub struct MemoryStorage {
     outage: Mutex<Option<StorageUnavailable>>,
     probes: AtomicUsize,
     units_of_work: AtomicUsize,
+    /// The units of work opened and not yet dropped.
+    live_units: Arc<AtomicUsize>,
     reads: Arc<CountedReads>,
 }
 
@@ -150,6 +156,7 @@ pub struct MemoryUnitOfWork {
     failed: bool,
     /// Opened as a snapshot: every write is refused.
     read_only: bool,
+    live_units: Arc<AtomicUsize>,
 }
 
 impl MemoryUnitOfWork {
@@ -206,6 +213,7 @@ impl MemoryStorage {
             security_keys: Arc::new(TrustingKeys::default()),
             hashing_shares: Arc::new(crate::login::fairness::HashingShares::new(4)),
             decision_shares: Arc::default(),
+            key_shares: Arc::default(),
             decoy_hash: Arc::new(OnceLock::new()),
         };
         (app, storage, clock)
@@ -243,6 +251,12 @@ impl MemoryStorage {
         self.units_of_work.load(Ordering::Relaxed)
     }
 
+    /// How many units of work are open now: opened, and not yet dropped.
+    #[must_use]
+    pub fn count_live_units_of_work(&self) -> usize {
+        self.live_units.load(Ordering::SeqCst)
+    }
+
     /// How many statements read what a person allowed a client.
     #[must_use]
     pub fn count_consent_reads(&self) -> usize {
@@ -271,6 +285,18 @@ impl MemoryStorage {
     #[must_use]
     pub fn count_held_role_reads(&self) -> usize {
         self.reads.held_roles.load(Ordering::Relaxed)
+    }
+
+    /// How many statements read the data key of a realm.
+    #[must_use]
+    pub fn count_data_key_reads(&self) -> usize {
+        self.reads.data_keys.load(Ordering::Relaxed)
+    }
+
+    /// How many private halves of signing keys were read.
+    #[must_use]
+    pub fn count_private_key_reads(&self) -> usize {
+        self.reads.private_keys.load(Ordering::Relaxed)
     }
 
     #[must_use]
@@ -349,12 +375,14 @@ impl MemoryStorage {
     ) -> Result<Box<dyn UnitOfWork>, StorageError> {
         self.check_reachable()?;
         self.units_of_work.fetch_add(1, Ordering::Relaxed);
+        self.live_units.fetch_add(1, Ordering::SeqCst);
         Ok(Box::new(MemoryUnitOfWork {
             scope,
             working: lock(&self.state).clone(),
             shared: Arc::clone(&self.state),
             reads: Arc::clone(&self.reads),
             failed: false,
+            live_units: Arc::clone(&self.live_units),
             read_only,
         }))
     }
@@ -409,12 +437,18 @@ impl UnitOfWork for MemoryUnitOfWork {
         self.scope
     }
 
-    async fn commit(self: Box<Self>) -> Result<(), StorageError> {
+    async fn commit(mut self: Box<Self>) -> Result<(), StorageError> {
         if self.failed {
             return Err(StorageError::Failed);
         }
-        *lock(&self.shared) = self.working;
+        *lock(&self.shared) = std::mem::take(&mut self.working);
         Ok(())
+    }
+}
+
+impl Drop for MemoryUnitOfWork {
+    fn drop(&mut self) {
+        self.live_units.fetch_sub(1, Ordering::SeqCst);
     }
 }
 

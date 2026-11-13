@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use saffui_core::authz::capability::Capability;
 use saffui_core::clients::Client;
 use saffui_core::clients::store::{ClientStore, ListWindow};
+use saffui_core::ports::crypto::SignatureAlgorithm;
 use saffui_core::ports::storage::StorageError;
 use tokio_postgres::Row;
 
@@ -13,6 +14,10 @@ use crate::query::list_query::ListQuery;
 use crate::query::select::{Select, SortDirection};
 use crate::schema::clients;
 use crate::work::PgUnitOfWork;
+
+const WRITE_CAPABILITIES: &str = "
+    UPDATE clients SET capabilities = $4
+    WHERE tenant_id = $1 AND realm_id = $2 AND client_id = $3";
 
 const CLIENT: &[Column] = &[
     clients::CLIENT_ROW_ID,
@@ -28,10 +33,12 @@ const CLIENT: &[Column] = &[
     clients::REDIRECT_URIS,
     clients::POST_LOGOUT_REDIRECT_URIS,
     clients::REQUIRES_CONSENT,
+    clients::ID_TOKEN_SIGNED_RESPONSE_ALG,
 ];
 
 fn read_client_row(row: &Row) -> Result<Client, StorageError> {
     let capabilities: Vec<String> = row.get(6);
+    let id_token_algorithm: Option<String> = row.get(13);
     Ok(Client {
         id: row.get(0),
         client_id: row.get(1),
@@ -49,6 +56,9 @@ fn read_client_row(row: &Row) -> Result<Client, StorageError> {
             .iter()
             .map(|name| Capability::parse(name).ok_or(StorageError::Failed))
             .collect::<Result<_, _>>()?,
+        id_token_signed_response_alg: id_token_algorithm
+            .map(|name| SignatureAlgorithm::parse(&name).ok_or(StorageError::Failed))
+            .transpose()?,
         enabled: row.get(7),
         created_at: row.get(8),
     })
@@ -62,6 +72,9 @@ impl ClientStore for PgUnitOfWork {
             .iter()
             .map(|granted| granted.name())
             .collect();
+        let id_token_algorithm = client
+            .id_token_signed_response_alg
+            .map(SignatureAlgorithm::name);
         let insert = Insert::into(
             clients::TABLE,
             vec![
@@ -85,6 +98,7 @@ impl ClientStore for PgUnitOfWork {
                 col(clients::REQUIRES_CONSENT, &client.requires_consent),
                 col(clients::SCOPES, &client.scopes),
                 col(clients::CAPABILITIES, &capabilities),
+                col(clients::ID_TOKEN_SIGNED_RESPONSE_ALG, &id_token_algorithm),
                 col(clients::ENABLED, &client.enabled),
                 col(clients::CREATED_AT, &client.created_at),
             ],
@@ -124,5 +138,21 @@ impl ClientStore for PgUnitOfWork {
             .ok_or(StorageError::Failed)?
             .get(0);
         u64::try_from(counted).map_err(|_| StorageError::Failed)
+    }
+
+    async fn write_client_capabilities(
+        &mut self,
+        client_id: &str,
+        capabilities: &[Capability],
+    ) -> Result<bool, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        let names: Vec<&str> = capabilities
+            .iter()
+            .map(|capability| capability.name())
+            .collect();
+        let written = self
+            .execute_raw(WRITE_CAPABILITIES, &[&tenant, &realm, &client_id, &names])
+            .await?;
+        Ok(written == 1)
     }
 }

@@ -222,6 +222,7 @@ pub async fn register_application(
             post_logout_redirect_uris: &goodbyes,
             public: wanted.public,
             requires_consent: wanted.requires_consent,
+            id_token_signed_response_alg: None,
             created_by: None,
         },
     )

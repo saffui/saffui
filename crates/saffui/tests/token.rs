@@ -195,6 +195,7 @@ fn a_wrong_secret_gets_no_token_and_an_issued_token_is_in_the_audit_chain() {
         [
             "realm.created",
             "key.created",
+            "key.created",
             "client.created",
             "token.issued"
         ],

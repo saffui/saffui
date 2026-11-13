@@ -11,9 +11,10 @@ use uuid::Uuid;
 
 use super::digest::WeakDigester;
 use crate::ports::crypto::{
-    CryptoFailure, Digester, EnrolledKey, GeneratedSigningKey, KeyCeremony, KeyProof, KeyRefusal,
-    OneTimeCodes, PasswordHasher, PasswordHashingFailure, SealPlace, Sealer, SecurityKeys,
-    SignatureAlgorithm, Signer, TotpEnrollmentText, WrappedDataKey,
+    CryptoFailure, Digester, EnrolledKey, GeneratedSigningKey, KeyCeremony, KeyMakingFailure,
+    KeyMakingGuard, KeyProof, KeyRefusal, OneTimeCodes, PasswordHasher, PasswordHashingFailure,
+    SealPlace, Sealer, SecurityKeys, SignatureAlgorithm, Signer, TotpEnrollmentText,
+    WrappedDataKey,
 };
 use crate::secret::Secret;
 
@@ -92,6 +93,28 @@ impl Sealer for TransparentSealer {
 #[derive(Debug, Default)]
 pub struct WeakSigner {
     generated: AtomicU64,
+    /// An algorithm it does not sign in, as a build that refuses one.
+    refused: Option<SignatureAlgorithm>,
+}
+
+impl WeakSigner {
+    /// A signer that neither makes, signs nor reads in `algorithm`, as a
+    /// build that leaves it out.
+    #[must_use]
+    pub fn refusing(algorithm: SignatureAlgorithm) -> Self {
+        Self {
+            refused: Some(algorithm),
+            ..Self::default()
+        }
+    }
+
+    fn admit(&self, algorithm: SignatureAlgorithm) -> Result<(), CryptoFailure> {
+        if self.signs_in(algorithm) {
+            Ok(())
+        } else {
+            Err(CryptoFailure)
+        }
+    }
 }
 
 fn to_hex(bytes: &[u8]) -> String {
@@ -109,11 +132,19 @@ fn sign_weakly(public: &str, message: &[u8]) -> Vec<u8> {
     [half, half].concat()
 }
 
+#[async_trait]
 impl Signer for WeakSigner {
-    fn generate_key(
+    fn signs_in(&self, algorithm: SignatureAlgorithm) -> bool {
+        self.refused != Some(algorithm)
+    }
+
+    async fn generate_key(
         &self,
         algorithm: SignatureAlgorithm,
-    ) -> Result<GeneratedSigningKey, CryptoFailure> {
+        _guard: KeyMakingGuard,
+    ) -> Result<GeneratedSigningKey, KeyMakingFailure> {
+        self.admit(algorithm)
+            .map_err(|_| KeyMakingFailure::Failed)?;
         let serial = self.generated.fetch_add(1, Ordering::Relaxed);
         let private = format!("weak-private-{serial}").into_bytes();
         let public = to_hex(&WeakDigester.sha256(&private));
@@ -136,21 +167,23 @@ impl Signer for WeakSigner {
 
     fn sign(
         &self,
-        _algorithm: SignatureAlgorithm,
+        algorithm: SignatureAlgorithm,
         private_key: &Secret,
         message: &[u8],
     ) -> Result<Vec<u8>, CryptoFailure> {
+        self.admit(algorithm)?;
         let public = to_hex(&WeakDigester.sha256(private_key.expose()));
         Ok(sign_weakly(&public, message))
     }
 
     fn verify(
         &self,
-        _algorithm: SignatureAlgorithm,
+        algorithm: SignatureAlgorithm,
         public_jwk: &serde_json::Value,
         message: &[u8],
         signature: &[u8],
     ) -> Result<bool, CryptoFailure> {
+        self.admit(algorithm)?;
         let public = public_jwk["x"].as_str().ok_or(CryptoFailure)?;
         Ok(sign_weakly(public, message) == signature)
     }

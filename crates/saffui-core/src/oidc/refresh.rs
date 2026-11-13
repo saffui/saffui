@@ -16,6 +16,7 @@ use crate::instant::write_instant;
 use crate::login::session::read_live_subject;
 use crate::ports::storage::UnitOfWork;
 use crate::tenancy::{RealmName, RealmScope};
+use crate::tokens::DEFAULT_ALGORITHM;
 use crate::tokens::mint::RefreshGrant;
 use crate::tokens::store::EndedFamily;
 
@@ -144,6 +145,9 @@ pub(super) async fn rotate_refresh_token(
         scopes: &scopes,
         // A nonce answers one authorization request: it is not said again.
         nonce: None,
+        id_token_algorithm: client
+            .id_token_signed_response_alg
+            .unwrap_or(DEFAULT_ALGORITHM),
         family: RefreshGrant {
             family: spent.family,
             client_id: &client.client_id,

@@ -48,6 +48,9 @@ pub enum EventKind {
     MapperCreated,
     MapperDeleted,
     PersonAttributesWritten,
+    SigningKeyRetired,
+    SigningKeyDeleted,
+    ClientCapabilitiesGranted,
 }
 
 impl EventKind {
@@ -88,6 +91,9 @@ impl EventKind {
             Self::MapperCreated => "client.mapper_created",
             Self::MapperDeleted => "client.mapper_deleted",
             Self::PersonAttributesWritten => "person.attributes_written",
+            Self::SigningKeyRetired => "key.retired",
+            Self::SigningKeyDeleted => "key.deleted",
+            Self::ClientCapabilitiesGranted => "client.capabilities_granted",
         }
     }
 }

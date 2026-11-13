@@ -328,9 +328,13 @@ async fn check_that_an_envelope_of_another_scope_is_refused(
 /// # Panics
 ///
 /// Panics at the first answer that breaks the contract.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario, read from top to bottom"
+)]
 pub async fn check_keys_contract(app: &App) {
-    use crate::keys::SIGNING_KEY_PURPOSE;
     use crate::keys::jwks::{open_signing_key, publish_key_set};
+    use crate::keys::{KeyStatus, SIGNING_KEY_PURPOSE, SealedSigningKey};
     use crate::ports::crypto::{SealPlace, SignatureAlgorithm};
     use crate::tenancy::realm::{NewRealm, provision_first_realm};
 
@@ -344,8 +348,9 @@ pub async fn check_keys_contract(app: &App) {
     .await
     .expect("a realm");
     let scope = RealmScope::bind(provisioned.tenant.id, provisioned.realm.id);
+    let (es256, rs256) = (SignatureAlgorithm::Es256, SignatureAlgorithm::Rs256);
 
-    // A realm is born with its data key and one signing key.
+    // A realm is born with its data key and an active key of ES256 and of RS256.
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
     let data_key = work
         .read_data_key()
@@ -353,16 +358,34 @@ pub async fn check_keys_contract(app: &App) {
         .expect("a read")
         .expect("a data key");
     assert_eq!(data_key.generation, 1);
-    let keys = work.list_signing_keys().await.expect("the keys");
-    assert_eq!(keys.len(), 1);
-    assert_eq!(keys[0].algorithm, SignatureAlgorithm::Es256);
+    // Born at one instant: their order says nothing of their algorithm.
+    let mut keys = work.list_signing_keys().await.expect("the keys");
+    keys.sort_by_key(|key| key.algorithm.name());
+    let algorithms: Vec<SignatureAlgorithm> = keys.iter().map(|key| key.algorithm).collect();
+    assert_eq!(algorithms, [es256, rs256]);
+    assert!(keys.iter().all(|key| key.status == KeyStatus::Active));
     assert_eq!(keys[0].public_jwk["kid"], keys[0].key_id.as_str());
+    assert_eq!(work.count_signing_keys().await, Ok(2));
+    assert_eq!(
+        work.read_signing_key(&keys[1].key_id).await,
+        Ok(Some(keys[1].clone()))
+    );
+    assert_eq!(work.read_signing_key("no-such-kid").await, Ok(None));
 
-    // What is published is the public half, and the private half opens
-    // where it is stored.
+    // What is published is the public half, read without any private one:
+    // the private halves are read by algorithm, of the active keys alone.
     let published = publish_key_set(app, scope).await.expect("a key set");
-    assert_eq!(published.keys, [keys[0].public_jwk.clone()]);
-    let (key, _private_key) = open_signing_key(app, work.as_mut(), SignatureAlgorithm::Es256)
+    assert_eq!(published.keys.len(), 2);
+    for key in &keys {
+        assert!(published.keys.contains(&key.public_jwk), "{}", key.key_id);
+    }
+    let sealed = work
+        .read_active_keys(&[es256])
+        .await
+        .expect("the key that signs");
+    assert_eq!(sealed.len(), 1, "one key per algorithm asked");
+    assert_eq!(sealed[0].key, keys[0]);
+    let (key, _private_key) = open_signing_key(app, work.as_mut(), es256)
         .await
         .expect("the signing key");
     assert_eq!(key, keys[0]);
@@ -376,7 +399,7 @@ pub async fn check_keys_contract(app: &App) {
     };
     assert!(
         app.sealer
-            .open(&data_key, &elsewhere, &key.sealed_private_key)
+            .open(&data_key, &elsewhere, &sealed[0].sealed_private_key)
             .is_err(),
         "a sealed key moved to another row does not open"
     );
@@ -385,10 +408,10 @@ pub async fn check_keys_contract(app: &App) {
     assert!(work.insert_data_key(&data_key).await.is_err());
     drop(work);
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
-    assert!(work.insert_signing_key(&keys[0]).await.is_err());
+    assert!(work.insert_signing_key(&sealed[0]).await.is_err());
     drop(work);
 
-    // A newer generation is the one read.
+    // A newer generation is the one read, and the one the lock returns.
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
     let newer = app
         .sealer
@@ -397,7 +420,73 @@ pub async fn check_keys_contract(app: &App) {
     work.insert_data_key(&newer)
         .await
         .expect("a second generation");
-    assert_eq!(work.read_data_key().await, Ok(Some(newer)));
+    assert_eq!(work.read_data_key().await, Ok(Some(newer.clone())));
+    assert_eq!(work.lock_signing_keys().await, Ok(Some(newer)));
+    drop(work);
+
+    // One key of an algorithm is active at a time.
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let second = SealedSigningKey {
+        key: crate::keys::SigningKey {
+            id: mint_id(app).expect("an identifier"),
+            key_id: "second-es256".to_owned(),
+            ..keys[0].clone()
+        },
+        sealed_private_key: sealed[0].sealed_private_key.clone(),
+    };
+    assert!(
+        work.insert_signing_key(&second).await.is_err(),
+        "a second active key of ES256 is refused"
+    );
+    drop(work);
+
+    // A key is retired once, and removed only once retired.
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.lock_signing_keys().await.expect("the keys taken");
+    assert_eq!(
+        work.delete_retired_key(key.id).await,
+        Ok(false),
+        "an active key stays"
+    );
+    assert_eq!(work.retire_signing_key(key.id).await, Ok(true));
+    assert_eq!(work.retire_signing_key(key.id).await, Ok(false));
+    work.insert_signing_key(&second)
+        .await
+        .expect("a new active key once the first is retired");
+    let listed = work.list_signing_keys().await.expect("the keys");
+    let status_of = |id| listed.iter().find(|key| key.id == id).map(|key| key.status);
+    assert_eq!(status_of(key.id), Some(KeyStatus::Retired));
+    assert_eq!(status_of(second.key.id), Some(KeyStatus::Active));
+    let signing = work
+        .read_active_keys(&[es256, rs256])
+        .await
+        .expect("the keys that sign");
+    let mut signing: Vec<&str> = signing
+        .iter()
+        .map(|sealed| sealed.key.key_id.as_str())
+        .collect();
+    signing.sort_unstable();
+    let mut expected = [second.key.key_id.as_str(), keys[1].key_id.as_str()];
+    expected.sort_unstable();
+    assert_eq!(signing, expected, "a retired key is never read to sign");
+    assert_eq!(work.delete_retired_key(key.id).await, Ok(true));
+    assert_eq!(work.delete_retired_key(key.id).await, Ok(false));
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let mut kept: Vec<String> = work
+        .list_signing_keys()
+        .await
+        .expect("the keys")
+        .into_iter()
+        .map(|key| key.key_id)
+        .collect();
+    kept.sort_unstable();
+    let mut expected = [keys[1].key_id.clone(), second.key.key_id.clone()];
+    expected.sort_unstable();
+    assert_eq!(
+        kept, expected,
+        "the removal was kept, and nothing else went"
+    );
 }
 
 /// Plays the clients contract on the storage `app` is wired on.
@@ -410,6 +499,7 @@ pub async fn check_keys_contract(app: &App) {
     reason = "one scenario, read from top to bottom"
 )]
 pub async fn check_clients_contract(app: &App) {
+    use crate::authz::capability::Capability;
     use crate::clients::Client;
     use crate::tenancy::realm::{NewRealm, provision_first_realm};
 
@@ -444,6 +534,7 @@ pub async fn check_clients_contract(app: &App) {
             crate::authz::capability::Capability::ClientRead,
             crate::authz::capability::Capability::AuditRead,
         ],
+        id_token_signed_response_alg: None,
         enabled: true,
         created_at: app.now(),
     };
@@ -467,6 +558,7 @@ pub async fn check_clients_contract(app: &App) {
         post_logout_redirect_uris: vec!["https://app.example.org/goodbye".to_owned()],
         requires_consent: true,
         capabilities: Vec::new(),
+        id_token_signed_response_alg: Some(crate::ports::crypto::SignatureAlgorithm::Ps256),
         ..client.clone()
     };
     work.insert_client(&application)
@@ -522,6 +614,33 @@ pub async fn check_clients_contract(app: &App) {
         Ok(vec!["billing".to_owned()])
     );
     assert_eq!(work.count_clients().await, Ok(3));
+
+    // What a client may do is replaced whole, for a client that acts as
+    // itself only: an application holds no capability.
+    let held = [Capability::KeyRead, Capability::KeyWrite];
+    assert_eq!(
+        work.write_client_capabilities("nobody", &held).await,
+        Ok(false)
+    );
+    assert_eq!(
+        work.write_client_capabilities("billing", &held).await,
+        Ok(true)
+    );
+    assert_eq!(
+        work.read_client("billing")
+            .await
+            .map(|client| client.map(|client| client.capabilities)),
+        Ok(Some(held.to_vec()))
+    );
+    work.insert_client(&application)
+        .await
+        .expect("an application");
+    assert!(
+        work.write_client_capabilities("webapp", &held)
+            .await
+            .is_err(),
+        "an application is granted no capability"
+    );
 }
 
 /// What every storage must answer of the people of a realm.

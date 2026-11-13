@@ -15,7 +15,7 @@ async fn get_json(product: saffui_core::app::App, path: &str) -> (StatusCode, Va
 }
 
 #[actix_web::test]
-async fn a_realm_publishes_the_public_half_of_its_key() {
+async fn a_realm_publishes_the_public_half_of_its_keys() {
     let (product, _storage) = MemoryStorage::wire();
     provision_first_realm(
         &product,
@@ -31,10 +31,12 @@ async fn a_realm_publishes_the_public_half_of_its_key() {
 
     assert_eq!(status, StatusCode::OK);
     let keys = key_set["keys"].as_array().expect("a list of keys");
-    assert_eq!(keys.len(), 1);
-    assert_eq!(keys[0]["alg"], "ES256");
-    assert_eq!(keys[0]["use"], "sig");
-    assert!(keys[0]["kid"].is_string());
+    let algorithms: Vec<&Value> = keys.iter().map(|key| &key["alg"]).collect();
+    assert_eq!(algorithms, ["ES256", "RS256"]);
+    for key in keys {
+        assert_eq!(key["use"], "sig");
+        assert!(key["kid"].is_string());
+    }
 }
 
 #[actix_web::test]

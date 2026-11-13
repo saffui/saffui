@@ -16,7 +16,7 @@ use crate::directory::Person;
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
 use crate::keys::SigningKey;
-use crate::keys::jwks::open_signing_key;
+use crate::keys::jwks::open_signing_keys;
 use crate::login::assurance::Assurance;
 use crate::login::session::{AuthenticationMethod, Session};
 use crate::ports::crypto::SignatureAlgorithm;
@@ -52,21 +52,53 @@ pub struct IdentityTokenSubject<'a> {
     pub session: &'a Session,
 }
 
-/// The key of the realm, opened once for every token of one answer.
+/// A key of the realm, opened once for every token of one answer it signs.
 pub struct MintingKey {
     key: SigningKey,
     private_key: Secret,
 }
 
-/// Opens the key the tokens of the realm are signed with.
+/// Opens the key the realm signs in `algorithm` with.
 ///
 /// # Errors
 ///
-/// Returns [`ErrorCode::CryptoUnavailable`] when the realm cannot sign, or
-/// the storage failure.
-pub async fn open_minting_key(app: &App, work: &mut dyn UnitOfWork) -> Result<MintingKey, Failure> {
-    let (key, private_key) = open_signing_key(app, work, SignatureAlgorithm::Es256).await?;
-    Ok(MintingKey { key, private_key })
+/// Returns [`ErrorCode::CryptoUnavailable`] when the realm cannot sign in
+/// it, or the storage failure.
+pub async fn open_minting_key(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    algorithm: SignatureAlgorithm,
+) -> Result<MintingKey, Failure> {
+    let (key, _) = open_minting_keys(app, work, algorithm, algorithm).await?;
+    Ok(key)
+}
+
+/// Opens the keys of one answer: the key of its access token, and the key
+/// of its identity token when that one is signed in another algorithm, in
+/// one read of the keys and one of the data key.
+///
+/// # Errors
+///
+/// As [`open_minting_key`].
+pub async fn open_minting_keys(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    access: SignatureAlgorithm,
+    identity: SignatureAlgorithm,
+) -> Result<(MintingKey, Option<MintingKey>), Failure> {
+    let algorithms: &[SignatureAlgorithm] = if identity == access {
+        &[access]
+    } else {
+        &[access, identity]
+    };
+    let mut opened = open_signing_keys(app, work, algorithms)
+        .await?
+        .into_iter()
+        .map(|(key, private_key)| MintingKey { key, private_key });
+    let access_key = opened
+        .next()
+        .ok_or_else(|| Failure::new(ErrorCode::Internal))?;
+    Ok((access_key, opened.next()))
 }
 
 fn sign_claims(
@@ -259,6 +291,7 @@ mod tests {
     use crate::testkit::drive::complete;
     use crate::testkit::fixtures::create_realm;
     use crate::testkit::memory::MemoryStorage;
+    use crate::tokens::DEFAULT_ALGORITHM;
 
     const ISSUER: &str = "https://id.example.test/realms/acme";
 
@@ -266,7 +299,8 @@ mod tests {
         let (app, _storage) = MemoryStorage::wire();
         let scope = complete(create_realm(&app, "acme"));
         let mut work = complete(app.storage.begin(scope)).expect("a unit of work");
-        let key = complete(open_minting_key(&app, work.as_mut())).expect("the key of the realm");
+        let key = complete(open_minting_key(&app, work.as_mut(), DEFAULT_ALGORITHM))
+            .expect("the key of the realm");
         (app, key)
     }
 

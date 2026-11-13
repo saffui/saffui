@@ -40,6 +40,7 @@ async fn start(name: &str) -> (saffui_core::app::App, RealmScope) {
             post_logout_redirect_uris: &[],
             public: true,
             requires_consent: true,
+            id_token_signed_response_alg: None,
             created_by: None,
         },
     )
@@ -277,6 +278,7 @@ async fn a_name_that_changes_direction_is_shown_with_the_change_replaced() {
         requires_consent: true,
         scopes: vec!["openid".to_owned(), "email".to_owned()],
         capabilities: Vec::new(),
+        id_token_signed_response_alg: None,
         enabled: true,
         created_at: product.now(),
     };

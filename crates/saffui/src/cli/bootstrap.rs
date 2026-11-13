@@ -27,7 +27,7 @@ use crate::config::database::{
 use crate::config::hashing::PASSWORD_HASHERS;
 use crate::config::origin::{PUBLIC_ORIGIN, PublicOriginSettingError, resolve_public_origin};
 use crate::telemetry;
-use crate::wiring::{StartupRefusal, WiringError, wire_product};
+use crate::wiring::{Sealing, StartupRefusal, WiringError, wire_product};
 
 #[derive(Args)]
 pub(crate) struct BootstrapOptions {
@@ -121,7 +121,7 @@ fn provision_from_options(options: &BootstrapOptions) -> Result<String, Bootstra
         Settings::reached_directly(public_origin),
         &database,
         one_connection,
-        &root_key,
+        Sealing::UnderRootKey(&root_key),
         PASSWORD_HASHERS.default,
     )?;
 

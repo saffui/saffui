@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 
 use super::Client;
+use crate::authz::capability::Capability;
 use crate::ports::storage::StorageError;
 
 /// A window on a list: where it starts and how many rows it holds at most.
@@ -47,6 +48,14 @@ pub trait ClientStore {
 
     /// How many clients the realm has. Asked for, never computed by default.
     async fn count_clients(&mut self) -> Result<u64, StorageError>;
+
+    /// Replaces what a client may do on the administration plane. Answers
+    /// whether the realm has that client.
+    async fn write_client_capabilities(
+        &mut self,
+        client_id: &str,
+        capabilities: &[Capability],
+    ) -> Result<bool, StorageError>;
 }
 
 #[cfg(test)]

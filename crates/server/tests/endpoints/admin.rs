@@ -144,8 +144,8 @@ async fn an_administrator_asks_whether_the_audit_chain_of_its_realm_is_whole() {
 
     assert_eq!(answer.status, StatusCode::OK);
     assert_eq!(answer.body["intact"], true);
-    // The realm, its key, the administrator, and the token it was given.
-    assert_eq!(answer.body["events"], 4);
+    // The realm, its two keys, the administrator, and the token it was given.
+    assert_eq!(answer.body["events"], 5);
     assert!(answer.warning.is_none());
 }
 

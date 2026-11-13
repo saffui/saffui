@@ -68,12 +68,12 @@ async fn writers_at_once_leave_one_chain_that_verifies_whole_while_they_write() 
             .all(|verdict| matches!(verdict, Ok(ChainVerdict::Intact { .. }))),
         "{verdicts:?}"
     );
-    // Then the whole chain: its creation and its first key, then every
+    // Then the whole chain: its creation and its two first keys, then every
     // append, no gap, no fork.
     assert_eq!(
         verify_chain(&app, scope).await,
         Ok(ChainVerdict::Intact {
-            events: 2 + WRITERS * EVENTS_EACH
+            events: 3 + WRITERS * EVENTS_EACH
         })
     );
 }
@@ -91,7 +91,7 @@ async fn an_envelope_changed_behind_the_product_is_found_by_the_verification() {
             "BEGIN; {};
              UPDATE audit_events
              SET envelope = convert_to(replace(convert_from(envelope, 'UTF8'), '\"amount\":10', '\"amount\":99'), 'UTF8')
-             WHERE seq = 3;
+             WHERE seq = 4;
              COMMIT;",
             scope_statement(scope)
         ))
@@ -101,7 +101,7 @@ async fn an_envelope_changed_behind_the_product_is_found_by_the_verification() {
     assert_eq!(
         verify_chain(&app, scope).await,
         Ok(ChainVerdict::Broken {
-            at_seq: 3,
+            at_seq: 4,
             reason: ChainBreak::Altered
         })
     );
@@ -201,7 +201,7 @@ async fn a_realm_with_a_history_is_not_deleted_with_it() {
     );
     assert_eq!(
         verify_chain(&app, scope).await,
-        Ok(ChainVerdict::Intact { events: 2 })
+        Ok(ChainVerdict::Intact { events: 3 })
     );
 }
 

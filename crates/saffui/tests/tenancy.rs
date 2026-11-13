@@ -12,6 +12,8 @@ use pgcore::{APP_ROLE, MAINTENANCE_ROLE};
 mod database;
 #[path = "support/http.rs"]
 mod http;
+#[path = "support/jwk.rs"]
+mod jwk;
 #[path = "support/node.rs"]
 mod node;
 mod support;
@@ -72,7 +74,7 @@ fn read_as(database: &TestDatabase, role: &str, sql: &str) -> Vec<String> {
 }
 
 #[test]
-fn a_bootstrapped_realm_has_its_creation_and_its_first_key_first_in_its_chain() {
+fn a_bootstrapped_realm_has_its_creation_and_its_first_keys_first_in_its_chain() {
     let database = database::create_database(EMBEDDED);
 
     let created = bootstrap(&database, "Acme", "acme");
@@ -84,14 +86,14 @@ fn a_bootstrapped_realm_has_its_creation_and_its_first_key_first_in_its_chain() 
         MAINTENANCE_ROLE,
         "SELECT seq || ' ' || kind FROM audit_events ORDER BY seq",
     );
-    assert_eq!(chain, ["1 realm.created", "2 key.created"]);
+    assert_eq!(chain, ["1 realm.created", "2 key.created", "3 key.created"]);
     let head = read_as(
         &database,
         MAINTENANCE_ROLE,
         "SELECT h.seq::text FROM audit_chain_heads h \
          JOIN audit_events e USING (tenant_id, realm_id, seq) WHERE h.hash = e.hash",
     );
-    assert_eq!(head, ["2"], "the head is the last event written");
+    assert_eq!(head, ["3"], "the head is the last event written");
 }
 
 #[test]
@@ -158,7 +160,7 @@ fn an_administrator_is_given_every_capability_and_the_admin_scope() {
     assert_eq!(
         kept,
         [
-            "admin realm:read,client:read,client:write,audit:read,user:read,user:write,role:read,role:write,policy:read,policy:write"
+            "admin realm:read,client:read,client:write,audit:read,user:read,user:write,role:read,role:write,policy:read,policy:write,key:read,key:write"
         ]
     );
 }
@@ -224,7 +226,7 @@ fn a_bootstrapped_realm_is_published_by_a_node_on_its_data_plane_only() {
             r#""response_types_supported":["code"],"#,
             r#""grant_types_supported":["authorization_code","client_credentials","refresh_token"],"#,
             r#""subject_types_supported":["public"],"#,
-            r#""id_token_signing_alg_values_supported":["ES256"],"#,
+            r#""id_token_signing_alg_values_supported":["ES256","RS256"],"#,
             r#""token_endpoint_auth_methods_supported":["client_secret_basic","client_secret_post","none"],"#,
             r#""code_challenge_methods_supported":["S256"],"#,
             r#""scopes_supported":["openid","profile","email","roles","offline_access"],"#,
@@ -237,22 +239,24 @@ fn a_bootstrapped_realm_is_published_by_a_node_on_its_data_plane_only() {
         )
     );
 
-    // The key set holds the public half of the first key, and nothing private.
+    // The key set holds the public half of the first keys, and nothing private.
     let keys = http::get(node.data, "/realms/acme/oauth2/jwks").expect("an answer");
     assert_eq!(keys.status, 200, "{}", keys.body);
     for member in [
         r#""kty":"EC""#,
         r#""crv":"P-256""#,
         r#""alg":"ES256""#,
+        r#""kty":"RSA""#,
+        r#""e":"AQAB""#,
+        r#""alg":"RS256""#,
         r#""use":"sig""#,
     ] {
         assert!(keys.body.contains(member), "{member} in {}", keys.body);
     }
-    assert!(
-        !keys.body.contains(r#""d":"#),
-        "no private member: {}",
-        keys.body
-    );
+    let published: serde_json::Value = serde_json::from_str(&keys.body).expect("JSON");
+    for key in published["keys"].as_array().expect("keys") {
+        assert!(jwk::holds_public_members_only(key), "{key}");
+    }
 
     let unknown =
         http::get(node.data, "/realms/nobody/.well-known/openid-configuration").expect("an answer");

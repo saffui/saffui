@@ -333,6 +333,19 @@ Code meant for the whole crate goes into a module of its own rather than into
     from `rand`, not from the provider: under `fips-strict`, a deployment
     serves no security key.
 
+20. `adapters::sign` (the algorithms of a realm): four more algorithms beside
+    ES256, each from the vendored `jose` layer, which is not modified. ES384
+    from `EcKeyPair` on P-384 and `EcdsaJwsAlgorithm`; RS256 from a 3072 bit
+    `RsaKeyPair` and `RsassaJwsAlgorithm`; PS256 from a 3072 bit RSA-PSS key
+    made by `RsassaPssJwsAlgorithm::generate_key_pair`, kept as such and read
+    in place to sign; EdDSA from an Ed25519 `EdKeyPair` and
+    `EddsaJwsAlgorithm`. The algorithm is the one the core names, never one
+    read from a key or a header. The adapter makes a key on a blocking
+    thread, two at most at once, and refuses at once a key asked while both
+    are at work. It refuses before any arithmetic an RSA key whose exponent
+    is not 65537 or whose modulus is longer than 4096 bits. Under
+    `fips-strict`, EdDSA is neither made, signed nor verified.
+
 ## Before vendoring anything
 
 Record the entry **in the same commit that introduces the code**, never

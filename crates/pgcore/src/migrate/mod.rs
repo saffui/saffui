@@ -59,6 +59,9 @@ pub const EMBEDDED: &[Migration] = &[
     embed!(36, "0036_person_attributes"),
     embed!(37, "0037_person_attributes_checked"),
     embed!(38, "0038_client_mappers"),
+    embed!(39, "0039_signing_key_status"),
+    embed!(40, "0040_id_token_algorithm"),
+    embed!(41, "0041_id_token_algorithm_checked"),
 ];
 
 /// One numbered step of the schema, as SQL text.

@@ -1,8 +1,8 @@
 //! From the types of the core to what the administration API says.
 
 use api::{
-    ClientView, ConsentView, GrantView, GroupView, HeldRoleView, MapperView, PolicyView, RealmView,
-    RoleView, UserView,
+    ClientView, ConsentView, GrantView, GroupView, HeldRoleView, KeyView, MapperView, PolicyView,
+    RealmView, RoleView, UserView,
 };
 use saffui_core::authz::grants::{Grant, HeldRole};
 use saffui_core::authz::policy::Policy;
@@ -12,6 +12,7 @@ use saffui_core::clients::Client;
 use saffui_core::consent::ListedConsent;
 use saffui_core::directory::Person;
 use saffui_core::instant::write_instant;
+use saffui_core::keys::SigningKey;
 use saffui_core::tenancy::Realm;
 
 pub(super) fn show_realm(realm: &Realm, issuer: String) -> RealmView {
@@ -41,8 +42,22 @@ pub(super) fn show_client(client: &Client) -> ClientView {
             .iter()
             .map(|granted| granted.name().to_owned())
             .collect(),
+        id_token_signed_response_alg: client
+            .id_token_signed_response_alg
+            .map(|algorithm| algorithm.name().to_owned()),
         enabled: client.enabled,
         created_at: write_instant(client.created_at),
+    }
+}
+
+/// A key as an administrator sees it: never its private half, sealed or not.
+pub(super) fn show_key(key: &SigningKey) -> KeyView {
+    KeyView {
+        kid: key.key_id.clone(),
+        alg: key.algorithm.name().to_owned(),
+        status: key.status.name().to_owned(),
+        public_jwk: key.public_jwk.clone(),
+        created_at: write_instant(key.created_at),
     }
 }
 

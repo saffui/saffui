@@ -4,10 +4,14 @@
 use serde::Serialize;
 
 use super::token::OFFLINE_ACCESS_SCOPE;
+use crate::app::App;
+use crate::error::Failure;
+use crate::keys::rotate::list_active_algorithms;
 use crate::login::assurance::Assurance;
 use crate::ports::crypto::SignatureAlgorithm;
 use crate::settings::Settings;
 use crate::tenancy::RealmName;
+use crate::tenancy::resolve::resolve_realm;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[expect(
@@ -27,7 +31,8 @@ pub struct ProviderMetadata {
     pub response_types_supported: Vec<&'static str>,
     pub grant_types_supported: Vec<&'static str>,
     pub subject_types_supported: Vec<&'static str>,
-    /// Derived from the catalog of algorithms, never from a list written here.
+    /// The algorithms the realm has an active key of: derived from its keys,
+    /// never from a list written here.
     pub id_token_signing_alg_values_supported: Vec<&'static str>,
     pub token_endpoint_auth_methods_supported: Vec<&'static str>,
     pub code_challenge_methods_supported: Vec<&'static str>,
@@ -48,8 +53,25 @@ pub fn name_issuer(settings: &Settings, realm: &RealmName) -> String {
     format!("{}/realms/{realm}", settings.public_origin)
 }
 
+/// The discovery document of a realm, with the algorithms its keys sign in.
+///
+/// # Errors
+///
+/// Returns [`crate::error::ErrorCode::RealmNotFound`] or the storage failure.
+pub async fn read_provider_metadata(app: &App, realm: &str) -> Result<ProviderMetadata, Failure> {
+    let (name, scope) = resolve_realm(app, realm).await?;
+    let mut work = app.storage.begin(scope).await?;
+    let keys = work.list_signing_keys().await?;
+    let signing = list_active_algorithms(app.signer.as_ref(), &keys);
+    Ok(describe_provider(&app.settings, &name, &signing))
+}
+
 #[must_use]
-pub fn describe_provider(settings: &Settings, realm: &RealmName) -> ProviderMetadata {
+pub fn describe_provider(
+    settings: &Settings,
+    realm: &RealmName,
+    signing: &[SignatureAlgorithm],
+) -> ProviderMetadata {
     let issuer = name_issuer(settings, realm);
     ProviderMetadata {
         authorization_endpoint: format!("{issuer}/oauth2/authorize"),
@@ -62,7 +84,7 @@ pub fn describe_provider(settings: &Settings, realm: &RealmName) -> ProviderMeta
         response_types_supported: vec!["code"],
         grant_types_supported: vec!["authorization_code", "client_credentials", "refresh_token"],
         subject_types_supported: vec!["public"],
-        id_token_signing_alg_values_supported: SignatureAlgorithm::ALL
+        id_token_signing_alg_values_supported: signing
             .iter()
             .map(|algorithm| algorithm.name())
             .collect(),
@@ -86,6 +108,7 @@ pub fn describe_provider(settings: &Settings, realm: &RealmName) -> ProviderMeta
 #[cfg(test)]
 mod tests {
     use super::{describe_provider, name_issuer};
+    use crate::ports::crypto::SignatureAlgorithm;
     use crate::settings::{PublicOrigin, Settings};
     use crate::tenancy::RealmName;
 
@@ -109,7 +132,7 @@ mod tests {
         );
         let realm = RealmName::parse("acme").expect("a realm name");
 
-        let document = describe_provider(&settings, &realm);
+        let document = describe_provider(&settings, &realm, &[SignatureAlgorithm::Es256]);
 
         assert_eq!(
             document.jwks_uri,

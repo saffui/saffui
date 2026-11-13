@@ -20,5 +20,10 @@ pub const ACCESS_TOKEN_TYPE: &str = "at+jwt";
 /// The `typ` of an identity token.
 pub const IDENTITY_TOKEN_TYPE: &str = "JWT";
 
+/// The algorithm of every access token, and of the identity tokens of a
+/// client that names none. A realm is born with a key of it.
+pub const DEFAULT_ALGORITHM: crate::ports::crypto::SignatureAlgorithm =
+    crate::ports::crypto::SignatureAlgorithm::Es256;
+
 /// How long an access token lives.
 pub const ACCESS_TOKEN_LIFETIME_SECONDS: u64 = 300;

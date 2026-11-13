@@ -6,6 +6,7 @@ use time::OffsetDateTime;
 
 use crate::authz::shares::DecisionShares;
 use crate::error::{ErrorCode, Failure};
+use crate::keys::shares::KeyMakingShares;
 use crate::login::fairness::HashingShares;
 use crate::ports::clock::Clock;
 use crate::ports::crypto::{Digester, OneTimeCodes, PasswordHasher, Sealer, SecurityKeys, Signer};
@@ -32,6 +33,8 @@ pub struct App {
     /// What each tenant, and the node, may have answered by the point of
     /// decision at once.
     pub decision_shares: Arc<DecisionShares>,
+    /// The key each tenant is making: one at a time.
+    pub key_shares: Arc<KeyMakingShares>,
     /// A hash nobody's password matches, made once per process. Start it empty.
     pub decoy_hash: Arc<OnceLock<String>>,
 }

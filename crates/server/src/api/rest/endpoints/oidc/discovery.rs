@@ -2,8 +2,7 @@
 
 use actix_web::{HttpResponse, get, web};
 use saffui_core::app::App as Product;
-use saffui_core::oidc::discovery::describe_provider;
-use saffui_core::tenancy::resolve::resolve_realm;
+use saffui_core::oidc::discovery::read_provider_metadata;
 
 use crate::error::render_failure;
 
@@ -12,8 +11,8 @@ pub async fn serve_provider_metadata(
     product: web::Data<Product>,
     realm: web::Path<String>,
 ) -> HttpResponse {
-    match resolve_realm(&product, &realm).await {
-        Ok((name, _scope)) => HttpResponse::Ok().json(describe_provider(&product.settings, &name)),
+    match read_provider_metadata(&product, &realm).await {
+        Ok(document) => HttpResponse::Ok().json(document),
         Err(failure) => render_failure(&failure),
     }
 }

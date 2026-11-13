@@ -7,6 +7,7 @@ pub mod otp;
 pub mod password;
 pub mod random;
 pub mod seal;
+pub mod sealing_refused;
 pub mod sign;
 #[cfg(feature = "testkit")]
 pub mod soft_key;

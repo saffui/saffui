@@ -3,7 +3,8 @@
 //! without a cryptographic library.
 
 use std::fmt::Write as _;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -11,10 +12,10 @@ use uuid::Uuid;
 
 use super::digest::WeakDigester;
 use crate::ports::crypto::{
-    CryptoFailure, Digester, EnrolledKey, GeneratedSigningKey, KeyCeremony, KeyMakingFailure,
-    KeyMakingGuard, KeyProof, KeyRefusal, OneTimeCodes, PasswordHasher, PasswordHashingFailure,
-    SealPlace, Sealer, SecurityKeys, SignatureAlgorithm, Signer, TotpEnrollmentText,
-    WrappedDataKey,
+    CryptoFailure, Digester, EnrolledKey, GeneratedSigningKey, HashingGuard, KeyCeremony,
+    KeyMakingFailure, KeyMakingGuard, KeyProof, KeyRefusal, OneTimeCodes, PasswordHasher,
+    PasswordHashingFailure, SealPlace, Sealer, SecurityKeys, SignatureAlgorithm, Signer,
+    TotpEnrollmentText, WrappedDataKey,
 };
 use crate::secret::Secret;
 
@@ -196,7 +197,11 @@ pub struct InstantHasher;
 
 #[async_trait]
 impl PasswordHasher for InstantHasher {
-    async fn hash_password(&self, password: Secret) -> Result<String, PasswordHashingFailure> {
+    async fn hash_password(
+        &self,
+        password: Secret,
+        _guard: HashingGuard,
+    ) -> Result<String, PasswordHashingFailure> {
         Ok(format!("$instant${}", to_hex(password.expose())))
     }
 
@@ -204,8 +209,65 @@ impl PasswordHasher for InstantHasher {
         &self,
         password: Secret,
         stored: String,
+        _guard: HashingGuard,
     ) -> Result<bool, PasswordHashingFailure> {
         Ok(stored == format!("$instant${}", to_hex(password.expose())))
+    }
+}
+
+/// A hasher that answers as [`InstantHasher`] until it is told to hold: it
+/// then keeps the guard of the next hash and never answers, as a hasher still
+/// at work after its caller gave up.
+#[derive(Default)]
+pub struct HoldingHasher {
+    holding: AtomicBool,
+    held: Mutex<Option<HashingGuard>>,
+}
+
+impl HoldingHasher {
+    /// Holds the next hash asked for.
+    pub fn hold_next(&self) {
+        self.holding.store(true, Ordering::SeqCst);
+    }
+
+    /// Ends the hash held: its guard is dropped.
+    pub fn finish_held(&self) {
+        drop(
+            self.held
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take(),
+        );
+    }
+
+    async fn hold_if_told(&self, guard: HashingGuard) -> HashingGuard {
+        if self.holding.swap(false, Ordering::SeqCst) {
+            *self.held.lock().unwrap_or_else(PoisonError::into_inner) = Some(guard);
+            return std::future::pending().await;
+        }
+        guard
+    }
+}
+
+#[async_trait]
+impl PasswordHasher for HoldingHasher {
+    async fn hash_password(
+        &self,
+        password: Secret,
+        guard: HashingGuard,
+    ) -> Result<String, PasswordHashingFailure> {
+        let guard = self.hold_if_told(guard).await;
+        InstantHasher.hash_password(password, guard).await
+    }
+
+    async fn verify_password(
+        &self,
+        password: Secret,
+        stored: String,
+        guard: HashingGuard,
+    ) -> Result<bool, PasswordHashingFailure> {
+        let guard = self.hold_if_told(guard).await;
+        InstantHasher.verify_password(password, stored, guard).await
     }
 }
 

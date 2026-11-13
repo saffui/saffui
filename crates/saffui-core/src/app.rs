@@ -65,9 +65,11 @@ impl App {
             .map_err(|_| Failure::new(ErrorCode::RandomUnavailable))?;
         // Written as text: a password is text, and a hasher may refuse anything else.
         let unknown = Secret::new(URL_SAFE_NO_PAD.encode(&unknown).into_bytes());
+        // Made before the node serves (the binary prepares it at start): no caller
+        // holds a share for it.
         let hash = self
             .hasher
-            .hash_password(unknown)
+            .hash_password(unknown, Box::new(()))
             .await
             .map_err(crate::directory::create::translate_hashing_failure)?;
         // Two requests may both compute it: either result serves.

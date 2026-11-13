@@ -59,13 +59,13 @@ pub async fn create_person(
     let hash = match wanted.password {
         Some(password) => {
             check_password_bounds(password.expose())?;
-            let _share = app
+            let share = app
                 .hashing_shares
                 .take(scope.realm(), None)
                 .ok_or_else(|| Failure::new(ErrorCode::HashingBusy))?;
             Some(
                 app.hasher
-                    .hash_password(password)
+                    .hash_password(password, Box::new(share))
                     .await
                     .map_err(translate_hashing_failure)?,
             )
@@ -107,9 +107,15 @@ pub async fn create_person(
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+    use std::pin::pin;
+    use std::sync::Arc;
+    use std::task::{Context, Waker};
+
     use super::{NewPerson, create_person};
     use crate::error::ErrorCode;
     use crate::secret::Secret;
+    use crate::testkit::crypto::HoldingHasher;
     use crate::testkit::drive::complete;
     use crate::testkit::fixtures::create_realm;
     use crate::testkit::memory::MemoryStorage;
@@ -211,5 +217,42 @@ mod tests {
             );
         }
         assert_eq!(create(ask("bob", None, b"12345678")), Ok(()));
+    }
+
+    #[test]
+    fn a_creation_given_up_while_the_password_is_hashed_keeps_the_share_of_its_realm() {
+        let (mut app, _storage) = MemoryStorage::wire();
+        let scope = complete(create_realm(&app, "acme"));
+        let hasher = Arc::new(HoldingHasher::default());
+        app.hasher = hasher.clone();
+        hasher.hold_next();
+
+        // Polled once, to the hasher, then dropped: a caller that hangs up.
+        {
+            let mut given_up = pin!(create_person(&app, scope, ask("ada", None, b"12345678")));
+            let polled = given_up
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()));
+            assert!(polled.is_pending(), "the password is being hashed");
+        }
+        // Four hashers: a realm holds two, the one given up and this one.
+        let held = app
+            .hashing_shares
+            .take(scope.realm(), None)
+            .expect("a share");
+        let create = || {
+            complete(create_person(&app, scope, ask("ada", None, b"12345678")))
+                .map(|_| ())
+                .map_err(|failure| failure.code)
+        };
+
+        assert_eq!(
+            create(),
+            Err(ErrorCode::HashingBusy),
+            "the share went with the work"
+        );
+        hasher.finish_held();
+        assert_eq!(create(), Ok(()), "the hash done, the realm is served");
+        drop(held);
     }
 }

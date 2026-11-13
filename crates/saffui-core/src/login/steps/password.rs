@@ -101,18 +101,18 @@ pub(crate) async fn verify_password(
         Some(hash) => hash,
         None => app.read_decoy_hash().await?,
     };
-    // Held for the hash alone: the realm, and the /48 of an IPv6 caller,
-    // run no more than their share at once, and an idle one is never refused.
-    let verified = {
-        let _share = app
-            .hashing_shares
-            .take(scope.realm(), network)
-            .ok_or_else(|| Failure::new(ErrorCode::HashingBusy))?;
-        app.hasher
-            .verify_password(password, against)
-            .await
-            .map_err(translate_hashing_failure)?
-    };
+    // Held for the hash alone, and by the hasher until it is done: the realm,
+    // and the /48 of an IPv6 caller, run no more than their share at once,
+    // callers that hung up included, and an idle one is never refused.
+    let share = app
+        .hashing_shares
+        .take(scope.realm(), network)
+        .ok_or_else(|| Failure::new(ErrorCode::HashingBusy))?;
+    let verified = app
+        .hasher
+        .verify_password(password, against, Box::new(share))
+        .await
+        .map_err(translate_hashing_failure)?;
 
     if let Some(person) = person.filter(|person| verified && person.enabled) {
         return Ok(ProvenPassword {
@@ -129,8 +129,13 @@ pub(crate) async fn verify_password(
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+    use std::pin::pin;
+    use std::sync::Arc;
+    use std::task::{Context, Waker};
     use std::time::Duration;
 
+    use super::verify_password;
     use crate::app::App;
     use crate::error::ErrorCode;
     use crate::login::device::DeviceMark;
@@ -138,6 +143,7 @@ mod tests {
     use crate::secret::Secret;
     use crate::tenancy::RealmScope;
     use crate::testkit::clock::FixedClock;
+    use crate::testkit::crypto::HoldingHasher;
     use crate::testkit::drive::complete;
     use crate::testkit::fixtures::{create_person, create_realm};
     use crate::testkit::memory::MemoryStorage;
@@ -440,6 +446,50 @@ mod tests {
         assert_eq!(
             attempt(&app, flooded, "ada", PASSWORD),
             Ok("ada".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_verification_given_up_while_the_password_is_hashed_keeps_the_share_of_its_network() {
+        let (mut app, _storage) = MemoryStorage::wire();
+        let scope = complete(create_realm(&app, "acme"));
+        complete(create_person(&app, scope, "ada", PASSWORD));
+        let hasher = Arc::new(HoldingHasher::default());
+        app.hasher = hasher.clone();
+        hasher.hold_next();
+
+        // Polled once, to the hasher, then dropped: a caller that hangs up.
+        {
+            let mut given_up = pin!(verify_password(
+                &app,
+                scope,
+                "ada",
+                Secret::new(PASSWORD.as_bytes().to_vec()),
+                Some("2001:db8:7::1".parse().expect("an address")),
+                &[],
+            ));
+            let polled = given_up
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()));
+            assert!(polled.is_pending(), "the password is being hashed");
+        }
+
+        // Four hashers: the one a /48 may hold went with the hash.
+        assert_eq!(
+            attempt_from(&app, scope, "2001:db8:7:ffff::1", "ada", PASSWORD),
+            Err(ErrorCode::HashingBusy),
+            "the share went with the work"
+        );
+        assert_eq!(
+            attempt_from(&app, scope, "2001:db8:8::1", "ada", PASSWORD),
+            Ok("ada".to_owned()),
+            "another /48 is not slowed"
+        );
+        hasher.finish_held();
+        assert_eq!(
+            attempt_from(&app, scope, "2001:db8:7:ffff::1", "ada", PASSWORD),
+            Ok("ada".to_owned()),
+            "the hash done, the /48 is served"
         );
     }
 

@@ -41,8 +41,8 @@ pub(crate) struct ProvenPassword {
 ///
 /// Returns [`ErrorCode::SignInFailed`] for every refusal above but the last,
 /// [`ErrorCode::HashingBusy`] when the address spent its attempts, or the
-/// realm or the /48 of an IPv6 caller runs its share of hashes already, or
-/// the storage failure.
+/// node, the realm or the /48 of an IPv6 caller runs its share of hashes
+/// already, or the storage failure.
 pub(crate) async fn verify_password(
     app: &App,
     scope: RealmScope,
@@ -62,8 +62,8 @@ pub(crate) async fn verify_password(
     let typed = typed_name.trim().to_lowercase();
     let mut brake = Brake::of(app, scope, &typed, caller)?;
     let network = caller.and_then(write_network_bucket);
-    // No hasher free now: refused before the attempt is counted, so that a
-    // busy node costs the address nothing. The share is taken further down.
+    // No share free now: refused before anything is read. The look keeps
+    // none: the share is taken further down, before the attempt is committed.
     if !app
         .hashing_shares
         .has_free_share(scope.realm(), network.as_deref())
@@ -74,8 +74,9 @@ pub(crate) async fn verify_password(
     let proven = prove_device_marks(app, scope, known_browsers, &typed, now)?;
 
     // One unit of work reads the counters and counts this attempt against
-    // its address. It commits before anything is hashed: attempts made
-    // together are each counted, and none holds a transaction meanwhile.
+    // its address, and commits before anything is hashed. An attempt to hash
+    // is committed only once it holds its share; one on a locked name hashes
+    // nothing, and is committed without one.
     let mut work = app.storage.begin(scope).await?;
     // Read whether or not the name is locked: both paths read as much.
     let person = match &username {
@@ -92,22 +93,24 @@ pub(crate) async fn verify_password(
     // two paths make as many trips to the storage, and take as long.
     let reading_for = person.as_ref().map_or(Uuid::nil(), |person| person.id);
     let stored = work.read_password(reading_for).await?;
-    work.commit().await?;
     if locked {
+        work.commit().await?;
         return Err(refused());
     }
+    // Held from here, and by the hasher until it is done: the realm, and the
+    // /48 of an IPv6 caller, run no more than their share at once, callers that
+    // hung up included, and an idle one is never refused. Without a share, the
+    // unit of work is dropped, and the attempt it counted with it.
+    let share = app
+        .hashing_shares
+        .take(scope.realm(), network)
+        .ok_or_else(|| Failure::new(ErrorCode::HashingBusy))?;
+    work.commit().await?;
 
     let against = match stored {
         Some(hash) => hash,
         None => app.read_decoy_hash().await?,
     };
-    // Held for the hash alone, and by the hasher until it is done: the realm,
-    // and the /48 of an IPv6 caller, run no more than their share at once,
-    // callers that hung up included, and an idle one is never refused.
-    let share = app
-        .hashing_shares
-        .take(scope.realm(), network)
-        .ok_or_else(|| Failure::new(ErrorCode::HashingBusy))?;
     let verified = app
         .hasher
         .verify_password(password, against, Box::new(share))
@@ -131,17 +134,24 @@ pub(crate) async fn verify_password(
 mod tests {
     use std::future::Future;
     use std::pin::pin;
-    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex, PoisonError};
     use std::task::{Context, Waker};
     use std::time::Duration;
+
+    use async_trait::async_trait;
 
     use super::verify_password;
     use crate::app::App;
     use crate::error::ErrorCode;
     use crate::login::device::DeviceMark;
+    use crate::login::fairness::{HashingShare, HashingShares};
     use crate::login::flow::{FirstStep, SignedIn, sign_in_with_password};
+    use crate::ports::storage::{
+        RealmLocation, Storage, StorageError, StorageUnavailable, UnitOfWork,
+    };
     use crate::secret::Secret;
-    use crate::tenancy::RealmScope;
+    use crate::tenancy::{RealmId, RealmName, RealmScope};
     use crate::testkit::clock::FixedClock;
     use crate::testkit::crypto::HoldingHasher;
     use crate::testkit::drive::complete;
@@ -494,7 +504,142 @@ mod tests {
     }
 
     #[test]
-    fn a_node_with_no_hasher_free_refuses_before_it_counts_the_attempt_of_the_address() {
+    fn a_node_whose_hashers_other_realms_hold_refuses_before_it_counts_the_attempt_of_the_address()
+    {
+        use crate::login::throttle::MAX_RECENT_ATTEMPTS_PER_ADDRESS;
+
+        let (app, storage) = MemoryStorage::wire();
+        let first = complete(create_realm(&app, "acme"));
+        let second = complete(create_realm(&app, "globex"));
+        let scope = complete(create_realm(&app, "initech"));
+        complete(create_person(&app, scope, "ada", PASSWORD));
+        // Four hashers: two realms hold two each, every one within its part.
+        let take = |realm: RealmScope| {
+            app.hashing_shares
+                .take(realm.realm(), None)
+                .expect("a share")
+        };
+        let [given_back, _kept] = [take(first), take(first)];
+        let _held_by_second = [take(second), take(second)];
+        let units_before = storage.count_units_of_work();
+
+        for _ in 0..=MAX_RECENT_ATTEMPTS_PER_ADDRESS {
+            assert_eq!(
+                attempt_from(&app, scope, "203.0.113.7", "ada", PASSWORD),
+                Err(ErrorCode::HashingBusy),
+                "every hasher of the node is held"
+            );
+        }
+
+        assert_eq!(
+            storage.count_units_of_work(),
+            units_before,
+            "nothing was read, nothing was counted"
+        );
+        drop(given_back);
+        assert_eq!(
+            attempt_from(&app, scope, "203.0.113.7", "ada", PASSWORD),
+            Ok("ada".to_owned()),
+            "a hasher given back, the address kept every attempt it may make"
+        );
+    }
+
+    /// The storage of the doubles which, armed, lets two other realms take
+    /// every free share of the hashers as the next unit of work opens: what a
+    /// node under load does between the look at the shares and the take.
+    struct CrowdedStorage {
+        inner: Arc<MemoryStorage>,
+        shares: Arc<HashingShares>,
+        others: [RealmId; 2],
+        armed: AtomicBool,
+        taken: Mutex<Vec<HashingShare>>,
+    }
+
+    impl CrowdedStorage {
+        fn arm(&self) {
+            self.armed.store(true, Ordering::SeqCst);
+        }
+
+        fn give_back(&self) {
+            self.taken
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clear();
+        }
+    }
+
+    #[async_trait]
+    impl Storage for CrowdedStorage {
+        async fn probe(&self) -> Result<(), StorageUnavailable> {
+            self.inner.probe().await
+        }
+
+        async fn locate_realm(
+            &self,
+            name: &RealmName,
+        ) -> Result<Option<RealmLocation>, StorageError> {
+            self.inner.locate_realm(name).await
+        }
+
+        async fn begin(&self, scope: RealmScope) -> Result<Box<dyn UnitOfWork>, StorageError> {
+            if self.armed.swap(false, Ordering::SeqCst) {
+                let mut taken = self.taken.lock().unwrap_or_else(PoisonError::into_inner);
+                for realm in self.others {
+                    while let Some(share) = self.shares.take(realm, None) {
+                        taken.push(share);
+                    }
+                }
+            }
+            self.inner.begin(scope).await
+        }
+
+        async fn begin_snapshot(
+            &self,
+            scope: RealmScope,
+        ) -> Result<Box<dyn UnitOfWork>, StorageError> {
+            self.inner.begin_snapshot(scope).await
+        }
+    }
+
+    #[test]
+    fn an_attempt_is_counted_only_when_it_holds_its_share_of_the_hashers() {
+        use crate::login::throttle::MAX_RECENT_ATTEMPTS_PER_ADDRESS;
+
+        let (mut app, storage) = MemoryStorage::wire();
+        let first = complete(create_realm(&app, "acme"));
+        let second = complete(create_realm(&app, "globex"));
+        let scope = complete(create_realm(&app, "initech"));
+        complete(create_person(&app, scope, "ada", PASSWORD));
+        let crowded = Arc::new(CrowdedStorage {
+            inner: storage,
+            shares: Arc::clone(&app.hashing_shares),
+            others: [first.realm(), second.realm()],
+            armed: AtomicBool::new(false),
+            taken: Mutex::default(),
+        });
+        app.storage = crowded.clone();
+
+        // Each time, the hashers are free as the attempt looks, and every one
+        // is taken by the time it has read its counters.
+        for _ in 0..=MAX_RECENT_ATTEMPTS_PER_ADDRESS {
+            crowded.arm();
+            assert_eq!(
+                attempt_from(&app, scope, "203.0.113.7", "ada", PASSWORD),
+                Err(ErrorCode::HashingBusy),
+                "the other realms took every hasher meanwhile"
+            );
+            crowded.give_back();
+        }
+
+        assert_eq!(
+            attempt_from(&app, scope, "203.0.113.7", "ada", PASSWORD),
+            Ok("ada".to_owned()),
+            "an attempt refused for want of a share was not counted"
+        );
+    }
+
+    #[test]
+    fn a_realm_that_runs_its_share_is_refused_before_the_attempt_of_the_address_is_counted() {
         use crate::login::throttle::MAX_RECENT_ATTEMPTS_PER_ADDRESS;
 
         let (app, storage) = MemoryStorage::wire();

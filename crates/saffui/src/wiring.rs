@@ -102,6 +102,8 @@ pub(crate) fn wire_product(
     };
     let hasher = BoundedPasswordHasher::new(Arc::clone(&provider), password_hashers)
         .map_err(|_| WiringError::Hasher)?;
+    // Cut from the hasher itself: the shares never count other workers than it has.
+    let hashing_shares = HashingShares::new(hasher.count_workers());
     let connections = pool.max_size;
     let pool = build_pool(database, pool)?;
     let storage = PgStorage::new(pool.clone(), SchemaWindow::of_exactly(EMBEDDED));
@@ -119,7 +121,7 @@ pub(crate) fn wire_product(
             hasher: Arc::new(hasher),
             one_time_codes: Arc::new(ProviderOneTimeCodes::new(Arc::clone(&provider))),
             security_keys: Arc::new(security_keys),
-            hashing_shares: Arc::new(HashingShares::new(password_hashers)),
+            hashing_shares: Arc::new(hashing_shares),
             decision_shares: Arc::new(DecisionShares::for_pool(connections)),
             key_shares: Arc::default(),
             decoy_hash: Arc::new(OnceLock::new()),
@@ -178,8 +180,13 @@ impl Wired {
 #[cfg(test)]
 mod tests {
     use crypto::adapters::webauthn::{KeyService, WebauthnSecurityKeys};
+    use pgcore::connect::plan_connection;
+    use pgcore::pool::PoolSettings;
+    use saffui_core::ids::mint_id;
+    use saffui_core::settings::{PublicOrigin, Settings};
+    use saffui_core::tenancy::RealmId;
 
-    use super::describe_unserved_keys;
+    use super::{Sealing, describe_unserved_keys, wire_product};
 
     const WHO_CANNOT: &str = "a person who holds only a key cannot sign in";
 
@@ -206,5 +213,31 @@ mod tests {
         assert!(!fips.contains("validated module"), "{fips}");
 
         assert_eq!(describe_unserved_keys(KeyService::Served), None);
+    }
+
+    #[test]
+    fn a_node_wired_with_one_hasher_refuses_a_second_share_to_another_realm() {
+        let plan = plan_connection("host=127.0.0.1 user=saffui dbname=saffui", None, None)
+            .expect("a loopback plan");
+        // No connection is opened: the pool dials on its first borrow.
+        let wired = wire_product(
+            Settings::reached_directly(
+                PublicOrigin::parse("https://id.example.test").expect("an origin"),
+            ),
+            &plan,
+            PoolSettings::default(),
+            Sealing::Refused,
+            1,
+        )
+        .expect("a product");
+        let app = &wired.app;
+        let realm = || RealmId::from_uuid(mint_id(app).expect("an identifier"));
+
+        let held = app.hashing_shares.take(realm(), None).expect("a share");
+        assert!(
+            app.hashing_shares.take(realm(), None).is_none(),
+            "one hasher, one share for the node, whatever realm asks"
+        );
+        drop(held);
     }
 }

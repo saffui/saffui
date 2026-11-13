@@ -19,6 +19,7 @@ pub struct BoundedPasswordHasher {
     provider: SharedProvider,
     cost: Argon2Params,
     workers: Arc<Semaphore>,
+    max_concurrent: usize,
 }
 
 impl BoundedPasswordHasher {
@@ -49,7 +50,15 @@ impl BoundedPasswordHasher {
             provider,
             cost,
             workers: Arc::new(Semaphore::new(max_concurrent)),
+            max_concurrent,
         })
+    }
+
+    /// How many passwords it hashes at once at most, at work or not: what
+    /// the shares of the hashers are cut from.
+    #[must_use]
+    pub fn count_workers(&self) -> usize {
+        self.max_concurrent
     }
 
     fn take_worker(&self) -> Result<OwnedSemaphorePermit, PasswordHashingFailure> {
@@ -77,8 +86,9 @@ async fn run_on_worker<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, PasswordHashingFailure> + Send + 'static,
 ) -> Result<T, PasswordHashingFailure> {
     spawn_blocking(move || {
-        // The share first, then its worker: one asked meanwhile is at worst refused as busy.
-        let _held = (guard, worker);
+        // The worker goes back first, then the share: the shares never count fewer
+        // hashes than the workers run, and see the node full until one is free.
+        let _held = (worker, guard);
         work()
     })
     .await
@@ -128,7 +138,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, mpsc};
     use std::task::{Context, Waker};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use saffui_core::ports::crypto::{HashingGuard, PasswordHasher, PasswordHashingFailure};
     use saffui_core::secret::Secret;
@@ -264,11 +274,21 @@ mod tests {
         );
     }
 
-    /// The passwords of the provider of this machine, each counted once it is
-    /// hashed or verified.
+    /// The passwords of the provider of this machine. As each one is hashed
+    /// or verified, it is counted, and the workers then free are noted.
     struct CountingPassword {
         inner: SharedProvider,
+        workers: Arc<Semaphore>,
         done: Arc<AtomicUsize>,
+        free_at_end: Arc<AtomicUsize>,
+    }
+
+    impl CountingPassword {
+        fn note_end(&self) {
+            self.free_at_end
+                .store(self.workers.available_permits(), Ordering::SeqCst);
+            self.done.fetch_add(1, Ordering::SeqCst);
+        }
     }
 
     impl PasswordProvider for CountingPassword {
@@ -278,7 +298,7 @@ mod tests {
             params: Argon2Params,
         ) -> crate::provider::Result<String> {
             let hashed = self.inner.password().hash(password, params);
-            self.done.fetch_add(1, Ordering::SeqCst);
+            self.note_end();
             hashed
         }
 
@@ -288,7 +308,7 @@ mod tests {
             encoded: &str,
         ) -> crate::provider::Result<bool> {
             let verified = self.inner.password().verify(password, encoded);
-            self.done.fetch_add(1, Ordering::SeqCst);
+            self.note_end();
             verified
         }
 
@@ -398,11 +418,12 @@ mod tests {
     }
 
     /// The only blocking thread is held, so that the password waits to be
-    /// hashed; the caller hangs up meanwhile. The guard of the caller is
-    /// dropped once the password is hashed, while its worker is still taken;
-    /// the worker is free again after.
+    /// hashed; the caller hangs up meanwhile. The worker is held until the
+    /// password is hashed, and the guard of the caller until the worker is
+    /// given back.
     #[test]
-    fn a_worker_and_the_guard_of_its_caller_are_held_until_the_password_is_hashed() {
+    fn a_worker_is_held_until_the_password_is_hashed_and_given_back_before_the_guard_of_its_caller()
+    {
         const WORKERS: usize = 2;
         for asked in [Asked::Hash, Asked::Verification] {
             let runtime = tokio::runtime::Builder::new_current_thread()
@@ -410,27 +431,32 @@ mod tests {
                 .build()
                 .expect("a runtime");
             let _inside = runtime.enter();
+            let workers = Arc::new(Semaphore::new(WORKERS));
             let done = Arc::new(AtomicUsize::new(0));
+            let free_at_end = Arc::new(AtomicUsize::new(0));
             let inner = open_provider().expect("a provider");
             let typed = SecretBox::new(Box::new("correct horse battery".to_owned()));
             let stored = inner.password().hash(&typed, LIGHT).expect("a hash");
-            let hasher = BoundedPasswordHasher::with_cost(
-                Arc::new(CountingProvider {
+            // Built by its fields: the provider sees the workers of the hasher.
+            let hasher = BoundedPasswordHasher {
+                provider: Arc::new(CountingProvider {
                     inner: Arc::clone(&inner),
                     password: CountingPassword {
                         inner,
+                        workers: Arc::clone(&workers),
                         done: Arc::clone(&done),
+                        free_at_end: Arc::clone(&free_at_end),
                     },
                 }),
-                LIGHT,
-                WORKERS,
-            )
-            .expect("a hasher");
+                cost: LIGHT,
+                workers: Arc::clone(&workers),
+                max_concurrent: WORKERS,
+            };
             let alive = Arc::new(());
             let (told, seen) = mpsc::channel();
             let guard: HashingGuard = Box::new(Watch {
                 done: Arc::clone(&done),
-                workers: Arc::clone(&hasher.workers),
+                workers: Arc::clone(&workers),
                 told,
                 _alive: Arc::clone(&alive),
             });
@@ -463,36 +489,22 @@ mod tests {
                 "{asked:?}: the guard waits with the work"
             );
             assert_eq!(
-                hasher.workers.available_permits(),
+                workers.available_permits(),
                 WORKERS - 1,
                 "{asked:?}: and so does the worker"
             );
             release.send(()).expect("the blocking thread let go");
-            let deadline = Instant::now() + Duration::from_mins(1);
-            while Arc::strong_count(&alive) == 2 {
-                assert!(
-                    Instant::now() < deadline,
-                    "{asked:?}: the password is hashed in time"
-                );
-                assert_eq!(
-                    hasher.workers.available_permits(),
-                    WORKERS - 1,
-                    "{asked:?}: the worker is never free while the guard is held"
-                );
-                std::thread::sleep(Duration::from_millis(1));
-            }
+
             assert_eq!(
-                seen.recv_timeout(Duration::from_secs(1)),
-                Ok((1, WORKERS - 1)),
-                "{asked:?}: the guard went once the password was hashed, its worker still taken"
+                seen.recv_timeout(Duration::from_mins(1)),
+                Ok((1, WORKERS)),
+                "{asked:?}: the guard went once the password was hashed and its worker given back"
             );
-            while hasher.workers.available_permits() < WORKERS {
-                assert!(
-                    Instant::now() < deadline,
-                    "{asked:?}: the worker is given back"
-                );
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            assert_eq!(
+                free_at_end.load(Ordering::SeqCst),
+                WORKERS - 1,
+                "{asked:?}: the worker was held until the password was hashed"
+            );
             drop(blocker);
         }
     }

@@ -17,6 +17,7 @@ use pgcore::migrate::window::SchemaWindow;
 use pgcore::pool::{PoolSettings, build_pool};
 use pgcore::testkit::TestDatabase;
 use saffui_core::app::App;
+use saffui_core::login::fairness::HashingShares;
 use saffui_core::secret::Secret;
 use saffui_core::settings::{PublicOrigin, Settings};
 use saffui_core::tenancy::RealmScope;
@@ -33,6 +34,9 @@ pub const ROOT_KEY: [u8; 32] = [7; 32];
 pub fn wire_app(database: &TestDatabase, root_key: &Secret) -> App {
     let pool = build_pool(&database.plan(APP_ROLE), PoolSettings::default()).expect("a pool");
     let provider = open_provider().expect("a provider");
+    let hasher = BoundedPasswordHasher::new(Arc::clone(&provider), 2).expect("a hasher");
+    // Cut from the hasher itself, as the binary does.
+    let hashing_shares = HashingShares::new(hasher.count_workers());
     App {
         settings: Settings::reached_directly(
             PublicOrigin::parse("https://id.example.test").expect("an origin"),
@@ -42,10 +46,10 @@ pub fn wire_app(database: &TestDatabase, root_key: &Secret) -> App {
         random: Arc::new(CountingRandom::default()),
         digester: Arc::new(ProviderDigester::new(Arc::clone(&provider))),
         sealer: Arc::new(EnvelopeSealer::new(Arc::clone(&provider), root_key).expect("a sealer")),
-        hasher: Arc::new(BoundedPasswordHasher::new(Arc::clone(&provider), 2).expect("a hasher")),
+        hasher: Arc::new(hasher),
         one_time_codes: Arc::new(ProviderOneTimeCodes::new(Arc::clone(&provider))),
         security_keys: Arc::new(WebauthnSecurityKeys::for_origin("https://id.example.test")),
-        hashing_shares: Arc::new(saffui_core::login::fairness::HashingShares::new(2)),
+        hashing_shares: Arc::new(hashing_shares),
         decision_shares: Arc::default(),
         key_shares: Arc::default(),
         signer: Arc::new(JoseSigner::new(provider)),

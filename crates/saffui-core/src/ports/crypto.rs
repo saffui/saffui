@@ -366,8 +366,8 @@ pub enum PasswordHashingFailure {
 }
 
 /// What the caller of a hash holds while it runs, such as the share of its
-/// realm: kept with the work and dropped when the hash is done, not when the
-/// caller gives up.
+/// realm: kept with the work, not with the caller, and dropped only once the
+/// worker that did the work is free again.
 pub type HashingGuard = Box<dyn Send>;
 
 /// Hashing is slow on purpose. An adapter runs it away from the threads that
@@ -375,7 +375,7 @@ pub type HashingGuard = Box<dyn Send>;
 #[async_trait]
 pub trait PasswordHasher: Send + Sync {
     /// Returns the hash as a PHC string, which names its own parameters.
-    /// `guard` is kept until the hash is done.
+    /// `guard` is dropped once the worker that hashed is free again.
     async fn hash_password(
         &self,
         password: Secret,
@@ -384,7 +384,7 @@ pub trait PasswordHasher: Send + Sync {
 
     /// Tells whether `password` is the one `stored` was made from. A stored
     /// value that is not a PHC string of a known algorithm is `Ok(false)`.
-    /// `guard` is kept until the answer is known.
+    /// `guard` is dropped once the worker that verified is free again.
     async fn verify_password(
         &self,
         password: Secret,

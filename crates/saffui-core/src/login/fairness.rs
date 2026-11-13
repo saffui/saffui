@@ -1,8 +1,11 @@
 //! A fair share of the password hashers. The hashers of a node are few, and
 //! every tenant shares them: a realm whose sign-in page is flooded takes its
 //! share, and so does an IPv6 /48 whatever realm it asks, and each leaves
-//! the rest to the others. A share is held for the time of one hash, so a
-//! network that is idle is never refused.
+//! the rest to the others. A share is held from the commit of an attempt to
+//! the end of its hash, so a network that is idle is never refused. Every
+//! hash but the decoy made at start holds one, so the node is counted here
+//! too, and an attempt whose password is hashed is counted only when it
+//! holds its share.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -10,6 +13,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use crate::tenancy::RealmId;
 
 pub struct HashingShares {
+    per_node: u32,
     per_realm: u32,
     per_network: u32,
     held: Mutex<Held>,
@@ -17,6 +21,7 @@ pub struct HashingShares {
 
 #[derive(Default)]
 struct Held {
+    node: u32,
     realms: HashMap<RealmId, u32>,
     networks: HashMap<String, u32>,
 }
@@ -39,12 +44,13 @@ fn give_back<K: std::hash::Hash + Eq>(counts: &mut HashMap<K, u32>, key: &K) {
 }
 
 impl HashingShares {
-    /// Shares `hashers` workers: a realm holds half of them at most, a
-    /// network a quarter, and each one at least.
+    /// Shares `hashers` workers: the node holds all of them at most, a realm
+    /// half, a network a quarter, and each one at least.
     #[must_use]
     pub fn new(hashers: usize) -> Self {
         let part = |divisor: usize| u32::try_from(hashers / divisor).unwrap_or(u32::MAX).max(1);
         Self {
+            per_node: part(1),
             per_realm: part(2),
             per_network: part(4),
             held: Mutex::new(Held::default()),
@@ -52,7 +58,8 @@ impl HashingShares {
     }
 
     fn is_held_whole(&self, held: &Held, realm: RealmId, network: Option<&str>) -> bool {
-        held.realms.get(&realm).copied().unwrap_or(0) >= self.per_realm
+        held.node >= self.per_node
+            || held.realms.get(&realm).copied().unwrap_or(0) >= self.per_realm
             || network.is_some_and(|network| {
                 held.networks.get(network).copied().unwrap_or(0) >= self.per_network
             })
@@ -67,7 +74,8 @@ impl HashingShares {
     }
 
     /// Takes a share for `realm` and for `network`, the /48 of an IPv6
-    /// caller, or none when either holds its whole share already.
+    /// caller, or none when the node, the realm or the network holds its
+    /// whole share already.
     #[must_use]
     pub fn take(self: &Arc<Self>, realm: RealmId, network: Option<String>) -> Option<HashingShare> {
         // A thread that panicked while holding the lock left whole counts:
@@ -76,6 +84,7 @@ impl HashingShares {
         if self.is_held_whole(&held, realm, network.as_deref()) {
             return None;
         }
+        held.node += 1;
         *held.realms.entry(realm).or_insert(0) += 1;
         if let Some(network) = &network {
             *held.networks.entry(network.clone()).or_insert(0) += 1;
@@ -95,6 +104,7 @@ impl Drop for HashingShare {
             .held
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        held.node = held.node.saturating_sub(1);
         give_back(&mut held.realms, &self.realm);
         if let Some(network) = &self.network {
             give_back(&mut held.networks, network);
@@ -178,6 +188,47 @@ mod tests {
         assert!(
             shares.take(realm(3), flooding()).is_some(),
             "idle, it is never refused"
+        );
+    }
+
+    #[test]
+    fn a_node_whose_hashers_are_all_held_refuses_a_realm_and_a_network_that_hold_none() {
+        let shares = Arc::new(HashingShares::new(4));
+        let realm = |n| RealmId::from_uuid(Uuid::from_u128(n));
+        let network = |n: u32| Some(format!("2001:db8:{n:x}::/48"));
+        // Two realms from two /48 each: every one within its part, the four held.
+        let [first, rest @ ..] = [
+            shares.take(realm(1), network(1)).expect("a share"),
+            shares.take(realm(1), network(2)).expect("a share"),
+            shares.take(realm(2), network(3)).expect("a share"),
+            shares.take(realm(2), network(4)).expect("a share"),
+        ];
+
+        assert!(
+            !shares.has_free_share(realm(3), network(5).as_deref()),
+            "looking finds the node full"
+        );
+        assert!(
+            shares.take(realm(3), network(5)).is_none(),
+            "a realm and a network that hold no share are refused one"
+        );
+        assert!(
+            shares.take(realm(3), None).is_none(),
+            "and so is an IPv4 caller"
+        );
+        drop(first);
+        let again = shares
+            .take(realm(3), network(5))
+            .expect("a share given back is free for any realm");
+        assert!(
+            shares.take(realm(4), None).is_none(),
+            "one share given back frees one, and the node is full again"
+        );
+        drop((rest, again));
+        let held = shares.held.lock().expect("a lock");
+        assert!(
+            held.node == 0 && held.realms.is_empty() && held.networks.is_empty(),
+            "every share is given back to the node too"
         );
     }
 

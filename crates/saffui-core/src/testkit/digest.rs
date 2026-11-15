@@ -1,4 +1,5 @@
-use crate::ports::crypto::Digester;
+use crate::ports::crypto::{CryptoFailure, Digester};
+use crate::secret::Secret;
 
 /// A digest that is not one: 32 bytes that depend on every byte of the
 /// input, with no claim past that. It lets the heart be tested without a
@@ -23,6 +24,16 @@ impl Digester for WeakDigester {
             chunk.copy_from_slice(&mix(seed, data).to_be_bytes());
         }
         digest
+    }
+
+    /// The digest of the length of the key, the key, then the data: two keys
+    /// give two tags, and nothing more is claimed.
+    fn hmac_sha256(&self, key: &Secret, data: &[u8]) -> Result<[u8; 32], CryptoFailure> {
+        let length = u64::try_from(key.expose().len()).map_err(|_| CryptoFailure)?;
+        let mut keyed = length.to_be_bytes().to_vec();
+        keyed.extend_from_slice(key.expose());
+        keyed.extend_from_slice(data);
+        Ok(self.sha256(&keyed))
     }
 
     fn equal_in_constant_time(&self, left: &[u8], right: &[u8]) -> bool {

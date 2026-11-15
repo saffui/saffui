@@ -500,7 +500,7 @@ pub async fn check_keys_contract(app: &App) {
 )]
 pub async fn check_clients_contract(app: &App) {
     use crate::authz::capability::Capability;
-    use crate::clients::Client;
+    use crate::clients::{AssertionAlgorithm, Client, ClientAuthMethod, KeptProof};
     use crate::tenancy::realm::{NewRealm, provision_first_realm};
 
     let mut scopes = Vec::new();
@@ -519,11 +519,20 @@ pub async fn check_clients_contract(app: &App) {
             provisioned.realm.id,
         ));
     }
+    let proof =
+        |digest: Option<&[u8]>, sealed: Option<&[u8]>, jwks: Option<serde_json::Value>| KeptProof {
+            secret_digest: digest.map(<[u8]>::to_vec),
+            sealed_secret: sealed.map(<[u8]>::to_vec),
+            jwks,
+        };
+    let digested = || proof(Some(&[7; 32]), None, None);
+    let nothing = || proof(None, None, None);
     let client = Client {
         id: mint_id(app).expect("an identifier"),
         client_id: "billing".to_owned(),
         name: "Billing".to_owned(),
-        secret_digest: Some(vec![7; 32]),
+        auth_method: ClientAuthMethod::ClientSecretBasic,
+        auth_signing_alg: None,
         allows_client_credentials: true,
         allows_authorization_code: false,
         redirect_uris: Vec::new(),
@@ -541,17 +550,25 @@ pub async fn check_clients_contract(app: &App) {
 
     // A client is read back as it was written, by its identifier.
     let mut work = app.storage.begin(scopes[0]).await.expect("a unit of work");
-    work.insert_client(&client).await.expect("a client");
+    work.insert_client(&client, &digested())
+        .await
+        .expect("a client");
     work.commit().await.expect("a commit");
     let mut work = app.storage.begin(scopes[0]).await.expect("a unit of work");
     assert_eq!(work.read_client("billing").await, Ok(Some(client.clone())));
     assert_eq!(work.read_client("nobody").await, Ok(None));
+    assert_eq!(
+        work.read_client_for_update("billing").await,
+        Ok(Some(client.clone())),
+        "taken, it reads the same"
+    );
+    assert_eq!(work.read_client_for_update("nobody").await, Ok(None));
 
     // An application without a secret is read back as it was written too.
     let application = Client {
         id: mint_id(app).expect("an identifier"),
         client_id: "webapp".to_owned(),
-        secret_digest: None,
+        auth_method: ClientAuthMethod::None,
         allows_client_credentials: false,
         allows_authorization_code: true,
         redirect_uris: vec!["https://app.example.org/callback".to_owned()],
@@ -561,11 +578,15 @@ pub async fn check_clients_contract(app: &App) {
         id_token_signed_response_alg: Some(crate::ports::crypto::SignatureAlgorithm::Ps256),
         ..client.clone()
     };
-    work.insert_client(&application)
+    work.insert_client(&application, &nothing())
         .await
         .expect("an application");
     assert_eq!(
         work.read_client("webapp").await,
+        Ok(Some(application.clone()))
+    );
+    assert_eq!(
+        work.read_client_for_update("webapp").await,
         Ok(Some(application.clone()))
     );
 
@@ -575,13 +596,14 @@ pub async fn check_clients_contract(app: &App) {
         ..client.clone()
     };
     assert_eq!(
-        work.insert_client(&again).await,
+        work.insert_client(&again, &digested()).await,
         Err(StorageError::Taken("client identifier"))
     );
     drop(work);
     let mut work = app.storage.begin(scopes[1]).await.expect("a unit of work");
     assert_eq!(work.read_client("billing").await, Ok(None));
-    work.insert_client(&again)
+    assert_eq!(work.read_client_for_update("billing").await, Ok(None));
+    work.insert_client(&again, &digested())
         .await
         .expect("the same identifier in another realm");
     work.commit().await.expect("a commit");
@@ -595,7 +617,9 @@ pub async fn check_clients_contract(app: &App) {
             client_id: client_id.to_owned(),
             ..client.clone()
         };
-        work.insert_client(&other).await.expect("a client");
+        work.insert_client(&other, &digested())
+            .await
+            .expect("a client");
     }
     let window = |first, max| crate::clients::store::ListWindow { first, max };
     let named = |clients: Vec<Client>| -> Vec<String> {
@@ -632,7 +656,7 @@ pub async fn check_clients_contract(app: &App) {
             .map(|client| client.map(|client| client.capabilities)),
         Ok(Some(held.to_vec()))
     );
-    work.insert_client(&application)
+    work.insert_client(&application, &nothing())
         .await
         .expect("an application");
     assert!(
@@ -640,6 +664,266 @@ pub async fn check_clients_contract(app: &App) {
             .await
             .is_err(),
         "an application is granted no capability"
+    );
+    drop(work);
+
+    // A client that signs with a key, and one that signs with a sealed
+    // secret, are read back as written, with what proves them read apart.
+    let keyed = Client {
+        id: mint_id(app).expect("an identifier"),
+        client_id: "keyed".to_owned(),
+        auth_method: ClientAuthMethod::PrivateKeyJwt,
+        auth_signing_alg: AssertionAlgorithm::parse("ES256"),
+        ..client.clone()
+    };
+    let keys = serde_json::json!({ "keys": [
+        { "kty": "EC", "crv": "P-256", "x": "x", "y": "y", "alg": "ES256" },
+    ] });
+    let sealed = Client {
+        id: mint_id(app).expect("an identifier"),
+        client_id: "sealed".to_owned(),
+        auth_method: ClientAuthMethod::ClientSecretJwt,
+        auth_signing_alg: Some(AssertionAlgorithm::Hs256),
+        ..client.clone()
+    };
+    let mut work = app.storage.begin(scopes[0]).await.expect("a unit of work");
+    work.insert_client(&keyed, &proof(None, None, Some(keys.clone())))
+        .await
+        .expect("a client with a key");
+    work.insert_client(&sealed, &proof(None, Some(&[9; 48]), None))
+        .await
+        .expect("a client with a sealed secret");
+    work.insert_client(&application, &nothing())
+        .await
+        .expect("an application");
+    assert_eq!(work.read_client("keyed").await, Ok(Some(keyed.clone())));
+    assert_eq!(work.read_client("sealed").await, Ok(Some(sealed.clone())));
+    assert_eq!(
+        work.read_client_for_update("keyed").await,
+        Ok(Some(keyed.clone()))
+    );
+    let read_proof = async |work: &mut Box<dyn crate::ports::storage::UnitOfWork>, client_id| {
+        let (read, kept) = work
+            .read_client_with_proof(client_id)
+            .await
+            .expect("a read")
+            .expect("the client");
+        assert_eq!(read.client_id, client_id);
+        (kept.secret_digest, kept.sealed_secret, kept.jwks)
+    };
+    assert_eq!(
+        read_proof(&mut work, "keyed").await,
+        (None, None, Some(keys.clone()))
+    );
+    assert!(
+        work.read_client_with_proof("nobody")
+            .await
+            .expect("a read")
+            .is_none()
+    );
+
+    // A secret is replaced in the one form its method keeps it in.
+    assert_eq!(
+        work.write_client_secret("billing", Some(&[8; 32]), None)
+            .await,
+        Ok(true)
+    );
+    assert_eq!(
+        work.write_client_secret("sealed", None, Some(&[6; 48]))
+            .await,
+        Ok(true)
+    );
+    assert_eq!(
+        work.write_client_secret("nobody", Some(&[8; 32]), None)
+            .await,
+        Ok(false)
+    );
+    assert_eq!(
+        read_proof(&mut work, "billing").await,
+        (Some(vec![8; 32]), None, None)
+    );
+    assert_eq!(
+        read_proof(&mut work, "sealed").await,
+        (None, Some(vec![6; 48]), None)
+    );
+
+    // A secret moves between the header and the form, and nowhere else.
+    assert_eq!(
+        work.write_client_auth_method("billing", ClientAuthMethod::ClientSecretPost)
+            .await,
+        Ok(true)
+    );
+    assert_eq!(
+        work.read_client("billing")
+            .await
+            .map(|client| client.map(|client| client.auth_method)),
+        Ok(Some(ClientAuthMethod::ClientSecretPost))
+    );
+    assert_eq!(
+        read_proof(&mut work, "billing").await,
+        (Some(vec![8; 32]), None, None),
+        "with the same secret"
+    );
+    assert_eq!(
+        work.write_client_auth_method("billing", ClientAuthMethod::ClientSecretBasic)
+            .await,
+        Ok(true)
+    );
+    assert_eq!(
+        work.write_client_auth_method("nobody", ClientAuthMethod::ClientSecretPost)
+            .await,
+        Ok(false)
+    );
+    work.commit().await.expect("a commit");
+    for (client_id, method) in [
+        ("billing", ClientAuthMethod::None),
+        ("billing", ClientAuthMethod::ClientSecretJwt),
+        ("sealed", ClientAuthMethod::ClientSecretPost),
+        ("webapp", ClientAuthMethod::ClientSecretBasic),
+    ] {
+        let mut work = app.storage.begin(scopes[0]).await.expect("a unit of work");
+        assert!(
+            work.write_client_auth_method(client_id, method)
+                .await
+                .is_err(),
+            "{client_id} to {}",
+            method.name()
+        );
+    }
+
+    // A form the method does not keep is refused, as is a client written
+    // with one, each in a unit of its own: a refusal ends its unit.
+    let (digest, sealed_bytes) = (&[8_u8; 32][..], &[9_u8; 48][..]);
+    for (client_id, written_digest, written_sealed) in [
+        ("billing", None, Some(sealed_bytes)),
+        ("billing", None, None),
+        ("sealed", Some(digest), None),
+        ("keyed", Some(digest), None),
+        ("keyed", None, Some(sealed_bytes)),
+        ("webapp", Some(digest), None),
+    ] {
+        let mut work = app.storage.begin(scopes[0]).await.expect("a unit of work");
+        assert!(
+            work.write_client_secret(client_id, written_digest, written_sealed)
+                .await
+                .is_err(),
+            "{client_id}: {written_digest:?} {written_sealed:?}"
+        );
+    }
+    let misfit = |changes: Client| Client {
+        id: mint_id(app).expect("an identifier"),
+        client_id: "misfit".to_owned(),
+        ..changes
+    };
+    let large = serde_json::json!({ "keys": [{ "kty": "RSA", "n": "x".repeat(40 * 1024) }] });
+    for (refused, kept, why) in [
+        (
+            client.clone(),
+            nothing(),
+            "a secret presented and kept nowhere",
+        ),
+        (
+            Client {
+                auth_method: ClientAuthMethod::ClientSecretPost,
+                ..client.clone()
+            },
+            proof(Some(&[7; 32]), Some(&[9; 48]), None),
+            "a secret presented and sealed too",
+        ),
+        (
+            sealed.clone(),
+            proof(Some(&[7; 32]), Some(&[9; 48]), None),
+            "a secret signed with and digested too",
+        ),
+        (keyed.clone(), nothing(), "a client of a key without keys"),
+        (
+            client.clone(),
+            proof(Some(&[7; 32]), None, Some(keys.clone())),
+            "keys for a client of a secret",
+        ),
+        (
+            Client {
+                allows_client_credentials: true,
+                ..application.clone()
+            },
+            nothing(),
+            "a public client acting as itself",
+        ),
+        (
+            Client {
+                auth_signing_alg: Some(AssertionAlgorithm::Hs256),
+                ..keyed.clone()
+            },
+            proof(None, None, Some(keys.clone())),
+            "a key that signs with a secret",
+        ),
+        (
+            Client {
+                auth_signing_alg: AssertionAlgorithm::parse("ES256"),
+                ..sealed.clone()
+            },
+            proof(None, Some(&[9; 48]), None),
+            "a secret that signs as a key",
+        ),
+        (
+            Client {
+                auth_signing_alg: Some(AssertionAlgorithm::Hs256),
+                ..client.clone()
+            },
+            digested(),
+            "an algorithm for a client that signs nothing",
+        ),
+        (
+            keyed.clone(),
+            proof(None, None, Some(serde_json::json!([keys.clone()]))),
+            "keys that are no object",
+        ),
+        (
+            keyed.clone(),
+            proof(None, None, Some(large)),
+            "keys past the bound of the table",
+        ),
+    ] {
+        let mut work = app.storage.begin(scopes[0]).await.expect("a unit of work");
+        assert_eq!(
+            work.insert_client(&misfit(refused), &kept).await,
+            Err(StorageError::Failed),
+            "{why}"
+        );
+    }
+
+    // An assertion is first once for its client, across units of work. One
+    // of a client the realm does not have is kept too, until the purge.
+    let kept_until = app.now() + time::Duration::minutes(5);
+    let mut work = app.storage.begin(scopes[0]).await.expect("a unit of work");
+    assert_eq!(
+        work.record_client_assertion("billing", "a-1", kept_until)
+            .await,
+        Ok(true)
+    );
+    assert_eq!(
+        work.record_client_assertion("billing", "a-1", kept_until)
+            .await,
+        Ok(false)
+    );
+    assert_eq!(
+        work.record_client_assertion("sealed", "a-1", kept_until)
+            .await,
+        Ok(true),
+        "one identifier for two clients is two assertions"
+    );
+    assert_eq!(
+        work.record_client_assertion("nobody", "a-1", kept_until)
+            .await,
+        Ok(true)
+    );
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scopes[0]).await.expect("a unit of work");
+    assert_eq!(
+        work.record_client_assertion("billing", "a-1", kept_until)
+            .await,
+        Ok(false),
+        "kept past the unit that wrote it"
     );
 }
 

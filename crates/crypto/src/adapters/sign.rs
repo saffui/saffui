@@ -1,15 +1,18 @@
-use std::sync::Arc;
+use std::ops::RangeInclusive;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use openssl::bn::{BigNum, BigNumContext, BigNumContextRef, BigNumRef};
+use openssl::error::ErrorStack;
 use saffui_core::ports::crypto::{
     CryptoFailure, GeneratedSigningKey, KeyMakingFailure, KeyMakingGuard, SignatureAlgorithm,
     Signer,
 };
 use saffui_core::secret::Secret;
 use serde_json::{Map, Value};
-use tokio::sync::{Semaphore, TryAcquireError};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 use tokio::task::spawn_blocking;
 
 use super::SharedProvider;
@@ -25,16 +28,17 @@ use crate::jose::jws::{JwsSigner, JwsVerifier};
 use crate::provider::CryptoProvider;
 use crate::thumbprint::jwk_sha256_thumbprint;
 
-/// The length of a generated RSA key: above the floor of 2048 bits the JOSE
-/// layer holds, for keys that outlive their first years.
+/// The length of a generated RSA key: above the floor of [`RSA_MODULUS_BITS`],
+/// for keys that outlive their first years.
 const RSA_KEY_BITS: u32 = 3072;
 
-/// How many keys are made at once. A key is made with a realm or by an
-/// administrator, and an RSA key keeps a core busy while it is found.
+/// How many keys are made, or keys of clients checked, at once: an RSA key
+/// keeps a core busy while it is found or its modulus checked.
 const KEY_MAKERS: usize = 2;
 
-/// The longest RSA modulus read: 4096 bits.
-const MAX_RSA_MODULUS_BYTES: usize = 512;
+/// The lengths of an RSA modulus read, in bits, the zeros in front aside. The
+/// JOSE layer counts its floor in bytes, and 2041 bits fill 256 of them.
+const RSA_MODULUS_BITS: RangeInclusive<usize> = 2048..=4096;
 
 /// The keys and signatures of the JOSE layer of this crate, behind the
 /// signing port of the core. A private key is carried as PKCS#8 DER, a
@@ -50,6 +54,16 @@ impl JoseSigner {
         Self {
             provider,
             makers: Arc::new(Semaphore::new(KEY_MAKERS)),
+        }
+    }
+
+    /// Takes a key maker now or not at all: a request never waits behind
+    /// the keys of other tenants.
+    fn take_maker(&self) -> Result<OwnedSemaphorePermit, KeyMakingFailure> {
+        match Arc::clone(&self.makers).try_acquire_owned() {
+            Ok(maker) => Ok(maker),
+            Err(TryAcquireError::NoPermits) => Err(KeyMakingFailure::Busy),
+            Err(TryAcquireError::Closed) => Err(KeyMakingFailure::Failed),
         }
     }
 }
@@ -137,9 +151,17 @@ fn sign_with(
     signed.map_err(|_| CryptoFailure)
 }
 
+/// The length in bits of a big-endian number, the zeros in front aside.
+fn count_bits(number: &[u8]) -> usize {
+    let mut digits = number.iter().skip_while(|byte| **byte == 0);
+    digits.next().map_or(0, |top| {
+        (u8::BITS - top.leading_zeros()) as usize + 8 * digits.count()
+    })
+}
+
 /// Whether an RSA key is one a signer makes: the exponent 65537 and a
-/// modulus of 4096 bits at most. A key built to make the verifier work, with
-/// a huge exponent or modulus, is refused before any arithmetic.
+/// modulus of [`RSA_MODULUS_BITS`]. A key built to make the verifier work,
+/// with a huge exponent or modulus, is refused before any arithmetic.
 fn is_ordinary_rsa_key(members: &Map<String, Value>) -> bool {
     let modulus_fits = members
         .get("n")
@@ -147,10 +169,10 @@ fn is_ordinary_rsa_key(members: &Map<String, Value>) -> bool {
         .is_some_and(|written| {
             // Measured before it is decoded, which bounds the work of the
             // decoding: four characters carry three bytes.
-            written.len() <= MAX_RSA_MODULUS_BYTES.div_ceil(3) * 4
-                && URL_SAFE_NO_PAD.decode(written).is_ok_and(|modulus| {
-                    modulus.iter().skip_while(|byte| **byte == 0).count() <= MAX_RSA_MODULUS_BYTES
-                })
+            written.len() <= (RSA_MODULUS_BITS.end() / 8).div_ceil(3) * 4
+                && URL_SAFE_NO_PAD
+                    .decode(written)
+                    .is_ok_and(|modulus| RSA_MODULUS_BITS.contains(&count_bits(&modulus)))
         });
     members.get("e").and_then(Value::as_str) == Some("AQAB") && modulus_fits
 }
@@ -191,6 +213,204 @@ fn read_verifier(
     Ok(verifier)
 }
 
+/// The encodings of the points of Ed25519 of small order, the sign of `x`
+/// aside: a key of one of them verifies a signature made without any
+/// private half, whatever the message.
+const SMALL_ORDER_ED25519: [[u8; 32]; 7] = [
+    // 0, of order 4.
+    [0; 32],
+    // 1, the neutral point.
+    [
+        1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0,
+    ],
+    // Two points of order 8.
+    [
+        0x26, 0xe8, 0x95, 0x8f, 0xc2, 0xb2, 0x27, 0xb0, 0x45, 0xc3, 0xf4, 0x89, 0xf2, 0xef, 0x98,
+        0xf0, 0xd5, 0xdf, 0xac, 0x05, 0xd3, 0xc6, 0x33, 0x39, 0xb1, 0x38, 0x02, 0x88, 0x6d, 0x53,
+        0xfc, 0x05,
+    ],
+    [
+        0xc7, 0x17, 0x6a, 0x70, 0x3d, 0x4d, 0xd8, 0x4f, 0xba, 0x3c, 0x0b, 0x76, 0x0d, 0x10, 0x67,
+        0x0f, 0x2a, 0x20, 0x53, 0xfa, 0x2c, 0x39, 0xcc, 0xc6, 0x4e, 0xc7, 0xfd, 0x77, 0x92, 0xac,
+        0x03, 0x7a,
+    ],
+    // p - 1, of order 2, then p and p + 1, which encode 0 and 1 again.
+    [
+        0xec, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0x7f,
+    ],
+    [
+        0xed, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0x7f,
+    ],
+    [
+        0xee, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0x7f,
+    ],
+];
+
+/// Whether a key of `EdDSA` is one a signer makes: on Ed25519, which alone
+/// this product signs and reads (`EdDSA` names Ed448 too), and not a point of
+/// small order.
+fn is_ordinary_ed25519_key(members: &Map<String, Value>) -> bool {
+    let on_ed25519 = members.get("crv").and_then(Value::as_str) == Some("Ed25519");
+    let point = members
+        .get("x")
+        .and_then(Value::as_str)
+        .filter(|written| written.len() == 43)
+        .and_then(|written| URL_SAFE_NO_PAD.decode(written).ok())
+        .and_then(|decoded| <[u8; 32]>::try_from(decoded).ok());
+    on_ed25519
+        && point.is_some_and(|mut point| {
+            point[31] &= 0x7f;
+            !SMALL_ORDER_ED25519.contains(&point)
+        })
+}
+
+/// The bound below which a prime factor of a modulus is looked for.
+const SMALL_FACTOR_BOUND: u32 = 1 << 16;
+
+/// The product of the primes below [`SMALL_FACTOR_BOUND`], some 94 000 bits.
+static SMALL_PRIMES: OnceLock<BigNum> = OnceLock::new();
+
+/// Multiplies the primes below [`SMALL_FACTOR_BOUND`], once for the process.
+fn multiply_small_primes() -> Result<&'static BigNum, ErrorStack> {
+    if let Some(product) = SMALL_PRIMES.get() {
+        return Ok(product);
+    }
+    let mut product = BigNum::from_u32(1)?;
+    for candidate in 2..SMALL_FACTOR_BOUND {
+        if (2..candidate)
+            .take_while(|divisor| divisor * divisor <= candidate)
+            .all(|divisor| candidate % divisor != 0)
+        {
+            product.mul_word(candidate)?;
+        }
+    }
+    Ok(SMALL_PRIMES.get_or_init(|| product))
+}
+
+/// The integer square root of `number`, by Newton's iteration from above,
+/// which falls to the root in a dozen steps for 4096 bits.
+fn find_square_root(
+    number: &BigNumRef,
+    context: &mut BigNumContextRef,
+) -> Result<BigNum, ErrorStack> {
+    let mut root = BigNum::new()?;
+    if number.num_bits() == 0 {
+        return Ok(root);
+    }
+    // Two to the half of its length, rounded up, is above the root.
+    root.set_bit((number.num_bits() + 1) / 2)?;
+    loop {
+        let mut quotient = BigNum::new()?;
+        quotient.checked_div(number, &root, context)?;
+        let mut sum = BigNum::new()?;
+        sum.checked_add(&root, &quotient)?;
+        let mut next = BigNum::new()?;
+        next.rshift1(&sum)?;
+        if next >= root {
+            return Ok(root);
+        }
+        root = next;
+    }
+}
+
+fn is_square(number: &BigNumRef, context: &mut BigNumContextRef) -> Result<bool, ErrorStack> {
+    let root = find_square_root(number, context)?;
+    let mut square = BigNum::new()?;
+    square.sqr(&root, context)?;
+    Ok(square == *number)
+}
+
+/// Whether an RSA modulus withstands four cheap ways to factor it, each of
+/// which would give anyone its private exponent: it has no prime factor
+/// below 2^16, it is not a square, it is not split by one step of Fermat's
+/// method (two primes too close), and it fails Fermat's test in base 2
+/// (a prime passes it, a product of two primes almost never does). A few
+/// exponentiations at most, whatever the key.
+fn check_modulus_against_cheap_factoring(written: &str) -> bool {
+    let checked = || -> Result<bool, ErrorStack> {
+        let Ok(bytes) = URL_SAFE_NO_PAD.decode(written) else {
+            return Ok(false);
+        };
+        let modulus = BigNum::from_slice(&bytes)?;
+        let mut context = BigNumContext::new()?;
+        let one = BigNum::from_u32(1)?;
+        // Reduced first: a gcd takes the time of its longer operand.
+        let mut reduced = BigNum::new()?;
+        reduced.nnmod(multiply_small_primes()?, &modulus, &mut context)?;
+        let mut common = BigNum::new()?;
+        common.gcd(&modulus, &reduced, &mut context)?;
+        if common != one {
+            return Ok(false);
+        }
+        let mut above = find_square_root(&modulus, &mut context)?;
+        let mut square = BigNum::new()?;
+        square.sqr(&above, &mut context)?;
+        if square == modulus {
+            return Ok(false);
+        }
+        // One step of Fermat's method: with a the root rounded up, a² - n a
+        // square b² splits n into (a - b)(a + b).
+        above.add_word(1)?;
+        square.sqr(&above, &mut context)?;
+        let mut gap = BigNum::new()?;
+        gap.checked_sub(&square, &modulus)?;
+        if is_square(&gap, &mut context)? {
+            return Ok(false);
+        }
+        let (two, mut exponent) = (BigNum::from_u32(2)?, modulus.to_owned()?);
+        exponent.sub_word(1)?;
+        let mut witness = BigNum::new()?;
+        witness.mod_exp(&two, &exponent, &modulus, &mut context)?;
+        Ok(witness != one)
+    };
+    checked().unwrap_or(false)
+}
+
+/// Reads a public key for `algorithm`, as every verification reads it. An
+/// RSA key that is not ordinary, and a key of `EdDSA` that is not, are
+/// refused before the library reads them.
+fn read_public_key(
+    algorithm: SignatureAlgorithm,
+    public_jwk: &Value,
+) -> Result<Box<dyn JwsVerifier>, CryptoFailure> {
+    if !admits(algorithm) {
+        return Err(CryptoFailure);
+    }
+    let members = public_jwk.as_object().ok_or(CryptoFailure)?;
+    let fits = match algorithm {
+        SignatureAlgorithm::Rs256 | SignatureAlgorithm::Ps256 => is_ordinary_rsa_key(members),
+        SignatureAlgorithm::EdDsa => is_ordinary_ed25519_key(members),
+        SignatureAlgorithm::Es256 | SignatureAlgorithm::Es384 => true,
+    };
+    if !fits {
+        return Err(CryptoFailure);
+    }
+    let key = Jwk::from_map(members.clone()).map_err(|_| CryptoFailure)?;
+    read_verifier(algorithm, &key)
+}
+
+/// Whether a key of a client is read as a verification reads it and, for
+/// RSA, withstands cheap factoring: tried only once it is known ordinary.
+fn reads_client_key(algorithm: SignatureAlgorithm, public_jwk: &Value) -> bool {
+    if read_public_key(algorithm, public_jwk).is_err() {
+        return false;
+    }
+    match algorithm {
+        SignatureAlgorithm::Rs256 | SignatureAlgorithm::Ps256 => public_jwk
+            .get("n")
+            .and_then(Value::as_str)
+            .is_some_and(check_modulus_against_cheap_factoring),
+        SignatureAlgorithm::Es256 | SignatureAlgorithm::Es384 | SignatureAlgorithm::EdDsa => true,
+    }
+}
+
 #[async_trait]
 impl Signer for JoseSigner {
     fn signs_in(&self, algorithm: SignatureAlgorithm) -> bool {
@@ -205,14 +425,9 @@ impl Signer for JoseSigner {
         if !admits(algorithm) {
             return Err(KeyMakingFailure::Failed);
         }
-        // Taken now or not at all: a request never waits behind the keys of
-        // other tenants. The permit and the guard go with the work: a caller
-        // that gives up frees neither a maker nor its share while it works.
-        let maker = match Arc::clone(&self.makers).try_acquire_owned() {
-            Ok(maker) => maker,
-            Err(TryAcquireError::NoPermits) => return Err(KeyMakingFailure::Busy),
-            Err(TryAcquireError::Closed) => return Err(KeyMakingFailure::Failed),
-        };
+        // The permit and the guard go with the work: a caller that gives up
+        // frees neither a maker nor its share while it works.
+        let maker = self.take_maker()?;
         let provider = Arc::clone(&self.provider);
         spawn_blocking(move || {
             // The share first, then its maker: one asked meanwhile is at worst refused as busy.
@@ -236,6 +451,21 @@ impl Signer for JoseSigner {
         sign_with(algorithm, private_key.expose(), message)
     }
 
+    async fn check_client_keys(
+        &self,
+        keys: Vec<(SignatureAlgorithm, Value)>,
+        guard: KeyMakingGuard,
+    ) -> Result<bool, KeyMakingFailure> {
+        let maker = self.take_maker()?;
+        spawn_blocking(move || {
+            let _held = (guard, maker);
+            keys.iter()
+                .all(|(algorithm, key)| reads_client_key(*algorithm, key))
+        })
+        .await
+        .map_err(|_| KeyMakingFailure::Failed)
+    }
+
     fn verify(
         &self,
         algorithm: SignatureAlgorithm,
@@ -243,19 +473,7 @@ impl Signer for JoseSigner {
         message: &[u8],
         signature: &[u8],
     ) -> Result<bool, CryptoFailure> {
-        if !admits(algorithm) {
-            return Err(CryptoFailure);
-        }
-        let members = public_jwk.as_object().ok_or(CryptoFailure)?;
-        let reads_rsa = matches!(
-            algorithm,
-            SignatureAlgorithm::Rs256 | SignatureAlgorithm::Ps256
-        );
-        if reads_rsa && !is_ordinary_rsa_key(members) {
-            return Err(CryptoFailure);
-        }
-        let key = Jwk::from_map(members.clone()).map_err(|_| CryptoFailure)?;
-        let verifier = read_verifier(algorithm, &key)?;
+        let verifier = read_public_key(algorithm, public_jwk)?;
         // A key that cannot be read is a failure. A signature that does not
         // verify, whatever its shape, is an answer.
         Ok(verifier.verify(message, signature).is_ok())
@@ -273,6 +491,7 @@ mod tests {
 
     use base64::Engine as _;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use openssl::bn::{BigNum, BigNumContext, BigNumRef};
 
     use saffui_core::ports::crypto::{KeyMakingFailure, SignatureAlgorithm, Signer};
     use saffui_core::secret::Secret;
@@ -343,6 +562,55 @@ mod tests {
         modulus[0] = 0x80;
         modulus[bytes - 1] = 1;
         modulus
+    }
+
+    /// Whether `key` is kept as a key of a client, for `algorithm`.
+    async fn check_key(signer: &JoseSigner, algorithm: SignatureAlgorithm, key: &Value) -> bool {
+        signer
+            .check_client_keys(vec![(algorithm, key.clone())], Box::new(()))
+            .await
+            .expect("a check")
+    }
+
+    /// A prime of `bits` bits, drawn as a signer draws one.
+    fn draw_prime(bits: i32) -> BigNum {
+        let mut prime = BigNum::new().expect("a number");
+        prime
+            .generate_prime(bits, false, None, None)
+            .expect("a prime");
+        prime
+    }
+
+    fn multiply(left: &BigNumRef, right: &BigNumRef) -> BigNum {
+        let mut product = BigNum::new().expect("a number");
+        let mut context = BigNumContext::new().expect("a context");
+        product
+            .checked_mul(left, right, &mut context)
+            .expect("a product");
+        product
+    }
+
+    /// The first number after `prime` that Fermat's test in base 2 takes
+    /// for a prime: past 2048 bits, the next prime.
+    fn find_next_prime(prime: &BigNumRef) -> BigNum {
+        let mut context = BigNumContext::new().expect("a context");
+        let (one, two) = (
+            BigNum::from_u32(1).expect("one"),
+            BigNum::from_u32(2).expect("two"),
+        );
+        let mut candidate = prime.to_owned().expect("a copy");
+        loop {
+            candidate.add_word(2).expect("the next odd number");
+            let mut exponent = candidate.to_owned().expect("a copy");
+            exponent.sub_word(1).expect("one less");
+            let mut witness = BigNum::new().expect("a number");
+            witness
+                .mod_exp(&two, &exponent, &candidate, &mut context)
+                .expect("a power");
+            if witness == one {
+                return candidate;
+            }
+        }
     }
 
     #[tokio::test]
@@ -576,6 +844,225 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_key_is_read_for_its_algorithm_as_a_verification_reads_it() {
+        let signer = open_signer();
+        for algorithm in list_served() {
+            let key = signer
+                .generate_key(algorithm, Box::new(()))
+                .await
+                .expect("a key");
+            assert!(
+                check_key(&signer, algorithm, &key.public_jwk).await,
+                "{algorithm:?}"
+            );
+        }
+        let p384 = signer
+            .generate_key(SignatureAlgorithm::Es384, Box::new(()))
+            .await
+            .expect("a key");
+        assert!(
+            !check_key(&signer, ES256, &p384.public_jwk).await,
+            "another curve"
+        );
+        for (key, why) in [
+            (write_rsa_key(&make_modulus(384), &[3]), "the exponent 3"),
+            (
+                write_rsa_key(&make_modulus(1024), &[1, 0, 1]),
+                "a modulus of 8192 bits",
+            ),
+            (json!("text"), "no key"),
+        ] {
+            for algorithm in [SignatureAlgorithm::Rs256, SignatureAlgorithm::Ps256] {
+                assert!(
+                    !check_key(&signer, algorithm, &key).await,
+                    "{why}, read for {algorithm:?}"
+                );
+            }
+        }
+        let modulus = multiply(&draw_prime(2048), &draw_prime(2048));
+        assert!(
+            check_key(
+                &signer,
+                SignatureAlgorithm::Rs256,
+                &write_rsa_key(&modulus.to_vec(), &[1, 0, 1])
+            )
+            .await,
+            "an ordinary key of 4096 bits"
+        );
+        let set = vec![
+            (SignatureAlgorithm::Es384, p384.public_jwk.clone()),
+            (ES256, p384.public_jwk),
+        ];
+        assert_eq!(
+            signer.check_client_keys(set, Box::new(())).await,
+            Ok(false),
+            "one key refused refuses the set"
+        );
+    }
+
+    /// Each modulus is read by a verification, which refuses none of them:
+    /// only the check at registration does.
+    #[tokio::test]
+    async fn a_modulus_cheap_to_factor_is_refused_at_registration_and_read_to_verify() {
+        let signer = open_signer();
+        let (prime, other) = (draw_prime(2048), draw_prime(2048));
+        let below_old_bound = BigNum::from_u32(8209).expect("a prime above 2^13");
+        let below_bound = BigNum::from_u32(65_521).expect("the last prime below 2^16");
+
+        for (modulus, why) in [
+            (prime.to_owned().expect("a copy"), "a prime of 2048 bits"),
+            (multiply(&prime, &prime), "the square of a prime"),
+            (multiply(&below_old_bound, &other), "8209 times a prime"),
+            (multiply(&below_bound, &other), "65521 times a prime"),
+            (
+                multiply(&prime, &find_next_prime(&prime)),
+                "a prime times the next one",
+            ),
+        ] {
+            let key = write_rsa_key(&modulus.to_vec(), &[1, 0, 1]);
+            for algorithm in [SignatureAlgorithm::Rs256, SignatureAlgorithm::Ps256] {
+                assert!(
+                    !check_key(&signer, algorithm, &key).await,
+                    "{why}, kept for {algorithm:?}"
+                );
+                assert_eq!(
+                    signer.verify(algorithm, &key, MESSAGE, &[1; 512]),
+                    Ok(false),
+                    "{why}: a verification of {algorithm:?} reads it, and does not factor"
+                );
+            }
+        }
+        let ordinary = write_rsa_key(
+            &multiply(&draw_prime(1024), &draw_prime(1024)).to_vec(),
+            &[1, 0, 1],
+        );
+        for algorithm in [SignatureAlgorithm::Rs256, SignatureAlgorithm::Ps256] {
+            assert!(
+                check_key(&signer, algorithm, &ordinary).await,
+                "an ordinary modulus of 2048 bits, for {algorithm:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_rsa_modulus_of_2047_bits_is_refused_though_it_fills_256_bytes() {
+        let signer = open_signer();
+        let mut short = make_modulus(256);
+        short[0] = 0x7f;
+        let mut behind_a_zero = vec![0_u8];
+        behind_a_zero.extend(&short);
+        let made = multiply(&draw_prime(1023), &draw_prime(1024));
+        assert_eq!(made.num_bits(), 2047, "two primes as a signer draws them");
+
+        for (key, why) in [
+            (write_rsa_key(&short, &[1, 0, 1]), "2047 bits"),
+            (
+                write_rsa_key(&behind_a_zero, &[1, 0, 1]),
+                "2047 bits behind a zero byte",
+            ),
+            (
+                write_rsa_key(&made.to_vec(), &[1, 0, 1]),
+                "2047 bits of two primes",
+            ),
+        ] {
+            for algorithm in [SignatureAlgorithm::Rs256, SignatureAlgorithm::Ps256] {
+                assert!(
+                    signer.verify(algorithm, &key, MESSAGE, &[1; 256]).is_err(),
+                    "{why}, read for {algorithm:?}"
+                );
+                assert!(
+                    !check_key(&signer, algorithm, &key).await,
+                    "{why}, kept for {algorithm:?}"
+                );
+            }
+        }
+        let mut leading_zero = vec![0_u8];
+        leading_zero.extend(make_modulus(256));
+        for key in [make_modulus(256), leading_zero] {
+            assert_eq!(
+                signer.verify(
+                    SignatureAlgorithm::Rs256,
+                    &write_rsa_key(&key, &[1, 0, 1]),
+                    MESSAGE,
+                    &[1; 256]
+                ),
+                Ok(false),
+                "a modulus of 2048 bits is read, {} bytes written",
+                key.len()
+            );
+        }
+    }
+
+    #[cfg(not(feature = "fips-strict"))]
+    #[tokio::test]
+    async fn a_key_of_small_order_is_refused_and_the_signature_anyone_makes_verifies_nothing() {
+        use super::SMALL_ORDER_ED25519;
+
+        let signer = open_signer();
+        let eddsa = SignatureAlgorithm::EdDsa;
+        let point_key = |point: &[u8]| {
+            json!({
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": URL_SAFE_NO_PAD.encode(point),
+                "alg": "EdDSA",
+            })
+        };
+        // R the neutral point, S zero: a signature of every message under
+        // the neutral point, made without any private half.
+        let mut trivial = vec![0_u8; 64];
+        trivial[0] = 1;
+        let neutral = point_key(&SMALL_ORDER_ED25519[1]);
+        assert_eq!(neutral["x"], "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+
+        assert_ne!(
+            signer.verify(eddsa, &neutral, MESSAGE, &trivial),
+            Ok(true),
+            "the neutral point takes no signature for a proof"
+        );
+        for point in SMALL_ORDER_ED25519 {
+            let mut negated = point;
+            negated[31] |= 0x80;
+            for encoded in [point, negated] {
+                assert!(
+                    !check_key(&signer, eddsa, &point_key(&encoded)).await,
+                    "{encoded:02x?}"
+                );
+            }
+        }
+    }
+
+    #[cfg(not(feature = "fips-strict"))]
+    #[tokio::test]
+    async fn a_key_on_ed448_is_neither_read_nor_verified_under_the_name_eddsa() {
+        use crate::jose::jwk::KeyPair;
+        use crate::jose::jwk::alg::ed::{EdCurve, EdKeyPair};
+        use crate::jose::jws::alg::eddsa::EddsaJwsAlgorithm;
+        use crate::jose::jws::{JwsSigner, JwsVerifier};
+
+        let signer = open_signer();
+        let pair = EdKeyPair::generate(EdCurve::Ed448).expect("a pair");
+        let public_jwk = Value::Object(pair.to_jwk_public_key().into());
+        let signature = EddsaJwsAlgorithm::Eddsa
+            .signer_from_der(pair.to_der_private_key())
+            .and_then(|made| made.sign(MESSAGE))
+            .expect("a signature");
+        // The layer reads it under the name EdDSA: only the product refuses it.
+        let read_by_the_layer = EddsaJwsAlgorithm::Eddsa
+            .verifier_from_jwk(&pair.to_jwk_public_key())
+            .expect("a verifier");
+        assert!(read_by_the_layer.verify(MESSAGE, &signature).is_ok());
+
+        assert_eq!(public_jwk["crv"], "Ed448");
+        assert!(!check_key(&signer, SignatureAlgorithm::EdDsa, &public_jwk).await);
+        assert!(
+            signer
+                .verify(SignatureAlgorithm::EdDsa, &public_jwk, MESSAGE, &signature)
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn a_key_asked_while_every_maker_is_at_work_is_refused_at_once() {
         let signer = open_signer();
         let at_work = Arc::clone(&signer.makers)
@@ -590,6 +1077,32 @@ mod tests {
         assert!(
             signer.generate_key(ES256, Box::new(())).await.is_ok(),
             "a maker is free again"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_check_asked_while_every_maker_is_at_work_is_refused_at_once() {
+        let signer = open_signer();
+        let key = signer
+            .generate_key(ES256, Box::new(()))
+            .await
+            .expect("a key");
+        let at_work = Arc::clone(&signer.makers)
+            .try_acquire_many_owned(u32::try_from(KEY_MAKERS).expect("a count"))
+            .expect("every maker");
+
+        assert_eq!(
+            signer
+                .check_client_keys(vec![(ES256, key.public_jwk.clone())], Box::new(()))
+                .await,
+            Err(KeyMakingFailure::Busy)
+        );
+        drop(at_work);
+        assert!(check_key(&signer, ES256, &key.public_jwk).await);
+        assert_eq!(
+            signer.makers.available_permits(),
+            KEY_MAKERS,
+            "its maker is given back once the check is done"
         );
     }
 
@@ -791,6 +1304,75 @@ mod tests {
         drop(blocker);
     }
 
+    /// As for a key made: the check waits for the only blocking thread, and
+    /// the caller hangs up meanwhile. The guard of the caller goes with the
+    /// check, and is dropped while its maker is still taken.
+    #[test]
+    fn a_checking_maker_and_the_guard_of_its_caller_are_held_until_the_check_is_done() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .build()
+            .expect("a runtime");
+        let _inside = runtime.enter();
+        let signer = open_signer();
+        let key = write_rsa_key(
+            &multiply(&draw_prime(1024), &draw_prime(1024)).to_vec(),
+            &[1, 0, 1],
+        );
+        let alive = Arc::new(());
+        let (told, seen) = mpsc::channel();
+        let guard = Watch {
+            digests: Arc::new(AtomicUsize::new(0)),
+            makers: Arc::clone(&signer.makers),
+            told,
+            _alive: Arc::clone(&alive),
+        };
+        let (release, held) = mpsc::channel::<()>();
+        let blocker = runtime.spawn_blocking(move || held.recv());
+        {
+            let mut checking = pin!(
+                signer.check_client_keys(vec![(SignatureAlgorithm::Rs256, key)], Box::new(guard))
+            );
+            let polled = checking
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()));
+            assert!(polled.is_pending(), "the check waits for a blocking thread");
+        }
+
+        assert_eq!(
+            Arc::strong_count(&alive),
+            2,
+            "the guard waits with the work"
+        );
+        assert_eq!(
+            signer.makers.available_permits(),
+            KEY_MAKERS - 1,
+            "and so does the maker"
+        );
+        release.send(()).expect("the blocking thread let go");
+        let deadline = Instant::now() + Duration::from_mins(1);
+        while Arc::strong_count(&alive) == 2 {
+            assert!(Instant::now() < deadline, "the check is done in time");
+            assert_eq!(
+                signer.makers.available_permits(),
+                KEY_MAKERS - 1,
+                "the maker is never free while the guard is held"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            seen.recv_timeout(Duration::from_secs(1))
+                .map(|(_, free)| free),
+            Ok(KEY_MAKERS - 1),
+            "the guard went with the check, its maker still taken"
+        );
+        while signer.makers.available_permits() < KEY_MAKERS {
+            assert!(Instant::now() < deadline, "the maker is given back");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        drop(blocker);
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn an_rsa_key_is_made_away_from_the_thread_that_waits_for_it() {
         let signer = open_signer();
@@ -812,6 +1394,42 @@ mod tests {
         tokio::join!(making, ticking);
 
         assert_eq!(*order.lock().expect("the order"), ["tick", "key"]);
+    }
+
+    /// The one blocking thread waits until a tick has passed: a modulus
+    /// checked on the thread that serves would be checked before the tick.
+    #[test]
+    fn a_modulus_is_checked_away_from_the_thread_that_waits_for_it() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .build()
+            .expect("a runtime");
+        let signer = open_signer();
+        let key = write_rsa_key(&draw_prime(4096).to_vec(), &[1, 0, 1]);
+        let (release, held) = mpsc::channel::<()>();
+        let blocker = runtime.spawn_blocking(move || held.recv());
+        let order = Mutex::new(Vec::new());
+        let note = |what: &'static str| order.lock().expect("the order").push(what);
+
+        let checked = runtime.block_on(async {
+            let checking = async {
+                let checked = signer
+                    .check_client_keys(vec![(SignatureAlgorithm::Rs256, key)], Box::new(()))
+                    .await;
+                note("checked");
+                checked
+            };
+            let ticking = async {
+                tokio::task::yield_now().await;
+                note("tick");
+                release.send(()).expect("the blocking thread let go");
+            };
+            tokio::join!(checking, ticking).0
+        });
+
+        assert_eq!(checked, Ok(false), "a prime of 4096 bits is refused");
+        assert_eq!(*order.lock().expect("the order"), ["tick", "checked"]);
+        drop(blocker);
     }
 
     #[cfg(not(feature = "fips-strict"))]
@@ -844,6 +1462,7 @@ mod tests {
             .expect("a signature");
 
         assert!(!signer.signs_in(eddsa));
+        assert!(!check_key(&signer, eddsa, &public_jwk).await);
         assert!(signer.generate_key(eddsa, Box::new(())).await.is_err());
         assert!(signer.sign(eddsa, &private_key, MESSAGE).is_err());
         assert!(

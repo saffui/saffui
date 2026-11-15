@@ -662,9 +662,15 @@ async fn a_family_taken_back_is_not_written_again_however_often_it_comes_back() 
         "the used token presented again"
     );
     assert_eq!(
-        revoke_token(&app, "acme", Some("webapp"), None, Some(&first))
-            .await
-            .map_err(|failure| failure.error),
+        revoke_token(
+            &app,
+            "acme",
+            Some("webapp"),
+            saffui_core::clients::authenticate::PresentedProof::default(),
+            Some(&first),
+        )
+        .await
+        .map_err(|failure| failure.error),
         Ok(()),
         "a revocation asked again"
     );

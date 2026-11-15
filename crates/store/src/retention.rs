@@ -16,7 +16,7 @@ use tokio_postgres::Client;
 pub const RETENTION_LOCK: i64 = 0x7361_6666_7569_0003;
 
 /// The tables a pass removes from, and the only ones its role may.
-const PURGED_TABLES: [&str; 7] = [
+const PURGED_TABLES: [&str; 8] = [
     "authorization_requests",
     "authorization_codes",
     "refresh_tokens",
@@ -24,6 +24,7 @@ const PURGED_TABLES: [&str; 7] = [
     "known_browsers",
     "login_failures",
     "security_key_enrollments",
+    "client_assertions",
 ];
 
 pub struct PgRetention {
@@ -156,7 +157,7 @@ const BATCH_ROWS: i64 = 1_000;
 /// finds it by an index, and asks again of each row it removes whether it
 /// still has none: a row made to live longer meanwhile stays. Names are
 /// qualified: the link sets no search path.
-const PURGES: [&str; 7] = [
+const PURGES: [&str; 8] = [
     "DELETE FROM public.authorization_requests
      WHERE ctid = ANY (ARRAY(SELECT ctid FROM public.authorization_requests
                              WHERE expires_at < $1 LIMIT $2))
@@ -194,6 +195,10 @@ const PURGES: [&str; 7] = [
      WHERE ctid = ANY (ARRAY(SELECT ctid FROM public.security_key_enrollments
                              WHERE expires_at < $1 LIMIT $2))
        AND expires_at < $1",
+    "DELETE FROM public.client_assertions
+     WHERE ctid = ANY (ARRAY(SELECT ctid FROM public.client_assertions
+                             WHERE kept_until < $1 LIMIT $2))
+       AND kept_until < $1",
 ];
 
 /// Removes the rows a statement finds, a batch at a time, as long as the
@@ -279,13 +284,14 @@ impl Retention for PgRetention {
             cutoffs.expired_before,
             cutoffs.counters_before,
             cutoffs.expired_before,
+            cutoffs.expired_before,
         ];
         let started = Instant::now();
-        let mut purged = [TablePurge::default(); 7];
+        let mut purged = [TablePurge::default(); 8];
         // Each table is given an equal part of what is left: one that anybody
         // can fill spends its own part only, and one done early leaves its
         // part to the tables after it. Each gets a batch at least.
-        let mut tables_left = 7_u32;
+        let mut tables_left = 8_u32;
         let tables = PURGED_TABLES.into_iter().zip(PURGES).zip(cutoff_of_each);
         for (slot, ((table, statement), before)) in purged.iter_mut().zip(tables) {
             let share = budget.saturating_sub(started.elapsed()) / tables_left;
@@ -310,6 +316,7 @@ impl Retention for PgRetention {
             known_browsers,
             failure_counters,
             key_enrollments,
+            client_assertions,
         ] = purged;
         Ok(Some(PurgeReport {
             pending_requests,
@@ -319,6 +326,7 @@ impl Retention for PgRetention {
             known_browsers,
             failure_counters,
             key_enrollments,
+            client_assertions,
         }))
     }
 }

@@ -24,7 +24,7 @@ use crate::tenancy::resolve::resolve_realm;
 /// Returns [`ErrorCode::AlgorithmUnknown`] for an algorithm this build does
 /// not sign in, [`ErrorCode::SigningKeyLimitReached`] for a realm that holds
 /// [`MAX_SIGNING_KEYS`] already, [`ErrorCode::KeyMakingBusy`] while its
-/// tenant makes another key or every key maker is at work,
+/// tenant makes or checks other keys or every key maker is at work,
 /// [`ErrorCode::CryptoUnavailable`] when the key cannot be made or sealed,
 /// or the storage failure.
 pub async fn rotate_signing_key(
@@ -199,7 +199,7 @@ mod tests {
     use super::{list_active_algorithms, list_realm_keys, remove_retired_key, rotate_signing_key};
     use crate::authz::admin::{AdminCaller, authorize_admin_call};
     use crate::authz::capability::Capability;
-    use crate::clients::register::{NewClient, register_client};
+    use crate::clients::register::NewClient;
     use crate::error::ErrorCode;
     use crate::keys::jwks::publish_key_set;
     use crate::keys::{KeyStatus, MAX_SIGNING_KEYS, SigningKey};
@@ -216,6 +216,7 @@ mod tests {
     use crate::secret::Secret;
     use crate::testkit::crypto::WeakSigner;
     use crate::testkit::drive::complete;
+    use crate::testkit::fixtures::check_and_register_client;
     use crate::testkit::fixtures::{CodeFlow, create_administrator, create_realm, run_code_flow};
     use crate::tokens::verify::verify_access_token;
 
@@ -262,6 +263,14 @@ mod tests {
             message: &[u8],
         ) -> Result<Vec<u8>, CryptoFailure> {
             self.signer.sign(algorithm, private_key, message)
+        }
+
+        async fn check_client_keys(
+            &self,
+            keys: Vec<(SignatureAlgorithm, Value)>,
+            guard: KeyMakingGuard,
+        ) -> Result<bool, KeyMakingFailure> {
+            self.signer.check_client_keys(keys, guard).await
         }
 
         fn verify(
@@ -333,10 +342,18 @@ mod tests {
             public: true,
             requires_consent: false,
             id_token_signed_response_alg: Some(algorithm),
+            auth_method: None,
+            jwks: None,
+            jwks_uri: None,
+            auth_signing_alg: None,
             created_by: None,
         };
-        complete(register_client(&scenario.app, work.as_mut(), wanted))
-            .map_err(|failure| failure.code)?;
+        complete(check_and_register_client(
+            &scenario.app,
+            work.as_mut(),
+            wanted,
+        ))
+        .map_err(|failure| failure.code)?;
         complete(work.commit()).expect("a commit");
         Ok(())
     }
@@ -423,7 +440,7 @@ mod tests {
                 &scenario.app,
                 "acme",
                 Some("billing"),
-                Some(scenario.copy_service_secret()),
+                scenario.present_service_secret(),
                 Some(access),
             ))
             .expect("an answer")

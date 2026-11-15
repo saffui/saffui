@@ -5,6 +5,7 @@ use actix_web::HttpRequest;
 use actix_web::http::header::AUTHORIZATION;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
+use saffui_core::clients::authenticate::PresentedSecret;
 use saffui_core::secret::Secret;
 
 pub(crate) struct ClientCredentials {
@@ -76,7 +77,8 @@ fn decode_form_component(encoded: &str) -> Option<String> {
 /// Who a client says it is, and the secret it presents, if any.
 pub(crate) struct ClientIdentity {
     pub(crate) client_id: Option<String>,
-    pub(crate) secret: Option<Secret>,
+    /// Where the secret came tells the method the client used.
+    pub(crate) secret: Option<PresentedSecret>,
     /// The client tried the Basic scheme: a refusal names it.
     pub(crate) asked_with_basic: bool,
 }
@@ -104,12 +106,13 @@ pub(crate) fn read_client_identity(
         Presented::Unusable => Err(UnreadableIdentity::UnusableHeader),
         Presented::Credentials(credentials) => Ok(ClientIdentity {
             client_id: Some(credentials.client_id),
-            secret: Some(credentials.secret),
+            secret: Some(PresentedSecret::Basic(credentials.secret)),
             asked_with_basic: true,
         }),
         Presented::Nothing => Ok(ClientIdentity {
             client_id: form_client_id,
-            secret: form_secret.map(|secret| Secret::new(secret.into_bytes())),
+            secret: form_secret
+                .map(|secret| PresentedSecret::Posted(Secret::new(secret.into_bytes()))),
             asked_with_basic: false,
         }),
     }

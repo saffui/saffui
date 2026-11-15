@@ -1,4 +1,6 @@
-use actix_web::http::header::{AUTHORIZATION, CONTENT_TYPE, WARNING, WWW_AUTHENTICATE};
+use actix_web::http::header::{
+    AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, PRAGMA, WARNING, WWW_AUTHENTICATE,
+};
 use actix_web::http::{Method, StatusCode};
 use actix_web::{App, test, web};
 use saffui_core::authz::capability::Capability;
@@ -11,6 +13,8 @@ pub(crate) struct Answer {
     pub(crate) status: StatusCode,
     pub(crate) challenge: Option<String>,
     pub(crate) warning: Option<String>,
+    /// What a cache is told of the answer: `Cache-Control`, then `Pragma`.
+    pub(crate) caching: (Option<String>, Option<String>),
     pub(crate) body: Value,
 }
 
@@ -43,11 +47,13 @@ pub(crate) async fn call(
             .map(str::to_owned)
     };
     let (status, challenge, warning) = (response.status(), read(WWW_AUTHENTICATE), read(WARNING));
+    let caching = (read(CACHE_CONTROL), read(PRAGMA));
     let bytes = test::read_body(response).await;
     Answer {
         status,
         challenge,
         warning,
+        caching,
         body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
     }
 }
@@ -192,6 +198,11 @@ async fn a_created_client_is_shown_its_secret_once_then_listed_without_it() {
     let created = call(&product, Method::POST, path, Some(&token), Some(&wanted)).await;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
     assert_eq!(created.body["client"]["client_id"], "billing");
+    assert_eq!(
+        created.caching,
+        (Some("no-store".to_owned()), Some("no-cache".to_owned())),
+        "the one showing of a secret is kept by no cache"
+    );
     assert!(
         created.body["client_secret"]
             .as_str()
@@ -225,10 +236,21 @@ async fn a_created_client_is_shown_its_secret_once_then_listed_without_it() {
     assert_eq!(listed.body["total"], 2);
     assert_eq!(listed.body["items"][0]["client_id"], "billing");
     assert_eq!(listed.body["items"][1]["client_id"], "operator");
+    let secret = created.body["client_secret"].as_str().expect("a secret");
+    let names_a_secret = listed.body["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .flat_map(|item| item.as_object().expect("an object").keys())
+        .any(|name| name.contains("secret") || name.contains("digest"));
     assert!(
-        !listed.body.to_string().contains("secret"),
+        !names_a_secret && !listed.body.to_string().contains(secret),
         "nothing about a secret is ever listed: {}",
         listed.body
+    );
+    assert_eq!(
+        listed.body["items"][0]["token_endpoint_auth_method"],
+        "client_secret_basic"
     );
 
     let missing = call(
@@ -486,4 +508,326 @@ async fn an_administrator_registers_an_application_that_holds_no_secret_and_no_c
     .to_string();
     let refused = call(&product, Method::POST, path, Some(&token), Some(&lending)).await;
     assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+}
+
+#[actix_web::test]
+async fn an_administrator_turns_a_secret_over_and_the_old_one_proves_nothing_from_then_on() {
+    use saffui_core::clients::authenticate::PresentedSecret;
+    use saffui_core::oidc::token::{TokenRequest, grant_token};
+    use saffui_core::secret::Secret;
+
+    let (product, token) = start(&[Capability::ClientRead, Capability::ClientWrite]).await;
+    let path = "/admin/v1/realms/acme/clients";
+    let created = call(
+        &product,
+        Method::POST,
+        path,
+        Some(&token),
+        Some(&json!({ "client_id": "billing", "scopes": ["invoices:read"] }).to_string()),
+    )
+    .await;
+    let old = created.body["client_secret"]
+        .as_str()
+        .expect("a secret")
+        .to_owned();
+    let application = json!({
+        "client_id": "webapp",
+        "redirect_uris": ["https://app.example.org/callback"],
+        "public": true,
+    });
+    call(
+        &product,
+        Method::POST,
+        path,
+        Some(&token),
+        Some(&application.to_string()),
+    )
+    .await;
+    let ask = async |secret: &str| {
+        let request = TokenRequest {
+            grant_type: Some("client_credentials"),
+            client_id: Some("billing"),
+            client_secret: Some(PresentedSecret::Basic(Secret::new(
+                secret.as_bytes().to_vec(),
+            ))),
+            ..TokenRequest::default()
+        };
+        grant_token(&product, "acme", request).await.is_ok()
+    };
+
+    let rotated = call(
+        &product,
+        Method::POST,
+        &format!("{path}/billing/secret"),
+        Some(&token),
+        None,
+    )
+    .await;
+
+    assert_eq!(rotated.status, StatusCode::OK, "{}", rotated.body);
+    assert_eq!(
+        rotated.caching,
+        (Some("no-store".to_owned()), Some("no-cache".to_owned()))
+    );
+    let new = rotated.body["client_secret"]
+        .as_str()
+        .expect("the new secret, shown once");
+    assert_ne!(new, old);
+    assert!(ask(new).await, "the new secret proves the client");
+    assert!(!ask(&old).await, "the old one proves nothing");
+    for (client_id, status, code) in [
+        ("webapp", StatusCode::CONFLICT, "client.has_no_secret"),
+        ("nobody", StatusCode::NOT_FOUND, "client.not_found"),
+    ] {
+        let refused = call(
+            &product,
+            Method::POST,
+            &format!("{path}/{client_id}/secret"),
+            Some(&token),
+            None,
+        )
+        .await;
+        assert_eq!(refused.status, status, "{client_id}");
+        assert_eq!(refused.body["code"], code, "{client_id}");
+    }
+    let (product, reader) = start(&[Capability::ClientRead]).await;
+    let refused = call(
+        &product,
+        Method::POST,
+        &format!("{path}/operator/secret"),
+        Some(&reader),
+        None,
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert_eq!(refused.body["code"], "auth.capability_missing");
+}
+
+#[actix_web::test]
+async fn a_client_of_a_key_gives_it_inline_and_names_its_method_and_algorithm_by_name() {
+    use saffui_core::ports::crypto::SignatureAlgorithm;
+
+    let (product, token) = start(&[Capability::ClientRead, Capability::ClientWrite]).await;
+    let path = "/admin/v1/realms/acme/clients";
+    let key = product
+        .signer
+        .generate_key(SignatureAlgorithm::Es256, Box::new(()))
+        .await
+        .expect("a key");
+    let keyed = |changes: Value| {
+        let mut wanted = json!({
+            "client_id": "keyed",
+            "token_endpoint_auth_method": "private_key_jwt",
+            "token_endpoint_auth_signing_alg": "ES256",
+            "jwks": { "keys": [key.public_jwk.clone()] },
+        });
+        for (name, value) in changes.as_object().expect("an object") {
+            wanted[name] = value.clone();
+        }
+        wanted.to_string()
+    };
+
+    for (changes, code) in [
+        (
+            json!({ "jwks_uri": "https://keys.example.org/jwks" }),
+            "client.jwks_invalid",
+        ),
+        (
+            json!({ "token_endpoint_auth_method": "tls_client_auth" }),
+            "client.auth_method_invalid",
+        ),
+        (
+            json!({ "token_endpoint_auth_signing_alg": "HS512" }),
+            "realm.algorithm_unknown",
+        ),
+    ] {
+        let refused = call(
+            &product,
+            Method::POST,
+            path,
+            Some(&token),
+            Some(&keyed(changes.clone())),
+        )
+        .await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{changes}");
+        assert_eq!(refused.body["code"], code, "{changes}");
+    }
+    let created = call(
+        &product,
+        Method::POST,
+        path,
+        Some(&token),
+        Some(&keyed(json!({}))),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert!(
+        created.body.get("client_secret").is_none(),
+        "a client of a key keeps no secret: {}",
+        created.body
+    );
+    assert_eq!(
+        created.body["client"]["token_endpoint_auth_method"],
+        "private_key_jwt"
+    );
+    assert_eq!(
+        created.body["client"]["token_endpoint_auth_signing_alg"],
+        "ES256"
+    );
+}
+
+#[actix_web::test]
+async fn an_administrator_moves_a_secret_between_the_header_and_the_form_and_nowhere_else() {
+    let (product, token) = start(&[Capability::ClientRead, Capability::ClientWrite]).await;
+    let path = "/admin/v1/realms/acme/clients";
+    let created = call(
+        &product,
+        Method::POST,
+        path,
+        Some(&token),
+        Some(&json!({ "client_id": "billing", "scopes": ["invoices:read"] }).to_string()),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let change = async |method: &str| {
+        call(
+            &product,
+            Method::PUT,
+            &format!("{path}/billing/auth-method"),
+            Some(&token),
+            Some(&json!({ "token_endpoint_auth_method": method }).to_string()),
+        )
+        .await
+    };
+
+    let moved = change("client_secret_post").await;
+
+    assert_eq!(moved.status, StatusCode::OK, "{}", moved.body);
+    assert_eq!(
+        moved.body["token_endpoint_auth_method"],
+        "client_secret_post"
+    );
+    assert!(
+        moved.body.get("client_secret").is_none(),
+        "nothing is drawn, nothing is shown: {}",
+        moved.body
+    );
+    for method in [
+        "none",
+        "client_secret_jwt",
+        "private_key_jwt",
+        "tls_client_auth",
+    ] {
+        let refused = change(method).await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{method}");
+        assert_eq!(
+            refused.body["code"], "client.auth_method_invalid",
+            "{method}"
+        );
+    }
+    let with_more = call(
+        &product,
+        Method::PUT,
+        &format!("{path}/billing/auth-method"),
+        Some(&token),
+        Some(r#"{"token_endpoint_auth_method":"client_secret_post","x":1}"#),
+    )
+    .await;
+    assert_eq!(
+        with_more.status,
+        StatusCode::BAD_REQUEST,
+        "a member nobody reads: {}",
+        with_more.body
+    );
+}
+
+/// Asks the decision point of `acme`, as a client that sends `body` of
+/// `content_type`, with `authorization` when it sends one.
+async fn ask_decision(
+    product: &saffui_core::app::App,
+    authorization: Option<String>,
+    content_type: &str,
+    body: String,
+) -> (StatusCode, Value) {
+    let app = test::init_service(
+        App::new().configure(register_data_plane(web::Data::new(product.clone()))),
+    )
+    .await;
+    let mut request = test::TestRequest::default()
+        .method(Method::POST)
+        .uri("/realms/acme/authz/decide")
+        .insert_header((CONTENT_TYPE, content_type.to_owned()))
+        .set_payload(body);
+    if let Some(authorization) = authorization {
+        request = request.insert_header((AUTHORIZATION, authorization));
+    }
+    let response = test::call_service(&app, request.to_request()).await;
+    let status = response.status();
+    let bytes = test::read_body(response).await;
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+#[actix_web::test]
+async fn a_client_moved_to_the_form_is_not_heard_at_the_decision_point() {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
+
+    let (product, token) = start(&[Capability::ClientRead, Capability::ClientWrite]).await;
+    let path = "/admin/v1/realms/acme/clients";
+    let created = call(
+        &product,
+        Method::POST,
+        path,
+        Some(&token),
+        Some(&json!({ "client_id": "billing" }).to_string()),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let secret = created.body["client_secret"]
+        .as_str()
+        .expect("a secret, shown once")
+        .to_owned();
+    let basic = || {
+        Some(format!(
+            "Basic {}",
+            STANDARD.encode(format!("billing:{secret}"))
+        ))
+    };
+    let question =
+        json!({ "subject_token": "t", "action": "read", "resource": { "type": "document" } });
+    let (status, body) =
+        ask_decision(&product, basic(), "application/json", question.to_string()).await;
+    assert_eq!(status, StatusCode::OK, "heard in the Basic scheme: {body}");
+
+    let moved = call(
+        &product,
+        Method::PUT,
+        &format!("{path}/billing/auth-method"),
+        Some(&token),
+        Some(&json!({ "token_endpoint_auth_method": "client_secret_post" }).to_string()),
+    )
+    .await;
+    assert_eq!(moved.status, StatusCode::OK, "{}", moved.body);
+
+    for (authorization, content_type, body, how) in [
+        (
+            basic(),
+            "application/json",
+            question.to_string(),
+            "in the Basic scheme",
+        ),
+        (
+            None,
+            "application/x-www-form-urlencoded",
+            format!("client_id=billing&client_secret={secret}"),
+            "in the form",
+        ),
+    ] {
+        let (status, answer) = ask_decision(&product, authorization, content_type, body).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{how}: {answer}");
+        assert_eq!(answer["error"], "invalid_client", "{how}");
+    }
 }

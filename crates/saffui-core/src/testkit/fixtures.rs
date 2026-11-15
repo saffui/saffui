@@ -1,7 +1,13 @@
 //! What most tests start from: a realm, and a client in it.
 
 use crate::app::App;
-use crate::clients::register::{NewServiceClient, register_service_client};
+use crate::clients::Client;
+use crate::clients::authenticate::PresentedSecret;
+use crate::clients::register::{
+    NewClient, NewServiceClient, check_new_client, register_client, register_service_client,
+};
+use crate::error::Failure;
+use crate::ports::storage::UnitOfWork;
 use crate::secret::Secret;
 use crate::tenancy::RealmScope;
 use crate::tenancy::realm::{NewRealm, provision_first_realm};
@@ -26,6 +32,42 @@ pub async fn create_realm(app: &App, name: &str) -> RealmScope {
         .await
         .expect("the realm resolves")
         .1
+}
+
+/// An assertion of `client_id` to the realm of `issuer`, signed with its
+/// secret in HS256 and living a minute from now.
+///
+/// # Panics
+///
+/// Panics when the digester cannot compute the tag.
+#[must_use]
+pub fn sign_client_assertion(
+    app: &App,
+    client_id: &str,
+    secret: &Secret,
+    issuer: &str,
+    jti: &str,
+) -> String {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+    let claims = serde_json::json!({
+        "iss": client_id,
+        "sub": client_id,
+        "aud": issuer,
+        "jti": jti,
+        "exp": app.now().unix_timestamp() + 60,
+    });
+    let input = format!(
+        "{}.{}",
+        URL_SAFE_NO_PAD.encode(r#"{"alg":"HS256"}"#),
+        URL_SAFE_NO_PAD.encode(claims.to_string())
+    );
+    let mac = app
+        .digester
+        .hmac_sha256(secret, input.as_bytes())
+        .expect("a tag");
+    format!("{input}.{}", URL_SAFE_NO_PAD.encode(mac))
 }
 
 /// Registers a service client in the realm and returns its secret.
@@ -88,7 +130,7 @@ pub async fn create_administrator(
         grant_type: Some("client_credentials"),
         scope: None,
         client_id: Some(client_id),
-        client_secret: Some(secret),
+        client_secret: Some(PresentedSecret::Basic(secret)),
         ..TokenRequest::default()
     };
     grant_token(app, realm, request)
@@ -189,6 +231,21 @@ pub struct Application<'a> {
     pub requires_consent: bool,
 }
 
+/// Checks `wanted` and registers it in `work`: the checks an administrator's
+/// request makes before its unit of work opens are made inside this one.
+///
+/// # Errors
+///
+/// As [`check_new_client`] and [`register_client`].
+pub async fn check_and_register_client(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    wanted: NewClient<'_>,
+) -> Result<(Client, Option<Secret>), Failure> {
+    let checked = check_new_client(app, work.scope().tenant(), wanted).await?;
+    register_client(app, work, checked).await
+}
+
 /// Registers an application allowed the scopes `openid`, `profile`, `email`,
 /// `roles` and `offline_access`, and returns its secret unless it is public.
 ///
@@ -200,8 +257,6 @@ pub async fn register_application(
     scope: RealmScope,
     wanted: Application<'_>,
 ) -> Option<Secret> {
-    use crate::clients::register::{NewClient, register_client};
-
     let scopes = ["openid", "profile", "email", "roles", "offline_access"].map(str::to_owned);
     let callbacks = [wanted.redirect_uri.to_owned()];
     let goodbyes: Vec<String> = wanted
@@ -210,7 +265,7 @@ pub async fn register_application(
         .into_iter()
         .collect();
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
-    let (_client, secret) = register_client(
+    let (_client, secret) = check_and_register_client(
         app,
         work.as_mut(),
         NewClient {
@@ -223,6 +278,10 @@ pub async fn register_application(
             public: wanted.public,
             requires_consent: wanted.requires_consent,
             id_token_signed_response_alg: None,
+            auth_method: None,
+            jwks: None,
+            jwks_uri: None,
+            auth_signing_alg: None,
             created_by: None,
         },
     )
@@ -338,7 +397,7 @@ pub async fn run_code_flow(app: &App, flow: CodeFlow<'_>) -> SignedInApplication
         client_id: Some(flow.client_id),
         client_secret: flow
             .client_secret
-            .map(|secret| Secret::new(secret.expose().to_vec())),
+            .map(|secret| PresentedSecret::Basic(Secret::new(secret.expose().to_vec()))),
         code: Some(&code),
         redirect_uri: Some(flow.redirect_uri),
         code_verifier: Some(VERIFIER),
@@ -445,7 +504,7 @@ pub async fn run_consented_code_flow(app: &App, flow: CodeFlow<'_>) -> SignedInA
         client_id: Some(flow.client_id),
         client_secret: flow
             .client_secret
-            .map(|secret| Secret::new(secret.expose().to_vec())),
+            .map(|secret| PresentedSecret::Basic(Secret::new(secret.expose().to_vec()))),
         code: Some(&code),
         redirect_uri: Some(flow.redirect_uri),
         code_verifier: Some(CONSENTED_VERIFIER),

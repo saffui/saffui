@@ -1,9 +1,11 @@
-use actix_web::{HttpResponse, get, post, web};
-use api::{CreatedClient, NewClient};
+use actix_web::http::header::{CACHE_CONTROL, PRAGMA};
+use actix_web::{HttpResponse, get, post, put, web};
+use api::{CreatedClient, NewAuthMethod, NewClient, RotatedSecret};
 use saffui_core::app::App as Product;
 use saffui_core::authz::capability::Capability;
 use saffui_core::clients::manage;
 use saffui_core::clients::register::NewClient as WantedClient;
+use saffui_core::clients::{AssertionAlgorithm, ClientAuthMethod};
 use saffui_core::error::{ErrorCode, Failure};
 use saffui_core::ports::crypto::SignatureAlgorithm;
 
@@ -62,6 +64,20 @@ pub async fn create_client(
                 SignatureAlgorithm::parse(name).ok_or(Failure::new(ErrorCode::AlgorithmUnknown))
             })
             .transpose()?;
+        let auth_method = wanted
+            .token_endpoint_auth_method
+            .as_deref()
+            .map(|name| {
+                ClientAuthMethod::parse(name).ok_or(Failure::new(ErrorCode::AuthMethodInvalid))
+            })
+            .transpose()?;
+        let auth_signing_alg = wanted
+            .token_endpoint_auth_signing_alg
+            .as_deref()
+            .map(|name| {
+                AssertionAlgorithm::parse(name).ok_or(Failure::new(ErrorCode::AlgorithmUnknown))
+            })
+            .transpose()?;
         let client = WantedClient {
             client_id: &wanted.client_id,
             name: wanted.name.as_deref().unwrap_or(&wanted.client_id),
@@ -72,18 +88,25 @@ pub async fn create_client(
             public: wanted.public,
             requires_consent: wanted.consent,
             id_token_signed_response_alg: id_token_algorithm,
+            auth_method,
+            jwks: wanted.jwks.as_ref(),
+            jwks_uri: wanted.jwks_uri.as_deref(),
+            auth_signing_alg,
             created_by: None,
         };
         manage::create_client(&product, &caller, client).await
     }
     .await;
     match created {
-        Ok((client, secret)) => HttpResponse::Created().json(CreatedClient {
-            client: show_client(&client),
-            // The one showing of the secret: it is base64url text by construction.
-            client_secret: secret
-                .map(|secret| String::from_utf8_lossy(secret.expose()).into_owned()),
-        }),
+        Ok((client, secret)) => HttpResponse::Created()
+            .insert_header((CACHE_CONTROL, "no-store"))
+            .insert_header((PRAGMA, "no-cache"))
+            .json(CreatedClient {
+                client: show_client(&client),
+                // The one showing of the secret: it is base64url text by construction.
+                client_secret: secret
+                    .map(|secret| String::from_utf8_lossy(secret.expose()).into_owned()),
+            }),
         Err(failure) => render_failure(&failure),
     }
 }
@@ -99,6 +122,51 @@ pub async fn read_client(
 ) -> HttpResponse {
     let (_realm, client_id) = path.into_inner();
     match manage::find_client(&product, caller.scope, &client_id).await {
+        Ok(client) => HttpResponse::Ok().json(show_client(&client)),
+        Err(failure) => render_failure(&failure),
+    }
+}
+
+#[post(
+    "/admin/v1/realms/{realm}/clients/{client_id}/secret",
+    wrap = "RequireCapability(Capability::ClientWrite)"
+)]
+pub async fn rotate_client_secret(
+    caller: Caller,
+    product: web::Data<Product>,
+    path: web::Path<(String, String)>,
+) -> HttpResponse {
+    let (_realm, client_id) = path.into_inner();
+    match manage::rotate_client_secret(&product, &caller, &client_id).await {
+        // The one showing of the new secret: it is base64url text by construction.
+        Ok(secret) => HttpResponse::Ok()
+            .insert_header((CACHE_CONTROL, "no-store"))
+            .insert_header((PRAGMA, "no-cache"))
+            .json(RotatedSecret {
+                client_secret: String::from_utf8_lossy(secret.expose()).into_owned(),
+            }),
+        Err(failure) => render_failure(&failure),
+    }
+}
+
+#[put(
+    "/admin/v1/realms/{realm}/clients/{client_id}/auth-method",
+    wrap = "RequireCapability(Capability::ClientWrite)"
+)]
+pub async fn change_client_auth_method(
+    caller: Caller,
+    product: web::Data<Product>,
+    path: web::Path<(String, String)>,
+    wanted: web::Json<NewAuthMethod>,
+) -> HttpResponse {
+    let (_realm, client_id) = path.into_inner();
+    let changed = async {
+        let method = ClientAuthMethod::parse(&wanted.token_endpoint_auth_method)
+            .ok_or(Failure::new(ErrorCode::AuthMethodInvalid))?;
+        manage::change_client_auth_method(&product, &caller, &client_id, method).await
+    }
+    .await;
+    match changed {
         Ok(client) => HttpResponse::Ok().json(show_client(&client)),
         Err(failure) => render_failure(&failure),
     }

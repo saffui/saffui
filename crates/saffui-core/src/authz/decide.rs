@@ -15,7 +15,7 @@ use super::relations::schema::{CompiledSchema, compile_schema};
 use super::relations::{ObjectRef, is_object_id, read_compiled_schema};
 use super::roles::is_role_name;
 use crate::app::App;
-use crate::clients::authenticate::authenticate_client;
+use crate::clients::authenticate::{ClientProof, PresentedSecret, authenticate_client};
 use crate::clients::read_named_client;
 use crate::error::{ErrorCode, Failure};
 use crate::login::session::read_live_subject;
@@ -276,8 +276,9 @@ fn is_small(attributes: &Map<String, Value>) -> bool {
 }
 
 /// Decides whether the subject of a token may take an action on a
-/// resource, for a client that authenticates. The facts are read as they
-/// are now, never from what the token says beyond who it is for.
+/// resource, for a client that presents its secret in the Basic scheme, as
+/// it registered it. The facts are read as they are now, never from what the
+/// token says beyond who it is for.
 ///
 /// # Errors
 ///
@@ -297,11 +298,12 @@ pub async fn decide(
     // The budget of a walk runs from the question, its first reads included.
     let deadline = app.now() + MAX_DURATION;
     let (realm_name, scope) = resolve_realm(app, realm).await?;
-    let (Some(client_id), Some(client_secret)) = (client_id, client_secret) else {
+    let issuer = name_issuer(&app.settings, &realm_name);
+    let Some(client_secret) = client_secret else {
         return Err(ErrorCode::ClientAuthenticationFailed.into());
     };
-    let mut work = app.storage.begin(scope).await.map_err(Failure::from)?;
-    let client = authenticate_client(app, work.as_mut(), client_id, &client_secret).await?;
+    let proof = ClientProof::Secret(PresentedSecret::Basic(client_secret));
+    let (client, mut work) = authenticate_client(app, scope, client_id, proof, &issuer).await?;
     let token = request.subject_token.ok_or(ErrorCode::RequestInvalid)?;
     if !is_role_name(request.action)
         || !is_role_name(request.resource_type)
@@ -315,7 +317,6 @@ pub async fn decide(
     let Some(share) = app.decision_shares.take(scope.tenant()) else {
         return Err(Failure::new(ErrorCode::StorageUnavailable).into());
     };
-    let issuer = name_issuer(&app.settings, &realm_name);
     let Some(subject) = read_subject(app, work.as_mut(), &issuer, token).await? else {
         return Ok(Decision::deny("subject_unknown", None));
     };

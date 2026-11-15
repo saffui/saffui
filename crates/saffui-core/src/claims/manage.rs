@@ -597,7 +597,7 @@ mod tests {
             &scenario.app,
             "acme",
             Some("billing"),
-            Some(scenario.copy_service_secret()),
+            scenario.present_service_secret(),
             Some(&tokens.access_token),
         ))
         .expect_err("too many roles to tell");

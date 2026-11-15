@@ -26,13 +26,13 @@ pub(super) fn show_realm(realm: &Realm, issuer: String) -> RealmView {
     }
 }
 
-/// A client as an administrator sees it. The digest of its secret is not
-/// part of it: nothing about the secret ever leaves.
+/// A client as an administrator sees it. Neither the digest nor the sealed
+/// form of its secret is part of it: nothing about the secret ever leaves.
 pub(super) fn show_client(client: &Client) -> ClientView {
     ClientView {
         client_id: client.client_id.clone(),
         name: client.name.clone(),
-        public: client.secret_digest.is_none(),
+        public: client.is_public(),
         redirect_uris: client.redirect_uris.clone(),
         post_logout_redirect_uris: client.post_logout_redirect_uris.clone(),
         consent: client.requires_consent,
@@ -44,6 +44,10 @@ pub(super) fn show_client(client: &Client) -> ClientView {
             .collect(),
         id_token_signed_response_alg: client
             .id_token_signed_response_alg
+            .map(|algorithm| algorithm.name().to_owned()),
+        token_endpoint_auth_method: client.auth_method.name().to_owned(),
+        token_endpoint_auth_signing_alg: client
+            .auth_signing_alg
             .map(|algorithm| algorithm.name().to_owned()),
         enabled: client.enabled,
         created_at: write_instant(client.created_at),

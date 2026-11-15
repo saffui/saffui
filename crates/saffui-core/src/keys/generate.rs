@@ -184,6 +184,14 @@ mod tests {
             self.signer.sign(algorithm, private_key, message)
         }
 
+        async fn check_client_keys(
+            &self,
+            keys: Vec<(SignatureAlgorithm, Value)>,
+            guard: KeyMakingGuard,
+        ) -> Result<bool, KeyMakingFailure> {
+            self.signer.check_client_keys(keys, guard).await
+        }
+
         fn verify(
             &self,
             algorithm: SignatureAlgorithm,

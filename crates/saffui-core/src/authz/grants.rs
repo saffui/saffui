@@ -877,7 +877,7 @@ mod tests {
                 &started.scenario.app,
                 "acme",
                 Some("billing"),
-                Some(started.scenario.copy_service_secret()),
+                started.scenario.present_service_secret(),
                 Some(&token),
             ))
             .expect("an answer")

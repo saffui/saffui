@@ -8,6 +8,7 @@ use super::token::{TokenRequest, TokenResponse, grant_token};
 use crate::app::App;
 use crate::authz::admin::{AdminCaller, authorize_admin_call};
 use crate::authz::capability::Capability;
+use crate::clients::authenticate::{PresentedProof, PresentedSecret};
 use crate::login::enroll::{
     begin_key_enrollment, begin_totp_enrollment, confirm_totp_enrollment, finish_key_enrollment,
 };
@@ -102,6 +103,14 @@ impl Scenario {
 
     pub(crate) fn copy_service_secret(&self) -> Secret {
         Secret::new(self.service_secret.expose().to_vec())
+    }
+
+    /// The secret of `billing` in the Basic scheme, as it registered it.
+    pub(crate) fn present_service_secret(&self) -> PresentedProof<'static> {
+        PresentedProof {
+            secret: Some(PresentedSecret::Basic(self.copy_service_secret())),
+            ..PresentedProof::default()
+        }
     }
 
     /// Registers `partner`, a public application that requires the consent
@@ -218,7 +227,7 @@ impl Scenario {
             &self.app,
             "acme",
             Some("billing"),
-            Some(self.copy_service_secret()),
+            self.present_service_secret(),
             Some(token),
         ))
         .expect("an answer")

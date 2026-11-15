@@ -1,6 +1,7 @@
-//! One key made at a time by each tenant. The key makers of a node are few
-//! and every tenant shares them: a tenant that asks for many keys at once is
-//! refused all but one, and leaves the others to the rest.
+//! One key made, or one set of keys of a client checked, at a time by each
+//! tenant. The key makers of a node are few and every tenant shares them: a
+//! tenant that asks for many at once is refused all but one, and leaves the
+//! others to the rest.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -12,14 +13,16 @@ pub struct KeyMakingShares {
     held: Mutex<HashSet<TenantId>>,
 }
 
-/// The key a tenant is making. Given back when dropped.
+/// The key a tenant is making, or the keys it is checking. Given back when
+/// dropped.
 pub struct KeyMakingShare {
     shares: Arc<KeyMakingShares>,
     tenant: TenantId,
 }
 
 impl KeyMakingShares {
-    /// Takes the share of `tenant`, or none while it is making a key already.
+    /// Takes the share of `tenant`, or none while it is making or checking
+    /// keys already.
     #[must_use]
     pub fn take(self: &Arc<Self>, tenant: TenantId) -> Option<KeyMakingShare> {
         let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);

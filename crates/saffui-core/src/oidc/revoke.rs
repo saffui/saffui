@@ -4,9 +4,8 @@ use super::discovery::name_issuer;
 use super::errors::OAuthFailure;
 use super::refresh::end_grant;
 use crate::app::App;
-use crate::clients::authenticate::identify_client;
+use crate::clients::authenticate::{PresentedProof, identify_client, read_client_proof};
 use crate::error::{ErrorCode, Failure};
-use crate::secret::Secret;
 use crate::tenancy::resolve::resolve_realm;
 use crate::tokens::verify::verify_access_token;
 
@@ -25,13 +24,13 @@ pub async fn revoke_token(
     app: &App,
     realm: &str,
     client_id: Option<&str>,
-    client_secret: Option<Secret>,
+    presented: PresentedProof<'_>,
     token: Option<&str>,
 ) -> Result<(), OAuthFailure> {
+    let proof = read_client_proof(presented)?;
     let (realm_name, scope) = resolve_realm(app, realm).await?;
-    let client_id = client_id.ok_or(ErrorCode::ClientAuthenticationFailed)?;
-    let mut work = app.storage.begin(scope).await.map_err(Failure::from)?;
-    let client = identify_client(app, work.as_mut(), client_id, client_secret).await?;
+    let issuer = name_issuer(&app.settings, &realm_name);
+    let (client, mut work) = identify_client(app, scope, client_id, proof, &issuer).await?;
     let token = token.ok_or(ErrorCode::RequestInvalid)?;
 
     let digest = app.digester.sha256(token.as_bytes());
@@ -61,7 +60,6 @@ pub async fn revoke_token(
     }
 
     // Saying yes to an access token would be a lie: it stands until it expires.
-    let issuer = name_issuer(&app.settings, &realm_name);
     if verify_access_token(app, work.as_mut(), &issuer, token)
         .await
         .is_ok()
@@ -74,17 +72,22 @@ pub async fn revoke_token(
 #[cfg(test)]
 mod tests {
     use super::revoke_token;
+    use crate::clients::authenticate::{PresentedProof, PresentedSecret};
     use crate::oidc::errors::OAuthError;
     use crate::oidc::scenario::Scenario;
     use crate::testkit::drive::complete;
 
     fn revoke(scenario: &Scenario, client_id: &str, token: &str) -> Result<(), OAuthError> {
         let secret = (client_id == "billing").then(|| scenario.copy_service_secret());
+        let presented = PresentedProof {
+            secret: secret.map(PresentedSecret::Basic),
+            ..PresentedProof::default()
+        };
         complete(revoke_token(
             &scenario.app,
             "acme",
             Some(client_id),
-            secret,
+            presented,
             Some(token),
         ))
         .map_err(|failure| failure.error)

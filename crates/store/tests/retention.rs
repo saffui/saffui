@@ -25,7 +25,7 @@ mod support;
 const TIME_ENOUGH: std::time::Duration = std::time::Duration::from_mins(1);
 
 /// Writes, in one realm, a row past its keeping and a row still of use in
-/// each of the seven tables retention reads.
+/// each of the eight tables retention reads.
 #[expect(clippy::too_many_lines, reason = "one realm, filled table by table")]
 async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
     let identify = || mint_id(app).expect("an identifier");
@@ -124,6 +124,11 @@ async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
         })
         .await
         .expect("a code");
+        // Kept until it expired a minute ago, or for five minutes more. Of
+        // no client the realm has: what is kept of it goes all the same.
+        work.record_client_assertion("portal", &format!("assertion-{digest}"), expires_at)
+            .await
+            .expect("an assertion");
     }
     // A counter of three days ago, and one of the window that is being read.
     work.record_login_failure(&[1; 32], now - Duration::days(3))
@@ -135,7 +140,7 @@ async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
     work.commit().await.expect("a commit");
 }
 
-const TABLES: [&str; 7] = [
+const TABLES: [&str; 8] = [
     "authorization_requests",
     "authorization_codes",
     "refresh_tokens",
@@ -143,13 +148,14 @@ const TABLES: [&str; 7] = [
     "known_browsers",
     "login_failures",
     "security_key_enrollments",
+    "client_assertions",
 ];
 
 /// What a pass removed from each table and how each came out, in the order
 /// of `TABLES`.
 fn summarize(
     report: Result<Option<PurgeReport>, StorageError>,
-) -> Result<Option<[(u64, PurgeOutcome); 7]>, StorageError> {
+) -> Result<Option<[(u64, PurgeOutcome); 8]>, StorageError> {
     report.map(|report| {
         report.map(|report| {
             report
@@ -161,8 +167,8 @@ fn summarize(
 
 const DONE: PurgeOutcome = PurgeOutcome::Done;
 
-async fn count_rows(client: &Client) -> [i64; 7] {
-    let mut counted = [0; 7];
+async fn count_rows(client: &Client) -> [i64; 8] {
+    let mut counted = [0; 8];
     for (slot, table) in TABLES.into_iter().enumerate() {
         counted[slot] = client
             .query_one(&format!("SELECT count(*) FROM {table}"), &[])
@@ -186,19 +192,19 @@ async fn a_pass_removes_what_expired_in_every_realm_and_leaves_what_is_still_of_
         .connect_directly()
         .await
         .expect("a connection");
-    assert_eq!(count_rows(&maintenance).await, [4; 7]);
+    assert_eq!(count_rows(&maintenance).await, [4; 8]);
     let retention = PgRetention::new(database.plan(RETENTION_ROLE));
 
     let first = run_retention_pass(&retention, now, TIME_ENOUGH).await;
 
     assert_eq!(
         summarize(first),
-        Ok(Some([(2, DONE); 7])),
+        Ok(Some([(2, DONE); 8])),
         "two of each, one in each realm"
     );
     assert_eq!(
         count_rows(&maintenance).await,
-        [2; 7],
+        [2; 8],
         "what is still of use stays, in both realms"
     );
     assert_eq!(
@@ -224,7 +230,7 @@ async fn a_pass_under_the_role_that_serves_is_refused_and_removes_nothing() {
         .connect_directly()
         .await
         .expect("a connection");
-    assert_eq!(count_rows(&maintenance).await, [2; 7]);
+    assert_eq!(count_rows(&maintenance).await, [2; 8]);
 }
 
 #[tokio::test]
@@ -249,7 +255,7 @@ async fn a_pass_under_a_role_that_may_do_more_than_purge_is_refused_and_removes_
         .connect_directly()
         .await
         .expect("a connection");
-    assert_eq!(count_rows(&maintenance).await, [2; 7]);
+    assert_eq!(count_rows(&maintenance).await, [2; 8]);
     let under_retention = PgRetention::new(database.plan(RETENTION_ROLE));
     assert_eq!(under_retention.verify_role().await, Ok(()));
 }
@@ -263,7 +269,7 @@ async fn a_retention_role_with_any_right_beyond_purging_is_refused() {
         .await
         .expect("a connection");
     let purged = "authorization_requests, authorization_codes, refresh_tokens, sessions, \
-                  known_browsers, login_failures, security_key_enrollments";
+                  known_browsers, login_failures, security_key_enrollments, client_assertions";
     // Each bypasses row security as retention does, and holds one thing more.
     for role in [
         "saffui_test_retention_reads_all",
@@ -574,7 +580,7 @@ async fn a_table_that_fails_is_reported_and_the_pass_goes_on_with_the_others() {
 
     let report = run_retention_pass(&retention, now, TIME_ENOUGH).await;
 
-    let mut all_but_codes = [(1, DONE); 7];
+    let mut all_but_codes = [(1, DONE); 8];
     all_but_codes[1] = (0, PurgeOutcome::Failed);
     assert_eq!(
         summarize(report),
@@ -588,7 +594,7 @@ async fn a_table_that_fails_is_reported_and_the_pass_goes_on_with_the_others() {
         .expect("a connection");
     assert_eq!(
         count_rows(&maintenance).await,
-        [1, 2, 1, 1, 1, 1, 1],
+        [1, 2, 1, 1, 1, 1, 1, 1],
         "both codes stay"
     );
 }
@@ -886,7 +892,7 @@ async fn a_pass_whose_link_closes_is_a_failure_and_stops_there() {
         .expect("a connection");
     assert_eq!(
         count_rows(&maintenance).await,
-        [2; 7],
+        [2; 8],
         "nothing was removed after the link closed"
     );
 }

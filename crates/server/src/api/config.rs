@@ -63,6 +63,8 @@ pub fn register_data_plane(
                     .service(admin::client::list_clients)
                     .service(admin::client::create_client)
                     .service(admin::client::read_client)
+                    .service(admin::client::rotate_client_secret)
+                    .service(admin::client::change_client_auth_method)
                     .service(admin::user::list_users)
                     .service(admin::user::create_user)
                     .service(admin::user::unlock_user)

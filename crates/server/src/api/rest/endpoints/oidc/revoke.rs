@@ -3,6 +3,7 @@
 use actix_web::http::header::CACHE_CONTROL;
 use actix_web::{HttpRequest, HttpResponse, post, web};
 use saffui_core::app::App as Product;
+use saffui_core::clients::authenticate::PresentedProof;
 use saffui_core::oidc::revoke::revoke_token;
 
 use super::introspect::TokenQuestion;
@@ -26,7 +27,11 @@ pub async fn take_back_token(
         &product,
         &realm,
         identity.client_id.as_deref(),
-        identity.secret,
+        PresentedProof {
+            secret: identity.secret,
+            assertion_type: form.client_assertion_type.as_deref(),
+            assertion: form.client_assertion.as_deref(),
+        },
         form.token.as_deref(),
     )
     .await;

@@ -1085,7 +1085,11 @@ mod tests {
         let request = TokenRequest {
             grant_type: Some("authorization_code"),
             client_id: Some("webapp"),
-            client_secret: secret.map(|secret| Secret::new(secret.expose().to_vec())),
+            client_secret: secret.map(|secret| {
+                crate::clients::authenticate::PresentedSecret::Basic(Secret::new(
+                    secret.expose().to_vec(),
+                ))
+            }),
             code: Some(code),
             redirect_uri: Some(redirect_uri),
             code_verifier: Some(verifier),
@@ -1153,7 +1157,11 @@ mod tests {
         let request = TokenRequest {
             grant_type: Some("refresh_token"),
             client_id: Some("webapp"),
-            client_secret: secret.map(|secret| Secret::new(secret.expose().to_vec())),
+            client_secret: secret.map(|secret| {
+                crate::clients::authenticate::PresentedSecret::Basic(Secret::new(
+                    secret.expose().to_vec(),
+                ))
+            }),
             refresh_token: Some(refresh_token),
             ..TokenRequest::default()
         };

@@ -3,9 +3,11 @@ use actix_web::http::{Method, StatusCode};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use saffui_core::authz::capability::Capability;
-use saffui_core::clients::register::{NewClient, register_client};
+use saffui_core::clients::register::NewClient;
 use saffui_core::tenancy::RealmScope;
-use saffui_core::testkit::fixtures::{create_administrator, create_person, create_realm};
+use saffui_core::testkit::fixtures::{
+    check_and_register_client, create_administrator, create_person, create_realm,
+};
 use saffui_core::testkit::memory::MemoryStorage;
 
 use super::admin::call;
@@ -28,7 +30,7 @@ async fn start(name: &str) -> (saffui_core::app::App, RealmScope) {
     let scopes = ["openid", "email", "offline_access"].map(str::to_owned);
     let callbacks = [CALLBACK.to_owned()];
     let mut work = product.storage.begin(scope).await.expect("a unit of work");
-    register_client(
+    check_and_register_client(
         &product,
         work.as_mut(),
         NewClient {
@@ -41,6 +43,10 @@ async fn start(name: &str) -> (saffui_core::app::App, RealmScope) {
             public: true,
             requires_consent: true,
             id_token_signed_response_alg: None,
+            auth_method: None,
+            jwks: None,
+            jwks_uri: None,
+            auth_signing_alg: None,
             created_by: None,
         },
     )
@@ -270,7 +276,8 @@ async fn a_name_that_changes_direction_is_shown_with_the_change_replaced() {
         id: uuid::Uuid::from_u128(9),
         client_id: "partner".to_owned(),
         name: "Pay\u{202e}lapyap".to_owned(),
-        secret_digest: None,
+        auth_method: saffui_core::clients::ClientAuthMethod::None,
+        auth_signing_alg: None,
         allows_client_credentials: false,
         allows_authorization_code: true,
         redirect_uris: vec![CALLBACK.to_owned()],
@@ -283,7 +290,14 @@ async fn a_name_that_changes_direction_is_shown_with_the_change_replaced() {
         created_at: product.now(),
     };
     let mut work = product.storage.begin(scope).await.expect("a unit of work");
-    work.insert_client(&partner).await.expect("a client");
+    let nothing = saffui_core::clients::KeptProof {
+        secret_digest: None,
+        sealed_secret: None,
+        jwks: None,
+    };
+    work.insert_client(&partner, &nothing)
+        .await
+        .expect("a client");
     work.commit().await.expect("a commit");
     let (waiting, _) = sign_in_for_partner(&product).await;
 

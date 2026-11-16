@@ -107,7 +107,9 @@ mod tests {
         let service = TokenRequest {
             grant_type: Some("client_credentials"),
             client_id: Some("billing"),
-            client_secret: Some(scenario.copy_service_secret()),
+            client_secret: Some(crate::clients::authenticate::PresentedSecret::Basic(
+                scenario.copy_service_secret(),
+            )),
             ..TokenRequest::default()
         };
         let of_a_service = complete(grant_token(&scenario.app, "acme", service)).expect("a token");

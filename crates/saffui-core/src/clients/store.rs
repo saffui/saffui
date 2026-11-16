@@ -1,6 +1,7 @@
 use async_trait::async_trait;
+use time::OffsetDateTime;
 
-use super::Client;
+use super::{Client, ClientAuthMethod, KeptProof};
 use crate::authz::capability::Capability;
 use crate::ports::storage::StorageError;
 
@@ -38,10 +39,30 @@ impl ListWindow {
 #[async_trait]
 pub trait ClientStore {
     /// Fails with `Taken("client identifier")` when the realm has a client
-    /// of that identifier already.
-    async fn insert_client(&mut self, client: &Client) -> Result<(), StorageError>;
+    /// of that identifier already, and fails for a proof that does not fit
+    /// the method of the client, as the table refuses it.
+    async fn insert_client(
+        &mut self,
+        client: &Client,
+        proof: &KeptProof,
+    ) -> Result<(), StorageError>;
 
+    /// A client, without what proves it.
     async fn read_client(&mut self, client_id: &str) -> Result<Option<Client>, StorageError>;
+
+    /// As `read_client`, by one statement, and the row stays taken until the
+    /// commit: another writer of the client waits, then reads what was kept.
+    async fn read_client_for_update(
+        &mut self,
+        client_id: &str,
+    ) -> Result<Option<Client>, StorageError>;
+
+    /// A client and what proves it, read by one statement: to identify it,
+    /// and for nothing else.
+    async fn read_client_with_proof(
+        &mut self,
+        client_id: &str,
+    ) -> Result<Option<(Client, KeptProof)>, StorageError>;
 
     /// The clients of the realm in the order of their identifiers, within the window.
     async fn list_clients(&mut self, window: ListWindow) -> Result<Vec<Client>, StorageError>;
@@ -55,6 +76,35 @@ pub trait ClientStore {
         &mut self,
         client_id: &str,
         capabilities: &[Capability],
+    ) -> Result<bool, StorageError>;
+
+    /// Replaces the secret of a client, in the one form its method keeps it
+    /// in: a digest, or sealed. A form the method does not keep fails, as
+    /// the table refuses it. Answers whether the realm has that client.
+    async fn write_client_secret(
+        &mut self,
+        client_id: &str,
+        secret_digest: Option<&[u8]>,
+        sealed_secret: Option<&[u8]>,
+    ) -> Result<bool, StorageError>;
+
+    /// Changes how a client presents its secret, between the Basic scheme
+    /// and the form, and nothing else: any other change fails, as the table
+    /// refuses it. Answers whether the realm has that client.
+    async fn write_client_auth_method(
+        &mut self,
+        client_id: &str,
+        method: ClientAuthMethod,
+    ) -> Result<bool, StorageError>;
+
+    /// Keeps the identifier of an assertion of a client until `kept_until`.
+    /// Answers whether it was the first time: of two uses of one assertion,
+    /// exactly one is first.
+    async fn record_client_assertion(
+        &mut self,
+        client_id: &str,
+        token_id: &str,
+        kept_until: OffsetDateTime,
     ) -> Result<bool, StorageError>;
 }
 

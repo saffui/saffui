@@ -177,6 +177,17 @@ impl Signer for WeakSigner {
         Ok(sign_weakly(&public, message))
     }
 
+    /// Any key of its own shape, for any algorithm it signs in.
+    async fn check_client_keys(
+        &self,
+        keys: Vec<(SignatureAlgorithm, Value)>,
+        _guard: KeyMakingGuard,
+    ) -> Result<bool, KeyMakingFailure> {
+        Ok(keys
+            .iter()
+            .all(|(algorithm, key)| self.signs_in(*algorithm) && key["x"].is_string()))
+    }
+
     fn verify(
         &self,
         algorithm: SignatureAlgorithm,

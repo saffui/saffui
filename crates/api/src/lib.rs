@@ -40,6 +40,10 @@ pub struct ClientView {
     pub capabilities: Vec<String>,
     /// The algorithm of its identity tokens. Null: the default of the realm.
     pub id_token_signed_response_alg: Option<String>,
+    /// How it proves itself, by the name RFC 7591 gives it.
+    pub token_endpoint_auth_method: String,
+    /// The one algorithm its assertions are signed in. Null: any it may.
+    pub token_endpoint_auth_signing_alg: Option<String>,
     pub enabled: bool,
     pub created_at: String,
 }
@@ -72,6 +76,19 @@ pub struct NewClient {
     /// The algorithm of its identity tokens, among those the realm signs in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id_token_signed_response_alg: Option<String>,
+    /// A public client is `none` and nothing else, and `none` is for it alone;
+    /// another names its method, `client_secret_basic` when it names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_endpoint_auth_method: Option<String>,
+    /// The public keys of a client that proves itself with a key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jwks: Option<serde_json::Value>,
+    /// Refused: a client gives its keys inline, in `jwks`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jwks_uri: Option<String>,
+    /// The one algorithm its assertions may be signed in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_endpoint_auth_signing_alg: Option<String>,
 }
 
 /// A client that was just created, with the one showing of its secret.
@@ -89,6 +106,30 @@ impl fmt::Debug for CreatedClient {
         formatter
             .debug_struct("CreatedClient")
             .field("client", &self.client)
+            .field("client_secret", &"..")
+            .finish()
+    }
+}
+
+/// How a client presents its secret from now on: in the Basic scheme or in
+/// the form, and nothing else.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NewAuthMethod {
+    pub token_endpoint_auth_method: String,
+}
+
+/// The new secret of a client, shown this once.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RotatedSecret {
+    pub client_secret: String,
+}
+
+// Written by hand: a derived `Debug` would print the secret.
+impl fmt::Debug for RotatedSecret {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RotatedSecret")
             .field("client_secret", &"..")
             .finish()
     }
@@ -336,7 +377,7 @@ pub struct HeldRoleView {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClientView, CreatedClient, NewUser};
+    use super::{ClientView, CreatedClient, NewUser, RotatedSecret};
 
     #[test]
     fn a_created_client_does_not_print_its_secret() {
@@ -351,6 +392,8 @@ mod tests {
                 scopes: Vec::new(),
                 capabilities: Vec::new(),
                 id_token_signed_response_alg: None,
+                token_endpoint_auth_method: "client_secret_basic".to_owned(),
+                token_endpoint_auth_signing_alg: None,
                 enabled: true,
                 created_at: "2026-10-31T00:00:00Z".to_owned(),
             },
@@ -360,6 +403,18 @@ mod tests {
         let printed = format!("{created:?}");
 
         assert!(printed.contains("billing"), "{printed}");
+        assert!(!printed.contains("hunter2"), "{printed}");
+    }
+
+    #[test]
+    fn a_turned_over_secret_does_not_print() {
+        let rotated = RotatedSecret {
+            client_secret: "hunter2".to_owned(),
+        };
+
+        let printed = format!("{rotated:?}");
+
+        assert!(printed.contains("RotatedSecret"), "{printed}");
         assert!(!printed.contains("hunter2"), "{printed}");
     }
 

@@ -4,18 +4,16 @@
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::discovery::name_issuer;
 use super::errors::OAuthFailure;
 use super::token::{Granted, TokenRequest, TokenResponse, answer_for_person, narrow_scopes};
 use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
-use crate::clients::authenticate::identify_client;
+use crate::clients::Client;
 use crate::error::{ErrorCode, Failure};
 use crate::instant::write_instant;
 use crate::login::session::read_live_subject;
 use crate::ports::storage::UnitOfWork;
-use crate::tenancy::{RealmName, RealmScope};
 use crate::tokens::DEFAULT_ALGORITHM;
 use crate::tokens::mint::RefreshGrant;
 use crate::tokens::store::EndedFamily;
@@ -77,24 +75,20 @@ pub(super) async fn end_grant(
 
 pub(super) async fn rotate_refresh_token(
     app: &App,
-    realm_name: &RealmName,
-    scope: RealmScope,
-    request: TokenRequest<'_>,
+    issuer: &str,
+    mut work: Box<dyn UnitOfWork>,
+    client: &Client,
+    request: &TokenRequest<'_>,
 ) -> Result<TokenResponse, OAuthFailure> {
-    let client_id = request
-        .client_id
-        .ok_or(ErrorCode::ClientAuthenticationFailed)?;
     let presented = request.refresh_token.ok_or(ErrorCode::RequestInvalid)?;
     let invalid = || OAuthFailure::from(ErrorCode::GrantInvalid);
     let now = app.now();
-
-    // One unit of work spends the token and writes the next: a failure in
-    // between leaves the client the token it had.
-    let mut work = app.storage.begin(scope).await.map_err(Failure::from)?;
-    let client = identify_client(app, work.as_mut(), client_id, request.client_secret).await?;
     if !client.allows_authorization_code {
         return Err(ErrorCode::GrantNotAllowed.into());
     }
+
+    // One unit of work spends the token and writes the next: a failure in
+    // between leaves the client the token it had.
     let digest = app.digester.sha256(presented.as_bytes());
     let spent = work
         .spend_refresh_token(&digest, &client.client_id, now)
@@ -136,9 +130,8 @@ pub(super) async fn rotate_refresh_token(
         .ok_or_else(invalid)?;
     let scopes = narrow_scopes(request.scope, &spent.scopes)?;
 
-    let issuer = name_issuer(&app.settings, realm_name);
     let granted = Granted {
-        issuer: &issuer,
+        issuer,
         client_id: &client.client_id,
         session: &session,
         person: &person,

@@ -58,6 +58,11 @@ pub(crate) struct State {
     pub(crate) signing_keys: HashMap<Uuid, Vec<SealedSigningKey>>,
     /// The clients of each realm, by realm.
     pub(crate) clients: HashMap<Uuid, Vec<Client>>,
+    /// What proves each client, by realm and client.
+    pub(crate) client_proofs: HashMap<(Uuid, String), clients::HeldProof>,
+    /// Until when the identifier of each assertion seen is kept, by realm,
+    /// client and identifier.
+    pub(crate) client_assertions: HashMap<(Uuid, String, String), OffsetDateTime>,
     /// The people of each realm, by realm.
     pub(crate) persons: HashMap<Uuid, Vec<Person>>,
     /// The password of each person, by person.
@@ -356,6 +361,21 @@ impl MemoryStorage {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Until when the identifier `token_id` of an assertion of `client_id`
+    /// is kept, in whichever realm.
+    #[must_use]
+    pub fn read_assertion_kept_until(
+        &self,
+        client_id: &str,
+        token_id: &str,
+    ) -> Option<OffsetDateTime> {
+        lock(&self.state)
+            .client_assertions
+            .iter()
+            .find(|((_, client, token), _)| client == client_id && token == token_id)
+            .map(|(_, kept_until)| *kept_until)
     }
 
     /// Changes the chain of a realm behind the back of the product, as

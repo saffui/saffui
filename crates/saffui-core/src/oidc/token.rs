@@ -16,7 +16,9 @@ use crate::audit::append::record_event;
 use crate::claims::ClaimTarget;
 use crate::claims::gather::gather_claim_inputs;
 use crate::claims::rules::{ClaimGrant, write_claims};
-use crate::clients::authenticate::{authenticate_client, identify_client};
+use crate::clients::authenticate::{
+    PresentedProof, PresentedSecret, identify_client, read_client_proof,
+};
 use crate::clients::{Client, check_scope_token};
 use crate::consent::{ConsentHold, ConsentTerms, grant_to_client, is_consent_owed};
 use crate::directory::Person;
@@ -25,9 +27,8 @@ use crate::ids::mint_id;
 use crate::login::session::{Session, open_offline_session, read_live_subject};
 use crate::ports::crypto::SignatureAlgorithm;
 use crate::ports::storage::UnitOfWork;
-use crate::secret::Secret;
+use crate::tenancy::RealmScope;
 use crate::tenancy::resolve::resolve_realm;
-use crate::tenancy::{RealmName, RealmScope};
 use crate::tokens::DEFAULT_ALGORITHM;
 use crate::tokens::mint::{
     AccessTokenSubject, IdentityTokenSubject, RefreshGrant, issue_refresh_token, mint_access_token,
@@ -47,7 +48,10 @@ pub struct TokenRequest<'a> {
     pub grant_type: Option<&'a str>,
     pub scope: Option<&'a str>,
     pub client_id: Option<&'a str>,
-    pub client_secret: Option<Secret>,
+    pub client_secret: Option<PresentedSecret>,
+    /// The type of a client assertion, and the assertion (RFC 7523).
+    pub client_assertion_type: Option<&'a str>,
+    pub client_assertion: Option<&'a str>,
     pub code: Option<&'a str>,
     pub redirect_uri: Option<&'a str>,
     pub code_verifier: Option<&'a str>,
@@ -89,7 +93,7 @@ impl fmt::Debug for TokenResponse {
 pub async fn grant_token(
     app: &App,
     realm: &str,
-    request: TokenRequest<'_>,
+    mut request: TokenRequest<'_>,
 ) -> Result<TokenResponse, OAuthFailure> {
     // Judged before the realm is looked for: a grant that is not served is
     // refused alike in a realm that exists and in one that does not.
@@ -101,9 +105,10 @@ pub async fn grant_token(
     // The form too: a request the realm could not serve is refused alike
     // whether the realm exists or not.
     if grant != "client_credentials" {
-        request
-            .client_id
-            .ok_or(ErrorCode::ClientAuthenticationFailed)?;
+        // A client names itself, or its assertion names it.
+        if request.client_id.is_none() && request.client_assertion.is_none() {
+            return Err(ErrorCode::ClientAuthenticationFailed.into());
+        }
         let complete = if grant == "authorization_code" {
             request.code.is_some()
                 && request.redirect_uri.is_some()
@@ -115,11 +120,19 @@ pub async fn grant_token(
             return Err(ErrorCode::RequestInvalid.into());
         }
     }
+    let proof = read_client_proof(PresentedProof {
+        secret: request.client_secret.take(),
+        assertion_type: request.client_assertion_type,
+        assertion: request.client_assertion,
+    })?;
     let (realm_name, scope) = resolve_realm(app, realm).await?;
+    let issuer = name_issuer(&app.settings, &realm_name);
+    // Once, before any grant: an assertion is spent here, whatever follows.
+    let (client, work) = identify_client(app, scope, request.client_id, proof, &issuer).await?;
     match grant {
-        "client_credentials" => grant_to_service(app, &realm_name, scope, request).await,
-        "authorization_code" => exchange_code(app, &realm_name, scope, request).await,
-        _ => rotate_refresh_token(app, &realm_name, scope, request).await,
+        "client_credentials" => grant_to_service(app, &issuer, work, &client, &request).await,
+        "authorization_code" => exchange_code(app, &issuer, scope, work, &client, &request).await,
+        _ => rotate_refresh_token(app, &issuer, work, &client, &request).await,
     }
 }
 
@@ -147,16 +160,15 @@ pub(super) fn narrow_scopes(
 
 async fn grant_to_service(
     app: &App,
-    realm_name: &RealmName,
-    scope: RealmScope,
-    request: TokenRequest<'_>,
+    issuer: &str,
+    mut work: Box<dyn UnitOfWork>,
+    client: &Client,
+    request: &TokenRequest<'_>,
 ) -> Result<TokenResponse, OAuthFailure> {
-    let (Some(client_id), Some(client_secret)) = (request.client_id, request.client_secret) else {
+    // A public client proves nothing: it never acts as itself.
+    if client.is_public() {
         return Err(ErrorCode::ClientAuthenticationFailed.into());
-    };
-
-    let mut work = app.storage.begin(scope).await.map_err(Failure::from)?;
-    let client = authenticate_client(app, work.as_mut(), client_id, &client_secret).await?;
+    }
     if !client.allows_client_credentials {
         return Err(ErrorCode::GrantNotAllowed.into());
     }
@@ -164,7 +176,6 @@ async fn grant_to_service(
     // Asked for nothing, a client gets what it is allowed. It never gets more.
     let granted = narrow_scopes(request.scope, &client.scopes)?;
 
-    let issuer = name_issuer(&app.settings, realm_name);
     let grant = ClaimGrant {
         person: None,
         client_id: &client.client_id,
@@ -178,7 +189,7 @@ async fn grant_to_service(
         app,
         &key,
         AccessTokenSubject {
-            issuer: &issuer,
+            issuer,
             subject: &client.client_id,
             client_id: &client.client_id,
             scopes: &granted,
@@ -202,28 +213,25 @@ async fn grant_to_service(
 
 async fn exchange_code(
     app: &App,
-    realm_name: &RealmName,
+    issuer: &str,
     scope: RealmScope,
-    request: TokenRequest<'_>,
+    mut work: Box<dyn UnitOfWork>,
+    client: &Client,
+    request: &TokenRequest<'_>,
 ) -> Result<TokenResponse, OAuthFailure> {
-    let client_id = request
-        .client_id
-        .ok_or(ErrorCode::ClientAuthenticationFailed)?;
     let (Some(code), Some(redirect_uri), Some(verifier)) =
         (request.code, request.redirect_uri, request.code_verifier)
     else {
         return Err(ErrorCode::RequestInvalid.into());
     };
     let invalid = || OAuthFailure::from(ErrorCode::GrantInvalid);
-
-    // The code is spent first, in a unit of work of its own that commits
-    // whatever follows: a code presented once is spent, even when the rest
-    // of the exchange is refused.
-    let mut work = app.storage.begin(scope).await.map_err(Failure::from)?;
-    let client = identify_client(app, work.as_mut(), client_id, request.client_secret).await?;
     if !client.allows_authorization_code {
         return Err(ErrorCode::GrantNotAllowed.into());
     }
+
+    // The code is spent first, in the unit identify_client returned, which
+    // commits whatever follows: a code presented once is spent, even when
+    // the rest of the exchange is refused.
     let digest = app.digester.sha256(code.as_bytes());
     let now = app.now();
     let spent = work
@@ -252,8 +260,8 @@ async fn exchange_code(
         .ok_or_else(invalid)?;
     // Whatever the code carries, a client that requires no consent is
     // granted nothing offline.
-    let scopes = grant_to_client(&client, &code.scopes);
-    if !hold_consent_for(work.as_mut(), &client, person.id, &scopes).await? {
+    let scopes = grant_to_client(client, &code.scopes);
+    if !hold_consent_for(work.as_mut(), client, person.id, &scopes).await? {
         return Err(invalid());
     }
 
@@ -271,9 +279,8 @@ async fn exchange_code(
     let (offline, given_way) =
         open_offline_grant(app, work.as_mut(), &client.client_id, &scopes, &session).await?;
     let held_in = offline.as_ref().unwrap_or(&session);
-    let issuer = name_issuer(&app.settings, realm_name);
     let granted = Granted {
-        issuer: &issuer,
+        issuer,
         client_id: &client.client_id,
         session: held_in,
         person: &person,
@@ -490,6 +497,7 @@ mod tests {
 
     use super::{TokenRequest, grant_token};
     use crate::app::App;
+    use crate::clients::authenticate::PresentedSecret;
     use crate::error::ErrorCode;
     use crate::oidc::errors::OAuthError;
     use crate::secret::Secret;
@@ -509,7 +517,7 @@ mod tests {
             grant_type: Some("client_credentials"),
             scope,
             client_id: Some(client_id),
-            client_secret: Some(copy_secret(secret)),
+            client_secret: Some(PresentedSecret::Basic(copy_secret(secret))),
             ..TokenRequest::default()
         }
     }

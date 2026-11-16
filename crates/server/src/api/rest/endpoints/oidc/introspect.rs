@@ -3,6 +3,7 @@
 use actix_web::http::header::{CACHE_CONTROL, PRAGMA};
 use actix_web::{HttpRequest, HttpResponse, post, web};
 use saffui_core::app::App as Product;
+use saffui_core::clients::authenticate::PresentedProof;
 use saffui_core::oidc::introspect::introspect_token;
 use serde::Deserialize;
 
@@ -10,12 +11,14 @@ use super::token::refuse_unreadable_identity;
 use crate::error::render_protocol_failure;
 use crate::extract::client_credentials::read_client_identity;
 
-// No `Debug`: the form carries a secret and a token.
+// No `Debug`: the form carries a secret or an assertion, and a token.
 #[derive(Deserialize)]
 pub struct TokenQuestion {
     pub(super) token: Option<String>,
     pub(super) client_id: Option<String>,
     pub(super) client_secret: Option<String>,
+    pub(super) client_assertion_type: Option<String>,
+    pub(super) client_assertion: Option<String>,
 }
 
 #[post("/realms/{realm}/oauth2/introspect")]
@@ -34,7 +37,11 @@ pub async fn describe_token(
         &product,
         &realm,
         identity.client_id.as_deref(),
-        identity.secret,
+        PresentedProof {
+            secret: identity.secret,
+            assertion_type: form.client_assertion_type.as_deref(),
+            assertion: form.client_assertion.as_deref(),
+        },
         form.token.as_deref(),
     )
     .await;

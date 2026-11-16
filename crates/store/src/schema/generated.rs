@@ -212,6 +212,24 @@ pub(crate) mod authz_policies {
     ];
 }
 
+pub(crate) mod client_assertions {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "client_assertions",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// text
+    pub(crate) const CLIENT_ID: Column = Column("client_id");
+    /// text
+    pub(crate) const TOKEN_ID: Column = Column("token_id");
+    /// timestamp with time zone
+    pub(crate) const KEPT_UNTIL: Column = Column("kept_until");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[CLIENT_ID, TOKEN_ID, KEPT_UNTIL];
+}
+
 pub(crate) mod client_mappers {
     use super::{Column, ScopeKeys, Table};
 
@@ -277,6 +295,14 @@ pub(crate) mod clients {
     pub(crate) const REQUIRES_CONSENT: Column = Column("requires_consent");
     /// text, nullable
     pub(crate) const ID_TOKEN_SIGNED_RESPONSE_ALG: Column = Column("id_token_signed_response_alg");
+    /// text
+    pub(crate) const AUTH_METHOD: Column = Column("auth_method");
+    /// bytea, nullable
+    pub(crate) const SEALED_SECRET: Column = Column("sealed_secret");
+    /// jsonb, nullable
+    pub(crate) const JWKS: Column = Column("jwks");
+    /// text, nullable
+    pub(crate) const AUTH_SIGNING_ALG: Column = Column("auth_signing_alg");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -294,6 +320,10 @@ pub(crate) mod clients {
         POST_LOGOUT_REDIRECT_URIS,
         REQUIRES_CONSENT,
         ID_TOKEN_SIGNED_RESPONSE_ALG,
+        AUTH_METHOD,
+        SEALED_SECRET,
+        JWKS,
+        AUTH_SIGNING_ALG,
     ];
 }
 
@@ -900,6 +930,7 @@ pub(crate) const TABLES: &[(Table, &[Column])] = &[
     (authorization_requests::TABLE, authorization_requests::ALL),
     (authz_definitions::TABLE, authz_definitions::ALL),
     (authz_policies::TABLE, authz_policies::ALL),
+    (client_assertions::TABLE, client_assertions::ALL),
     (client_mappers::TABLE, client_mappers::ALL),
     (clients::TABLE, clients::ALL),
     (code_attempts::TABLE, code_attempts::ALL),

@@ -3,7 +3,9 @@ use actix_web::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, WWW_AU
 use actix_web::{App, test, web};
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use saffui_core::clients::ClientAuthMethod;
 use saffui_core::ports::storage::StorageUnavailable;
+use saffui_core::secret::Secret;
 use saffui_core::testkit::fixtures::{create_realm, create_service_client};
 use saffui_core::testkit::memory::MemoryStorage;
 use serde_json::Value;
@@ -87,14 +89,159 @@ async fn a_service_gets_a_token_with_the_basic_scheme_and_no_cache_may_keep_it()
     );
 }
 
+/// Registers in `acme` a service that proves itself by `method`, and
+/// returns the secret it was shown.
+async fn register_service(
+    product: &saffui_core::app::App,
+    client_id: &str,
+    method: ClientAuthMethod,
+) -> String {
+    use saffui_core::clients::register::NewClient;
+    use saffui_core::tenancy::resolve::resolve_realm;
+    use saffui_core::testkit::fixtures::check_and_register_client;
+
+    let scope = resolve_realm(product, "acme").await.expect("the realm").1;
+    let scopes = ["invoices:read".to_owned()];
+    let mut work = product.storage.begin(scope).await.expect("a unit of work");
+    let (_client, secret) = check_and_register_client(
+        product,
+        work.as_mut(),
+        NewClient {
+            client_id,
+            name: client_id,
+            scopes: &scopes,
+            capabilities: &[],
+            redirect_uris: &[],
+            post_logout_redirect_uris: &[],
+            public: false,
+            requires_consent: false,
+            id_token_signed_response_alg: None,
+            auth_method: Some(method),
+            jwks: None,
+            jwks_uri: None,
+            auth_signing_alg: None,
+            created_by: None,
+        },
+    )
+    .await
+    .expect("a client");
+    work.commit().await.expect("a commit");
+    String::from_utf8(secret.expect("a secret").expose().to_vec()).expect("a printable secret")
+}
+
 #[actix_web::test]
-async fn a_service_gets_a_token_with_its_credentials_in_the_form() {
+async fn a_secret_is_read_where_its_client_registered_it_and_nowhere_else() {
     let (product, _storage, secret) = start().await;
+    let posted = register_service(&product, "poster", ClientAuthMethod::ClientSecretPost).await;
+    let in_form = |client_id, secret| {
+        format!("grant_type=client_credentials&client_id={client_id}&client_secret={secret}")
+    };
 
-    let form = format!("grant_type=client_credentials&client_id=billing&client_secret={secret}");
-    let answer = post_form(&product, TOKEN, None, &form).await;
+    let poster_in_form = post_form(&product, TOKEN, None, &in_form("poster", &posted)).await;
+    let billing_in_form = post_form(&product, TOKEN, None, &in_form("billing", &secret)).await;
+    let poster_in_basic = post_form(
+        &product,
+        TOKEN,
+        Some(("poster", &posted)),
+        "grant_type=client_credentials",
+    )
+    .await;
 
-    assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+    assert_eq!(
+        poster_in_form.status,
+        StatusCode::OK,
+        "{}",
+        poster_in_form.body
+    );
+    for (refused, why) in [
+        (&billing_in_form, "registered for the Basic scheme"),
+        (&poster_in_basic, "registered for the form"),
+    ] {
+        assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{why}");
+        assert_eq!(refused.body["error"], "invalid_client", "{why}");
+    }
+}
+
+/// An assertion of `client_id` signed with its secret, as its form carries it.
+fn write_assertion(
+    product: &saffui_core::app::App,
+    client_id: &str,
+    secret: &str,
+    jti: &str,
+) -> String {
+    let claims = serde_json::json!({
+        "iss": client_id,
+        "sub": client_id,
+        "aud": "https://id.example.test/realms/acme",
+        "jti": jti,
+        "exp": product.now().unix_timestamp() + 60,
+    });
+    let input = format!(
+        "{}.{}",
+        URL_SAFE_NO_PAD.encode(r#"{"alg":"HS256"}"#),
+        URL_SAFE_NO_PAD.encode(claims.to_string())
+    );
+    let mac = product
+        .digester
+        .hmac_sha256(&Secret::new(secret.as_bytes().to_vec()), input.as_bytes())
+        .expect("a mac");
+    format!(
+        "client_assertion_type=urn%3Aietf%3Aparams%3Aoauth%3Aclient-assertion-type%3Ajwt-bearer\
+         &client_assertion={input}.{}",
+        URL_SAFE_NO_PAD.encode(mac)
+    )
+}
+
+#[actix_web::test]
+async fn an_assertion_in_the_form_proves_its_client_at_the_token_and_introspection_endpoints_once()
+{
+    let (product, _storage, _secret) = start().await;
+    let secret = register_service(&product, "signer", ClientAuthMethod::ClientSecretJwt).await;
+    let first = write_assertion(&product, "signer", &secret, "a-1");
+
+    let granted = post_form(
+        &product,
+        TOKEN,
+        None,
+        &format!("grant_type=client_credentials&{first}"),
+    )
+    .await;
+    let replayed = post_form(
+        &product,
+        TOKEN,
+        None,
+        &format!("grant_type=client_credentials&{first}"),
+    )
+    .await;
+    let token = granted.body["access_token"].as_str().expect("a token");
+    let told = post_form(
+        &product,
+        "/realms/acme/oauth2/introspect",
+        None,
+        &format!(
+            "token={token}&{}",
+            write_assertion(&product, "signer", &secret, "a-2")
+        ),
+    )
+    .await;
+    let beside_a_secret = post_form(
+        &product,
+        TOKEN,
+        Some(("signer", &secret)),
+        &format!(
+            "grant_type=client_credentials&{}",
+            write_assertion(&product, "signer", &secret, "a-3")
+        ),
+    )
+    .await;
+
+    assert_eq!(granted.status, StatusCode::OK, "{}", granted.body);
+    assert_eq!(replayed.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(replayed.body["error"], "invalid_client");
+    assert_eq!(told.status, StatusCode::OK, "{}", told.body);
+    assert_eq!(told.body["active"], true);
+    assert_eq!(beside_a_secret.status, StatusCode::BAD_REQUEST);
+    assert_eq!(beside_a_secret.body["error"], "invalid_request");
 }
 
 #[actix_web::test]

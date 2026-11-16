@@ -18,6 +18,13 @@ pub trait Digester: Send + Sync {
     /// the digest, since every link compared with it would then match.
     fn sha256(&self, data: &[u8]) -> [u8; 32];
 
+    /// HMAC-SHA-256 of `data` under `key`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the library cannot compute it.
+    fn hmac_sha256(&self, key: &Secret, data: &[u8]) -> Result<[u8; 32], CryptoFailure>;
+
     /// Compares without telling, by the time it takes, where the two differ.
     fn equal_in_constant_time(&self, left: &[u8], right: &[u8]) -> bool;
 }
@@ -147,15 +154,15 @@ pub struct GeneratedSigningKey {
     pub public_jwk: serde_json::Value,
 }
 
-/// What the caller of a key holds while it is made, such as the share of its
-/// tenant: kept with the work and dropped when the key is made, not when the
-/// caller gives up.
+/// What the caller of a key holds while it is made or checked, such as the
+/// share of its tenant: kept with the work and dropped when the work is done,
+/// not when the caller gives up.
 pub type KeyMakingGuard = Box<dyn Send>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum KeyMakingFailure {
-    /// Every key maker of the node is at work: the request is refused at
-    /// once, instead of waiting behind the keys of other tenants.
+    /// Every key maker of the node is at work, making or checking keys: the
+    /// request is refused at once, instead of waiting behind other tenants.
     #[error("every key maker is at work")]
     Busy,
     #[error("the key could not be made")]
@@ -195,6 +202,26 @@ pub trait Signer: Send + Sync {
         private_key: &Secret,
         message: &[u8],
     ) -> Result<Vec<u8>, CryptoFailure>;
+
+    /// Tells whether this build reads each key of a client for its algorithm,
+    /// away from the threads that serve requests, on the key makers. `guard`
+    /// is kept until the check is done:
+    /// - a key of another type or curve, of a size no signer makes, or of a
+    ///   small order is refused here and by [`Signer::verify`] alike;
+    /// - so is an RSA key of another exponent than 65537;
+    /// - an RSA modulus is checked against cheap factoring here alone: the
+    ///   work costs too much for an assertion anybody may send;
+    /// - a key read from anywhere else passes here before it serves.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KeyMakingFailure::Busy`] when every key maker is at work,
+    /// and fails when the check cannot be carried out.
+    async fn check_client_keys(
+        &self,
+        keys: Vec<(SignatureAlgorithm, serde_json::Value)>,
+        guard: KeyMakingGuard,
+    ) -> Result<bool, KeyMakingFailure>;
 
     /// Tells whether `signature` is the one of `message` under the public
     /// key. A signature that does not verify is `Ok(false)`.

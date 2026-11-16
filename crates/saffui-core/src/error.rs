@@ -70,6 +70,9 @@ pub enum ErrorCode {
     MapperNotFound = 314,
     MapperLimitReached = 315,
     MapperOverlaps = 316,
+    ClientJwksInvalid = 317,
+    AuthMethodInvalid = 318,
+    ClientHasNoSecret = 319,
     AdminAuthenticationFailed = 400,
     CapabilityMissing = 401,
     SignInFailed = 402,
@@ -143,7 +146,8 @@ impl ErrorCode {
             | Self::MapperOverlaps
             | Self::ClaimsTooLarge
             | Self::KeyStillActive
-            | Self::SigningKeyLimitReached => ErrorKind::Conflict,
+            | Self::SigningKeyLimitReached
+            | Self::ClientHasNoSecret => ErrorKind::Conflict,
             Self::RealmNotFound
             | Self::ClientNotFound
             | Self::PersonNotFound
@@ -199,7 +203,9 @@ impl ErrorCode {
             | Self::AttributesInvalid
             | Self::MapperInvalid
             | Self::KeyAlgorithmUnavailable
-            | Self::AlgorithmUnknown => ErrorKind::Invalid,
+            | Self::AlgorithmUnknown
+            | Self::ClientJwksInvalid
+            | Self::AuthMethodInvalid => ErrorKind::Invalid,
         }
     }
 
@@ -247,6 +253,9 @@ impl ErrorCode {
             Self::MapperNotFound => "client.mapper_not_found",
             Self::MapperLimitReached => "client.mapper_limit_reached",
             Self::MapperOverlaps => "client.mapper_overlaps",
+            Self::ClientJwksInvalid => "client.jwks_invalid",
+            Self::AuthMethodInvalid => "client.auth_method_invalid",
+            Self::ClientHasNoSecret => "client.has_no_secret",
             Self::TokenInvalid => "token.invalid",
             Self::GrantInvalid => "token.grant_invalid",
             Self::TokenScopeInsufficient => "token.scope_insufficient",
@@ -424,6 +433,13 @@ impl ErrorCode {
             Self::MapperOverlaps => {
                 "Another mapper of this client writes this claim or reads this source for one of these targets."
             }
+            Self::ClientJwksInvalid => {
+                "A client that proves itself with a key gives one to ten public keys inline, of a type and size this realm reads: no other client gives keys, and no address of keys is read."
+            }
+            Self::AuthMethodInvalid => {
+                "This way of proving the client, or the algorithm it signs in, does not fit it."
+            }
+            Self::ClientHasNoSecret => "This client keeps no secret to replace.",
             Self::ClaimsTooLarge => "The mappers of this client write more than a token can carry.",
         }
     }
@@ -487,7 +503,7 @@ mod tests {
 
     use super::ErrorCode;
 
-    const ALL: [ErrorCode; 81] = [
+    const ALL: [ErrorCode; 84] = [
         ErrorCode::Internal,
         ErrorCode::StorageUnavailable,
         ErrorCode::Conflict,
@@ -562,6 +578,9 @@ mod tests {
         ErrorCode::MapperNotFound,
         ErrorCode::MapperLimitReached,
         ErrorCode::MapperOverlaps,
+        ErrorCode::ClientJwksInvalid,
+        ErrorCode::AuthMethodInvalid,
+        ErrorCode::ClientHasNoSecret,
         ErrorCode::ClaimsTooLarge,
         ErrorCode::KeyNotFound,
         ErrorCode::KeyStillActive,

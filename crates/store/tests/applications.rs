@@ -3,7 +3,7 @@
 
 use pgcore::pool::PoolSettings;
 use saffui_core::authz::capability::Capability;
-use saffui_core::clients::Client;
+use saffui_core::clients::{Client, ClientAuthMethod, KeptProof};
 use saffui_core::ids::mint_id;
 use saffui_core::ports::storage::StorageError;
 use saffui_core::testkit::fixtures::create_realm;
@@ -19,7 +19,8 @@ async fn an_application_with_a_capability_a_service_without_a_secret_and_a_flow_
         id: mint_id(&app).expect("an identifier"),
         client_id: "webapp".to_owned(),
         name: "Web app".to_owned(),
-        secret_digest: None,
+        auth_method: ClientAuthMethod::None,
+        auth_signing_alg: None,
         allows_client_credentials: false,
         allows_authorization_code: true,
         redirect_uris: vec!["https://app.example.org/callback".to_owned()],
@@ -33,9 +34,17 @@ async fn an_application_with_a_capability_a_service_without_a_secret_and_a_flow_
     };
     let insert = |client: Client| {
         let app = app.clone();
+        // A client of the Basic scheme keeps a digest, a public one nothing.
+        let digest =
+            (client.auth_method == ClientAuthMethod::ClientSecretBasic).then(|| vec![7; 32]);
         async move {
+            let proof = KeptProof {
+                secret_digest: digest,
+                sealed_secret: None,
+                jwks: None,
+            };
             let mut work = app.storage.begin(scope).await.expect("a unit of work");
-            work.insert_client(&client).await
+            work.insert_client(&client, &proof).await
         }
     };
 
@@ -60,7 +69,7 @@ async fn an_application_with_a_capability_a_service_without_a_secret_and_a_flow_
         Client {
             allows_authorization_code: false,
             allows_client_credentials: true,
-            secret_digest: Some(vec![7; 32]),
+            auth_method: ClientAuthMethod::ClientSecretBasic,
             redirect_uris: Vec::new(),
             ..application.clone()
         },
@@ -68,7 +77,7 @@ async fn an_application_with_a_capability_a_service_without_a_secret_and_a_flow_
         Client {
             allows_authorization_code: false,
             allows_client_credentials: true,
-            secret_digest: Some(vec![7; 32]),
+            auth_method: ClientAuthMethod::ClientSecretBasic,
             redirect_uris: Vec::new(),
             post_logout_redirect_uris: Vec::new(),
             ..application.clone()

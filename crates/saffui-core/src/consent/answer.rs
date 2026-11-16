@@ -212,7 +212,7 @@ mod tests {
 
     use super::{ConsentDecision, ConsentPrompt, answer_consent, describe_consent};
     use crate::authz::capability::Capability;
-    use crate::clients::register::{NewClient, register_client};
+    use crate::clients::register::NewClient;
     use crate::consent::Consent;
     use crate::consent::manage::{
         list_my_consents, list_person_consents, withdraw_my_consent, withdraw_person_consent,
@@ -228,6 +228,7 @@ mod tests {
     use crate::oidc::token::{TokenRequest, TokenResponse, grant_token};
     use crate::secret::Secret;
     use crate::testkit::drive::complete;
+    use crate::testkit::fixtures::check_and_register_client;
 
     const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 
@@ -238,7 +239,7 @@ mod tests {
         let redirect_uris = [CALLBACK.to_owned()];
         let mut work =
             complete(scenario.app.storage.begin(scenario.scope)).expect("a unit of work");
-        complete(register_client(
+        complete(check_and_register_client(
             &scenario.app,
             work.as_mut(),
             NewClient {
@@ -251,6 +252,10 @@ mod tests {
                 public: true,
                 requires_consent: true,
                 id_token_signed_response_alg: None,
+                auth_method: None,
+                jwks: None,
+                jwks_uri: None,
+                auth_signing_alg: None,
                 created_by: None,
             },
         ))
@@ -742,7 +747,8 @@ mod tests {
             id: Uuid::from_u128(9),
             client_id: "partner".to_owned(),
             name: "Pay\u{202e}lapyap".to_owned(),
-            secret_digest: None,
+            auth_method: crate::clients::ClientAuthMethod::None,
+            auth_signing_alg: None,
             allows_client_credentials: false,
             allows_authorization_code: true,
             redirect_uris: vec![CALLBACK.to_owned()],
@@ -756,7 +762,12 @@ mod tests {
         };
         let mut work =
             complete(scenario.app.storage.begin(scenario.scope)).expect("a unit of work");
-        complete(work.insert_client(&partner)).expect("a client");
+        let nothing = crate::clients::KeptProof {
+            secret_digest: None,
+            sealed_secret: None,
+            jwks: None,
+        };
+        complete(work.insert_client(&partner, &nothing)).expect("a client");
         complete(work.commit()).expect("a commit");
         let (request, browser_secret, ticket) = sign_in_for_partner(&scenario, "ada", "openid");
 

@@ -1,7 +1,8 @@
 //! The bounds of claims are counted under a lock: the mappers of a client
 //! under the row of the client, the attributes of a person under the row of
 //! the person. Of two writers at the bound, the second waits for the first,
-//! then counts what it kept.
+//! then counts what it kept. An administrator who changes how a client
+//! proves itself takes the same row: a grant of the operator waits for it.
 
 use std::future::Future;
 use std::time::{Duration, Instant};
@@ -16,11 +17,13 @@ use saffui_core::claims::attributes::{read_attributes, write_attributes};
 use saffui_core::claims::manage::{create_mapper, list_mappers};
 use saffui_core::claims::rules::MAX_MAPPERS_PER_CLIENT;
 use saffui_core::claims::{ClaimTarget, Mapper, MapperKind, NewMapper};
+use saffui_core::clients::manage::grant_capabilities_as_operator;
 use saffui_core::error::ErrorCode;
 use saffui_core::ports::storage::StorageError;
 use saffui_core::tenancy::RealmScope;
 use saffui_core::testkit::fixtures::{
-    Application, create_administrator, create_person, create_realm, register_application,
+    Application, create_administrator, create_person, create_realm, create_service_client,
+    register_application,
 };
 use serde_json::{Map, Value, json};
 use tokio::task::JoinHandle;
@@ -390,4 +393,40 @@ async fn the_mappers_of_a_client_are_read_in_the_order_of_their_names_whatever_t
         .collect();
 
     assert_eq!(names, ["Zeta", "alpha", "beta"]);
+}
+
+/// A unit of work takes the row of a client to change how it proves itself:
+/// a grant of the operator to that client waits for the commit, then grants.
+#[tokio::test]
+async fn a_grant_of_the_operator_waits_for_a_client_taken_to_be_changed() {
+    let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let scope = create_realm(&app, "acme").await;
+    create_service_client(&app, scope, "billing", &[]).await;
+    let observer = connect(&database, APP_ROLE).await;
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.read_client_for_update("billing")
+        .await
+        .expect("a read")
+        .expect("the client");
+
+    let granting = {
+        let app = app.clone();
+        tokio::spawn(async move {
+            grant_capabilities_as_operator(&app, "acme", "billing", &[Capability::KeyWrite])
+                .await
+                .map(|client| client.capabilities)
+                .map_err(|failure| failure.code)
+        })
+    };
+    let waited = wait_for_waiter(&observer, ON_A_ROW, &granting).await;
+    let done_before = granting.is_finished();
+    work.commit().await.expect("a commit");
+
+    assert!(waited, "the grant waits on the row of the client");
+    assert!(!done_before, "and is not done before the commit");
+    assert_eq!(
+        granting.await.expect("the grant"),
+        Ok(vec![Capability::KeyWrite]),
+        "then it grants"
+    );
 }

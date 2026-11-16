@@ -8,10 +8,9 @@ use super::discovery::name_issuer;
 use super::errors::OAuthFailure;
 use crate::app::App;
 use crate::authz::grants::{ROLES_SCOPE, RoleClaims, name_client_held_for, read_role_claims};
-use crate::clients::authenticate::authenticate_client;
+use crate::clients::authenticate::{PresentedProof, authenticate_client, read_client_proof};
 use crate::error::{ErrorCode, Failure};
 use crate::login::session::read_live_subject;
-use crate::secret::Secret;
 use crate::tenancy::resolve::resolve_realm;
 use crate::tokens::verify::verify_access_token;
 
@@ -53,27 +52,25 @@ pub struct Introspection {
 ///
 /// # Errors
 ///
-/// Returns [`ErrorCode::ClientAuthenticationFailed`] for a caller that is
-/// not a client with its secret, [`ErrorCode::RequestInvalid`] when no token
-/// is presented, [`ErrorCode::HeldTooMany`] for a token that asks for the
-/// roles of a person who holds them by more ways than are read, or the
-/// storage failure. A token that does not stand is not an error: it is an
+/// Returns [`ErrorCode::ClientAuthenticationFailed`] for a caller that does
+/// not prove itself as a confidential client, [`ErrorCode::RequestInvalid`]
+/// for two proofs at once or when no token is presented,
+/// [`ErrorCode::HeldTooMany`] for a token that asks for the roles of a
+/// person who holds them by more ways than are read, or the storage
+/// failure. A token that does not stand is not an error: it is an
 /// answer.
 pub async fn introspect_token(
     app: &App,
     realm: &str,
     client_id: Option<&str>,
-    client_secret: Option<Secret>,
+    presented: PresentedProof<'_>,
     token: Option<&str>,
 ) -> Result<Introspection, OAuthFailure> {
+    let proof = read_client_proof(presented)?;
     let (realm_name, scope) = resolve_realm(app, realm).await?;
-    let (Some(client_id), Some(client_secret)) = (client_id, client_secret) else {
-        return Err(ErrorCode::ClientAuthenticationFailed.into());
-    };
-    let mut work = app.storage.begin(scope).await.map_err(Failure::from)?;
-    let client = authenticate_client(app, work.as_mut(), client_id, &client_secret).await?;
-    let token = token.ok_or(ErrorCode::RequestInvalid)?;
     let issuer = name_issuer(&app.settings, &realm_name);
+    let (client, mut work) = authenticate_client(app, scope, client_id, proof, &issuer).await?;
+    let token = token.ok_or(ErrorCode::RequestInvalid)?;
     let now = app.now();
 
     match verify_access_token(app, work.as_mut(), &issuer, token).await {
@@ -166,17 +163,27 @@ pub async fn introspect_token(
 #[cfg(test)]
 mod tests {
     use super::{Introspection, introspect_token};
+    use crate::clients::authenticate::{PresentedProof, PresentedSecret};
     use crate::oidc::errors::OAuthError;
     use crate::oidc::scenario::Scenario;
+    use crate::secret::Secret;
     use crate::testkit::drive::complete;
     use crate::testkit::fixtures::{CodeFlow, create_application, run_code_flow};
+
+    /// A secret presented in the Basic scheme, as `billing` registered it.
+    fn in_basic(secret: Option<Secret>) -> PresentedProof<'static> {
+        PresentedProof {
+            secret: secret.map(PresentedSecret::Basic),
+            ..PresentedProof::default()
+        }
+    }
 
     fn ask(scenario: &Scenario, token: &str) -> Introspection {
         complete(introspect_token(
             &scenario.app,
             "acme",
             Some("billing"),
-            Some(scenario.copy_service_secret()),
+            in_basic(Some(scenario.copy_service_secret())),
             Some(token),
         ))
         .expect("an answer")
@@ -275,7 +282,7 @@ mod tests {
                 &scenario.app,
                 "acme",
                 Some("backend"),
-                Some(crate::secret::Secret::new(secret.expose().to_vec())),
+                in_basic(Some(Secret::new(secret.expose().to_vec()))),
                 Some(&refresh),
             ))
             .expect("an answer")
@@ -306,7 +313,7 @@ mod tests {
                 &scenario.app,
                 "acme",
                 client_id,
-                secret.map(|secret| crate::secret::Secret::new(secret.as_bytes().to_vec())),
+                in_basic(secret.map(|secret| Secret::new(secret.as_bytes().to_vec()))),
                 Some(&token),
             ))
             .map_err(|failure| failure.error)
@@ -322,7 +329,7 @@ mod tests {
             &scenario.app,
             "acme",
             Some("billing"),
-            Some(scenario.copy_service_secret()),
+            in_basic(Some(scenario.copy_service_secret())),
             None,
         ));
         assert_eq!(

@@ -51,6 +51,8 @@ pub enum EventKind {
     SigningKeyRetired,
     SigningKeyDeleted,
     ClientCapabilitiesGranted,
+    ClientSecretRotated,
+    ClientAuthMethodChanged,
 }
 
 impl EventKind {
@@ -94,6 +96,8 @@ impl EventKind {
             Self::SigningKeyRetired => "key.retired",
             Self::SigningKeyDeleted => "key.deleted",
             Self::ClientCapabilitiesGranted => "client.capabilities_granted",
+            Self::ClientSecretRotated => "client.secret_rotated",
+            Self::ClientAuthMethodChanged => "client.auth_method_changed",
         }
     }
 }

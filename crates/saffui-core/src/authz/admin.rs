@@ -94,6 +94,7 @@ mod tests {
     use super::authorize_admin_call;
     use crate::app::App;
     use crate::authz::capability::Capability;
+    use crate::clients::authenticate::PresentedSecret;
     use crate::clients::register::{NewServiceClient, register_service_client};
     use crate::error::ErrorCode;
     use crate::oidc::token::{TokenRequest, grant_token};
@@ -129,7 +130,9 @@ mod tests {
             grant_type: Some("client_credentials"),
             scope: None,
             client_id: Some(client_id),
-            client_secret: Some(Secret::new(secret.expose().to_vec())),
+            client_secret: Some(PresentedSecret::Basic(Secret::new(
+                secret.expose().to_vec(),
+            ))),
             ..TokenRequest::default()
         };
         complete(grant_token(app, realm, request))
@@ -333,7 +336,9 @@ mod tests {
                 grant_type: Some("client_credentials"),
                 scope: Some("invoices:read"),
                 client_id: Some("operator"),
-                client_secret: Some(Secret::new(secret.expose().to_vec())),
+                client_secret: Some(PresentedSecret::Basic(Secret::new(
+                    secret.expose().to_vec(),
+                ))),
                 ..TokenRequest::default()
             },
         ))

@@ -1,6 +1,7 @@
 //! The clients of a realm: the applications and services allowed to ask it
 //! for tokens.
 
+pub mod assertion;
 pub mod authenticate;
 pub mod manage;
 pub mod register;
@@ -14,6 +15,87 @@ use crate::error::{ErrorCode, Failure};
 use crate::ports::crypto::SignatureAlgorithm;
 use crate::ports::storage::{StorageError, UnitOfWork};
 
+/// How a client proves itself where it asks about tokens. The method it
+/// registered is the only one it may prove itself with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClientAuthMethod {
+    /// Its secret, in the Basic scheme of the `Authorization` header.
+    ClientSecretBasic,
+    /// Its secret, in the body of the form.
+    ClientSecretPost,
+    /// An assertion signed with its secret (RFC 7523).
+    ClientSecretJwt,
+    /// An assertion signed with a key it registered (RFC 7523).
+    PrivateKeyJwt,
+    /// Nothing: a public client only names itself.
+    None,
+}
+
+impl ClientAuthMethod {
+    pub const ALL: [Self; 5] = [
+        Self::ClientSecretBasic,
+        Self::ClientSecretPost,
+        Self::ClientSecretJwt,
+        Self::PrivateKeyJwt,
+        Self::None,
+    ];
+
+    /// The name RFC 7591 gives it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::ClientSecretBasic => "client_secret_basic",
+            Self::ClientSecretPost => "client_secret_post",
+            Self::ClientSecretJwt => "client_secret_jwt",
+            Self::PrivateKeyJwt => "private_key_jwt",
+            Self::None => "none",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|method| method.name() == name)
+    }
+
+    /// Whether a client of this method keeps a secret: the two that present
+    /// it, and the one that signs with it. Only they are given one, or a new
+    /// one. Named one by one: a method added later keeps none until it says.
+    #[must_use]
+    pub fn keeps_secret(self) -> bool {
+        match self {
+            Self::ClientSecretBasic | Self::ClientSecretPost | Self::ClientSecretJwt => true,
+            Self::PrivateKeyJwt | Self::None => false,
+        }
+    }
+}
+
+/// What signs the assertion of a client: its secret, or one of its keys.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssertionAlgorithm {
+    /// HMAC with SHA-256, keyed by the secret.
+    Hs256,
+    Signed(SignatureAlgorithm),
+}
+
+impl AssertionAlgorithm {
+    /// The name it has in the header of an assertion.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Hs256 => "HS256",
+            Self::Signed(algorithm) => algorithm.name(),
+        }
+    }
+
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        if name == Self::Hs256.name() {
+            return Some(Self::Hs256);
+        }
+        SignatureAlgorithm::parse(name).map(Self::Signed)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -24,10 +106,10 @@ pub struct Client {
     /// The public identifier, unique in its realm.
     pub client_id: String,
     pub name: String,
-    /// The digest of the secret the realm generated. The secret itself is
-    /// shown once, when it is made, and kept nowhere. A public application,
-    /// which can keep no secret, has none.
-    pub secret_digest: Option<Vec<u8>>,
+    /// How it proves itself. What it proves itself with is kept apart.
+    pub auth_method: ClientAuthMethod,
+    /// The one algorithm its assertions may be signed in, when it named one.
+    pub auth_signing_alg: Option<AssertionAlgorithm>,
     /// A grant that is not written here is refused.
     pub allows_client_credentials: bool,
     pub allows_authorization_code: bool,
@@ -47,6 +129,30 @@ pub struct Client {
     pub id_token_signed_response_alg: Option<SignatureAlgorithm>,
     pub enabled: bool,
     pub created_at: OffsetDateTime,
+}
+
+impl Client {
+    /// A public client keeps no secret and holds no key: it proves nothing.
+    #[must_use]
+    pub fn is_public(&self) -> bool {
+        self.auth_method == ClientAuthMethod::None
+    }
+}
+
+/// What the realm keeps to check that a client is who it says, in the form
+/// its method needs. It is read with the client by the one statement that
+/// identifies it, and by no other: a client read for anything else carries
+/// none of it.
+// No `Debug` and no `Clone`: it is what a client proves itself with.
+pub struct KeptProof {
+    /// The digest of a secret the client presents. The secret itself is
+    /// shown once, when it is made.
+    pub secret_digest: Option<Vec<u8>>,
+    /// A secret the client signs its assertions with, sealed for its row.
+    pub sealed_secret: Option<Vec<u8>>,
+    /// The public keys of a client that signs with a key, each written with
+    /// the one algorithm it verifies in.
+    pub jwks: Option<serde_json::Value>,
 }
 
 /// Checks a client identifier: 1 to 64 letters, digits, hyphens, dots or

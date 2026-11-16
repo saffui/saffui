@@ -5,6 +5,7 @@ use serde::Serialize;
 
 use super::token::OFFLINE_ACCESS_SCOPE;
 use crate::app::App;
+use crate::clients::{AssertionAlgorithm, ClientAuthMethod};
 use crate::error::Failure;
 use crate::keys::rotate::list_active_algorithms;
 use crate::login::assurance::Assurance;
@@ -35,6 +36,14 @@ pub struct ProviderMetadata {
     /// never from a list written here.
     pub id_token_signing_alg_values_supported: Vec<&'static str>,
     pub token_endpoint_auth_methods_supported: Vec<&'static str>,
+    /// What an assertion of a client may be signed in: its secret, or a key
+    /// of a signature this build serves. The same at each endpoint.
+    pub token_endpoint_auth_signing_alg_values_supported: Vec<&'static str>,
+    /// Only a confidential client is told what a token says.
+    pub introspection_endpoint_auth_methods_supported: Vec<&'static str>,
+    pub introspection_endpoint_auth_signing_alg_values_supported: Vec<&'static str>,
+    pub revocation_endpoint_auth_methods_supported: Vec<&'static str>,
+    pub revocation_endpoint_auth_signing_alg_values_supported: Vec<&'static str>,
     pub code_challenge_methods_supported: Vec<&'static str>,
     pub scopes_supported: Vec<&'static str>,
     /// What `acr` may say: the levels a sign-in can reach.
@@ -53,7 +62,8 @@ pub fn name_issuer(settings: &Settings, realm: &RealmName) -> String {
     format!("{}/realms/{realm}", settings.public_origin)
 }
 
-/// The discovery document of a realm, with the algorithms its keys sign in.
+/// The discovery document of a realm, with the algorithms its keys sign in
+/// and those this build verifies the keys of clients in.
 ///
 /// # Errors
 ///
@@ -63,7 +73,16 @@ pub async fn read_provider_metadata(app: &App, realm: &str) -> Result<ProviderMe
     let mut work = app.storage.begin(scope).await?;
     let keys = work.list_signing_keys().await?;
     let signing = list_active_algorithms(app.signer.as_ref(), &keys);
-    Ok(describe_provider(&app.settings, &name, &signing))
+    let verifying: Vec<SignatureAlgorithm> = SignatureAlgorithm::ALL
+        .into_iter()
+        .filter(|algorithm| app.signer.signs_in(*algorithm))
+        .collect();
+    Ok(describe_provider(
+        &app.settings,
+        &name,
+        &signing,
+        &verifying,
+    ))
 }
 
 #[must_use]
@@ -71,8 +90,20 @@ pub fn describe_provider(
     settings: &Settings,
     realm: &RealmName,
     signing: &[SignatureAlgorithm],
+    verifying: &[SignatureAlgorithm],
 ) -> ProviderMetadata {
     let issuer = name_issuer(settings, realm);
+    let methods = ClientAuthMethod::ALL.map(ClientAuthMethod::name).to_vec();
+    let confidential: Vec<&'static str> = ClientAuthMethod::ALL
+        .into_iter()
+        .filter(|method| *method != ClientAuthMethod::None)
+        .map(ClientAuthMethod::name)
+        .collect();
+    let assertion_algorithms: Vec<&'static str> = [AssertionAlgorithm::Hs256]
+        .into_iter()
+        .chain(verifying.iter().copied().map(AssertionAlgorithm::Signed))
+        .map(AssertionAlgorithm::name)
+        .collect();
     ProviderMetadata {
         authorization_endpoint: format!("{issuer}/oauth2/authorize"),
         token_endpoint: format!("{issuer}/oauth2/token"),
@@ -88,11 +119,12 @@ pub fn describe_provider(
             .iter()
             .map(|algorithm| algorithm.name())
             .collect(),
-        token_endpoint_auth_methods_supported: vec![
-            "client_secret_basic",
-            "client_secret_post",
-            "none",
-        ],
+        token_endpoint_auth_methods_supported: methods.clone(),
+        token_endpoint_auth_signing_alg_values_supported: assertion_algorithms.clone(),
+        introspection_endpoint_auth_methods_supported: confidential,
+        introspection_endpoint_auth_signing_alg_values_supported: assertion_algorithms.clone(),
+        revocation_endpoint_auth_methods_supported: methods,
+        revocation_endpoint_auth_signing_alg_values_supported: assertion_algorithms,
         code_challenge_methods_supported: vec!["S256"],
         scopes_supported: vec!["openid", "profile", "email", "roles", OFFLINE_ACCESS_SCOPE],
         acr_values_supported: Assurance::ALL.map(Assurance::name).to_vec(),
@@ -132,7 +164,12 @@ mod tests {
         );
         let realm = RealmName::parse("acme").expect("a realm name");
 
-        let document = describe_provider(&settings, &realm, &[SignatureAlgorithm::Es256]);
+        let document = describe_provider(
+            &settings,
+            &realm,
+            &[SignatureAlgorithm::Es256],
+            &SignatureAlgorithm::ALL,
+        );
 
         assert_eq!(
             document.jwks_uri,
@@ -161,5 +198,38 @@ mod tests {
             !document.request_parameter_supported && !document.claims_parameter_supported,
             "an absent member would mean yes"
         );
+    }
+
+    #[test]
+    fn each_endpoint_that_reads_a_client_says_how_it_may_prove_itself_and_in_what() {
+        let settings = Settings::reached_directly(
+            PublicOrigin::parse("https://id.example.org").expect("an origin"),
+        );
+        let realm = RealmName::parse("acme").expect("a realm name");
+        let served = [SignatureAlgorithm::Es256, SignatureAlgorithm::Rs256];
+
+        let document = describe_provider(&settings, &realm, &[SignatureAlgorithm::Es256], &served);
+
+        let every = [
+            "client_secret_basic",
+            "client_secret_post",
+            "client_secret_jwt",
+            "private_key_jwt",
+            "none",
+        ];
+        assert_eq!(document.token_endpoint_auth_methods_supported, every);
+        assert_eq!(document.revocation_endpoint_auth_methods_supported, every);
+        assert_eq!(
+            document.introspection_endpoint_auth_methods_supported,
+            every[..4],
+            "a public client is told nothing"
+        );
+        for signed in [
+            &document.token_endpoint_auth_signing_alg_values_supported,
+            &document.introspection_endpoint_auth_signing_alg_values_supported,
+            &document.revocation_endpoint_auth_signing_alg_values_supported,
+        ] {
+            assert_eq!(*signed, ["HS256", "ES256", "RS256"], "only what is served");
+        }
     }
 }

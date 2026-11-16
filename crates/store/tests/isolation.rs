@@ -581,11 +581,13 @@ async fn a_statement_under_one_scope_removes_no_consent_of_another_realm() {
     assert_eq!(left, [scopes[1].realm().as_uuid()]);
 }
 
-/// The serving role may update two columns of a client, its realm for the
-/// lock of its row and the capabilities the operator grants, and the
-/// attributes of a person: row security keeps the first where it is and each
-/// in its realm, the schema keeps the capabilities to its list and to the
-/// clients that act as themselves, and nothing else of either changes.
+/// The serving role may update five columns of a client, its realm for the
+/// lock of its row, the capabilities the operator grants, the two forms of
+/// its secret and its method, and the attributes of a person: row security
+/// keeps the first where it is and each in its realm, the schema keeps the
+/// capabilities to its list and to the clients that act as themselves, a
+/// secret to the form its method keeps and a method between the two ways of
+/// presenting one secret, and nothing else of either changes.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -608,6 +610,15 @@ async fn the_rights_to_update_a_client_and_a_person_reach_their_columns_in_their
         requires_consent: false,
     };
     register_application(&app, acme, webapp).await;
+    // A confidential application: public, it would break no rule of its row.
+    let portal = Application {
+        client_id: "portal",
+        redirect_uri: "https://portal.example.org/callback",
+        post_logout_redirect_uri: None,
+        public: false,
+        requires_consent: false,
+    };
+    register_application(&app, acme, portal).await;
     create_person(&app, acme, "ada", "correct horse battery").await;
     let bob = create_person(&app, globex, "bob", "correct horse battery").await;
     let session = connect(&database, APP_ROLE).await;
@@ -659,6 +670,18 @@ async fn the_rights_to_update_a_client_and_a_person_reach_their_columns_in_their
             "UPDATE clients SET capabilities = '{key:*}' WHERE client_id = 'billing'",
             "clients_capabilities_known",
         ),
+        (
+            "UPDATE clients SET secret_digest = NULL WHERE client_id = 'billing'",
+            "clients_proof_fits_method",
+        ),
+        (
+            "UPDATE clients SET sealed_secret = '\\x00' WHERE client_id = 'billing'",
+            "clients_proof_fits_method",
+        ),
+        (
+            "UPDATE clients SET secret_digest = '\\x07' WHERE client_id = 'webapp'",
+            "clients_proof_fits_method",
+        ),
     ] {
         let refused = refuse(statement.to_owned()).await;
         assert_eq!(
@@ -675,9 +698,25 @@ async fn the_rights_to_update_a_client_and_a_person_reach_their_columns_in_their
         );
     }
     for statement in [
+        "UPDATE clients SET auth_method = 'none', secret_digest = NULL \
+         WHERE client_id = 'portal'",
+        "UPDATE clients SET auth_method = 'client_secret_jwt', secret_digest = NULL, \
+         sealed_secret = '\\x00' WHERE client_id = 'billing'",
+        "UPDATE clients SET auth_method = 'client_secret_post', secret_digest = '\\x09' \
+         WHERE client_id = 'billing'",
+        "UPDATE clients SET auth_method = 'client_secret_basic' WHERE client_id = 'webapp'",
+    ] {
+        let refused = refuse(statement.to_owned()).await;
+        assert_eq!(
+            refused.code(),
+            Some(&SqlState::CHECK_VIOLATION),
+            "a method changes between the two ways of presenting one secret: {statement}"
+        );
+    }
+    for statement in [
         "UPDATE clients SET name = 'x'",
         "UPDATE clients SET scopes = '{}'",
-        "UPDATE clients SET secret_digest = NULL",
+        "UPDATE clients SET jwks = '{}'",
         "UPDATE persons SET email_verified = true",
     ] {
         let refused = refuse(statement.to_owned()).await;
@@ -710,7 +749,143 @@ async fn the_rights_to_update_a_client_and_a_person_reach_their_columns_in_their
         )
         .await
         .expect("a capability granted to a service");
+    let turned_over = session
+        .execute(
+            "UPDATE clients SET secret_digest = '\\x08' WHERE client_id = 'billing'",
+            &[],
+        )
+        .await
+        .expect("a secret turned over");
+    let mut moved = 0;
+    for method in ["client_secret_post", "client_secret_basic"] {
+        moved += session
+            .execute(
+                "UPDATE clients SET auth_method = $1 WHERE client_id = 'billing'",
+                &[&method],
+            )
+            .await
+            .expect("a secret moved between the header and the form");
+    }
     session.batch_execute("ROLLBACK").await.expect("a rollback");
     assert_eq!(reached, 0, "a person of another realm");
     assert_eq!(granted, 1, "the column the operator writes");
+    assert_eq!(turned_over, 1, "the column an administrator turns over");
+    assert_eq!(moved, 2, "there and back");
+}
+
+/// The trigger that bounds a method compares under a path of its own. An
+/// operator the serving role plants first on its path, true for any two
+/// texts it is given, would otherwise let an application that signs with
+/// its secret become public: its digest is null before and after, and its
+/// row breaks no rule. True for an empty text, the operator would hide every
+/// row instead, as the scope is read through `NULLIF`.
+#[tokio::test]
+async fn an_operator_the_serving_role_plants_does_not_unbind_a_change_of_method() {
+    use saffui_core::clients::ClientAuthMethod;
+    use saffui_core::clients::register::NewClient;
+    use saffui_core::testkit::fixtures::{check_and_register_client, create_realm};
+
+    let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let acme = create_realm(&app, "acme").await;
+    let callbacks = ["https://portal.example.org/callback".to_owned()];
+    let mut work = app.storage.begin(acme).await.expect("a unit of work");
+    check_and_register_client(
+        &app,
+        work.as_mut(),
+        NewClient {
+            client_id: "portal",
+            name: "Portal",
+            scopes: &[],
+            capabilities: &[],
+            redirect_uris: &callbacks,
+            post_logout_redirect_uris: &[],
+            public: false,
+            requires_consent: false,
+            id_token_signed_response_alg: None,
+            auth_method: Some(ClientAuthMethod::ClientSecretJwt),
+            jwks: None,
+            jwks_uri: None,
+            auth_signing_alg: None,
+            created_by: None,
+        },
+    )
+    .await
+    .expect("an application that signs with its secret");
+    work.commit().await.expect("a commit");
+    let owner = connect(&database, OWNER).await;
+    owner
+        .batch_execute(&format!(
+            "CREATE SCHEMA planted; GRANT USAGE, CREATE ON SCHEMA planted TO {APP_ROLE}"
+        ))
+        .await
+        .expect("a schema the serving role may write in");
+    let session = connect(&database, APP_ROLE).await;
+    session
+        .batch_execute(
+            "CREATE FUNCTION planted.agree(text, text) RETURNS boolean LANGUAGE sql
+                 AS $$ SELECT $1 OPERATOR(pg_catalog.<>) '' AND $2 OPERATOR(pg_catalog.<>) '' $$;
+             CREATE OPERATOR planted.= (LEFTARG = text, RIGHTARG = text, FUNCTION = planted.agree);
+             CREATE FUNCTION planted.agree(bytea, bytea) RETURNS boolean LANGUAGE sql
+                 AS 'SELECT true';
+             CREATE OPERATOR planted.= (LEFTARG = bytea, RIGHTARG = bytea, FUNCTION = planted.agree);
+             SET search_path = planted, pg_catalog, public",
+        )
+        .await
+        .expect("an operator planted first on the path of the serving role");
+    session
+        .batch_execute(&format!(
+            "BEGIN; SELECT set_config('saffui.tenant', '{}', true), \
+             set_config('saffui.realm', '{}', true)",
+            acme.tenant().as_uuid(),
+            acme.realm().as_uuid()
+        ))
+        .await
+        .expect("a scoped transaction");
+
+    // `LIKE`, not `=`: the planted operator would pick every row.
+    let made_public = session
+        .execute(
+            "UPDATE clients SET auth_method = 'none', sealed_secret = NULL \
+             WHERE client_id LIKE 'portal'",
+            &[],
+        )
+        .await;
+    session.batch_execute("ROLLBACK").await.expect("a rollback");
+    drop(session);
+    owner
+        .batch_execute("DROP SCHEMA planted CASCADE")
+        .await
+        .expect("the schema dropped");
+
+    let refused = made_public.expect_err("a confidential application made public");
+    assert_eq!(
+        refused.code(),
+        Some(&SqlState::CHECK_VIOLATION),
+        "{refused}"
+    );
+    assert_eq!(
+        refused
+            .as_db_error()
+            .map(|refusal| (refusal.constraint(), refusal.message())),
+        Some((None, "a client changes only how it presents its secret")),
+        "the trigger refuses it, not a rule of the row"
+    );
+}
+
+#[tokio::test]
+async fn the_function_that_bounds_a_method_is_granted_to_no_role() {
+    let (_app, database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let owner = connect(&database, OWNER).await;
+
+    for role in [APP_ROLE, MAINTENANCE_ROLE] {
+        let granted: bool = owner
+            .query_one(
+                "SELECT has_function_privilege($1, 'saffui_bound_auth_method_change()', 'EXECUTE')",
+                &[&role],
+            )
+            .await
+            .expect("a privilege read")
+            .get(0);
+        assert!(!granted, "{role} may call it");
+    }
 }

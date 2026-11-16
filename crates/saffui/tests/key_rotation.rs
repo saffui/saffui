@@ -380,10 +380,10 @@ fn the_operator_command_answers_by_its_exit_code_what_it_refuses() {
         "INSERT INTO clients (tenant_id, realm_id, client_row_id, client_id, name, secret_digest,
                               allows_client_credentials, scopes, enabled, created_at,
                               allows_authorization_code, redirect_uris,
-                              post_logout_redirect_uris, requires_consent)
+                              post_logout_redirect_uris, requires_consent, auth_method)
              VALUES (current_setting('saffui.tenant')::uuid, current_setting('saffui.realm')::uuid,
                      gen_random_uuid(), 'webapp', 'webapp', NULL, false, '{openid}', true, now(),
-                     true, '{https://app.example.test/callback}', '{}', false);
+                     true, '{https://app.example.test/callback}', '{}', false, 'none');
          INSERT INTO signing_keys (tenant_id, realm_id, signing_key_id, kid, algorithm,
                                    public_jwk, sealed_private_key, created_at, status)
              SELECT current_setting('saffui.tenant')::uuid,

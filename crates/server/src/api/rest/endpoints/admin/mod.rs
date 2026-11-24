@@ -11,5 +11,6 @@ pub mod policy;
 pub mod realm;
 pub mod relation;
 pub mod role;
+pub mod settings;
 pub mod user;
 mod views;

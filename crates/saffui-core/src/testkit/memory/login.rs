@@ -238,6 +238,23 @@ impl ThrottleStore for MemoryUnitOfWork {
         Ok(())
     }
 
+    async fn record_attempt_within(
+        &mut self,
+        identifier_digest: &[u8],
+        bucket_start: OffsetDateTime,
+        since: OffsetDateTime,
+        most: u32,
+    ) -> Result<bool, StorageError> {
+        // One unit of work at a time: the count and the bucket it adds to
+        // are one operation here.
+        if self.count_login_failures(identifier_digest, since).await? >= most {
+            return Ok(false);
+        }
+        self.record_login_failure(identifier_digest, bucket_start)
+            .await?;
+        Ok(true)
+    }
+
     async fn forget_login_failures(
         &mut self,
         identifier_digest: &[u8],

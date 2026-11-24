@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use saffui_core::authz::capability::Capability;
 use saffui_core::clients::store::{ClientStore, ListWindow};
-use saffui_core::clients::{AssertionAlgorithm, Client, ClientAuthMethod, KeptProof};
+use saffui_core::clients::{
+    AssertionAlgorithm, Client, ClientAuthMethod, ClientStanding, KeptProof,
+};
 use saffui_core::ports::crypto::SignatureAlgorithm;
 use saffui_core::ports::storage::StorageError;
 use time::OffsetDateTime;
@@ -30,6 +32,25 @@ const RECORD_ASSERTION: &str = "
     VALUES ($1, $2, $3, $4, $5)
     ON CONFLICT DO NOTHING";
 
+/// Constant SQL: one statement turns a client off, and reads nothing of it
+/// first. A client off already is left as it is.
+const DISABLE_CLIENT: &str = "
+    UPDATE clients SET enabled = false
+    WHERE tenant_id = $1 AND realm_id = $2 AND client_id = $3 AND enabled";
+
+/// Constant SQL: the columns a client that registered itself writes, and
+/// only while its registration lasts. Whether it is enabled is never
+/// written from what was read of it.
+const WRITE_CLIENT_METADATA: &str = "
+    UPDATE clients SET name = $4, scopes = $5, redirect_uris = $6,
+        post_logout_redirect_uris = $7, id_token_signed_response_alg = $8,
+        auth_signing_alg = $9, jwks = $10
+    WHERE tenant_id = $1 AND realm_id = $2 AND client_id = $3 AND self_registered
+      AND EXISTS (
+          SELECT 1 FROM client_registrations AS registration
+          WHERE registration.tenant_id = $1 AND registration.realm_id = $2
+            AND registration.client_id = $3 AND registration.ended_at IS NULL)";
+
 /// What is read of a client for anything but identifying it: nothing of
 /// what proves it.
 const CLIENT: &[Column] = &[
@@ -48,6 +69,7 @@ const CLIENT: &[Column] = &[
     clients::ID_TOKEN_SIGNED_RESPONSE_ALG,
     clients::AUTH_METHOD,
     clients::AUTH_SIGNING_ALG,
+    clients::SELF_REGISTERED,
 ];
 
 /// Constant SQL: the columns of [`CLIENT`], in its order, and the row stays
@@ -56,10 +78,25 @@ const READ_CLIENT_FOR_UPDATE: &str = "
     SELECT client_row_id, client_id, name, allows_client_credentials, scopes, capabilities,
         enabled, created_at, allows_authorization_code, redirect_uris,
         post_logout_redirect_uris, requires_consent, id_token_signed_response_alg, auth_method,
-        auth_signing_alg
+        auth_signing_alg, self_registered
     FROM clients
     WHERE tenant_id = $1 AND realm_id = $2 AND client_id = $3
     FOR NO KEY UPDATE";
+
+/// Constant SQL: the columns of [`CLIENT`], in its order, and the row stays
+/// shared until the commit: a writer of the client waits, as the reader
+/// waits for one.
+const READ_CLIENT_FOR_SHARE: &str = "
+    SELECT client_row_id, client_id, name, allows_client_credentials, scopes, capabilities,
+        enabled, created_at, allows_authorization_code, redirect_uris,
+        post_logout_redirect_uris, requires_consent, id_token_signed_response_alg, auth_method,
+        auth_signing_alg, self_registered
+    FROM clients
+    WHERE tenant_id = $1 AND realm_id = $2 AND client_id = $3
+    FOR SHARE";
+
+/// What a token of a client is worth now, and nothing else of it.
+const STANDING: &[Column] = &[clients::ENABLED, clients::SELF_REGISTERED];
 
 /// The same, then what proves the client: read to identify it alone.
 const CLIENT_WITH_PROOF: &[Column] = &[
@@ -78,6 +115,7 @@ const CLIENT_WITH_PROOF: &[Column] = &[
     clients::ID_TOKEN_SIGNED_RESPONSE_ALG,
     clients::AUTH_METHOD,
     clients::AUTH_SIGNING_ALG,
+    clients::SELF_REGISTERED,
     clients::SECRET_DIGEST,
     clients::SEALED_SECRET,
     clients::JWKS,
@@ -112,6 +150,7 @@ fn read_client_row(row: &Row) -> Result<Client, StorageError> {
             .map(|name| SignatureAlgorithm::parse(&name).ok_or(StorageError::Failed))
             .transpose()?,
         enabled: row.get(6),
+        self_registered: row.get(15),
         created_at: row.get(7),
     })
 }
@@ -180,6 +219,7 @@ impl ClientStore for PgUnitOfWork {
                     &client.post_logout_redirect_uris,
                 ),
                 col(clients::REQUIRES_CONSENT, &client.requires_consent),
+                col(clients::SELF_REGISTERED, &client.self_registered),
                 col(clients::SCOPES, &client.scopes),
                 col(clients::CAPABILITIES, &capabilities),
                 col(clients::ID_TOKEN_SIGNED_RESPONSE_ALG, &id_token_algorithm),
@@ -212,6 +252,31 @@ impl ClientStore for PgUnitOfWork {
             .first()
             .map(read_client_row)
             .transpose()
+    }
+
+    async fn read_client_for_share(
+        &mut self,
+        client_id: &str,
+    ) -> Result<Option<Client>, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        self.read_raw(READ_CLIENT_FOR_SHARE, &[&tenant, &realm, &client_id])
+            .await?
+            .first()
+            .map(read_client_row)
+            .transpose()
+    }
+
+    async fn read_client_standing(
+        &mut self,
+        client_id: &str,
+    ) -> Result<Option<ClientStanding>, StorageError> {
+        let select = Select::from(clients::TABLE, STANDING)
+            .filter(Criteria::new().where_equal(clients::CLIENT_ID, &client_id))
+            .build();
+        Ok(self.read_one(&select).await?.map(|row| ClientStanding {
+            enabled: row.get(0),
+            self_registered: row.get(1),
+        }))
     }
 
     async fn read_client_with_proof(
@@ -299,6 +364,44 @@ impl ClientStore for PgUnitOfWork {
         Ok(self.execute(&update).await? == 1)
     }
 
+    async fn write_client_metadata(
+        &mut self,
+        client: &Client,
+        jwks: Option<&serde_json::Value>,
+    ) -> Result<bool, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        let id_token_algorithm = client
+            .id_token_signed_response_alg
+            .map(SignatureAlgorithm::name);
+        let auth_signing_alg = client.auth_signing_alg.map(AssertionAlgorithm::name);
+        let written = self
+            .execute_raw(
+                WRITE_CLIENT_METADATA,
+                &[
+                    &tenant,
+                    &realm,
+                    &client.client_id,
+                    &client.name,
+                    &client.scopes,
+                    &client.redirect_uris,
+                    &client.post_logout_redirect_uris,
+                    &id_token_algorithm,
+                    &auth_signing_alg,
+                    &jwks,
+                ],
+            )
+            .await?;
+        Ok(written == 1)
+    }
+
+    async fn disable_client(&mut self, client_id: &str) -> Result<bool, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        let disabled = self
+            .execute_raw(DISABLE_CLIENT, &[&tenant, &realm, &client_id])
+            .await?;
+        Ok(disabled == 1)
+    }
+
     async fn record_client_assertion(
         &mut self,
         client_id: &str,
@@ -321,7 +424,8 @@ mod tests {
     use saffui_core::clients::store::ListWindow;
 
     use super::{
-        CLIENT, CLIENT_WITH_PROOF, READ_CLIENT_FOR_UPDATE, order_clients, select_client_page,
+        CLIENT, CLIENT_WITH_PROOF, READ_CLIENT_FOR_SHARE, READ_CLIENT_FOR_UPDATE, order_clients,
+        select_client_page,
     };
 
     #[test]
@@ -343,20 +447,22 @@ mod tests {
 
     #[test]
     fn a_client_is_read_and_taken_by_one_statement_of_the_columns_of_a_client() {
-        let written = READ_CLIENT_FOR_UPDATE
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
         let columns: Vec<&str> = CLIENT.iter().map(|column| column.0).collect();
 
-        // The whole clause: the security of rows would hide a scope left out.
-        assert_eq!(
-            written,
-            format!(
-                "SELECT {} FROM clients \
-                 WHERE tenant_id = $1 AND realm_id = $2 AND client_id = $3 FOR NO KEY UPDATE",
-                columns.join(", ")
-            )
-        );
+        for (statement, lock) in [
+            (READ_CLIENT_FOR_UPDATE, "FOR NO KEY UPDATE"),
+            (READ_CLIENT_FOR_SHARE, "FOR SHARE"),
+        ] {
+            let written = statement.split_whitespace().collect::<Vec<_>>().join(" ");
+            // The whole clause: the security of rows would hide a scope left out.
+            assert_eq!(
+                written,
+                format!(
+                    "SELECT {} FROM clients \
+                     WHERE tenant_id = $1 AND realm_id = $2 AND client_id = $3 {lock}",
+                    columns.join(", ")
+                )
+            );
+        }
     }
 }

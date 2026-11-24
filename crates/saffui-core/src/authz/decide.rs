@@ -16,7 +16,7 @@ use super::relations::{ObjectRef, is_object_id, read_compiled_schema};
 use super::roles::is_role_name;
 use crate::app::App;
 use crate::clients::authenticate::{ClientProof, PresentedSecret, authenticate_client};
-use crate::clients::read_named_client;
+use crate::clients::{read_named_client, read_named_client_standing};
 use crate::error::{ErrorCode, Failure};
 use crate::login::session::read_live_subject;
 use crate::oidc::discovery::name_issuer;
@@ -83,7 +83,8 @@ struct Subject {
 
 /// Reads who presented the token, as they are now. A token that does not
 /// verify, a session that ended, a person disabled or a client disabled
-/// since is nobody.
+/// since is nobody. So is the token a person gave a client that registered
+/// itself: they allowed it what its page showed, not to speak for them here.
 async fn read_subject(
     app: &App,
     work: &mut dyn UnitOfWork,
@@ -119,7 +120,10 @@ async fn read_subject(
     let Some((_, person)) = read_live_subject(app, work, session).await? else {
         return Ok(None);
     };
-    if person.id.to_string() != claims.subject {
+    let holder = read_named_client_standing(work, &claims.client_id).await?;
+    if person.id.to_string() != claims.subject
+        || !holder.is_some_and(|holder| holder.enabled && !holder.self_registered)
+    {
         return Ok(None);
     }
     Ok(Some(Subject {
@@ -283,7 +287,8 @@ fn is_small(attributes: &Map<String, Value>) -> bool {
 /// # Errors
 ///
 /// Returns [`ErrorCode::ClientAuthenticationFailed`] for a caller that is
-/// not a client with its secret, [`ErrorCode::RequestInvalid`] for a
+/// not a client with its secret, [`ErrorCode::GrantNotAllowed`] for a
+/// client that registered itself, [`ErrorCode::RequestInvalid`] for a
 /// question that cannot be asked, [`ErrorCode::StorageUnavailable`] past
 /// the share of the tenant or of the node, [`ErrorCode::HeldTooMany`] for a
 /// person with too many roles or groups, or the storage failure. A refusal
@@ -304,6 +309,11 @@ pub async fn decide(
     };
     let proof = ClientProof::Secret(PresentedSecret::Basic(client_secret));
     let (client, mut work) = authenticate_client(app, scope, client_id, proof, &issuer).await?;
+    // Registered by anyone, it guards nothing of the realm: refused before
+    // it takes any part of what the point of decision answers at once.
+    if client.self_registered {
+        return Err(ErrorCode::GrantNotAllowed.into());
+    }
     let token = request.subject_token.ok_or(ErrorCode::RequestInvalid)?;
     if !is_role_name(request.action)
         || !is_role_name(request.resource_type)

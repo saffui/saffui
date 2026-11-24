@@ -8,7 +8,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use saffui_core::app::App as Product;
 use saffui_core::consent::answer::{
-    ConsentDecision, ConsentPrompt, answer_consent, describe_consent,
+    ClientOrigin, ConsentDecision, ConsentPrompt, answer_consent, describe_consent,
 };
 use saffui_core::error::{ErrorCode, Failure};
 use saffui_core::secret::Secret;
@@ -29,6 +29,9 @@ pub struct ConsentQuery {
 pub struct ConsentForm {
     request: String,
     decision: String,
+    /// What the page showed of the client. Absent, it showed nothing an
+    /// answer could stand for.
+    shown: Option<String>,
 }
 
 /// The question a person answers for a client: who asks, and for what.
@@ -106,7 +109,9 @@ pub async fn submit_consent(
         return render_refusal(&product, &Failure::new(ErrorCode::RequestInvalid));
     };
     let decision = match form.decision.as_str() {
-        "allow" => ConsentDecision::Allow,
+        "allow" => ConsentDecision::Allow {
+            shown: form.shown.unwrap_or_default(),
+        },
         "deny" => ConsentDecision::Deny,
         _ => return expire(&product),
     };
@@ -139,14 +144,23 @@ pub async fn submit_consent(
                 ))
                 .finish()
         }
+        // The request still waits: the page says again what it covers.
+        Err(failure) if failure.code == ErrorCode::ConsentPageOutdated => HttpResponse::SeeOther()
+            .insert_header((
+                LOCATION,
+                format!("/realms/{realm}/consent?request={request}"),
+            ))
+            .insert_header((CACHE_CONTROL, "no-store"))
+            .finish(),
         Err(failure) => render_refusal(&product, &failure),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use actix_web::body::MessageBody;
     use actix_web::http::StatusCode;
-    use saffui_core::consent::answer::ConsentPrompt;
+    use saffui_core::consent::answer::{ClientOrigin, ConsentPrompt};
     use saffui_core::login::session::OFFLINE_SESSION_LIFETIME;
     use saffui_core::testkit::memory::MemoryStorage;
     use uuid::Uuid;
@@ -162,6 +176,12 @@ mod tests {
             client_name: HOSTILE.to_owned(),
             scopes: vec![HOSTILE.to_owned(), HOSTILE.to_owned()],
             offline_access: Some(OFFLINE_SESSION_LIFETIME),
+            origin: ClientOrigin::SelfRegistered {
+                client_id: HOSTILE.to_owned(),
+                return_host: HOSTILE.to_owned(),
+                other_hosts: vec![HOSTILE.to_owned(), HOSTILE.to_owned()],
+            },
+            shown: HOSTILE.to_owned(),
         };
 
         let page = render_page(&product, StatusCode::OK, |frame| ConsentPage {
@@ -171,6 +191,51 @@ mod tests {
             prompt: &prompt,
         });
 
-        assert_written_as_text(page, 4);
+        assert_written_as_text(page, 9);
+    }
+
+    #[test]
+    fn a_client_that_registered_itself_is_told_apart_from_one_of_the_same_name() {
+        let (product, _storage) = MemoryStorage::wire();
+        let draw = |origin| {
+            let prompt = ConsentPrompt {
+                client_name: "Partner".to_owned(),
+                scopes: vec!["openid".to_owned()],
+                offline_access: None,
+                origin,
+                shown: "c2hvd24".to_owned(),
+            };
+            let page = render_page(&product, StatusCode::OK, |frame| ConsentPage {
+                frame,
+                realm: "acme",
+                request: Uuid::nil(),
+                prompt: &prompt,
+            });
+            let body = page.into_body().try_into_bytes().expect("a body");
+            String::from_utf8(body.to_vec()).expect("text")
+        };
+        let made = draw(ClientOrigin::Realm);
+        let registered = draw(ClientOrigin::SelfRegistered {
+            client_id: "Zx9-registered".to_owned(),
+            return_host: "registered.example.org".to_owned(),
+            other_hosts: vec!["xn--bcher-kva.example".to_owned()],
+        });
+
+        for page in [&made, &registered] {
+            assert!(page.contains("<bdi>Partner</bdi>"), "{page}");
+            assert!(
+                page.contains(r#"<input type="hidden" name="shown" value="c2hvd24">"#),
+                "{page}"
+            );
+        }
+        for told in [
+            "This application registered itself",
+            "Zx9-registered",
+            "<bdi>registered.example.org</bdi>",
+            "<bdi>xn--bcher-kva.example</bdi>",
+        ] {
+            assert!(registered.contains(told), "{told}: {registered}");
+            assert!(!made.contains(told), "{told}: {made}");
+        }
     }
 }

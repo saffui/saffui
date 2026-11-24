@@ -7,8 +7,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use openssl::bn::{BigNum, BigNumContext, BigNumContextRef, BigNumRef};
 use openssl::error::ErrorStack;
 use saffui_core::ports::crypto::{
-    CryptoFailure, GeneratedSigningKey, KeyMakingFailure, KeyMakingGuard, SignatureAlgorithm,
-    Signer,
+    CryptoFailure, GeneratedSigningKey, KeyCheckLane, KeyMakingFailure, KeyMakingGuard,
+    SignatureAlgorithm, Signer,
 };
 use saffui_core::secret::Secret;
 use serde_json::{Map, Value};
@@ -36,6 +36,11 @@ const RSA_KEY_BITS: u32 = 3072;
 /// keeps a core busy while it is found or its modulus checked.
 const KEY_MAKERS: usize = 2;
 
+/// How many sets of keys of clients that register themselves are checked
+/// at once, apart from the key makers: anyone may ask for one where a realm
+/// is open, and none takes a maker the realms need.
+const REGISTRATION_CHECKERS: usize = 1;
+
 /// The lengths of an RSA modulus read, in bits, the zeros in front aside. The
 /// JOSE layer counts its floor in bytes, and 2041 bits fill 256 of them.
 const RSA_MODULUS_BITS: RangeInclusive<usize> = 2048..=4096;
@@ -46,6 +51,17 @@ const RSA_MODULUS_BITS: RangeInclusive<usize> = 2048..=4096;
 pub struct JoseSigner {
     provider: SharedProvider,
     makers: Arc<Semaphore>,
+    registration_checkers: Arc<Semaphore>,
+}
+
+/// Takes a place of `places` now or not at all: a request never waits
+/// behind the keys of other tenants.
+fn take_place(places: &Arc<Semaphore>) -> Result<OwnedSemaphorePermit, KeyMakingFailure> {
+    match Arc::clone(places).try_acquire_owned() {
+        Ok(place) => Ok(place),
+        Err(TryAcquireError::NoPermits) => Err(KeyMakingFailure::Busy),
+        Err(TryAcquireError::Closed) => Err(KeyMakingFailure::Failed),
+    }
 }
 
 impl JoseSigner {
@@ -54,17 +70,12 @@ impl JoseSigner {
         Self {
             provider,
             makers: Arc::new(Semaphore::new(KEY_MAKERS)),
+            registration_checkers: Arc::new(Semaphore::new(REGISTRATION_CHECKERS)),
         }
     }
 
-    /// Takes a key maker now or not at all: a request never waits behind
-    /// the keys of other tenants.
     fn take_maker(&self) -> Result<OwnedSemaphorePermit, KeyMakingFailure> {
-        match Arc::clone(&self.makers).try_acquire_owned() {
-            Ok(maker) => Ok(maker),
-            Err(TryAcquireError::NoPermits) => Err(KeyMakingFailure::Busy),
-            Err(TryAcquireError::Closed) => Err(KeyMakingFailure::Failed),
-        }
+        take_place(&self.makers)
     }
 }
 
@@ -454,11 +465,15 @@ impl Signer for JoseSigner {
     async fn check_client_keys(
         &self,
         keys: Vec<(SignatureAlgorithm, Value)>,
+        lane: KeyCheckLane,
         guard: KeyMakingGuard,
     ) -> Result<bool, KeyMakingFailure> {
-        let maker = self.take_maker()?;
+        let place = match lane {
+            KeyCheckLane::KeyMakers => self.take_maker()?,
+            KeyCheckLane::Registration => take_place(&self.registration_checkers)?,
+        };
         spawn_blocking(move || {
-            let _held = (guard, maker);
+            let _held = (guard, place);
             keys.iter()
                 .all(|(algorithm, key)| reads_client_key(*algorithm, key))
         })
@@ -493,13 +508,13 @@ mod tests {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use openssl::bn::{BigNum, BigNumContext, BigNumRef};
 
-    use saffui_core::ports::crypto::{KeyMakingFailure, SignatureAlgorithm, Signer};
+    use saffui_core::ports::crypto::{KeyCheckLane, KeyMakingFailure, SignatureAlgorithm, Signer};
     use saffui_core::secret::Secret;
     use serde_json::{Value, json};
 
     use tokio::sync::Semaphore;
 
-    use super::{JoseSigner, KEY_MAKERS};
+    use super::{JoseSigner, KEY_MAKERS, REGISTRATION_CHECKERS};
     use crate::adapters::{SharedProvider, open_provider};
     use crate::provider::{
         AeadProvider, CbcProvider, CryptoProvider, DigestProvider, HashAlg, HmacProvider,
@@ -567,7 +582,11 @@ mod tests {
     /// Whether `key` is kept as a key of a client, for `algorithm`.
     async fn check_key(signer: &JoseSigner, algorithm: SignatureAlgorithm, key: &Value) -> bool {
         signer
-            .check_client_keys(vec![(algorithm, key.clone())], Box::new(()))
+            .check_client_keys(
+                vec![(algorithm, key.clone())],
+                KeyCheckLane::KeyMakers,
+                Box::new(()),
+            )
             .await
             .expect("a check")
     }
@@ -894,7 +913,9 @@ mod tests {
             (ES256, p384.public_jwk),
         ];
         assert_eq!(
-            signer.check_client_keys(set, Box::new(())).await,
+            signer
+                .check_client_keys(set, KeyCheckLane::KeyMakers, Box::new(()))
+                .await,
             Ok(false),
             "one key refused refuses the set"
         );
@@ -1093,7 +1114,11 @@ mod tests {
 
         assert_eq!(
             signer
-                .check_client_keys(vec![(ES256, key.public_jwk.clone())], Box::new(()))
+                .check_client_keys(
+                    vec![(ES256, key.public_jwk.clone())],
+                    KeyCheckLane::KeyMakers,
+                    Box::new(())
+                )
                 .await,
             Err(KeyMakingFailure::Busy)
         );
@@ -1103,6 +1128,48 @@ mod tests {
             signer.makers.available_permits(),
             KEY_MAKERS,
             "its maker is given back once the check is done"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_registration_checks_keys_on_its_own_lane_one_set_at_a_time() {
+        let signer = open_signer();
+        let key = signer
+            .generate_key(ES256, Box::new(()))
+            .await
+            .expect("a key");
+        let check = |lane| {
+            signer.check_client_keys(vec![(ES256, key.public_jwk.clone())], lane, Box::new(()))
+        };
+        let makers_at_work = Arc::clone(&signer.makers)
+            .try_acquire_many_owned(u32::try_from(KEY_MAKERS).expect("a count"))
+            .expect("every maker");
+
+        assert_eq!(
+            check(KeyCheckLane::Registration).await,
+            Ok(true),
+            "no maker is taken"
+        );
+        let checking = Arc::clone(&signer.registration_checkers)
+            .try_acquire_owned()
+            .expect("the place of a registration");
+        drop(makers_at_work);
+        assert_eq!(
+            check(KeyCheckLane::Registration).await,
+            Err(KeyMakingFailure::Busy),
+            "one registration at a time"
+        );
+        assert_eq!(
+            check(KeyCheckLane::KeyMakers).await,
+            Ok(true),
+            "an administrator is not held up by it"
+        );
+        drop(checking);
+        assert_eq!(check(KeyCheckLane::Registration).await, Ok(true));
+        assert_eq!(
+            signer.registration_checkers.available_permits(),
+            REGISTRATION_CHECKERS,
+            "its place is given back once the check is done"
         );
     }
 
@@ -1330,9 +1397,11 @@ mod tests {
         let (release, held) = mpsc::channel::<()>();
         let blocker = runtime.spawn_blocking(move || held.recv());
         {
-            let mut checking = pin!(
-                signer.check_client_keys(vec![(SignatureAlgorithm::Rs256, key)], Box::new(guard))
-            );
+            let mut checking = pin!(signer.check_client_keys(
+                vec![(SignatureAlgorithm::Rs256, key)],
+                KeyCheckLane::KeyMakers,
+                Box::new(guard)
+            ));
             let polled = checking
                 .as_mut()
                 .poll(&mut Context::from_waker(Waker::noop()));
@@ -1414,7 +1483,11 @@ mod tests {
         let checked = runtime.block_on(async {
             let checking = async {
                 let checked = signer
-                    .check_client_keys(vec![(SignatureAlgorithm::Rs256, key)], Box::new(()))
+                    .check_client_keys(
+                        vec![(SignatureAlgorithm::Rs256, key)],
+                        KeyCheckLane::KeyMakers,
+                        Box::new(()),
+                    )
                     .await;
                 note("checked");
                 checked

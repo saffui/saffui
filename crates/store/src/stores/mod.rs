@@ -11,6 +11,7 @@ mod keys;
 mod persons;
 mod policies;
 mod realms;
+mod registrations;
 mod relations;
 mod roles;
 mod security_keys;

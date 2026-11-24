@@ -19,7 +19,9 @@ use super::errors::OAuthError;
 use super::pkce::is_well_formed_challenge;
 use super::token::OFFLINE_ACCESS_SCOPE;
 use crate::app::App;
-use crate::clients::{Client, check_scope_token, read_named_client};
+use crate::clients::{
+    Client, check_scope_token, is_loopback_host, read_named_client, read_redirect_host,
+};
 use crate::consent::{ConsentTerms, is_consent_owed};
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
@@ -304,8 +306,15 @@ async fn trust_request(
     let (Some(code_challenge), Some("S256")) = (challenge, parameters.code_challenge_method) else {
         return Err(returned(OAuthError::InvalidRequest));
     };
-    let proof = read_proof_asked(parameters.prompt, parameters.max_age)
+    let mut proof = read_proof_asked(parameters.prompt, parameters.max_age)
         .ok_or_else(|| returned(OAuthError::InvalidRequest))?;
+    // Sent back to this machine, a public client is whatever listens there
+    // (RFC 8252, section 8.6), and to a host kept before it could be read, it
+    // may be: the person answers each request.
+    let return_host = read_redirect_host(&redirect_uri);
+    if client.is_public() && (return_host.is_empty() || is_loopback_host(return_host)) {
+        proof.consent = true;
+    }
     let mut scopes = Vec::new();
     for token in parameters
         .scope
@@ -2317,5 +2326,153 @@ mod tests {
         scenario.register_partner();
         let allowed = scenario.sign_in_and_consent("partner", "openid offline_access");
         assert_eq!(allowed.tokens.scope, "openid offline_access");
+    }
+
+    #[test]
+    fn a_public_client_sent_back_to_this_machine_asks_the_person_at_each_request() {
+        use crate::clients::register::NewClient;
+        use crate::oidc::scenario::Scenario;
+        use crate::testkit::fixtures::check_and_register_client;
+
+        const LOOPBACK: &str = "http://127.0.0.1:8400/callback";
+        let scenario = Scenario::start();
+        let callbacks = [LOOPBACK.to_owned(), CALLBACK.to_owned()];
+        let scopes = ["openid".to_owned()];
+        let native = |client_id, public| NewClient {
+            client_id,
+            name: "An application of this machine",
+            scopes: &scopes,
+            capabilities: &[],
+            redirect_uris: &callbacks,
+            post_logout_redirect_uris: &[],
+            public,
+            requires_consent: true,
+            id_token_signed_response_alg: None,
+            auth_method: None,
+            jwks: None,
+            jwks_uri: None,
+            auth_signing_alg: None,
+            created_by: Some("operator"),
+        };
+        let mut work = complete(scenario.app.storage.begin(scenario.scope)).expect("a unit");
+        for (client_id, public) in [("native", true), ("native-secret", false)] {
+            complete(check_and_register_client(
+                &scenario.app,
+                work.as_mut(),
+                native(client_id, public),
+            ))
+            .expect("a client of this machine the realm made");
+        }
+        complete(work.commit()).expect("a commit");
+        let signed_in = scenario.sign_in_and_consent("native", "openid");
+        scenario.allow_on_the_page("native-secret", "openid");
+        let challenge = challenge();
+        let ask_as = |client_id, redirect_uri, prompt| {
+            let parameters = AuthorizationParameters {
+                redirect_uri: Some(redirect_uri),
+                client_id: Some(client_id),
+                scope: Some("openid"),
+                prompt,
+                ..ask(&challenge)
+            };
+            read_outcome(complete(begin_authorization(
+                &scenario.app,
+                "acme",
+                parameters,
+                Some(&signed_in.ticket),
+            )))
+        };
+
+        assert_eq!(
+            ask_as("native", CALLBACK, Some("none")),
+            "granted",
+            "allowed once, it is sent back to its host without a page"
+        );
+        assert_eq!(
+            ask_as("native", LOOPBACK, Some("none")),
+            "consent_required",
+            "whatever listens on this machine is not known by its address"
+        );
+        assert_eq!(ask_as("native", LOOPBACK, None), "consent");
+        assert_eq!(
+            ask_as("native-secret", LOOPBACK, Some("none")),
+            "granted",
+            "a client that proves itself is known by its secret"
+        );
+    }
+
+    #[test]
+    fn a_public_client_sent_back_to_a_host_it_kept_before_its_check_asks_the_person_at_each_request()
+     {
+        use crate::clients::{Client, ClientAuthMethod, KeptProof};
+        use crate::oidc::scenario::Scenario;
+
+        // Kept before the grammar of today, which reads no host in it.
+        const KEPT_BEFORE: &str = "http://localhost:8080/cb?a=|b";
+        const NAMED_IN_CAPITALS: &str = "https://LocalHost/cb";
+        let scenario = Scenario::start();
+        let legacy = Client {
+            id: Uuid::from_u128(7),
+            client_id: "legacy".to_owned(),
+            name: "An application kept before".to_owned(),
+            auth_method: ClientAuthMethod::None,
+            auth_signing_alg: None,
+            allows_client_credentials: false,
+            allows_authorization_code: true,
+            redirect_uris: vec![
+                CALLBACK.to_owned(),
+                KEPT_BEFORE.to_owned(),
+                NAMED_IN_CAPITALS.to_owned(),
+            ],
+            post_logout_redirect_uris: Vec::new(),
+            requires_consent: true,
+            scopes: vec!["openid".to_owned()],
+            capabilities: Vec::new(),
+            id_token_signed_response_alg: None,
+            enabled: true,
+            self_registered: false,
+            created_at: scenario.app.now(),
+        };
+        let nothing = KeptProof {
+            secret_digest: None,
+            sealed_secret: None,
+            jwks: None,
+        };
+        let mut work = complete(scenario.app.storage.begin(scenario.scope)).expect("a unit");
+        complete(work.insert_client(&legacy, &nothing)).expect("a client the store keeps");
+        complete(work.commit()).expect("a commit");
+        let signed_in = scenario.sign_in_and_consent("legacy", "openid");
+        let challenge = challenge();
+        let ask_silently = |redirect_uri| {
+            let parameters = AuthorizationParameters {
+                redirect_uri: Some(redirect_uri),
+                client_id: Some("legacy"),
+                scope: Some("openid"),
+                prompt: Some("none"),
+                ..ask(&challenge)
+            };
+            read_outcome(complete(begin_authorization(
+                &scenario.app,
+                "acme",
+                parameters,
+                Some(&signed_in.ticket),
+            )))
+        };
+
+        assert_eq!(
+            ask_silently(CALLBACK),
+            "granted",
+            "allowed, in a live session"
+        );
+        assert_eq!(
+            ask_silently(KEPT_BEFORE),
+            "consent_required",
+            "a host this version cannot read may be this machine"
+        );
+        assert_eq!(
+            ask_silently(NAMED_IN_CAPITALS),
+            "consent_required",
+            "this machine, however its name is written"
+        );
     }
 }

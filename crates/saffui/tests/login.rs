@@ -60,6 +60,14 @@ fn read_cookie(answer: &http::Answer, prefix: &str) -> Option<String> {
     })
 }
 
+/// What a page of consent says it showed of the client, for its answer.
+fn read_shown(page: &str) -> String {
+    page.split_once(r#"name="shown" value=""#)
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(shown, _)| shown.to_owned())
+        .expect("what the page showed")
+}
+
 fn read_parameter(location: &str, name: &str) -> Option<String> {
     let (_, query) = location.split_once('?')?;
     query
@@ -1556,7 +1564,10 @@ fn a_client_that_requires_consent_asks_once_and_again_once_the_person_withdraws(
         "POST",
         "/realms/acme/consent",
         &[FORM, ("Cookie", &both), origin],
-        &format!("request={request}&decision=allow"),
+        &format!(
+            "request={request}&decision=allow&shown={}",
+            read_shown(&page.body)
+        ),
     )
     .expect("an answer");
     assert_eq!(allowed.status, 303, "{}", allowed.body);
@@ -1769,12 +1780,25 @@ fn prompt_none_is_answered_at_once_and_an_offline_grant_outlives_the_sign_out() 
         signed_in.head
     );
     let session = read_cookie(&signed_in, "saffui_session_acme=").expect("a session");
+    let both = format!("{flow}; {session}");
+    let page = http::send_request(
+        node.data,
+        "GET",
+        &format!("/realms/acme/consent?request={request}"),
+        &[("Cookie", &both)],
+        "",
+    )
+    .expect("an answer");
+    assert_eq!(page.status, 200, "{}", page.body);
     let allowed = http::send_request(
         node.data,
         "POST",
         "/realms/acme/consent",
-        &[FORM, ("Cookie", &format!("{flow}; {session}")), origin],
-        &format!("request={request}&decision=allow"),
+        &[FORM, ("Cookie", &both), origin],
+        &format!(
+            "request={request}&decision=allow&shown={}",
+            read_shown(&page.body)
+        ),
     )
     .expect("an answer");
     assert_eq!(allowed.status, 303, "{}", allowed.body);

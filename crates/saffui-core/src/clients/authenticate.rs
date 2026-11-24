@@ -96,6 +96,66 @@ fn check_presented_secret(
         .ok_or(Failure::new(ErrorCode::ClientAuthenticationFailed))
 }
 
+/// Opens the secret a client that signs with it keeps sealed for its row.
+async fn open_client_secret(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    client: &Client,
+    sealed: &[u8],
+) -> Result<Secret, Failure> {
+    let unavailable = |detail| Failure::with_detail(ErrorCode::CryptoUnavailable, detail);
+    let scope = work.scope();
+    let data_key = work
+        .read_data_key()
+        .await?
+        .ok_or_else(|| unavailable("the realm has no data key"))?;
+    let place = SealPlace {
+        tenant: scope.tenant().as_uuid(),
+        realm: scope.realm().as_uuid(),
+        purpose: CLIENT_SECRET_PURPOSE,
+        row: client.id,
+    };
+    app.sealer
+        .open(&data_key, &place, sealed)
+        .map_err(|_| unavailable("a client secret does not open where it is stored"))
+}
+
+/// Tells whether `presented` is the secret a client keeps now, in whichever
+/// form its method keeps it, compared in constant time. A client that keeps
+/// no secret matches none.
+///
+/// # Errors
+///
+/// Returns [`ErrorCode::CryptoUnavailable`] when its sealed secret cannot be
+/// opened, or the storage failure.
+pub(crate) async fn is_current_secret(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    client: &Client,
+    proof: &KeptProof,
+    presented: &[u8],
+) -> Result<bool, Failure> {
+    let kept = match (
+        client.auth_method,
+        &proof.secret_digest,
+        &proof.sealed_secret,
+    ) {
+        (
+            ClientAuthMethod::ClientSecretBasic | ClientAuthMethod::ClientSecretPost,
+            Some(digest),
+            _,
+        ) => digest.clone(),
+        (ClientAuthMethod::ClientSecretJwt, _, Some(sealed)) => {
+            let secret = open_client_secret(app, work, client, sealed).await?;
+            app.digester.sha256(secret.expose()).to_vec()
+        }
+        _ => return Ok(false),
+    };
+    Ok(app
+        .digester
+        .equal_in_constant_time(&app.digester.sha256(presented), &kept))
+}
+
 /// Tells whether the signature of an assertion is the one the client makes:
 /// with its sealed secret, or with the key the assertion names.
 async fn verify_assertion_signature(
@@ -111,21 +171,7 @@ async fn verify_assertion_signature(
                 return Ok(false);
             };
             let unavailable = |detail| Failure::with_detail(ErrorCode::CryptoUnavailable, detail);
-            let scope = work.scope();
-            let data_key = work
-                .read_data_key()
-                .await?
-                .ok_or_else(|| unavailable("the realm has no data key"))?;
-            let place = SealPlace {
-                tenant: scope.tenant().as_uuid(),
-                realm: scope.realm().as_uuid(),
-                purpose: CLIENT_SECRET_PURPOSE,
-                row: client.id,
-            };
-            let secret = app
-                .sealer
-                .open(&data_key, &place, sealed)
-                .map_err(|_| unavailable("a client secret does not open where it is stored"))?;
+            let secret = open_client_secret(app, work, client, sealed).await?;
             let mac = app
                 .digester
                 .hmac_sha256(&secret, read.signing_input.as_bytes())

@@ -59,6 +59,19 @@ pub const MAX_DAILY_FAILURES_PER_BROWSER: u32 = 20;
 /// minutes, and asking for one takes nothing but a request.
 pub const MAX_PENDING_SIGN_INS_PER_ADDRESS: u32 = 60;
 
+/// How many clients one address may register in a realm in the window,
+/// changes and ends of a registration included: each may check keys, and
+/// writes a client nobody vetted.
+pub const MAX_RECENT_REGISTRATIONS_PER_ADDRESS: u32 = 10;
+
+/// As many from the /48 of an IPv6 caller, whatever its /64: a site holds
+/// 65536 of them.
+pub const MAX_RECENT_REGISTRATIONS_PER_NETWORK: u32 = 30;
+
+/// How many times one client may change its registration in a day, from
+/// wherever it asks.
+pub const MAX_DAILY_CHANGES_PER_CLIENT: u32 = 20;
+
 /// The start of the bucket an instant falls in.
 #[must_use]
 pub fn start_bucket(now: OffsetDateTime) -> OffsetDateTime {
@@ -136,6 +149,36 @@ fn digest_counter(
     app.sealer
         .digest_typed_name(scope.tenant().as_uuid(), scope.realm().as_uuid(), &written)
         .map_err(|_| Failure::new(ErrorCode::CryptoUnavailable))
+}
+
+/// Adds one to `counter` in the bucket of `now`, unless the window holds
+/// `most` already: then it adds nothing, and answers so.
+async fn count_one_more(
+    work: &mut dyn UnitOfWork,
+    counter: &[u8],
+    now: OffsetDateTime,
+    most: u32,
+) -> Result<bool, Failure> {
+    Ok(work
+        .record_attempt_within(counter, start_bucket(now), start_window(now), most)
+        .await?)
+}
+
+/// As [`count_one_more`], in buckets of an hour over a day.
+async fn count_one_more_in_day(
+    work: &mut dyn UnitOfWork,
+    counter: &[u8],
+    now: OffsetDateTime,
+    most: u32,
+) -> Result<bool, Failure> {
+    Ok(work
+        .record_attempt_within(
+            counter,
+            start_long_bucket(now),
+            start_long_window(now),
+            most,
+        )
+        .await?)
 }
 
 /// The two counters that lock a name for everyone: the window, and the day.
@@ -241,16 +284,11 @@ impl Brake {
         let Some(counter) = counter else {
             return Ok(());
         };
-        if work
-            .count_login_failures(counter, start_window(now))
-            .await?
-            >= most
-        {
-            return Err(Failure::new(ErrorCode::HashingBusy));
+        if count_one_more(work, counter, now, most).await? {
+            Ok(())
+        } else {
+            Err(Failure::new(ErrorCode::HashingBusy))
         }
-        work.record_login_failure(counter, start_bucket(now))
-            .await?;
-        Ok(())
     }
 
     /// Tells whether the name is locked for this attempt. A known browser
@@ -363,16 +401,119 @@ pub(crate) async fn admit_pending_sign_in(
         .sealer
         .digest_typed_name(scope.tenant().as_uuid(), scope.realm().as_uuid(), &written)
         .map_err(|_| Failure::new(ErrorCode::CryptoUnavailable))?;
-    if work
-        .count_login_failures(&counter, start_window(now))
-        .await?
-        >= MAX_PENDING_SIGN_INS_PER_ADDRESS
-    {
-        return Err(Failure::new(ErrorCode::SignInRequestsTooFrequent));
+    if count_one_more(work, &counter, now, MAX_PENDING_SIGN_INS_PER_ADDRESS).await? {
+        Ok(())
+    } else {
+        Err(Failure::new(ErrorCode::SignInRequestsTooFrequent))
     }
-    work.record_login_failure(&counter, start_bucket(now))
-        .await?;
+}
+
+/// The counters of the registrations of `caller`: its address, and the /48
+/// of an IPv6 caller, each of a kind of its own. No registration is counted
+/// as an attempt to sign in.
+fn digest_registration_counters(
+    app: &App,
+    scope: RealmScope,
+    caller: IpAddr,
+) -> Result<Vec<(Vec<u8>, u32)>, Failure> {
+    let address = write_address_bucket(caller);
+    let mut counters = vec![(
+        digest_counter(app, scope, 12, &[address.as_bytes()])?,
+        MAX_RECENT_REGISTRATIONS_PER_ADDRESS,
+    )];
+    if let Some(network) = write_network_bucket(caller) {
+        counters.push((
+            digest_counter(app, scope, 13, &[network.as_bytes()])?,
+            MAX_RECENT_REGISTRATIONS_PER_NETWORK,
+        ));
+    }
+    Ok(counters)
+}
+
+/// Counts one more registration from `caller`, or refuses it once its
+/// address, or the /48 of an IPv6 caller, registered too often in the
+/// window: it is counted before the metadata is read and before any key is
+/// checked. Refused, the unit of work is to be dropped with what it
+/// counted. An address unknown is not counted, as the brake does not count it.
+///
+/// # Errors
+///
+/// Returns [`ErrorCode::RegistrationsTooFrequent`],
+/// [`ErrorCode::CryptoUnavailable`] when the sealer cannot digest, or the
+/// storage failure.
+pub(crate) async fn admit_registration(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    caller: Option<IpAddr>,
+) -> Result<(), Failure> {
+    let Some(caller) = caller else {
+        return Ok(());
+    };
+    let now = app.now();
+    for (counter, most) in digest_registration_counters(app, work.scope(), caller)? {
+        if !count_one_more(work, &counter, now, most).await? {
+            return Err(Failure::new(ErrorCode::RegistrationsTooFrequent));
+        }
+    }
     Ok(())
+}
+
+/// Counts one more change of a registration of the realm, from wherever it
+/// comes, or refuses it once the realm took `most` in its day: a client
+/// may rewrite itself in a loop from many addresses, and each change is
+/// written to the chain of the realm. The counter is the realm's alone, of
+/// a kind no other counter has.
+///
+/// # Errors
+///
+/// Returns [`ErrorCode::RegistrationBudgetSpent`],
+/// [`ErrorCode::CryptoUnavailable`] when the sealer cannot digest, or the
+/// storage failure.
+pub(crate) async fn admit_registration_change(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    most: u32,
+) -> Result<(), Failure> {
+    let counter = digest_counter(app, work.scope(), 14, &[])?;
+    if count_one_more_in_day(work, &counter, app.now(), most).await? {
+        Ok(())
+    } else {
+        Err(Failure::new(ErrorCode::RegistrationBudgetSpent))
+    }
+}
+
+/// The counter of the changes of the registration of `client_id`, of a kind
+/// of its own: no change of one client is counted as anything else.
+fn digest_client_change_counter(
+    app: &App,
+    scope: RealmScope,
+    client_id: &str,
+) -> Result<Vec<u8>, Failure> {
+    digest_counter(app, scope, 15, &[client_id.as_bytes()])
+}
+
+/// Counts one more change of the registration of `client_id`, from wherever
+/// it comes, or refuses it once the client asked for
+/// [`MAX_DAILY_CHANGES_PER_CLIENT`] in its day. It is counted before the
+/// body is read: a body that cannot be read spends the count of its client,
+/// and nothing of the changes the realm takes.
+///
+/// # Errors
+///
+/// Returns [`ErrorCode::RegistrationChangesSpent`],
+/// [`ErrorCode::CryptoUnavailable`] when the sealer cannot digest, or the
+/// storage failure.
+pub(crate) async fn admit_client_change(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    client_id: &str,
+) -> Result<(), Failure> {
+    let counter = digest_client_change_counter(app, work.scope(), client_id)?;
+    if count_one_more_in_day(work, &counter, app.now(), MAX_DAILY_CHANGES_PER_CLIENT).await? {
+        Ok(())
+    } else {
+        Err(Failure::new(ErrorCode::RegistrationChangesSpent))
+    }
 }
 
 #[cfg(test)]
@@ -381,7 +522,57 @@ mod tests {
 
     use std::net::IpAddr;
 
-    use super::{is_locked, start_bucket, start_window, write_address_bucket};
+    use super::{
+        digest_client_change_counter, digest_counter, digest_registration_counters, is_locked,
+        start_bucket, start_window, write_address_bucket, write_network_bucket,
+    };
+    use crate::oidc::scenario::Scenario;
+
+    #[test]
+    fn a_registration_is_counted_apart_from_every_attempt_to_sign_in() {
+        let scenario = Scenario::start();
+        let (app, scope) = (&scenario.app, scenario.scope);
+        let caller: IpAddr = "2001:db8:1:2::7".parse().expect("an address");
+        let address = write_address_bucket(caller);
+        let network = write_network_bucket(caller).expect("the /48 of an IPv6 caller");
+        let registered: Vec<Vec<u8>> = digest_registration_counters(app, scope, caller)
+            .expect("counters")
+            .into_iter()
+            .map(|(counter, _)| counter)
+            .collect();
+        assert_eq!(registered.len(), 2, "the address, and its /48");
+
+        // Every kind the brake counts an address or a network under.
+        for kind in 1..=11 {
+            for part in [address.as_bytes(), network.as_bytes()] {
+                let other = digest_counter(app, scope, kind, &[part]).expect("a counter");
+                assert!(!registered.contains(&other), "kind {kind}");
+            }
+        }
+        assert_ne!(registered[0], registered[1]);
+        let ipv4: IpAddr = "203.0.113.7".parse().expect("an address");
+        assert_eq!(
+            digest_registration_counters(app, scope, ipv4)
+                .expect("counters")
+                .len(),
+            1,
+            "an IPv4 address has no network beyond itself"
+        );
+    }
+
+    #[test]
+    fn the_changes_of_a_client_are_counted_apart_from_every_other_counter() {
+        let scenario = Scenario::start();
+        let (app, scope) = (&scenario.app, scenario.scope);
+        // Written as an address: the kind alone tells the counters apart.
+        let client_id = "203.0.113.7";
+        let changes = digest_client_change_counter(app, scope, client_id).expect("a counter");
+        for kind in 1..=14 {
+            let other =
+                digest_counter(app, scope, kind, &[client_id.as_bytes()]).expect("a counter");
+            assert_ne!(changes, other, "kind {kind}");
+        }
+    }
 
     fn at(seconds: i64) -> OffsetDateTime {
         OffsetDateTime::from_unix_timestamp(seconds).expect("an instant in range")

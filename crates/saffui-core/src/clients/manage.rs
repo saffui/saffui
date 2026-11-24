@@ -3,7 +3,8 @@
 use serde_json::json;
 
 use super::register::{
-    NewClient, check_new_client, keep_client_secret, make_client_secret, register_client,
+    ClientChecker, NewClient, check_new_client, keep_client_secret, make_client_secret,
+    register_client,
 };
 use super::store::ListWindow;
 use super::{Client, ClientAuthMethod};
@@ -75,7 +76,12 @@ pub async fn create_client(
         created_by: Some(&caller.client.client_id),
         ..wanted
     };
-    let checked = check_new_client(app, caller.scope.tenant(), wanted).await?;
+    let checked = check_new_client(
+        app,
+        ClientChecker::Administrator(caller.scope.tenant()),
+        wanted,
+    )
+    .await?;
     let mut work = app.storage.begin(caller.scope).await?;
     let created = register_client(app, work.as_mut(), checked).await?;
     work.commit().await?;
@@ -282,8 +288,8 @@ mod tests {
     use crate::error::ErrorCode;
     use crate::oidc::scenario::Scenario;
     use crate::ports::crypto::{
-        CryptoFailure, GeneratedSigningKey, KeyMakingFailure, KeyMakingGuard, SignatureAlgorithm,
-        Signer,
+        CryptoFailure, GeneratedSigningKey, KeyCheckLane, KeyMakingFailure, KeyMakingGuard,
+        SignatureAlgorithm, Signer,
     };
     use crate::secret::Secret;
     use crate::tenancy::RealmScope;
@@ -597,6 +603,7 @@ mod tests {
         async fn check_client_keys(
             &self,
             _keys: Vec<(SignatureAlgorithm, Value)>,
+            _lane: KeyCheckLane,
             _guard: KeyMakingGuard,
         ) -> Result<bool, KeyMakingFailure> {
             let seen = (
@@ -753,11 +760,12 @@ mod tests {
         async fn check_client_keys(
             &self,
             keys: Vec<(SignatureAlgorithm, Value)>,
+            lane: KeyCheckLane,
             guard: KeyMakingGuard,
         ) -> Result<bool, KeyMakingFailure> {
             self.checks.fetch_add(1, Ordering::SeqCst);
             let guard = self.pass_gate(guard).await;
-            self.signer.check_client_keys(keys, guard).await
+            self.signer.check_client_keys(keys, lane, guard).await
         }
 
         fn verify(

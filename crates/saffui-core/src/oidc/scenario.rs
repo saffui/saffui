@@ -141,7 +141,7 @@ impl Scenario {
             Authorization, AuthorizationParameters, SignInAnswer, SignInStep, TypedSignIn,
             begin_authorization, finish_sign_in,
         };
-        use crate::consent::answer::{ConsentDecision, answer_consent};
+        use crate::consent::answer::{ConsentDecision, answer_consent, describe_consent};
 
         let challenge = URL_SAFE_NO_PAD.encode(self.app.digester.sha256(VERIFIER.as_bytes()));
         let parameters = AuthorizationParameters {
@@ -181,13 +181,22 @@ impl Scenario {
         let SignInStep::ConsentRequired(signed_in) = step else {
             panic!("asked to consent again, the person answers on the page: {step:?}");
         };
+        let shown = complete(describe_consent(
+            &self.app,
+            "acme",
+            request,
+            &browser_secret,
+            Some(&signed_in.ticket),
+        ))
+        .expect("the page")
+        .shown;
         let location = complete(answer_consent(
             &self.app,
             "acme",
             request,
             &browser_secret,
             Some(&signed_in.ticket),
-            ConsentDecision::Allow,
+            ConsentDecision::Allow { shown },
         ))
         .expect("an allowed client");
         let code = location

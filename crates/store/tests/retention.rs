@@ -25,7 +25,7 @@ mod support;
 const TIME_ENOUGH: std::time::Duration = std::time::Duration::from_mins(1);
 
 /// Writes, in one realm, a row past its keeping and a row still of use in
-/// each of the eight tables retention reads.
+/// each of the nine tables retention reads.
 #[expect(clippy::too_many_lines, reason = "one realm, filled table by table")]
 async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
     let identify = || mint_id(app).expect("an identifier");
@@ -129,6 +129,42 @@ async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
         work.record_client_assertion("portal", &format!("assertion-{digest}"), expires_at)
             .await
             .expect("an assertion");
+        // A client that registered itself, whose registration ended a
+        // little more, or a little less, than a month ago.
+        let client_id = format!("registered-{digest}");
+        let registered = saffui_core::clients::Client {
+            id: identify(),
+            client_id: client_id.clone(),
+            name: "Registered".to_owned(),
+            auth_method: saffui_core::clients::ClientAuthMethod::None,
+            auth_signing_alg: None,
+            allows_client_credentials: false,
+            allows_authorization_code: true,
+            redirect_uris: vec!["https://app.example.org/cb".to_owned()],
+            post_logout_redirect_uris: Vec::new(),
+            requires_consent: true,
+            scopes: vec!["openid".to_owned()],
+            capabilities: Vec::new(),
+            id_token_signed_response_alg: None,
+            enabled: false,
+            self_registered: true,
+            created_at: now - Duration::days(40),
+        };
+        let proof = saffui_core::clients::KeptProof {
+            secret_digest: None,
+            sealed_secret: None,
+            jwks: None,
+        };
+        work.insert_client(&registered, &proof)
+            .await
+            .expect("a registered client");
+        work.insert_client_registration(&client_id, &[digest; 32], now - Duration::days(40))
+            .await
+            .expect("its registration");
+        let ended_at = now - Duration::days(30) + expires_in;
+        work.end_client_registration_as_administrator(&client_id, ended_at)
+            .await
+            .expect("its end");
     }
     // A counter of three days ago, and one of the window that is being read.
     work.record_login_failure(&[1; 32], now - Duration::days(3))
@@ -140,7 +176,7 @@ async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
     work.commit().await.expect("a commit");
 }
 
-const TABLES: [&str; 8] = [
+const TABLES: [&str; 9] = [
     "authorization_requests",
     "authorization_codes",
     "refresh_tokens",
@@ -149,13 +185,14 @@ const TABLES: [&str; 8] = [
     "login_failures",
     "security_key_enrollments",
     "client_assertions",
+    "clients",
 ];
 
 /// What a pass removed from each table and how each came out, in the order
 /// of `TABLES`.
 fn summarize(
     report: Result<Option<PurgeReport>, StorageError>,
-) -> Result<Option<[(u64, PurgeOutcome); 8]>, StorageError> {
+) -> Result<Option<[(u64, PurgeOutcome); 9]>, StorageError> {
     report.map(|report| {
         report.map(|report| {
             report
@@ -167,8 +204,8 @@ fn summarize(
 
 const DONE: PurgeOutcome = PurgeOutcome::Done;
 
-async fn count_rows(client: &Client) -> [i64; 8] {
-    let mut counted = [0; 8];
+async fn count_rows(client: &Client) -> [i64; 9] {
+    let mut counted = [0; 9];
     for (slot, table) in TABLES.into_iter().enumerate() {
         counted[slot] = client
             .query_one(&format!("SELECT count(*) FROM {table}"), &[])
@@ -192,19 +229,19 @@ async fn a_pass_removes_what_expired_in_every_realm_and_leaves_what_is_still_of_
         .connect_directly()
         .await
         .expect("a connection");
-    assert_eq!(count_rows(&maintenance).await, [4; 8]);
+    assert_eq!(count_rows(&maintenance).await, [4; 9]);
     let retention = PgRetention::new(database.plan(RETENTION_ROLE));
 
     let first = run_retention_pass(&retention, now, TIME_ENOUGH).await;
 
     assert_eq!(
         summarize(first),
-        Ok(Some([(2, DONE); 8])),
+        Ok(Some([(2, DONE); 9])),
         "two of each, one in each realm"
     );
     assert_eq!(
         count_rows(&maintenance).await,
-        [2; 8],
+        [2; 9],
         "what is still of use stays, in both realms"
     );
     assert_eq!(
@@ -230,7 +267,7 @@ async fn a_pass_under_the_role_that_serves_is_refused_and_removes_nothing() {
         .connect_directly()
         .await
         .expect("a connection");
-    assert_eq!(count_rows(&maintenance).await, [2; 8]);
+    assert_eq!(count_rows(&maintenance).await, [2; 9]);
 }
 
 #[tokio::test]
@@ -255,7 +292,7 @@ async fn a_pass_under_a_role_that_may_do_more_than_purge_is_refused_and_removes_
         .connect_directly()
         .await
         .expect("a connection");
-    assert_eq!(count_rows(&maintenance).await, [2; 8]);
+    assert_eq!(count_rows(&maintenance).await, [2; 9]);
     let under_retention = PgRetention::new(database.plan(RETENTION_ROLE));
     assert_eq!(under_retention.verify_role().await, Ok(()));
 }
@@ -269,7 +306,8 @@ async fn a_retention_role_with_any_right_beyond_purging_is_refused() {
         .await
         .expect("a connection");
     let purged = "authorization_requests, authorization_codes, refresh_tokens, sessions, \
-                  known_browsers, login_failures, security_key_enrollments, client_assertions";
+                  known_browsers, login_failures, security_key_enrollments, client_assertions, \
+                  client_registrations, clients";
     // Each bypasses row security as retention does, and holds one thing more.
     for role in [
         "saffui_test_retention_reads_all",
@@ -580,7 +618,7 @@ async fn a_table_that_fails_is_reported_and_the_pass_goes_on_with_the_others() {
 
     let report = run_retention_pass(&retention, now, TIME_ENOUGH).await;
 
-    let mut all_but_codes = [(1, DONE); 8];
+    let mut all_but_codes = [(1, DONE); 9];
     all_but_codes[1] = (0, PurgeOutcome::Failed);
     assert_eq!(
         summarize(report),
@@ -594,7 +632,7 @@ async fn a_table_that_fails_is_reported_and_the_pass_goes_on_with_the_others() {
         .expect("a connection");
     assert_eq!(
         count_rows(&maintenance).await,
-        [1, 2, 1, 1, 1, 1, 1, 1],
+        [1, 2, 1, 1, 1, 1, 1, 1, 1],
         "both codes stay"
     );
 }
@@ -892,7 +930,7 @@ async fn a_pass_whose_link_closes_is_a_failure_and_stops_there() {
         .expect("a connection");
     assert_eq!(
         count_rows(&maintenance).await,
-        [2; 8],
+        [2; 9],
         "nothing was removed after the link closed"
     );
 }
@@ -1067,4 +1105,238 @@ async fn an_offline_session_is_purged_at_its_end_with_its_tokens_and_kept_until_
         (1, 1),
         "ended before its end, kept until then"
     );
+}
+
+/// The role of retention removes a client that registered itself and was
+/// turned off, and a registration that ended, and no other, whatever
+/// statement it runs. A pass chooses only such clients: it removes the one
+/// whose registration ended a month ago, with its registration and what
+/// hangs on it by its keys, and leaves one a hand in the database left on.
+#[tokio::test]
+#[expect(clippy::too_many_lines, reason = "one realm, read from top to bottom")]
+async fn retention_removes_a_client_whose_registration_ended_and_no_other() {
+    use saffui_core::authz::roles::Role;
+    use saffui_core::clients::{Client, ClientAuthMethod, KeptProof};
+    use saffui_core::consent::Consent;
+    use saffui_core::testkit::fixtures::{Application, register_application};
+    use tokio_postgres::error::SqlState;
+
+    let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let now = app.now();
+    let scope = create_realm(&app, "retention-clients").await;
+    let portal = Application {
+        client_id: "portal",
+        redirect_uri: "https://app.example.org/cb",
+        post_logout_redirect_uri: None,
+        public: true,
+        requires_consent: true,
+    };
+    register_application(&app, scope, portal).await;
+    let retired = Application {
+        client_id: "retired",
+        redirect_uri: "https://app.example.org/cb",
+        post_logout_redirect_uri: None,
+        public: true,
+        requires_consent: true,
+    };
+    register_application(&app, scope, retired).await;
+    let identify = || mint_id(&app).expect("an identifier");
+    let ada = Person {
+        id: identify(),
+        username: "ada".to_owned(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        enabled: true,
+        created_at: now,
+    };
+    let registered = |client_id: &str, enabled: bool| Client {
+        id: identify(),
+        client_id: client_id.to_owned(),
+        name: client_id.to_owned(),
+        auth_method: ClientAuthMethod::None,
+        auth_signing_alg: None,
+        allows_client_credentials: false,
+        allows_authorization_code: true,
+        redirect_uris: vec!["https://app.example.org/cb".to_owned()],
+        post_logout_redirect_uris: Vec::new(),
+        requires_consent: true,
+        scopes: vec!["openid".to_owned()],
+        capabilities: Vec::new(),
+        id_token_signed_response_alg: None,
+        enabled,
+        self_registered: true,
+        created_at: now - Duration::days(40),
+    };
+    let nothing = || KeptProof {
+        secret_digest: None,
+        sealed_secret: None,
+        jwks: None,
+    };
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.insert_person(&ada).await.expect("a person");
+    // Live, ended and turned off, and ended but left on by a hand in the
+    // database: the product turns off every client whose registration ends.
+    for (client_id, digest, enabled, ended) in [
+        ("live", 1_u8, true, false),
+        ("ended", 2, false, true),
+        ("left-on", 3, true, true),
+    ] {
+        work.insert_client(&registered(client_id, enabled), &nothing())
+            .await
+            .expect("a client that registered itself");
+        work.insert_client_registration(client_id, &[digest; 32], now - Duration::days(40))
+            .await
+            .expect("its registration");
+        if ended {
+            work.end_client_registration_as_administrator(client_id, now - Duration::days(31))
+                .await
+                .expect("its end");
+        }
+    }
+    for client_id in ["live", "ended"] {
+        work.add_consent(&Consent {
+            person: ada.id,
+            client_id: client_id.to_owned(),
+            scopes: vec!["openid".to_owned()],
+            granted_at: now,
+        })
+        .await
+        .expect("a consent");
+        let role = Role {
+            id: identify(),
+            client_id: Some(client_id.to_owned()),
+            name: "reader".to_owned(),
+            description: None,
+            created_at: now,
+        };
+        assert_eq!(work.insert_role(&role).await, Ok(true));
+    }
+    work.commit().await.expect("a commit");
+    // An administrator made it, and the owner of the tables turned it off.
+    let owner = database
+        .plan("saffui_owner")
+        .connect_directly()
+        .await
+        .expect("a connection");
+    owner
+        .batch_execute(&format!(
+            "BEGIN; SELECT set_config('saffui.tenant', '{}', true), \
+             set_config('saffui.realm', '{}', true)",
+            scope.tenant().as_uuid(),
+            scope.realm().as_uuid()
+        ))
+        .await
+        .expect("a scoped transaction");
+    let turned_off = owner
+        .execute(
+            "UPDATE clients SET enabled = false WHERE client_id = 'retired'",
+            &[],
+        )
+        .await
+        .expect("a client turned off");
+    owner.batch_execute("COMMIT").await.expect("a commit");
+    assert_eq!(turned_off, 1, "retired is off");
+
+    let retention_link = database
+        .plan(RETENTION_ROLE)
+        .connect_directly()
+        .await
+        .expect("a connection");
+    for client_id in ["portal", "retired", "live", "left-on"] {
+        let refused = retention_link
+            .execute("DELETE FROM clients WHERE client_id = $1", &[&client_id])
+            .await
+            .expect_err("a client retention may not remove");
+        assert_eq!(
+            refused.code(),
+            Some(&SqlState::CHECK_VIOLATION),
+            "{client_id}: {refused}"
+        );
+    }
+    let refused = retention_link
+        .execute(
+            "DELETE FROM client_registrations WHERE client_id = 'live'",
+            &[],
+        )
+        .await
+        .expect_err("a registration that lasts");
+    assert_eq!(
+        refused.code(),
+        Some(&SqlState::CHECK_VIOLATION),
+        "{refused}"
+    );
+    assert_eq!(
+        refused
+            .as_db_error()
+            .map(tokio_postgres::error::DbError::message),
+        Some("only a registration that ended is removed")
+    );
+    retention_link
+        .batch_execute("BEGIN")
+        .await
+        .expect("a transaction");
+    let removed = retention_link
+        .execute("DELETE FROM clients WHERE client_id = 'ended'", &[])
+        .await
+        .expect("a client whose registration ended");
+    let registrations_left: i64 = retention_link
+        .query_one(
+            "SELECT count(*) FROM client_registrations WHERE client_id = 'ended'",
+            &[],
+        )
+        .await
+        .expect("a count")
+        .get(0);
+    retention_link
+        .batch_execute("ROLLBACK")
+        .await
+        .expect("a rollback");
+    assert_eq!(
+        (removed, registrations_left),
+        (1, 0),
+        "its registration goes with it"
+    );
+    let retention = PgRetention::new(database.plan(RETENTION_ROLE));
+    let report = run_retention_pass(&retention, now, TIME_ENOUGH).await;
+
+    assert_eq!(
+        summarize(report).map(|tables| tables.map(|tables| tables[8])),
+        Ok(Some((1, DONE))),
+        "the client whose registration ended, and its batch done"
+    );
+    let maintenance = database
+        .plan(MAINTENANCE_ROLE)
+        .connect_directly()
+        .await
+        .expect("a connection");
+    let list = async |statement: &str| -> Vec<String> {
+        maintenance
+            .query(statement, &[&scope.realm().as_uuid()])
+            .await
+            .expect("a list")
+            .iter()
+            .map(|row| row.get(0))
+            .collect()
+    };
+    assert_eq!(
+        list("SELECT client_id FROM clients WHERE realm_id = $1 ORDER BY client_id").await,
+        ["left-on", "live", "portal", "retired"]
+    );
+    assert_eq!(
+        list("SELECT client_id FROM client_registrations WHERE realm_id = $1 ORDER BY client_id")
+            .await,
+        ["left-on", "live"]
+    );
+    for table in ["consents", "roles"] {
+        assert_eq!(
+            list(&format!(
+                "SELECT client_id FROM {table} WHERE realm_id = $1 AND client_id IS NOT NULL \
+                 ORDER BY client_id"
+            ))
+            .await,
+            ["live"],
+            "{table}: gone with their client, kept for the other"
+        );
+    }
 }

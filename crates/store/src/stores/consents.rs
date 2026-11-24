@@ -171,4 +171,14 @@ impl ConsentStore for PgUnitOfWork {
             .await?;
         Ok(deleted == 1)
     }
+
+    async fn delete_consents_of_client(&mut self, client_id: &str) -> Result<u64, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        // Found by the index of the consents of a client.
+        self.execute_raw(
+            "DELETE FROM consents WHERE tenant_id = $1 AND realm_id = $2 AND client_id = $3",
+            &[&tenant, &realm, &client_id],
+        )
+        .await
+    }
 }

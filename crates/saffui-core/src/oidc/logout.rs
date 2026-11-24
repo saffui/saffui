@@ -69,21 +69,26 @@ pub async fn begin_logout(
         None => None,
     };
 
+    let mut closed_named_session = false;
     if let Some(session) = &session {
         if hint.as_ref().is_none_or(|hint| hint.session != session.id) {
             return Ok(Logout::ConfirmationRequired);
         }
         close_session(app, work.as_mut(), session).await?;
+        closed_named_session = true;
     }
 
     // Only the client an identity token of this realm names may send the
-    // browser on, and only to an address it registered.
+    // browser on, and only to an address it registered. A client that
+    // registered itself does so only when this request ended the session its
+    // token names: a token kept from a session long over sends it nowhere.
     let location = match (&hint, parameters.post_logout_redirect_uri) {
         (Some(hint), Some(asked)) => work
             .read_client(&hint.client_id)
             .await?
             .filter(|client| {
                 client.enabled
+                    && (closed_named_session || !client.self_registered)
                     && client
                         .post_logout_redirect_uris
                         .iter()

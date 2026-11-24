@@ -63,4 +63,46 @@ impl RealmStore for MemoryUnitOfWork {
             .filter(|realm| realm.tenant == self.scope.tenant())
             .cloned())
     }
+
+    async fn read_realm_settings(&mut self) -> Result<Option<serde_json::Value>, StorageError> {
+        Ok(self
+            .working
+            .realm_settings
+            .get(&self.scope.realm().as_uuid())
+            .cloned())
+    }
+
+    async fn read_realm_settings_for_update(
+        &mut self,
+    ) -> Result<Option<serde_json::Value>, StorageError> {
+        // One unit of work at a time: nothing else writes meanwhile.
+        self.read_realm_settings().await
+    }
+
+    async fn read_realm_settings_for_share(
+        &mut self,
+    ) -> Result<Option<serde_json::Value>, StorageError> {
+        // One unit of work at a time: nothing else writes meanwhile.
+        self.read_realm_settings().await
+    }
+
+    async fn write_realm_settings(
+        &mut self,
+        settings: &serde_json::Value,
+    ) -> Result<(), StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        // As the rule of the table: an object, of a bounded size.
+        let fits = settings.is_object() && settings.to_string().len() <= 16 * 1024;
+        let outcome = if fits {
+            Ok(())
+        } else {
+            Err(StorageError::Failed)
+        };
+        self.record_refusal(outcome)?;
+        self.working
+            .realm_settings
+            .insert(self.scope.realm().as_uuid(), settings.clone());
+        Ok(())
+    }
 }

@@ -4,7 +4,8 @@ use async_trait::async_trait;
 use saffui_core::login::session::{SessionKind, SessionState};
 use saffui_core::ports::storage::StorageError;
 use saffui_core::tokens::store::{
-    EndedFamily, RefreshStore, RefreshToken, RevokedFamilies, StoredRefreshToken,
+    EndedFamily, RefreshStore, RefreshToken, RevokedClientGrants, RevokedFamilies,
+    StoredRefreshToken,
 };
 use time::OffsetDateTime;
 use tokio_postgres::Row;
@@ -124,6 +125,47 @@ const REVOKE_FAMILIES_OF_CLIENT: &str = "
             WHERE tenant_id = $1 AND realm_id = $2 AND revoked_at IS NULL
               AND family_id IN (SELECT family_id FROM ended)),
            ARRAY(SELECT family_id FROM ended ORDER BY family_id LIMIT $6)";
+
+/// Constant SQL: the offline sessions a client holds a live token in, for
+/// whoever they are, found by the index of its live tokens. They end before
+/// their tokens are revoked. It answers one row: how many ended, and the
+/// first `$7` of them, however many there were.
+const END_OFFLINE_SESSIONS_OF_EVERY_PERSON: &str = "
+    WITH ended AS (
+        UPDATE sessions SET state = $4
+        WHERE tenant_id = $1 AND realm_id = $2 AND kind = $5 AND state = $6
+          AND session_id = ANY (ARRAY(
+              SELECT session_id FROM refresh_tokens
+              WHERE tenant_id = $1 AND realm_id = $2 AND client_id = $3 AND revoked_at IS NULL))
+        RETURNING session_id)
+    SELECT (SELECT count(*) FROM ended),
+           ARRAY(SELECT session_id FROM ended ORDER BY session_id LIMIT $7)";
+
+/// Constant SQL: every family of a client is revoked as `REVOKE_FAMILY`
+/// revokes one, its live tokens found by their index, in one statement that
+/// answers one row however many families end. A family a revoked token
+/// refuses already is left as it was.
+const REVOKE_FAMILIES_OF_EVERY_PERSON: &str = "
+    WITH latest AS (
+        SELECT DISTINCT ON (family_id) token_digest
+        FROM refresh_tokens
+        WHERE tenant_id = $1 AND realm_id = $2 AND client_id = $3 AND revoked_at IS NULL
+        ORDER BY family_id, issued_at DESC),
+    revoked AS (
+        UPDATE refresh_tokens AS token SET revoked_at = $4
+        WHERE tenant_id = $1 AND realm_id = $2 AND client_id = $3 AND revoked_at IS NULL
+          AND (used_at IS NULL OR token_digest IN (SELECT token_digest FROM latest))
+          AND NOT EXISTS (
+              SELECT 1 FROM refresh_tokens AS kin
+              WHERE kin.tenant_id = $1 AND kin.realm_id = $2
+                AND kin.family_id = token.family_id AND kin.revoked_at IS NOT NULL)
+        RETURNING family_id),
+    ended AS (SELECT DISTINCT family_id FROM revoked)
+    SELECT (SELECT count(*) FROM ended),
+           (SELECT count(*) FROM refresh_tokens
+            WHERE tenant_id = $1 AND realm_id = $2 AND revoked_at IS NULL
+              AND family_id IN (SELECT family_id FROM ended)),
+           ARRAY(SELECT family_id FROM ended ORDER BY family_id LIMIT $5)";
 
 /// Constant SQL: each family of these sessions is revoked as `REVOKE_FAMILY`
 /// revokes one, in one statement, the tokens found by the index of sessions.
@@ -311,6 +353,50 @@ impl RefreshStore for PgUnitOfWork {
             tokens: count(1)?,
             named: row.get(2),
             offline_sessions,
+        })
+    }
+
+    async fn revoke_every_refresh_family_of_client(
+        &mut self,
+        client_id: &str,
+        now: OffsetDateTime,
+        most: u32,
+    ) -> Result<RevokedClientGrants, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        let (offline, ended, active) = (
+            SessionKind::Offline.name(),
+            SessionState::Ended.name(),
+            SessionState::Active.name(),
+        );
+        let most = i64::from(most);
+        let sessions = self
+            .read_raw(
+                END_OFFLINE_SESSIONS_OF_EVERY_PERSON,
+                &[
+                    &tenant, &realm, &client_id, &ended, &offline, &active, &most,
+                ],
+            )
+            .await?;
+        let sessions = sessions.first().ok_or(StorageError::Failed)?;
+        let offline_sessions =
+            u64::try_from(sessions.get::<_, i64>(0)).map_err(|_| StorageError::Failed)?;
+        let named_offline_sessions: Vec<Uuid> = sessions.get(1);
+        let rows = self
+            .read_raw(
+                REVOKE_FAMILIES_OF_EVERY_PERSON,
+                &[&tenant, &realm, &client_id, &now, &most],
+            )
+            .await?;
+        let row = rows.first().ok_or(StorageError::Failed)?;
+        let count = |column: usize| {
+            u64::try_from(row.get::<_, i64>(column)).map_err(|_| StorageError::Failed)
+        };
+        Ok(RevokedClientGrants {
+            families: count(0)?,
+            tokens: count(1)?,
+            named: row.get(2),
+            offline_sessions,
+            named_offline_sessions,
         })
     }
 

@@ -3,6 +3,7 @@ pub mod certs;
 pub mod discovery;
 pub mod introspect;
 pub mod logout;
+pub mod register;
 pub mod revoke;
 pub mod token;
 pub mod userinfo;

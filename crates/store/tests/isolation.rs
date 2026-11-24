@@ -12,7 +12,7 @@ use saffui_core::ports::storage::{StorageError, StorageUnavailable};
 use saffui_core::tenancy::RealmName;
 use saffui_core::tenancy::realm::{NewRealm, Provisioned, provision_first_realm};
 use tokio_postgres::Client;
-use tokio_postgres::error::SqlState;
+use tokio_postgres::error::{DbError, SqlState};
 
 mod support;
 
@@ -581,13 +581,14 @@ async fn a_statement_under_one_scope_removes_no_consent_of_another_realm() {
     assert_eq!(left, [scopes[1].realm().as_uuid()]);
 }
 
-/// The serving role may update five columns of a client, its realm for the
-/// lock of its row, the capabilities the operator grants, the two forms of
-/// its secret and its method, and the attributes of a person: row security
-/// keeps the first where it is and each in its realm, the schema keeps the
-/// capabilities to its list and to the clients that act as themselves, a
-/// secret to the form its method keeps and a method between the two ways of
-/// presenting one secret, and nothing else of either changes.
+/// The serving role may update of a client its realm for the lock of its
+/// row, the capabilities the operator grants, the two forms of its secret
+/// and its method, what a registered client says of itself and whether it
+/// is enabled, and the attributes of a person: row security keeps the first
+/// where it is and each in its realm, the schema keeps the capabilities to
+/// its list and to the clients that act as themselves, a secret to the form
+/// its method keeps and a method between the two ways of presenting one
+/// secret, and nothing else of either changes.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -619,6 +620,7 @@ async fn the_rights_to_update_a_client_and_a_person_reach_their_columns_in_their
         requires_consent: false,
     };
     register_application(&app, acme, portal).await;
+    plant_registered_client(&app, acme, "registered").await;
     create_person(&app, acme, "ada", "correct horse battery").await;
     let bob = create_person(&app, globex, "bob", "correct horse battery").await;
     let session = connect(&database, APP_ROLE).await;
@@ -714,9 +716,12 @@ async fn the_rights_to_update_a_client_and_a_person_reach_their_columns_in_their
         );
     }
     for statement in [
-        "UPDATE clients SET name = 'x'",
-        "UPDATE clients SET scopes = '{}'",
-        "UPDATE clients SET jwks = '{}'",
+        "UPDATE clients SET client_id = 'x'",
+        "UPDATE clients SET requires_consent = false",
+        "UPDATE clients SET allows_client_credentials = true",
+        "UPDATE clients SET allows_authorization_code = false",
+        "UPDATE clients SET created_at = now()",
+        "UPDATE clients SET self_registered = true",
         "UPDATE persons SET email_verified = true",
     ] {
         let refused = refuse(statement.to_owned()).await;
@@ -756,6 +761,14 @@ async fn the_rights_to_update_a_client_and_a_person_reach_their_columns_in_their
         )
         .await
         .expect("a secret turned over");
+    let said = session
+        .execute(
+            "UPDATE clients SET name = 'Renamed', scopes = '{openid}', enabled = false \
+             WHERE client_id = 'registered'",
+            &[],
+        )
+        .await
+        .expect("what a registered client says of itself, and its end");
     let mut moved = 0;
     for method in ["client_secret_post", "client_secret_basic"] {
         moved += session
@@ -771,6 +784,7 @@ async fn the_rights_to_update_a_client_and_a_person_reach_their_columns_in_their
     assert_eq!(granted, 1, "the column the operator writes");
     assert_eq!(turned_over, 1, "the column an administrator turns over");
     assert_eq!(moved, 2, "there and back");
+    assert_eq!(said, 1, "the columns a registered client writes");
 }
 
 /// The trigger that bounds a method compares under a path of its own. An
@@ -888,4 +902,462 @@ async fn the_function_that_bounds_a_method_is_granted_to_no_role() {
             .get(0);
         assert!(!granted, "{role} may call it");
     }
+}
+
+/// The settings of a realm, its initial access tokens and the tokens of its
+/// registrations: the serving role reads only those of its realm, writes
+/// none for another, and changes only the column each statement of the
+/// product writes. A setting is never removed, a token's maker and instants
+/// never change, and a registration never moves to another client.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario, read from top to bottom"
+)]
+async fn the_rows_of_registration_stay_in_their_realm_and_change_only_where_granted() {
+    use saffui_core::clients::registration::InitialAccessToken;
+    use saffui_core::tenancy::RealmScope;
+    use saffui_core::testkit::fixtures::{Application, create_realm, register_application};
+
+    let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let mut scopes: Vec<RealmScope> = Vec::new();
+    for realm_name in ["acme", "globex"] {
+        let scope = create_realm(&app, realm_name).await;
+        let portal = Application {
+            client_id: "portal",
+            redirect_uri: "https://app.example.org/cb",
+            post_logout_redirect_uri: None,
+            public: true,
+            requires_consent: true,
+        };
+        register_application(&app, scope, portal).await;
+        plant_registered_client(&app, scope, "registered").await;
+        let mut work = app.storage.begin(scope).await.expect("a unit of work");
+        work.write_realm_settings(&serde_json::json!({ "registration": "open" }))
+            .await
+            .expect("settings");
+        let token = InitialAccessToken {
+            id: saffui_core::ids::mint_id(&app).expect("an identifier"),
+            uses_left: 3,
+            expires_at: app.now() + time::Duration::hours(1),
+            created_at: app.now(),
+            created_by: "operator".to_owned(),
+        };
+        work.insert_initial_access_token(&token, &[4; 32])
+            .await
+            .expect("a token");
+        work.insert_client_registration("registered", &[6; 32], app.now())
+            .await
+            .expect("a registration");
+        work.commit().await.expect("a commit");
+        scopes.push(scope);
+    }
+    let session = connect(&database, APP_ROLE).await;
+    let open = |scope: RealmScope| {
+        format!(
+            "BEGIN; SELECT set_config('saffui.tenant', '{}', true), \
+             set_config('saffui.realm', '{}', true)",
+            scope.tenant().as_uuid(),
+            scope.realm().as_uuid()
+        )
+    };
+    let refuse = async |statement: &str| {
+        session
+            .batch_execute(&open(scopes[0]))
+            .await
+            .expect("a scoped transaction");
+        let refused = session
+            .execute(statement, &[])
+            .await
+            .expect_err("a statement the serving role may not run");
+        session.batch_execute("ROLLBACK").await.expect("a rollback");
+        refused
+    };
+
+    session
+        .batch_execute(&open(scopes[0]))
+        .await
+        .expect("a scoped transaction");
+    for table in [
+        "realm_settings",
+        "initial_access_tokens",
+        "client_registrations",
+    ] {
+        assert_eq!(
+            count_rows(&session, table).await,
+            1,
+            "{table} of its realm alone"
+        );
+    }
+    let spent = session
+        .execute(
+            "UPDATE initial_access_tokens SET uses_left = uses_left - 1",
+            &[],
+        )
+        .await
+        .expect("a use spent");
+    let rotated = session
+        .execute(
+            "UPDATE client_registrations SET token_digest = $1",
+            &[&vec![8_u8; 32]],
+        )
+        .await
+        .expect("a token replaced");
+    let rewritten = session
+        .execute(
+            "UPDATE realm_settings SET settings = '{\"registration\": \"closed\"}'",
+            &[],
+        )
+        .await
+        .expect("settings replaced");
+    let ended = session
+        .execute(
+            "UPDATE client_registrations SET token_digest = NULL, ended_at = now()",
+            &[],
+        )
+        .await
+        .expect("a registration ended");
+    let removed = session
+        .execute("DELETE FROM initial_access_tokens", &[])
+        .await
+        .expect("a token taken back");
+    session.batch_execute("ROLLBACK").await.expect("a rollback");
+    assert_eq!(
+        (spent, rotated, rewritten, ended, removed),
+        (1, 1, 1, 1, 1),
+        "each reaches the one row of its realm"
+    );
+
+    let (globex_tenant, globex_realm) = (
+        scopes[1].tenant().as_uuid().to_string(),
+        scopes[1].realm().as_uuid().to_string(),
+    );
+    for planted in [
+        format!(
+            "INSERT INTO initial_access_tokens (tenant_id, realm_id, token_id, token_digest, \
+             uses_left, expires_at, created_at, created_by) VALUES ('{globex_tenant}', \
+             '{globex_realm}', gen_random_uuid(), '\\x{}', 1, now(), now(), 'x')",
+            "05".repeat(32)
+        ),
+        format!(
+            "INSERT INTO client_registrations (tenant_id, realm_id, client_id, token_digest, \
+             registered_at) VALUES ('{globex_tenant}', '{globex_realm}', 'portal', '\\x{}', now())",
+            "09".repeat(32)
+        ),
+        format!("UPDATE realm_settings SET realm_id = '{globex_realm}'"),
+    ] {
+        let refused = refuse(&planted).await;
+        assert_eq!(
+            refused.code(),
+            Some(&SqlState::INSUFFICIENT_PRIVILEGE),
+            "{planted}: {refused}"
+        );
+    }
+    for statement in [
+        "DELETE FROM realm_settings",
+        "DELETE FROM client_registrations",
+        "UPDATE initial_access_tokens SET created_by = 'someone'",
+        "UPDATE initial_access_tokens SET expires_at = now() + interval '1 year'",
+        "UPDATE initial_access_tokens SET token_digest = token_digest",
+        "UPDATE client_registrations SET client_id = 'another'",
+        "UPDATE client_registrations SET registered_at = now()",
+    ] {
+        let refused = refuse(statement).await;
+        assert_eq!(
+            refused.code(),
+            Some(&SqlState::INSUFFICIENT_PRIVILEGE),
+            "{statement}: {refused}"
+        );
+    }
+    for (statement, rule) in [
+        (
+            "UPDATE realm_settings SET settings = '[]'",
+            "realm_settings_settings_check",
+        ),
+        (
+            "UPDATE initial_access_tokens SET uses_left = 101",
+            "initial_access_tokens_uses_left_check",
+        ),
+        (
+            "UPDATE client_registrations SET token_digest = '\\x01'",
+            "client_registrations_token_digest_check",
+        ),
+        (
+            "UPDATE client_registrations SET ended_at = now()",
+            "client_registrations_token_while_live",
+        ),
+        (
+            "UPDATE client_registrations SET token_digest = NULL",
+            "client_registrations_token_while_live",
+        ),
+    ] {
+        let refused = refuse(statement).await;
+        assert_eq!(
+            refused.code(),
+            Some(&SqlState::CHECK_VIOLATION),
+            "{statement}: {refused}"
+        );
+        assert_eq!(
+            refused
+                .as_db_error()
+                .and_then(|refusal| refusal.constraint()),
+            Some(rule),
+            "{statement}"
+        );
+    }
+
+    let maintenance = connect(&database, MAINTENANCE_ROLE).await;
+    for table in [
+        "realm_settings",
+        "initial_access_tokens",
+        "client_registrations",
+    ] {
+        assert_eq!(
+            count_rows(&maintenance, table).await,
+            2,
+            "{table}: nothing of another realm was touched"
+        );
+    }
+}
+
+/// The end of a registration holds in the database: a client turned off is
+/// turned on again by no role, the owner included, and the statement that
+/// rewrites what a client says of itself writes only a client that
+/// registered itself, while its registration lasts. A client an
+/// administrator made is given no registration, and what it says of itself
+/// is rewritten by no statement of the serving role.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario, read from top to bottom"
+)]
+async fn a_client_turned_off_stays_off_and_only_a_live_registration_is_rewritten() {
+    use saffui_core::clients::{Client, ClientAuthMethod, KeptProof};
+    use saffui_core::testkit::fixtures::{Application, create_realm, register_application};
+
+    let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let acme = create_realm(&app, "acme").await;
+    let portal = Application {
+        client_id: "portal",
+        redirect_uri: "https://app.example.org/cb",
+        post_logout_redirect_uri: None,
+        public: true,
+        requires_consent: true,
+    };
+    register_application(&app, acme, portal).await;
+    let mut work = app.storage.begin(acme).await.expect("a unit of work");
+    let made = work
+        .read_client("portal")
+        .await
+        .expect("a read")
+        .expect("portal");
+    let registered = |client_id: &str| Client {
+        id: saffui_core::ids::mint_id(&app).expect("an identifier"),
+        client_id: client_id.to_owned(),
+        auth_method: ClientAuthMethod::None,
+        self_registered: true,
+        ..made.clone()
+    };
+    let nothing = || KeptProof {
+        secret_digest: None,
+        sealed_secret: None,
+        jwks: None,
+    };
+    for (client_id, digest) in [("live", 1_u8), ("ended", 2)] {
+        work.insert_client(&registered(client_id), &nothing())
+            .await
+            .expect("a registered client");
+        work.insert_client_registration(client_id, &[digest; 32], app.now())
+            .await
+            .expect("its registration");
+    }
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(acme).await.expect("a unit of work");
+    assert!(
+        work.insert_client_registration("portal", &[3; 32], app.now())
+            .await
+            .is_err(),
+        "a client an administrator made registered nothing"
+    );
+    drop(work);
+    let mut work = app.storage.begin(acme).await.expect("a unit of work");
+    assert_eq!(
+        work.end_client_registration("ended", &[2; 32], app.now())
+            .await,
+        Ok(true)
+    );
+    for client_id in ["live", "ended", "portal"] {
+        let renamed = Client {
+            name: "Renamed".to_owned(),
+            ..work
+                .read_client(client_id)
+                .await
+                .expect("a read")
+                .expect("the client")
+        };
+        assert_eq!(
+            work.write_client_metadata(&renamed, None).await,
+            Ok(client_id == "live"),
+            "{client_id}"
+        );
+    }
+    assert_eq!(work.disable_client("live").await, Ok(true));
+    work.commit().await.expect("a commit");
+
+    for role in [APP_ROLE, OWNER] {
+        let session = connect(&database, role).await;
+        session
+            .batch_execute(&format!(
+                "BEGIN; SELECT set_config('saffui.tenant', '{}', true), \
+                 set_config('saffui.realm', '{}', true)",
+                acme.tenant().as_uuid(),
+                acme.realm().as_uuid()
+            ))
+            .await
+            .expect("a scoped transaction");
+        let refused = session
+            .execute(
+                "UPDATE clients SET enabled = true WHERE client_id = 'live'",
+                &[],
+            )
+            .await
+            .expect_err("a client turned on again");
+        session.batch_execute("ROLLBACK").await.expect("a rollback");
+        assert_eq!(refused.code(), Some(&SqlState::CHECK_VIOLATION), "{role}");
+        assert_eq!(
+            refused.as_db_error().map(DbError::message),
+            Some("a client turned off stays off"),
+            "{role}"
+        );
+    }
+    let session = connect(&database, APP_ROLE).await;
+    let (tenant, realm) = (acme.tenant().as_uuid(), acme.realm().as_uuid());
+    let plant = |client_id: &str, self_registered: bool| {
+        format!(
+            "INSERT INTO client_registrations (tenant_id, realm_id, client_id, \
+             self_registered, token_digest, registered_at) VALUES ('{tenant}', '{realm}', \
+             '{client_id}', {self_registered}, '\\x{}', now())",
+            "03".repeat(32)
+        )
+    };
+    let rewrite = |column: &str| format!("UPDATE clients SET {column} WHERE client_id = 'portal'");
+    let kept_by_the_trigger = Some("a client an administrator made keeps what it says of itself");
+    for (statement, code, message) in [
+        (plant("portal", true), SqlState::FOREIGN_KEY_VIOLATION, None),
+        (plant("live", false), SqlState::CHECK_VIOLATION, None),
+        (
+            rewrite("name = 'Renamed'"),
+            SqlState::CHECK_VIOLATION,
+            kept_by_the_trigger,
+        ),
+        (
+            rewrite("redirect_uris = '{https://evil.example/cb}'"),
+            SqlState::CHECK_VIOLATION,
+            kept_by_the_trigger,
+        ),
+        (
+            rewrite("scopes = scopes"),
+            SqlState::CHECK_VIOLATION,
+            kept_by_the_trigger,
+        ),
+        (
+            rewrite("post_logout_redirect_uris = post_logout_redirect_uris"),
+            SqlState::CHECK_VIOLATION,
+            kept_by_the_trigger,
+        ),
+        (
+            rewrite("id_token_signed_response_alg = id_token_signed_response_alg"),
+            SqlState::CHECK_VIOLATION,
+            kept_by_the_trigger,
+        ),
+        (
+            rewrite("auth_signing_alg = auth_signing_alg"),
+            SqlState::CHECK_VIOLATION,
+            kept_by_the_trigger,
+        ),
+        (
+            rewrite("jwks = jwks"),
+            SqlState::CHECK_VIOLATION,
+            kept_by_the_trigger,
+        ),
+    ] {
+        session
+            .batch_execute(&format!(
+                "BEGIN; SELECT set_config('saffui.tenant', '{tenant}', true), \
+                 set_config('saffui.realm', '{realm}', true)"
+            ))
+            .await
+            .expect("a scoped transaction");
+        let refused = session
+            .execute(&statement, &[])
+            .await
+            .expect_err("a statement the schema refuses");
+        session.batch_execute("ROLLBACK").await.expect("a rollback");
+        assert_eq!(refused.code(), Some(&code), "{statement}: {refused}");
+        if message.is_some() {
+            assert_eq!(
+                refused.as_db_error().map(DbError::message),
+                message,
+                "{statement}"
+            );
+        }
+    }
+    let owner = connect(&database, OWNER).await;
+    for function in [
+        "saffui_keep_client_disabled()",
+        "saffui_rewrite_registered_clients_only()",
+        "saffui_remove_ended_clients_only()",
+        "saffui_remove_ended_registrations_only()",
+    ] {
+        for role in [APP_ROLE, MAINTENANCE_ROLE, pgcore::RETENTION_ROLE] {
+            let granted: bool = owner
+                .query_one(
+                    "SELECT has_function_privilege($1, $2, 'EXECUTE')",
+                    &[&role, &function],
+                )
+                .await
+                .expect("a privilege read")
+                .get(0);
+            assert!(!granted, "{role} may call {function}");
+        }
+    }
+}
+
+/// Writes `client_id`, a public client that registered itself, without its
+/// registration: as the insertion of a registration does.
+async fn plant_registered_client(
+    app: &App,
+    scope: saffui_core::tenancy::RealmScope,
+    client_id: &str,
+) {
+    use saffui_core::clients::{Client, ClientAuthMethod, KeptProof};
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let registered = Client {
+        id: saffui_core::ids::mint_id(app).expect("an identifier"),
+        client_id: client_id.to_owned(),
+        name: client_id.to_owned(),
+        auth_method: ClientAuthMethod::None,
+        auth_signing_alg: None,
+        allows_client_credentials: false,
+        allows_authorization_code: true,
+        redirect_uris: vec!["https://registered.example.org/cb".to_owned()],
+        post_logout_redirect_uris: Vec::new(),
+        requires_consent: true,
+        scopes: vec!["openid".to_owned()],
+        capabilities: Vec::new(),
+        id_token_signed_response_alg: None,
+        enabled: true,
+        self_registered: true,
+        created_at: app.now(),
+    };
+    let nothing = KeptProof {
+        secret_digest: None,
+        sealed_secret: None,
+        jwks: None,
+    };
+    work.insert_client(&registered, &nothing)
+        .await
+        .expect("a client that registered itself");
+    work.commit().await.expect("a commit");
 }

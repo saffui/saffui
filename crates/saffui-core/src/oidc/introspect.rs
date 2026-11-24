@@ -9,6 +9,7 @@ use super::errors::OAuthFailure;
 use crate::app::App;
 use crate::authz::grants::{ROLES_SCOPE, RoleClaims, name_client_held_for, read_role_claims};
 use crate::clients::authenticate::{PresentedProof, authenticate_client, read_client_proof};
+use crate::clients::is_client_enabled;
 use crate::error::{ErrorCode, Failure};
 use crate::login::session::read_live_subject;
 use crate::tenancy::resolve::resolve_realm;
@@ -47,8 +48,9 @@ pub struct Introspection {
 }
 
 /// Tells a client whether a token stands. An access token stands while it
-/// verifies and, when a person is behind it, while their session lasts. A
-/// refresh token is told only to the client it was issued to.
+/// verifies and its client is enabled and, when a person is behind it,
+/// while their session lasts. A refresh token is told only to the client it
+/// was issued to, and so is any token to a client that registered itself.
 ///
 /// # Errors
 ///
@@ -75,6 +77,16 @@ pub async fn introspect_token(
 
     match verify_access_token(app, work.as_mut(), &issuer, token).await {
         Ok(claims) => {
+            // Nobody of the realm vetted it: it learns of its own tokens only.
+            if client.self_registered && claims.client_id != client.client_id {
+                return Ok(Introspection::default());
+            }
+            if !is_client_enabled(work.as_mut(), &claims.client_id)
+                .await
+                .map_err(Failure::from)?
+            {
+                return Ok(Introspection::default());
+            }
             let person = match claims.session {
                 None => None,
                 Some(session) => match read_live_subject(app, work.as_mut(), session).await? {

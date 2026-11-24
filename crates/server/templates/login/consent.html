@@ -1,7 +1,23 @@
 {% extends "base.html" %}
 {%- block body -%}
 <h1>Allow access</h1>{# -#}
-<p><strong>{{ prompt.client_name }}</strong> asks to act in your name with:</p>{# -#}
+{%- match prompt.origin -%}
+    {%- when ClientOrigin::SelfRegistered with { client_id, return_host, other_hosts } -%}
+        <p class="error">This application registered itself. The realm has not checked who runs it, {# -#}
+            and the name below is the one it chose.</p>{# -#}
+        <p>Its identifier is <code>{{ client_id }}</code>, and you will be sent back to {# -#}
+            <strong><bdi>{{ return_host }}</bdi></strong>.</p>{# -#}
+        {%- if !other_hosts.is_empty() -%}
+            <p>What you allow it also holds when it sends you to:</p>{# -#}
+            <ul>
+                {%- for host in other_hosts -%}
+                    <li><bdi>{{ host }}</bdi></li>
+                {%- endfor -%}
+            </ul>
+        {%- endif -%}
+    {%- when ClientOrigin::Realm -%}
+{%- endmatch -%}
+<p><strong><bdi>{{ prompt.client_name }}</bdi></strong> asks to act in your name with:</p>{# -#}
 <ul>
     {%- for scope in prompt.scopes -%}
         <li>{{ scope }}</li>
@@ -13,6 +29,7 @@
 {%- endif -%}
 <form method="post" action="/realms/{{ realm }}/consent">{# -#}
     <input type="hidden" name="request" value="{{ request }}">{# -#}
+    <input type="hidden" name="shown" value="{{ prompt.shown }}">{# -#}
     <button type="submit" name="decision" value="allow">Allow</button> {# -#}
     <button type="submit" name="decision" value="deny">Deny</button>{# -#}
 </form>

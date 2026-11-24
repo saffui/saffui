@@ -13,6 +13,7 @@ use crate::ports::crypto::SignatureAlgorithm;
 use crate::settings::Settings;
 use crate::tenancy::RealmName;
 use crate::tenancy::resolve::resolve_realm;
+use crate::tenancy::settings::{RegistrationPolicy, read_settings_closed};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[expect(
@@ -29,6 +30,9 @@ pub struct ProviderMetadata {
     pub introspection_endpoint: String,
     pub revocation_endpoint: String,
     pub end_session_endpoint: String,
+    /// Published only while the realm lets clients register themselves.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registration_endpoint: Option<String>,
     pub response_types_supported: Vec<&'static str>,
     pub grant_types_supported: Vec<&'static str>,
     pub subject_types_supported: Vec<&'static str>,
@@ -77,12 +81,12 @@ pub async fn read_provider_metadata(app: &App, realm: &str) -> Result<ProviderMe
         .into_iter()
         .filter(|algorithm| app.signer.signs_in(*algorithm))
         .collect();
-    Ok(describe_provider(
-        &app.settings,
-        &name,
-        &signing,
-        &verifying,
-    ))
+    let settings = read_settings_closed(work.read_realm_settings().await?);
+    let mut document = describe_provider(&app.settings, &name, &signing, &verifying);
+    if settings.registration != RegistrationPolicy::Closed {
+        document.registration_endpoint = Some(format!("{}/oauth2/register", document.issuer));
+    }
+    Ok(document)
 }
 
 #[must_use]
@@ -112,6 +116,7 @@ pub fn describe_provider(
         introspection_endpoint: format!("{issuer}/oauth2/introspect"),
         revocation_endpoint: format!("{issuer}/oauth2/revoke"),
         end_session_endpoint: format!("{issuer}/oauth2/logout"),
+        registration_endpoint: None,
         response_types_supported: vec!["code"],
         grant_types_supported: vec!["authorization_code", "client_credentials", "refresh_token"],
         subject_types_supported: vec!["public"],

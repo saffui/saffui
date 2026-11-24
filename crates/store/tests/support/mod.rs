@@ -37,6 +37,7 @@ pub async fn wire_on_postgres(pool: PoolSettings) -> (App, TestDatabase) {
         hashing_shares: Arc::new(saffui_core::login::fairness::HashingShares::new(4)),
         decision_shares: Arc::default(),
         key_shares: Arc::default(),
+        registration_key_shares: Arc::default(),
         decoy_hash: Arc::new(OnceLock::new()),
     };
     (app, database)

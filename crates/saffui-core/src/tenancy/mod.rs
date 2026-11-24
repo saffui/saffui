@@ -5,6 +5,7 @@
 pub mod realm;
 pub mod resolve;
 pub mod scope;
+pub mod settings;
 pub mod store;
 
 use std::fmt;

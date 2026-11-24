@@ -17,10 +17,11 @@ pub enum Capability {
     PolicyWrite,
     KeyRead,
     KeyWrite,
+    RealmWrite,
 }
 
 impl Capability {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::RealmRead,
         Self::ClientRead,
         Self::ClientWrite,
@@ -33,6 +34,7 @@ impl Capability {
         Self::PolicyWrite,
         Self::KeyRead,
         Self::KeyWrite,
+        Self::RealmWrite,
     ];
 
     #[must_use]
@@ -50,6 +52,7 @@ impl Capability {
             Self::PolicyWrite => "policy:write",
             Self::KeyRead => "key:read",
             Self::KeyWrite => "key:write",
+            Self::RealmWrite => "realm:write",
         }
     }
 

@@ -1,5 +1,5 @@
 use actix_web::http::header::{CACHE_CONTROL, PRAGMA};
-use actix_web::{HttpResponse, get, post, put, web};
+use actix_web::{HttpResponse, delete, get, post, put, web};
 use api::{CreatedClient, NewAuthMethod, NewClient, RotatedSecret};
 use saffui_core::app::App as Product;
 use saffui_core::authz::capability::Capability;
@@ -7,6 +7,7 @@ use saffui_core::clients::manage;
 use saffui_core::clients::register::NewClient as WantedClient;
 use saffui_core::clients::{AssertionAlgorithm, ClientAuthMethod};
 use saffui_core::error::{ErrorCode, Failure};
+use saffui_core::oidc::registration::end_registration_as_administrator;
 use saffui_core::ports::crypto::SignatureAlgorithm;
 
 use super::listing::{ListParameters, answer_page};
@@ -168,6 +169,24 @@ pub async fn change_client_auth_method(
     .await;
     match changed {
         Ok(client) => HttpResponse::Ok().json(show_client(&client)),
+        Err(failure) => render_failure(&failure),
+    }
+}
+
+/// Ends the registration of a client that registered itself, as its own
+/// token would: the client is disabled, and what it holds is taken back.
+#[delete(
+    "/admin/v1/realms/{realm}/clients/{client_id}/registration",
+    wrap = "RequireCapability(Capability::ClientWrite)"
+)]
+pub async fn end_registration(
+    caller: Caller,
+    product: web::Data<Product>,
+    path: web::Path<(String, String)>,
+) -> HttpResponse {
+    let (_realm, client_id) = path.into_inner();
+    match end_registration_as_administrator(&product, &caller, &client_id).await {
+        Ok(()) => HttpResponse::NoContent().finish(),
         Err(failure) => render_failure(&failure),
     }
 }

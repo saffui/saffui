@@ -14,6 +14,7 @@ use crate::ports::random::Random;
 use crate::ports::storage::Storage;
 use crate::secret::Secret;
 use crate::settings::Settings;
+use crate::tenancy::RealmId;
 
 /// Everything a use case can reach. The binary fills it once.
 #[derive(Clone)]
@@ -35,6 +36,9 @@ pub struct App {
     pub decision_shares: Arc<DecisionShares>,
     /// The key each tenant is making: one at a time.
     pub key_shares: Arc<KeyMakingShares>,
+    /// The keys each realm checks for a client that registers itself: one
+    /// set at a time, apart from the share of its tenant.
+    pub registration_key_shares: Arc<KeyMakingShares<RealmId>>,
     /// A hash nobody's password matches, made once per process. Start it empty.
     pub decoy_hash: Arc<OnceLock<String>>,
 }

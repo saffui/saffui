@@ -109,6 +109,7 @@ async fn name_operator(app: &App, scope: RealmScope) -> AdminCaller {
 fn start_second_node(app: &App) -> App {
     App {
         key_shares: Arc::default(),
+        registration_key_shares: Arc::default(),
         ..app.clone()
     }
 }

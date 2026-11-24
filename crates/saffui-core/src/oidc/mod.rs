@@ -8,6 +8,7 @@ pub mod introspect;
 pub mod logout;
 pub mod pkce;
 pub(crate) mod refresh;
+pub mod registration;
 pub mod revoke;
 #[cfg(test)]
 pub(crate) mod scenario;

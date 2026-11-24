@@ -375,9 +375,77 @@ pub struct HeldRoleView {
     pub until: Option<String>,
 }
 
+/// How a realm lets clients register themselves through the protocol.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RealmSettingsView {
+    /// `closed`, `initial_token` or `open`.
+    pub registration: String,
+    pub registrable_scopes: Vec<String>,
+    pub max_registered_clients: u32,
+    /// Of each kind: where a person is sent back, and after signing out.
+    pub max_redirect_uris: u32,
+    pub max_daily_registrations: u32,
+}
+
+/// The settings of registration, written whole: a bound left out is its default.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NewRealmSettings {
+    /// `closed`, `initial_token` or `open`.
+    pub registration: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registrable_scopes: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_registered_clients: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_redirect_uris: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_daily_registrations: Option<u32>,
+}
+
+/// An initial access token as an administrator sees it: never the token.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InitialTokenView {
+    pub id: String,
+    pub uses_left: u32,
+    pub expires_at: String,
+    pub created_at: String,
+    pub created_by: String,
+}
+
+/// An initial access token to make: for how many registrations, and for how
+/// many seconds from now.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NewInitialToken {
+    pub uses: u32,
+    pub expires_in: i64,
+}
+
+/// An initial access token that was just made, with the one showing of it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreatedInitialToken {
+    #[serde(flatten)]
+    pub view: InitialTokenView,
+    pub initial_access_token: String,
+}
+
+// Written by hand: a derived `Debug` would print the token.
+impl fmt::Debug for CreatedInitialToken {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CreatedInitialToken")
+            .field("view", &self.view)
+            .field("initial_access_token", &"..")
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ClientView, CreatedClient, NewUser, RotatedSecret};
+    use super::{
+        ClientView, CreatedClient, CreatedInitialToken, InitialTokenView, NewUser, RotatedSecret,
+    };
 
     #[test]
     fn a_created_client_does_not_print_its_secret() {
@@ -415,6 +483,25 @@ mod tests {
         let printed = format!("{rotated:?}");
 
         assert!(printed.contains("RotatedSecret"), "{printed}");
+        assert!(!printed.contains("hunter2"), "{printed}");
+    }
+
+    #[test]
+    fn a_made_initial_token_does_not_print() {
+        let created = CreatedInitialToken {
+            view: InitialTokenView {
+                id: "0198c2f4-7a3e-7c11-9b6e-2f1d3c4b5a69".to_owned(),
+                uses_left: 1,
+                expires_at: "2026-11-25T00:00:00Z".to_owned(),
+                created_at: "2026-11-24T00:00:00Z".to_owned(),
+                created_by: "operator".to_owned(),
+            },
+            initial_access_token: "hunter2".to_owned(),
+        };
+
+        let printed = format!("{created:?}");
+
+        assert!(printed.contains("operator"), "{printed}");
         assert!(!printed.contains("hunter2"), "{printed}");
     }
 

@@ -159,6 +159,17 @@ pub struct GeneratedSigningKey {
 /// not when the caller gives up.
 pub type KeyMakingGuard = Box<dyn Send>;
 
+/// Where the keys of a client are checked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyCheckLane {
+    /// On the key makers of the node, as a key is made: for an
+    /// administrator, who proved who they are.
+    KeyMakers,
+    /// On a lane of its own, which takes no key maker: for a client that
+    /// registers itself, which nobody proved.
+    Registration,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum KeyMakingFailure {
     /// Every key maker of the node is at work, making or checking keys: the
@@ -204,7 +215,7 @@ pub trait Signer: Send + Sync {
     ) -> Result<Vec<u8>, CryptoFailure>;
 
     /// Tells whether this build reads each key of a client for its algorithm,
-    /// away from the threads that serve requests, on the key makers. `guard`
+    /// away from the threads that serve requests, on the lane named. `guard`
     /// is kept until the check is done:
     /// - a key of another type or curve, of a size no signer makes, or of a
     ///   small order is refused here and by [`Signer::verify`] alike;
@@ -215,11 +226,12 @@ pub trait Signer: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`KeyMakingFailure::Busy`] when every key maker is at work,
-    /// and fails when the check cannot be carried out.
+    /// Returns [`KeyMakingFailure::Busy`] when every place of the lane is
+    /// at work, and fails when the check cannot be carried out.
     async fn check_client_keys(
         &self,
         keys: Vec<(SignatureAlgorithm, serde_json::Value)>,
+        lane: KeyCheckLane,
         guard: KeyMakingGuard,
     ) -> Result<bool, KeyMakingFailure>;
 

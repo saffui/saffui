@@ -5,6 +5,8 @@
 //! identifier of an assertion past its expiry guards nothing, and a counter
 //! of the brake older than every window that reads it counts for nothing.
 //! A spent code is kept while what it obtained could still be taken back.
+//! A client whose registration ended goes a month later, with what its keys
+//! take along: until then it counts against the bound of its realm.
 //!
 //! This is one of the rare works across tenants. It runs under a role of
 //! its own, never the one that serves, and one node at a time.
@@ -26,6 +28,11 @@ pub const FAILURE_COUNTERS_KEPT: Duration = Duration::days(2);
 /// presented later still obtains nothing, and takes nothing back.
 pub const CODES_KEPT: Duration = SESSION_LIFETIME;
 
+/// How long a client that registered itself is kept after its registration
+/// ended: disabled, it counts against the bound of its realm, so that ending
+/// a registration frees no place for a while.
+pub const ENDED_REGISTRATIONS_KEPT: Duration = Duration::days(30);
+
 /// Where each table of a pass stops: rows older than these go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PurgeCutoffs {
@@ -37,6 +44,8 @@ pub struct PurgeCutoffs {
     pub codes_before: OffsetDateTime,
     /// Counters of the brake whose bucket started before this.
     pub counters_before: OffsetDateTime,
+    /// Clients whose registration ended before this.
+    pub registrations_ended_before: OffsetDateTime,
 }
 
 impl PurgeCutoffs {
@@ -46,6 +55,7 @@ impl PurgeCutoffs {
             expired_before: now,
             codes_before: now - CODES_KEPT,
             counters_before: now - FAILURE_COUNTERS_KEPT,
+            registrations_ended_before: now - ENDED_REGISTRATIONS_KEPT,
         }
     }
 }
@@ -80,12 +90,14 @@ pub struct PurgeReport {
     pub failure_counters: TablePurge,
     pub key_enrollments: TablePurge,
     pub client_assertions: TablePurge,
+    /// Clients that registered themselves, with their registration.
+    pub registered_clients: TablePurge,
 }
 
 impl PurgeReport {
     /// Each table under the name the journal gives it, in the order of a pass.
     #[must_use]
-    pub fn list_tables(&self) -> [(&'static str, TablePurge); 8] {
+    pub fn list_tables(&self) -> [(&'static str, TablePurge); 9] {
         [
             ("pending_requests", self.pending_requests),
             ("codes", self.codes),
@@ -95,6 +107,7 @@ impl PurgeReport {
             ("failure_counters", self.failure_counters),
             ("key_enrollments", self.key_enrollments),
             ("client_assertions", self.client_assertions),
+            ("registered_clients", self.registered_clients),
         ]
     }
 }
@@ -155,7 +168,8 @@ mod tests {
     }
 
     #[test]
-    fn a_pass_removes_what_expired_keeps_codes_a_session_long_and_counters_two_days() {
+    fn a_pass_removes_what_expired_keeps_codes_a_session_long_counters_two_days_and_ended_registrations_a_month()
+     {
         let retention = Recorded::default();
         let now = OffsetDateTime::from_unix_timestamp(1_700_000_000).expect("an instant");
 
@@ -172,6 +186,7 @@ mod tests {
                 expired_before: now,
                 codes_before: now - Duration::hours(12),
                 counters_before: now - Duration::days(2),
+                registrations_ended_before: now - Duration::days(30),
             }]
         );
     }

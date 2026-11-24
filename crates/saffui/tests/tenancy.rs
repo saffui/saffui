@@ -160,7 +160,7 @@ fn an_administrator_is_given_every_capability_and_the_admin_scope() {
     assert_eq!(
         kept,
         [
-            "admin realm:read,client:read,client:write,audit:read,user:read,user:write,role:read,role:write,policy:read,policy:write,key:read,key:write"
+            "admin realm:read,client:read,client:write,audit:read,user:read,user:write,role:read,role:write,policy:read,policy:write,key:read,key:write,realm:write"
         ]
     );
 }

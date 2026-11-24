@@ -45,6 +45,18 @@ pub trait ThrottleStore {
         bucket_start: OffsetDateTime,
     ) -> Result<(), StorageError>;
 
+    /// Adds one to the bucket of a counter that starts at `bucket_start`,
+    /// unless the buckets that start at or after `since` hold `most` already,
+    /// in one operation: of attempts made at once, no more are counted than
+    /// the bound lets. Answers whether this one was.
+    async fn record_attempt_within(
+        &mut self,
+        identifier_digest: &[u8],
+        bucket_start: OffsetDateTime,
+        since: OffsetDateTime,
+        most: u32,
+    ) -> Result<bool, StorageError>;
+
     /// Forgets every bucket of a counter: what was proven need not be
     /// counted against any more.
     async fn forget_login_failures(&mut self, identifier_digest: &[u8])

@@ -4,7 +4,8 @@ use crate::app::App;
 use crate::clients::Client;
 use crate::clients::authenticate::PresentedSecret;
 use crate::clients::register::{
-    NewClient, NewServiceClient, check_new_client, register_client, register_service_client,
+    ClientChecker, NewClient, NewServiceClient, check_new_client, register_client,
+    register_service_client,
 };
 use crate::error::Failure;
 use crate::ports::storage::UnitOfWork;
@@ -242,7 +243,12 @@ pub async fn check_and_register_client(
     work: &mut dyn UnitOfWork,
     wanted: NewClient<'_>,
 ) -> Result<(Client, Option<Secret>), Failure> {
-    let checked = check_new_client(app, work.scope().tenant(), wanted).await?;
+    let checked = check_new_client(
+        app,
+        ClientChecker::Administrator(work.scope().tenant()),
+        wanted,
+    )
+    .await?;
     register_client(app, work, checked).await
 }
 
@@ -430,7 +436,7 @@ pub async fn allow_consented_code(
     use base64::Engine as _;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-    use crate::consent::answer::{ConsentDecision, answer_consent};
+    use crate::consent::answer::{ConsentDecision, answer_consent, describe_consent};
     use crate::oidc::authorize::{
         Authorization, AuthorizationParameters, SignInAnswer, SignInStep, TypedSignIn,
         begin_authorization, finish_sign_in,
@@ -471,13 +477,23 @@ pub async fn allow_consented_code(
     let SignInStep::ConsentRequired(signed_in) = step else {
         panic!("asked to consent again, the person answers on the page: {step:?}");
     };
+    let shown = describe_consent(
+        app,
+        flow.realm,
+        request,
+        &browser_secret,
+        Some(&signed_in.ticket),
+    )
+    .await
+    .expect("the page")
+    .shown;
     let location = answer_consent(
         app,
         flow.realm,
         request,
         &browser_secret,
         Some(&signed_in.ticket),
-        ConsentDecision::Allow,
+        ConsentDecision::Allow { shown },
     )
     .await
     .expect("an allowed client");

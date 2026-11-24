@@ -545,6 +545,7 @@ pub async fn check_clients_contract(app: &App) {
         ],
         id_token_signed_response_alg: None,
         enabled: true,
+        self_registered: false,
         created_at: app.now(),
     };
 
@@ -576,6 +577,7 @@ pub async fn check_clients_contract(app: &App) {
         requires_consent: true,
         capabilities: Vec::new(),
         id_token_signed_response_alg: Some(crate::ports::crypto::SignatureAlgorithm::Ps256),
+        self_registered: true,
         ..client.clone()
     };
     work.insert_client(&application, &nothing())
@@ -1022,6 +1024,10 @@ pub async fn check_persons_contract(app: &App) {
 /// # Panics
 ///
 /// Panics at the first answer the contract does not allow.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario, read from top to bottom"
+)]
 pub async fn check_sign_in_contract(app: &App) {
     use time::Duration;
 
@@ -1106,6 +1112,38 @@ pub async fn check_sign_in_contract(app: &App) {
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
     assert_eq!(work.count_login_failures(&digest, earlier).await, Ok(0));
     assert_eq!(work.count_login_failures(&another, earlier).await, Ok(1));
+
+    // Counted under a bound, in its bucket: the window holds the buckets
+    // since the instant asked for, and an attempt past the bound adds nothing.
+    let bounded = [7_u8; 32];
+    work.record_login_failure(&bounded, earlier)
+        .await
+        .expect("an older attempt");
+    for counted in [true, true, false] {
+        assert_eq!(
+            work.record_attempt_within(&bounded, now, earlier, 3).await,
+            Ok(counted),
+            "the older bucket counts against the bound"
+        );
+    }
+    assert_eq!(
+        work.record_attempt_within(&bounded, now, now, 3).await,
+        Ok(true),
+        "a window that leaves the older bucket out"
+    );
+    assert_eq!(work.count_login_failures(&bounded, earlier).await, Ok(4));
+    let full = [8_u8; 32];
+    for _ in 0..2 {
+        work.record_login_failure(&full, earlier)
+            .await
+            .expect("an older attempt");
+    }
+    assert_eq!(
+        work.record_attempt_within(&full, now, earlier, 2).await,
+        Ok(false),
+        "a window an older bucket filled opens no new one"
+    );
+    assert_eq!(work.count_login_failures(&full, earlier).await, Ok(2));
 }
 
 /// What every storage must answer of the authorization code flow: requests
@@ -3933,4 +3971,573 @@ pub async fn check_claims_contract(app: &App) {
     assert_eq!(elsewhere.lock_client("billing").await, Ok(None));
     assert_eq!(elsewhere.read_person_attributes(ada.id).await, Ok(None));
     assert_eq!(elsewhere.lock_person_attributes(ada.id).await, Ok(None));
+}
+
+/// Plays the contract of registration through the protocol: the settings
+/// of a realm, its initial access tokens, the token of each registration,
+/// what a registered client rewrites of itself, and its end. A token is
+/// spent once, a registration is replaced or ended only by whoever presents
+/// the token kept, and nothing reaches another realm.
+///
+/// # Panics
+///
+/// Panics at the first answer that breaks the contract.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario, read from top to bottom"
+)]
+pub async fn check_registration_contract(app: &App) {
+    use serde_json::json;
+    use time::Duration;
+
+    use crate::clients::registration::InitialAccessToken;
+    use crate::clients::store::{ListWindow, RegistrationCounts};
+    use crate::clients::{Client, ClientAuthMethod, ClientStanding, KeptProof};
+    use crate::ports::crypto::SignatureAlgorithm;
+    use crate::testkit::fixtures::{Application, create_realm, register_application};
+
+    let scope = create_realm(app, "contract-registration").await;
+    let other = create_realm(app, "contract-registration-2").await;
+    let portal = Application {
+        client_id: "portal",
+        redirect_uri: "https://app.example.org/cb",
+        post_logout_redirect_uri: None,
+        public: false,
+        requires_consent: true,
+    };
+    register_application(app, scope, portal).await;
+    let now = app.now();
+
+    // The settings: none at first, then written, replaced, and read back
+    // alike with or without the lock.
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(work.read_realm_settings().await, Ok(None));
+    assert_eq!(work.read_realm_settings_for_update().await, Ok(None));
+    let opened = json!({ "registration": "open" });
+    let by_token = json!({ "registration": "initial_token", "max_redirect_uris": 2 });
+    work.write_realm_settings(&opened).await.expect("settings");
+    work.write_realm_settings(&by_token)
+        .await
+        .expect("settings again");
+    assert_eq!(work.read_realm_settings().await, Ok(Some(by_token.clone())));
+    assert_eq!(
+        work.read_realm_settings_for_update().await,
+        Ok(Some(by_token.clone()))
+    );
+    work.commit().await.expect("a commit");
+
+    // Initial access tokens: listed newest first without their digests,
+    // spent one use at a time until none is left or they expire, and
+    // counted while they have a use left and have not expired.
+    let older = InitialAccessToken {
+        id: mint_id(app).expect("an identifier"),
+        uses_left: 2,
+        expires_at: now + Duration::hours(1),
+        created_at: now,
+        created_by: "operator".to_owned(),
+    };
+    let newer = InitialAccessToken {
+        id: mint_id(app).expect("an identifier"),
+        uses_left: 1,
+        created_at: now + Duration::seconds(1),
+        ..older.clone()
+    };
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.insert_initial_access_token(&older, &[4; 32])
+        .await
+        .expect("a token");
+    work.insert_initial_access_token(&newer, &[5; 32])
+        .await
+        .expect("another token");
+    let window = |first, max| ListWindow { first, max };
+    assert_eq!(
+        work.list_initial_access_tokens(window(0, 10)).await,
+        Ok(vec![newer.clone(), older.clone()])
+    );
+    assert_eq!(
+        work.list_initial_access_tokens(window(1, 1)).await,
+        Ok(vec![older.clone()])
+    );
+    assert_eq!(work.count_live_initial_access_tokens(now).await, Ok(2));
+    assert_eq!(
+        work.count_live_initial_access_tokens(now + Duration::hours(1))
+            .await,
+        Ok(0),
+        "expired at its instant"
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            work.spend_initial_access_token(&[4; 32], now).await,
+            Ok(Some(older.id))
+        );
+    }
+    assert_eq!(
+        work.spend_initial_access_token(&[4; 32], now).await,
+        Ok(None),
+        "two uses, and no third"
+    );
+    assert_eq!(
+        work.count_live_initial_access_tokens(now).await,
+        Ok(1),
+        "a spent token is not live"
+    );
+    assert_eq!(
+        work.spend_initial_access_token(&[5; 32], now + Duration::hours(1))
+            .await,
+        Ok(None),
+        "expired at its instant"
+    );
+    assert_eq!(
+        work.spend_initial_access_token(&[6; 32], now).await,
+        Ok(None)
+    );
+    assert_eq!(
+        work.find_live_initial_access_token(&[5; 32], now).await,
+        Ok(Some(newer.id)),
+        "found, and not spent"
+    );
+    assert_eq!(
+        work.find_live_initial_access_token(&[5; 32], now + Duration::hours(1))
+            .await,
+        Ok(None),
+        "expired at its instant"
+    );
+    assert_eq!(
+        work.find_live_initial_access_token(&[4; 32], now).await,
+        Ok(None),
+        "no use left"
+    );
+    assert_eq!(
+        work.spend_initial_access_token(&[5; 32], now).await,
+        Ok(Some(newer.id)),
+        "its use was still there"
+    );
+    assert_eq!(
+        work.list_initial_access_tokens(window(1, 1))
+            .await
+            .map(|listed| listed
+                .iter()
+                .map(|token| token.uses_left)
+                .collect::<Vec<_>>()),
+        Ok(vec![0]),
+        "a spent token stays until it is removed"
+    );
+    assert_eq!(work.delete_initial_access_token(older.id).await, Ok(true));
+    assert_eq!(work.delete_initial_access_token(older.id).await, Ok(false));
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let twin = InitialAccessToken {
+        id: mint_id(app).expect("an identifier"),
+        ..newer.clone()
+    };
+    assert!(
+        work.insert_initial_access_token(&twin, &[5; 32])
+            .await
+            .is_err(),
+        "a digest is kept once in its realm"
+    );
+    drop(work);
+
+    // Two clients that registered themselves, the second two days ago, and
+    // their registrations. A client an administrator made, `portal`, is
+    // given none.
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let kept = work
+        .read_client("portal")
+        .await
+        .expect("a read")
+        .expect("portal");
+    let registered = Client {
+        id: mint_id(app).expect("an identifier"),
+        client_id: "registered".to_owned(),
+        auth_method: ClientAuthMethod::None,
+        self_registered: true,
+        ..kept.clone()
+    };
+    let older = Client {
+        id: mint_id(app).expect("an identifier"),
+        client_id: "older".to_owned(),
+        ..registered.clone()
+    };
+    let nothing = || KeptProof {
+        secret_digest: None,
+        sealed_secret: None,
+        jwks: None,
+    };
+    work.insert_client(&registered, &nothing())
+        .await
+        .expect("a registered client");
+    work.insert_client(&older, &nothing())
+        .await
+        .expect("an older registered client");
+    work.insert_client_registration("registered", &[6; 32], now)
+        .await
+        .expect("a registration");
+    work.insert_client_registration("older", &[9; 32], now - Duration::days(2))
+        .await
+        .expect("an older registration");
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert!(
+        work.insert_client_registration("portal", &[12; 32], now)
+            .await
+            .is_err(),
+        "a client an administrator made registered nothing"
+    );
+    drop(work);
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.matches_registration_token("registered", &[6; 32])
+            .await,
+        Ok(true)
+    );
+    assert_eq!(
+        work.matches_registration_token("registered", &[7; 32])
+            .await,
+        Ok(false)
+    );
+    assert_eq!(
+        work.matches_registration_token("nobody", &[6; 32]).await,
+        Ok(false)
+    );
+    assert_eq!(
+        work.rotate_registration_token("registered", &[7; 32], &[8; 32])
+            .await,
+        Ok(false),
+        "a token that is not the one kept replaces nothing"
+    );
+    assert_eq!(
+        work.rotate_registration_token("registered", &[6; 32], &[8; 32])
+            .await,
+        Ok(true)
+    );
+    assert_eq!(
+        work.rotate_registration_token("registered", &[6; 32], &[10; 32])
+            .await,
+        Ok(false),
+        "the token presented once is spent"
+    );
+    assert_eq!(
+        work.count_registrations(now - Duration::days(1)).await,
+        Ok(RegistrationCounts {
+            registered: 2,
+            since: 1
+        }),
+        "the registrations of the last day"
+    );
+    assert_eq!(
+        work.count_registrations(now)
+            .await
+            .map(|counts| counts.since),
+        Ok(1),
+        "one made at the very instant counts"
+    );
+    for (client_id, standing) in [
+        (
+            "registered",
+            Some(ClientStanding {
+                enabled: true,
+                self_registered: true,
+            }),
+        ),
+        (
+            "portal",
+            Some(ClientStanding {
+                enabled: true,
+                self_registered: false,
+            }),
+        ),
+        ("nobody", None),
+    ] {
+        assert_eq!(
+            work.read_client_standing(client_id).await,
+            Ok(standing),
+            "{client_id}"
+        );
+    }
+    assert_eq!(
+        work.read_client_for_share("registered").await,
+        Ok(Some(registered.clone()))
+    );
+    assert_eq!(work.read_client_for_share("nobody").await, Ok(None));
+    work.commit().await.expect("a commit");
+
+    // What a registered client rewrites of itself, and nothing else: whether
+    // it is enabled is not written, whatever the client says, and a client
+    // an administrator made is written by no registration.
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let rewritten = Client {
+        name: "Renamed".to_owned(),
+        scopes: vec!["openid".to_owned()],
+        redirect_uris: vec!["https://app.example.org/other".to_owned()],
+        post_logout_redirect_uris: vec!["https://app.example.org/bye".to_owned()],
+        id_token_signed_response_alg: Some(SignatureAlgorithm::Rs256),
+        enabled: false,
+        requires_consent: false,
+        ..registered.clone()
+    };
+    assert_eq!(work.write_client_metadata(&rewritten, None).await, Ok(true));
+    let nobody = Client {
+        client_id: "nobody".to_owned(),
+        ..rewritten.clone()
+    };
+    assert_eq!(work.write_client_metadata(&nobody, None).await, Ok(false));
+    let not_registered = Client {
+        client_id: "portal".to_owned(),
+        ..rewritten.clone()
+    };
+    assert_eq!(
+        work.write_client_metadata(&not_registered, None).await,
+        Ok(false),
+        "made by an administrator"
+    );
+    assert_eq!(
+        work.read_client("registered").await,
+        Ok(Some(Client {
+            enabled: true,
+            requires_consent: true,
+            ..rewritten.clone()
+        }))
+    );
+    assert_eq!(work.read_client("portal").await, Ok(Some(kept.clone())));
+    work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert!(
+        work.write_client_metadata(&registered, Some(&json!({ "keys": [] })))
+            .await
+            .is_err(),
+        "a public client holds no keys"
+    );
+    drop(work);
+
+    // Ended with the token kept, once: the registration stays, without a
+    // token, still counted, and its client is written no more.
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.end_client_registration("registered", &[6; 32], now)
+            .await,
+        Ok(false)
+    );
+    assert_eq!(
+        work.end_client_registration("registered", &[8; 32], now)
+            .await,
+        Ok(true)
+    );
+    assert_eq!(
+        work.end_client_registration("registered", &[8; 32], now)
+            .await,
+        Ok(false)
+    );
+    assert_eq!(
+        work.matches_registration_token("registered", &[8; 32])
+            .await,
+        Ok(false)
+    );
+    assert_eq!(
+        work.rotate_registration_token("registered", &[8; 32], &[11; 32])
+            .await,
+        Ok(false)
+    );
+    assert_eq!(
+        work.write_client_metadata(&rewritten, None).await,
+        Ok(false),
+        "its registration ended"
+    );
+    assert_eq!(
+        work.end_client_registration_as_administrator("registered", now)
+            .await,
+        Ok(false),
+        "ended once"
+    );
+    assert_eq!(
+        work.end_client_registration_as_administrator("older", now)
+            .await,
+        Ok(true)
+    );
+    for registered_none in ["portal", "nobody"] {
+        assert_eq!(
+            work.end_client_registration_as_administrator(registered_none, now)
+                .await,
+            Ok(false),
+            "{registered_none}"
+        );
+    }
+    assert_eq!(
+        work.count_registrations(now)
+            .await
+            .map(|counts| counts.registered),
+        Ok(2),
+        "ended, both still count"
+    );
+
+    // Disabled by one statement.
+    assert_eq!(work.disable_client("registered").await, Ok(true));
+    assert_eq!(work.disable_client("registered").await, Ok(false));
+    assert_eq!(work.disable_client("nobody").await, Ok(false));
+    assert_eq!(
+        work.read_client("registered")
+            .await
+            .map(|client| client.map(|client| client.enabled)),
+        Ok(Some(false))
+    );
+    assert_eq!(
+        work.read_client_standing("registered").await,
+        Ok(Some(ClientStanding {
+            enabled: false,
+            self_registered: true,
+        }))
+    );
+    work.commit().await.expect("a commit");
+
+    // Nothing of it reaches another realm.
+    let mut work = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(work.read_realm_settings().await, Ok(None));
+    assert_eq!(
+        work.list_initial_access_tokens(window(0, 10)).await,
+        Ok(Vec::new())
+    );
+    assert_eq!(work.count_live_initial_access_tokens(now).await, Ok(0));
+    assert_eq!(
+        work.spend_initial_access_token(&[5; 32], now).await,
+        Ok(None)
+    );
+    assert_eq!(
+        work.count_registrations(now - Duration::days(7)).await,
+        Ok(RegistrationCounts {
+            registered: 0,
+            since: 0
+        })
+    );
+    assert_eq!(work.read_client_standing("registered").await, Ok(None));
+    assert_eq!(
+        work.find_live_initial_access_token(&[5; 32], now).await,
+        Ok(None)
+    );
+    assert_eq!(work.disable_client("portal").await, Ok(false));
+    assert_eq!(
+        work.end_client_registration_as_administrator("portal", now)
+            .await,
+        Ok(false)
+    );
+}
+
+/// Plays the contract of the end of every grant a client holds: the offline
+/// sessions it holds a live token in end, for whoever they are, then each
+/// of its families is revoked as one family is, and no other client's.
+///
+/// # Panics
+///
+/// Panics at the first answer that breaks the contract.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario, read from top to bottom"
+)]
+pub async fn check_client_grants_contract(app: &App) {
+    use time::Duration;
+
+    use crate::login::session::{AuthenticationMethod, Session, SessionKind, SessionState};
+    use crate::testkit::fixtures::{create_person, create_realm};
+    use crate::tokens::store::RefreshToken;
+
+    let scope = create_realm(app, "contract-client-grants").await;
+    let ada = create_person(app, scope, "ada", "correct horse battery").await;
+    let bob = create_person(app, scope, "bob", "correct horse battery").await;
+    let now = app.now();
+    let open = |person: Uuid, kind: SessionKind| Session {
+        id: mint_id(app).expect("an identifier"),
+        person,
+        secret_digest: match kind {
+            SessionKind::Browser => vec![7; 32],
+            SessionKind::Offline => Vec::new(),
+        },
+        state: SessionState::Active,
+        kind,
+        methods: vec![AuthenticationMethod::Password],
+        authenticated_at: now,
+        expires_at: now + Duration::hours(1),
+    };
+    let ada_browser = open(ada.id, SessionKind::Browser);
+    let ada_offline = open(ada.id, SessionKind::Offline);
+    let bob_offline = open(bob.id, SessionKind::Offline);
+    let mint = |digest: u8, client_id: &str, family: Uuid, session: &Session| RefreshToken {
+        token_digest: vec![digest; 32],
+        family,
+        client_id: client_id.to_owned(),
+        person: session.person,
+        session: session.id,
+        scopes: vec!["openid".to_owned()],
+        issued_at: now + Duration::seconds(i64::from(digest)),
+        expires_at: now + Duration::minutes(30),
+    };
+    let (ada_family, ada_offline_family, bob_family, kept_family) = (
+        mint_id(app).expect("an identifier"),
+        mint_id(app).expect("an identifier"),
+        mint_id(app).expect("an identifier"),
+        mint_id(app).expect("an identifier"),
+    );
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.insert_session(&ada_browser).await.expect("a session");
+    work.insert_session(&ada_offline).await.expect("a session");
+    work.insert_session(&bob_offline).await.expect("a session");
+    for token in [
+        mint(1, "registered", ada_family, &ada_browser),
+        mint(2, "registered", ada_family, &ada_browser),
+        mint(3, "registered", bob_family, &bob_offline),
+        mint(4, "webapp", kept_family, &ada_browser),
+        mint(5, "registered", ada_offline_family, &ada_offline),
+    ] {
+        work.insert_refresh_token(&token).await.expect("a token");
+    }
+    work.commit().await.expect("a commit");
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let revoked = work
+        .revoke_every_refresh_family_of_client("registered", now, 1)
+        .await
+        .expect("a revocation");
+    assert_eq!(revoked.families, 3, "of each person");
+    assert_eq!(revoked.tokens, 4);
+    assert_eq!(
+        revoked.named.len(),
+        1,
+        "named up to the bound, counted past it"
+    );
+    assert_eq!(revoked.offline_sessions, 2, "counted past the bound");
+    assert_eq!(
+        revoked.named_offline_sessions,
+        [ada_offline.id.min(bob_offline.id)],
+        "the first by identifier, named up to the bound"
+    );
+    for (digest, revoked) in [(1, true), (2, true), (3, true), (4, false), (5, true)] {
+        let read = work
+            .read_refresh_token(&[digest; 32])
+            .await
+            .expect("a read")
+            .expect("the token");
+        assert_eq!(read.revoked_at.is_some(), revoked, "token {digest}");
+    }
+    let again = work
+        .revoke_every_refresh_family_of_client("registered", now, 1)
+        .await
+        .expect("a revocation");
+    assert_eq!(
+        (again.families, again.tokens, again.offline_sessions),
+        (0, 0, 0),
+        "nothing is ended twice"
+    );
+    let state_of = async |work: &mut Box<dyn crate::ports::storage::UnitOfWork>, id| {
+        work.read_session(id)
+            .await
+            .map(|read| read.map(|read| read.session.state))
+    };
+    assert_eq!(
+        state_of(&mut work, bob_offline.id).await,
+        Ok(Some(SessionState::Ended)),
+        "an offline session it held ends"
+    );
+    assert_eq!(
+        state_of(&mut work, ada_browser.id).await,
+        Ok(Some(SessionState::Active)),
+        "a browser session stands"
+    );
 }

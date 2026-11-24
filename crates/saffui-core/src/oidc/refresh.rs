@@ -626,7 +626,7 @@ mod tests {
 
     #[test]
     fn an_offline_grant_after_a_second_factor_says_both_at_each_refresh() {
-        use crate::consent::answer::{ConsentDecision, answer_consent};
+        use crate::consent::answer::{ConsentDecision, answer_consent, describe_consent};
         use crate::oidc::authorize::{
             Authorization, AuthorizationParameters, SignInAnswer, SignInStep, TypedSignIn,
             begin_authorization, finish_sign_in,
@@ -682,13 +682,22 @@ mod tests {
         else {
             panic!("a client that requires consent asks it");
         };
+        let shown = complete(describe_consent(
+            &scenario.app,
+            "acme",
+            request,
+            &browser_secret,
+            Some(&signed_in.ticket),
+        ))
+        .expect("the page")
+        .shown;
         let location = complete(answer_consent(
             &scenario.app,
             "acme",
             request,
             &browser_secret,
             Some(&signed_in.ticket),
-            ConsentDecision::Allow,
+            ConsentDecision::Allow { shown },
         ))
         .expect("an allowed client");
         let code = location

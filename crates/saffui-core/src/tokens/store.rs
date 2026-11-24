@@ -67,6 +67,23 @@ pub struct RevokedFamilies {
     pub offline_sessions: Vec<Uuid>,
 }
 
+/// What the revocation of every token of a client took back, for whoever
+/// it held them for, counted and named up to a bound.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RevokedClientGrants {
+    /// The families it ended: one with a token revoked before is left alone.
+    pub families: u64,
+    /// The tokens the families it ended still held, counted as
+    /// [`EndedFamily::tokens`] counts them.
+    pub tokens: u64,
+    /// The first of the families it ended, by identifier.
+    pub named: Vec<Uuid>,
+    /// The offline sessions the client held tokens in, ended before the families.
+    pub offline_sessions: u64,
+    /// The first of those offline sessions, by identifier.
+    pub named_offline_sessions: Vec<Uuid>,
+}
+
 #[async_trait]
 pub trait RefreshStore {
     async fn insert_refresh_token(&mut self, token: &RefreshToken) -> Result<(), StorageError>;
@@ -117,6 +134,15 @@ pub trait RefreshStore {
         now: OffsetDateTime,
         most: u32,
     ) -> Result<RevokedFamilies, StorageError>;
+
+    /// As [`Self::revoke_refresh_families_of_client`], for every person the
+    /// client holds tokens for, and names `most` offline sessions too.
+    async fn revoke_every_refresh_family_of_client(
+        &mut self,
+        client_id: &str,
+        now: OffsetDateTime,
+        most: u32,
+    ) -> Result<RevokedClientGrants, StorageError>;
 
     /// Ends the active offline sessions a client holds tokens in for a
     /// person, but the `kept` that expire last, in one statement on the

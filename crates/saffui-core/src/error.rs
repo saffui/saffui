@@ -43,6 +43,7 @@ pub enum ErrorCode {
     AlgorithmUnknown = 106,
     SigningKeyLimitReached = 131,
     KeyMakingBusy = 132,
+    RealmSettingsInvalid = 133,
     UsernameInvalid = 200,
     UsernameTaken = 201,
     EmailInvalid = 202,
@@ -73,6 +74,17 @@ pub enum ErrorCode {
     ClientJwksInvalid = 317,
     AuthMethodInvalid = 318,
     ClientHasNoSecret = 319,
+    RegistrationClosed = 320,
+    RegistrationTokenInvalid = 321,
+    ClientMetadataInvalid = 322,
+    SoftwareStatementRefused = 323,
+    RegistrationQuotaReached = 324,
+    RegistrationsTooFrequent = 325,
+    InitialTokenNotFound = 326,
+    RegistrationBudgetSpent = 327,
+    InitialTokenLimitReached = 328,
+    RegistrationNotFound = 329,
+    RegistrationChangesSpent = 330,
     AdminAuthenticationFailed = 400,
     CapabilityMissing = 401,
     SignInFailed = 402,
@@ -86,6 +98,7 @@ pub enum ErrorCode {
     KeyRejected = 410,
     SecurityKeysNotServed = 411,
     ConsentNotFound = 412,
+    ConsentPageOutdated = 413,
     TokenInvalid = 500,
     GrantInvalid = 501,
     TokenScopeInsufficient = 502,
@@ -128,6 +141,7 @@ impl ErrorCode {
             Self::StorageUnavailable
             | Self::HashingBusy
             | Self::SignInRequestsTooFrequent
+            | Self::RegistrationsTooFrequent
             | Self::KeyMakingBusy => ErrorKind::Unavailable,
             Self::Conflict
             | Self::RealmNameTaken
@@ -147,6 +161,8 @@ impl ErrorCode {
             | Self::ClaimsTooLarge
             | Self::KeyStillActive
             | Self::SigningKeyLimitReached
+            | Self::InitialTokenLimitReached
+            | Self::ConsentPageOutdated
             | Self::ClientHasNoSecret => ErrorKind::Conflict,
             Self::RealmNotFound
             | Self::ClientNotFound
@@ -161,6 +177,8 @@ impl ErrorCode {
             | Self::PolicyNotFound
             | Self::ConsentNotFound
             | Self::MapperNotFound
+            | Self::InitialTokenNotFound
+            | Self::RegistrationNotFound
             | Self::KeyNotFound => ErrorKind::NotFound,
             Self::ClientAuthenticationFailed
             | Self::TokenInvalid
@@ -168,11 +186,16 @@ impl ErrorCode {
             | Self::SignInFailed
             | Self::SessionRequired
             | Self::CodeRejected
+            | Self::RegistrationTokenInvalid
             | Self::KeyRejected => ErrorKind::Unauthenticated,
             Self::GrantNotAllowed
             | Self::CapabilityMissing
             | Self::TokenScopeInsufficient
             | Self::SecondFactorProofRequired
+            | Self::RegistrationClosed
+            | Self::RegistrationQuotaReached
+            | Self::RegistrationBudgetSpent
+            | Self::RegistrationChangesSpent
             | Self::SecurityKeysNotServed => ErrorKind::Forbidden,
             Self::RealmNameInvalid
             | Self::TenantNameInvalid
@@ -205,6 +228,9 @@ impl ErrorCode {
             | Self::KeyAlgorithmUnavailable
             | Self::AlgorithmUnknown
             | Self::ClientJwksInvalid
+            | Self::RealmSettingsInvalid
+            | Self::ClientMetadataInvalid
+            | Self::SoftwareStatementRefused
             | Self::AuthMethodInvalid => ErrorKind::Invalid,
         }
     }
@@ -229,6 +255,7 @@ impl ErrorCode {
             Self::AlgorithmUnknown => "realm.algorithm_unknown",
             Self::SigningKeyLimitReached => "realm.signing_key_limit_reached",
             Self::KeyMakingBusy => "realm.key_making_busy",
+            Self::RealmSettingsInvalid => "realm.settings_invalid",
             Self::UsernameInvalid => "user.username_invalid",
             Self::UsernameTaken => "user.username_taken",
             Self::EmailInvalid => "user.email_invalid",
@@ -256,6 +283,17 @@ impl ErrorCode {
             Self::ClientJwksInvalid => "client.jwks_invalid",
             Self::AuthMethodInvalid => "client.auth_method_invalid",
             Self::ClientHasNoSecret => "client.has_no_secret",
+            Self::RegistrationClosed => "client.registration_closed",
+            Self::RegistrationTokenInvalid => "client.registration_token_invalid",
+            Self::ClientMetadataInvalid => "client.metadata_invalid",
+            Self::SoftwareStatementRefused => "client.software_statement_refused",
+            Self::RegistrationQuotaReached => "client.registration_quota_reached",
+            Self::RegistrationsTooFrequent => "client.registrations_too_frequent",
+            Self::InitialTokenNotFound => "client.initial_token_not_found",
+            Self::RegistrationBudgetSpent => "client.registration_budget_spent",
+            Self::InitialTokenLimitReached => "client.initial_token_limit_reached",
+            Self::RegistrationNotFound => "client.registration_not_found",
+            Self::RegistrationChangesSpent => "client.registration_changes_spent",
             Self::TokenInvalid => "token.invalid",
             Self::GrantInvalid => "token.grant_invalid",
             Self::TokenScopeInsufficient => "token.scope_insufficient",
@@ -275,6 +313,7 @@ impl ErrorCode {
             Self::KeyRejected => "auth.key_rejected",
             Self::SecurityKeysNotServed => "auth.security_keys_not_served",
             Self::ConsentNotFound => "auth.consent_not_found",
+            Self::ConsentPageOutdated => "auth.consent_page_outdated",
             Self::SecurityKeyNotFound => "user.security_key_not_found",
             Self::AttributesInvalid => "user.attributes_invalid",
             Self::TenantNameInvalid => "tenant.name_invalid",
@@ -356,6 +395,9 @@ impl ErrorCode {
             }
             Self::SecurityKeyNotFound => "This person has no security key.",
             Self::ConsentNotFound => "This person gave that client no consent.",
+            Self::ConsentPageOutdated => {
+                "The application changed since this page was shown. Read it again before you answer."
+            }
             Self::RedirectUriMismatch => "The redirect URI is not one the client registered.",
             Self::RequestInvalid => "The request is missing a parameter or carries one it cannot.",
             Self::ClientAuthenticationFailed => "Client authentication failed.",
@@ -440,6 +482,36 @@ impl ErrorCode {
                 "This way of proving the client, or the algorithm it signs in, does not fit it."
             }
             Self::ClientHasNoSecret => "This client keeps no secret to replace.",
+            Self::RealmSettingsInvalid => {
+                "Registration is closed, open, or by initial access token. A registered client may be allowed at most 32 scopes, never admin; a realm holds 1 to 10000 of them, each with 1 to 10 addresses of each kind, and takes 1 to 10000 a day."
+            }
+            Self::RegistrationClosed => "This realm does not let clients register themselves.",
+            Self::RegistrationTokenInvalid => {
+                "The token is not one this realm handed out, was used, or expired."
+            }
+            Self::ClientMetadataInvalid => {
+                "The metadata of the client asks for what this realm does not serve, or cannot be read."
+            }
+            Self::SoftwareStatementRefused => "This realm reads no software statement.",
+            Self::RegistrationQuotaReached => {
+                "The realm holds as many registered clients as it may: one must be deleted first."
+            }
+            Self::RegistrationsTooFrequent => {
+                "Too many clients were registered from here. Try again in a few minutes."
+            }
+            Self::InitialTokenNotFound => "No such initial access token.",
+            Self::RegistrationBudgetSpent => {
+                "The realm took as many registrations as it may in a day. Try again later."
+            }
+            Self::InitialTokenLimitReached => {
+                "The realm holds as many live initial access tokens as it may: one must be spent, expire or be removed first."
+            }
+            Self::RegistrationNotFound => {
+                "This client holds no registration: it did not register itself, or its registration ended."
+            }
+            Self::RegistrationChangesSpent => {
+                "This client changed its registration as often as it may in a day. Try again later."
+            }
             Self::ClaimsTooLarge => "The mappers of this client write more than a token can carry.",
         }
     }
@@ -503,7 +575,7 @@ mod tests {
 
     use super::ErrorCode;
 
-    const ALL: [ErrorCode; 84] = [
+    const ALL: [ErrorCode; 97] = [
         ErrorCode::Internal,
         ErrorCode::StorageUnavailable,
         ErrorCode::Conflict,
@@ -551,6 +623,7 @@ mod tests {
         ErrorCode::KeyRejected,
         ErrorCode::SecurityKeysNotServed,
         ErrorCode::ConsentNotFound,
+        ErrorCode::ConsentPageOutdated,
         ErrorCode::SecurityKeyNotFound,
         ErrorCode::TenantNameInvalid,
         ErrorCode::RoleNameInvalid,
@@ -588,6 +661,18 @@ mod tests {
         ErrorCode::AlgorithmUnknown,
         ErrorCode::SigningKeyLimitReached,
         ErrorCode::KeyMakingBusy,
+        ErrorCode::RealmSettingsInvalid,
+        ErrorCode::RegistrationClosed,
+        ErrorCode::RegistrationTokenInvalid,
+        ErrorCode::ClientMetadataInvalid,
+        ErrorCode::SoftwareStatementRefused,
+        ErrorCode::RegistrationQuotaReached,
+        ErrorCode::RegistrationsTooFrequent,
+        ErrorCode::InitialTokenNotFound,
+        ErrorCode::RegistrationBudgetSpent,
+        ErrorCode::InitialTokenLimitReached,
+        ErrorCode::RegistrationNotFound,
+        ErrorCode::RegistrationChangesSpent,
     ];
 
     #[test]

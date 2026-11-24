@@ -702,6 +702,7 @@ async fn no_migration_from_the_consent_on_blocks_writes_to_two_tables_served_bef
         "0036_person_attributes",
         "0039_signing_key_status",
         "0042_client_auth",
+        "0044_registration",
     ];
     let first = EMBEDDED
         .iter()
@@ -785,6 +786,7 @@ async fn a_rule_set_on_a_served_table_is_checked_apart_from_the_lock_that_sets_i
             "clients_assertion_algorithm_fits_method",
         ),
         ("0042_client_auth", "clients_jwks_bounded"),
+        ("0045_client_registrations", "clients_capabilities_known"),
     ] {
         let set_at = EMBEDDED
             .iter()

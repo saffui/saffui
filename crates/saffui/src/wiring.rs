@@ -124,6 +124,7 @@ pub(crate) fn wire_product(
             hashing_shares: Arc::new(hashing_shares),
             decision_shares: Arc::new(DecisionShares::for_pool(connections)),
             key_shares: Arc::default(),
+            registration_key_shares: Arc::default(),
             decoy_hash: Arc::new(OnceLock::new()),
             signer: Arc::new(JoseSigner::new(provider)),
         },

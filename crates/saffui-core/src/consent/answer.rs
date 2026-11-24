@@ -2,6 +2,8 @@
 //! Only the browser that started the request reaches it, signed in as the
 //! person the request waits for.
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::json;
 use time::Duration;
 use uuid::Uuid;
@@ -10,7 +12,9 @@ use super::{Consent, grant_to_client};
 use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
-use crate::clients::{neutralize_unshowable, read_named_client};
+use crate::clients::{
+    Client, neutralize_unshowable, read_client_keys, read_named_client, read_redirect_host,
+};
 use crate::error::{ErrorCode, Failure};
 use crate::login::session::{
     OFFLINE_SESSION_LIFETIME, Session, SessionTicket, find_answering_session,
@@ -37,11 +41,34 @@ pub struct ConsentPrompt {
     /// How long the client may act while the person is away, when allowing
     /// grants it: past their sign-out, until they withdraw it from their account.
     pub offline_access: Option<Duration>,
+    pub origin: ClientOrigin,
+    /// What the answer covers of the client, digested: the page posts it
+    /// back, and a client changed since is asked about again.
+    pub shown: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Who stands behind the client a page names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClientOrigin {
+    /// An administrator of the realm made it.
+    Realm,
+    /// It registered itself, and nobody of the realm vetted it: its name is
+    /// whatever it chose. The page says so, with what it cannot choose: its
+    /// identifier, the host the request sends the person back to, and every
+    /// other host the answer lets it send them to, ten at most in all.
+    SelfRegistered {
+        client_id: String,
+        return_host: String,
+        other_hosts: Vec<String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConsentDecision {
-    Allow,
+    /// With what the page showed of the client, as [`ConsentPrompt::shown`].
+    Allow {
+        shown: String,
+    },
     Deny,
 }
 
@@ -74,6 +101,38 @@ async fn check_waiting_consent(
     Ok((pending, session))
 }
 
+/// The hosts a client sends people back to, each once, in the order of its
+/// addresses.
+fn list_return_hosts(client: &Client) -> Vec<&str> {
+    let mut hosts: Vec<&str> = Vec::new();
+    for uri in &client.redirect_uris {
+        let host = read_redirect_host(uri);
+        if !hosts.contains(&host) {
+            hosts.push(host);
+        }
+    }
+    hosts
+}
+
+/// Digests what an answer covers of a client: the hosts it sends people
+/// back to, and the keys it proves itself with. The order of its addresses
+/// changes nothing of it.
+async fn digest_covered(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    client: &Client,
+) -> Result<String, Failure> {
+    let mut hosts = list_return_hosts(client);
+    hosts.sort_unstable();
+    // A host holds neither a line feed nor a zero byte: each part ends here.
+    let mut written = hosts.join("\n").into_bytes();
+    written.push(0);
+    if let Some(keys) = read_client_keys(work, client).await? {
+        written.extend_from_slice(keys.to_string().as_bytes());
+    }
+    Ok(URL_SAFE_NO_PAD.encode(app.digester.sha256(&written)))
+}
+
 /// Tells the page what the client asks.
 ///
 /// # Errors
@@ -99,6 +158,22 @@ pub async fn describe_consent(
         .filter(|client| client.enabled && client.allows_authorization_code)
         .ok_or(Failure::new(ErrorCode::ClientNotFound))?;
     let granted = grant_to_client(&client, &pending.scopes);
+    let shown = digest_covered(app, work.as_mut(), &client).await?;
+    let origin = if client.self_registered {
+        let return_host = read_redirect_host(&pending.redirect_uri);
+        let other_hosts = list_return_hosts(&client)
+            .into_iter()
+            .filter(|host| *host != return_host)
+            .map(str::to_owned)
+            .collect();
+        ClientOrigin::SelfRegistered {
+            return_host: return_host.to_owned(),
+            other_hosts,
+            client_id: client.client_id,
+        }
+    } else {
+        ClientOrigin::Realm
+    };
     Ok(ConsentPrompt {
         client_name: neutralize_unshowable(&client.name),
         scopes: leave_out_offline_access(&granted),
@@ -106,6 +181,8 @@ pub async fn describe_consent(
             .iter()
             .any(|scope| scope == OFFLINE_ACCESS_SCOPE)
             .then_some(OFFLINE_SESSION_LIFETIME),
+        origin,
+        shown,
     })
 }
 
@@ -118,7 +195,9 @@ pub async fn describe_consent(
 /// Returns [`ErrorCode::AuthorizationRequestExpired`] as
 /// [`describe_consent`] does, and to the second of two answers,
 /// [`ErrorCode::ClientNotFound`] when the client may no longer sign anyone
-/// in, or the storage failure.
+/// in, [`ErrorCode::ConsentPageOutdated`] to an answer that allows what
+/// the page no longer shows, which leaves the request waiting, or the
+/// storage failure.
 pub async fn answer_consent(
     app: &App,
     realm: &str,
@@ -136,8 +215,8 @@ pub async fn answer_consent(
     let (pending, session) =
         check_waiting_consent(app, work.as_mut(), taken, browser_secret, ticket).await?;
     let location = match decision {
-        ConsentDecision::Allow => {
-            allow_client(app, work.as_mut(), &realm, &pending, &session).await?
+        ConsentDecision::Allow { shown } => {
+            allow_client(app, work.as_mut(), &realm, &pending, &session, &shown).await?
         }
         ConsentDecision::Deny => write_return_location(
             &pending.redirect_uri,
@@ -150,18 +229,26 @@ pub async fn answer_consent(
     Ok(location)
 }
 
-/// Keeps what the person allowed, and gives the client its code.
+/// Keeps what the person allowed, and gives the client its code, if it
+/// covers what `shown` says the page showed of the client.
 async fn allow_client(
     app: &App,
     work: &mut dyn UnitOfWork,
     realm: &RealmName,
     pending: &PendingAuthorization,
     session: &Session,
+    shown: &str,
 ) -> Result<String, Failure> {
-    let client = read_named_client(work, &pending.client_id)
+    // Shared until the commit: a change of the client in flight is waited
+    // for and read, and one that comes after waits for this answer.
+    let client = work
+        .read_client_for_share(&pending.client_id)
         .await?
         .filter(|client| client.enabled && client.allows_authorization_code)
         .ok_or(Failure::new(ErrorCode::ClientNotFound))?;
+    if digest_covered(app, work, &client).await? != shown {
+        return Err(Failure::new(ErrorCode::ConsentPageOutdated));
+    }
     // Kept only for a client that requires it: to another, `prompt=consent`
     // asks once, nothing stands to be withdrawn, and so nothing is granted
     // that outlives the browser session.
@@ -210,7 +297,7 @@ mod tests {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use uuid::Uuid;
 
-    use super::{ConsentDecision, ConsentPrompt, answer_consent, describe_consent};
+    use super::{ClientOrigin, ConsentDecision, ConsentPrompt, answer_consent, describe_consent};
     use crate::authz::capability::Capability;
     use crate::clients::register::NewClient;
     use crate::consent::Consent;
@@ -380,6 +467,40 @@ mod tests {
         .map_err(|failure| failure.code)
     }
 
+    /// Allows as the page does: with what it showed of the client, or with
+    /// nothing when no page could be shown.
+    fn allow(
+        scenario: &Scenario,
+        request: Uuid,
+        browser_secret: &Secret,
+        ticket: Option<&SessionTicket>,
+    ) -> Result<String, ErrorCode> {
+        let shown = complete(describe_consent(
+            &scenario.app,
+            "acme",
+            request,
+            browser_secret,
+            ticket,
+        ))
+        .map(|prompt| prompt.shown)
+        .unwrap_or_default();
+        answer(
+            scenario,
+            request,
+            browser_secret,
+            ticket,
+            ConsentDecision::Allow { shown },
+        )
+    }
+
+    /// What a page shows a person, without the digest it posts back.
+    fn forget_shown(prompt: ConsentPrompt) -> ConsentPrompt {
+        ConsentPrompt {
+            shown: String::new(),
+            ..prompt
+        }
+    }
+
     /// What the last `consent.granted` of the realm says.
     fn read_last_grant(scenario: &Scenario) -> serde_json::Value {
         scenario
@@ -440,14 +561,7 @@ mod tests {
     /// Signs `ada` in for `partner`, allows it `openid`, and exchanges the code.
     fn consent_once(scenario: &Scenario) -> (SessionTicket, TokenResponse) {
         let (request, browser_secret, ticket) = sign_in_for_partner(scenario, "ada", "openid");
-        let location = answer(
-            scenario,
-            request,
-            &browser_secret,
-            Some(&ticket),
-            ConsentDecision::Allow,
-        )
-        .expect("a code");
+        let location = allow(scenario, request, &browser_secret, Some(&ticket)).expect("a code");
         let tokens = exchange(scenario, &read_code(&location).expect("a code"));
         (ticket, tokens)
     }
@@ -465,22 +579,18 @@ mod tests {
                 request,
                 &browser_secret,
                 Some(&ticket)
-            )),
+            ))
+            .map(forget_shown),
             Ok(ConsentPrompt {
                 client_name: "Partner <b>Inc</b>".to_owned(),
                 scopes: vec!["openid".to_owned()],
                 offline_access: None,
+                origin: ClientOrigin::Realm,
+                shown: String::new(),
             }),
             "the name is given as it was written: the page writes it as text"
         );
-        let location = answer(
-            &scenario,
-            request,
-            &browser_secret,
-            Some(&ticket),
-            ConsentDecision::Allow,
-        )
-        .expect("a code");
+        let location = allow(&scenario, request, &browser_secret, Some(&ticket)).expect("a code");
         assert!(location.starts_with(CALLBACK), "{location}");
         assert!(location.contains("state=s1"), "{location}");
         let tokens = exchange(&scenario, &read_code(&location).expect("a code"));
@@ -602,13 +712,7 @@ mod tests {
         assert!(location.contains("state=s1"), "{location}");
         assert_eq!(read_code(&location), None);
         assert_eq!(
-            answer(
-                &scenario,
-                request,
-                &browser_secret,
-                Some(&ticket),
-                ConsentDecision::Allow
-            ),
+            allow(&scenario, request, &browser_secret, Some(&ticket)),
             Err(ErrorCode::AuthorizationRequestExpired),
             "a request is answered once"
         );
@@ -632,7 +736,7 @@ mod tests {
             (&browser_secret, Some(&another_session_of_ada)),
         ] {
             assert_eq!(
-                answer(&scenario, request, secret, held, ConsentDecision::Allow),
+                allow(&scenario, request, secret, held),
                 Err(ErrorCode::AuthorizationRequestExpired)
             );
             assert_eq!(
@@ -648,14 +752,7 @@ mod tests {
             );
         }
         assert!(
-            answer(
-                &scenario,
-                request,
-                &browser_secret,
-                Some(&ticket),
-                ConsentDecision::Allow
-            )
-            .is_ok(),
+            allow(&scenario, request, &browser_secret, Some(&ticket)).is_ok(),
             "the request still waits for its own browser and session"
         );
     }
@@ -674,13 +771,7 @@ mod tests {
         };
 
         assert_eq!(
-            answer(
-                &scenario,
-                request,
-                &browser_secret,
-                Some(&ticket),
-                ConsentDecision::Allow
-            ),
+            allow(&scenario, request, &browser_secret, Some(&ticket)),
             Err(ErrorCode::AuthorizationRequestExpired)
         );
     }
@@ -758,6 +849,7 @@ mod tests {
             capabilities: Vec::new(),
             id_token_signed_response_alg: None,
             enabled: true,
+            self_registered: false,
             created_at: scenario.app.now(),
         };
         let mut work =
@@ -781,14 +873,7 @@ mod tests {
         .expect("a prompt");
         assert_eq!(prompt.client_name, "Pay\u{fffd}lapyap");
 
-        answer(
-            &scenario,
-            request,
-            &browser_secret,
-            Some(&ticket),
-            ConsentDecision::Allow,
-        )
-        .expect("a code");
+        allow(&scenario, request, &browser_secret, Some(&ticket)).expect("a code");
         let held =
             complete(list_my_consents(&scenario.app, "acme", Some(&ticket))).expect("a list");
         assert_eq!(held[0].client_name, "Pay\u{fffd}lapyap");
@@ -941,14 +1026,8 @@ mod tests {
         let scenario = Scenario::start();
         register_partner(&scenario, "Partner");
         let (request, browser_secret, ticket) = sign_in_for_partner(&scenario, "ada", "openid");
-        let from_the_page = answer(
-            &scenario,
-            request,
-            &browser_secret,
-            Some(&ticket),
-            ConsentDecision::Allow,
-        )
-        .expect("a code");
+        let from_the_page =
+            allow(&scenario, request, &browser_secret, Some(&ticket)).expect("a code");
         let Ok(Authorization::Granted {
             location: from_the_session,
         }) = ask_partner(&scenario, "openid", Some(&ticket))
@@ -992,14 +1071,7 @@ mod tests {
             panic!("prompt=consent asks the person on a page");
         };
 
-        let location = answer(
-            &scenario,
-            request,
-            &browser_secret,
-            Some(&ticket),
-            ConsentDecision::Allow,
-        )
-        .expect("a code");
+        let location = allow(&scenario, request, &browser_secret, Some(&ticket)).expect("a code");
 
         assert!(read_code(&location).is_some(), "{location}");
         assert_eq!(
@@ -1130,13 +1202,7 @@ mod tests {
             Err(ErrorCode::AuthorizationRequestExpired)
         );
         assert_eq!(
-            answer(
-                &scenario,
-                request,
-                &browser_secret,
-                None,
-                ConsentDecision::Allow
-            ),
+            allow(&scenario, request, &browser_secret, None),
             Err(ErrorCode::AuthorizationRequestExpired)
         );
         assert_eq!(scenario.storage.count_units_of_work(), opened);
@@ -1218,13 +1284,7 @@ mod tests {
             Err(ErrorCode::ClientNotFound)
         );
         assert_eq!(
-            answer(
-                &scenario,
-                request,
-                &browser_secret,
-                Some(&ticket),
-                ConsentDecision::Allow
-            ),
+            allow(&scenario, request, &browser_secret, Some(&ticket)),
             Err(ErrorCode::ClientNotFound)
         );
     }
@@ -1265,14 +1325,7 @@ mod tests {
         );
         drop(work);
         assert!(
-            answer(
-                &scenario,
-                request,
-                &browser_secret,
-                Some(&first),
-                ConsentDecision::Allow
-            )
-            .is_ok(),
+            allow(&scenario, request, &browser_secret, Some(&first)).is_ok(),
             "the request still waits for the first"
         );
     }
@@ -1319,14 +1372,8 @@ mod tests {
         register_partner(&scenario, "Partner");
         let (request, browser_secret, ticket) =
             sign_in_for_partner(&scenario, "ada", "openid email");
-        let wider = answer(
-            &scenario,
-            request,
-            &browser_secret,
-            Some(&ticket),
-            ConsentDecision::Allow,
-        )
-        .expect("a code for openid and email");
+        let wider = allow(&scenario, request, &browser_secret, Some(&ticket))
+            .expect("a code for openid and email");
         complete(withdraw_my_consent(
             &scenario.app,
             "acme",
@@ -1341,14 +1388,8 @@ mod tests {
         else {
             panic!("withdrawn, the consent is asked again");
         };
-        answer(
-            &scenario,
-            request,
-            &browser_secret,
-            Some(&ticket),
-            ConsentDecision::Allow,
-        )
-        .expect("openid allowed again, and nothing more");
+        allow(&scenario, request, &browser_secret, Some(&ticket))
+            .expect("openid allowed again, and nothing more");
 
         assert_eq!(
             try_exchange(&scenario, &read_code(&wider).expect("a code")).err(),
@@ -1399,7 +1440,9 @@ mod tests {
                     request,
                     &browser_secret,
                     None,
-                    ConsentDecision::Allow
+                    ConsentDecision::Allow {
+                        shown: String::new()
+                    }
                 ))
                 .map(|_| ())
             ),
@@ -1495,14 +1538,8 @@ mod tests {
             "nothing is offered it would not give"
         );
         assert_eq!(prompt.offline_access, None);
-        let location = answer(
-            &scenario,
-            request,
-            &browser_secret,
-            Some(&ticket),
-            ConsentDecision::Allow,
-        )
-        .expect("an allowed client");
+        let location =
+            allow(&scenario, request, &browser_secret, Some(&ticket)).expect("an allowed client");
         let tokens = scenario.exchange_as("webapp", &read_code(&location).expect("a code"));
 
         assert_eq!(
@@ -1545,11 +1582,14 @@ mod tests {
                 request,
                 &browser_secret,
                 Some(&ticket),
-            )),
+            ))
+            .map(forget_shown),
             Ok(ConsentPrompt {
                 client_name: "partner".to_owned(),
                 scopes: vec!["openid".to_owned()],
                 offline_access: Some(OFFLINE_SESSION_LIFETIME),
+                origin: ClientOrigin::Realm,
+                shown: String::new(),
             }),
             "said in words, not as a scope"
         );

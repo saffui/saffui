@@ -1,19 +1,21 @@
 //! From the types of the core to what the administration API says.
 
 use api::{
-    ClientView, ConsentView, GrantView, GroupView, HeldRoleView, KeyView, MapperView, PolicyView,
-    RealmView, RoleView, UserView,
+    ClientView, ConsentView, GrantView, GroupView, HeldRoleView, InitialTokenView, KeyView,
+    MapperView, PolicyView, RealmSettingsView, RealmView, RoleView, UserView,
 };
 use saffui_core::authz::grants::{Grant, HeldRole};
 use saffui_core::authz::policy::Policy;
 use saffui_core::authz::roles::{Group, Role};
 use saffui_core::claims::Mapper;
 use saffui_core::clients::Client;
+use saffui_core::clients::registration::InitialAccessToken;
 use saffui_core::consent::ListedConsent;
 use saffui_core::directory::Person;
 use saffui_core::instant::write_instant;
 use saffui_core::keys::SigningKey;
 use saffui_core::tenancy::Realm;
+use saffui_core::tenancy::settings::RealmSettings;
 
 pub(super) fn show_realm(realm: &Realm, issuer: String) -> RealmView {
     RealmView {
@@ -23,6 +25,27 @@ pub(super) fn show_realm(realm: &Realm, issuer: String) -> RealmView {
         issuer,
         enabled: realm.enabled,
         created_at: write_instant(realm.created_at),
+    }
+}
+
+pub(super) fn show_realm_settings(settings: &RealmSettings) -> RealmSettingsView {
+    RealmSettingsView {
+        registration: settings.registration.name().to_owned(),
+        registrable_scopes: settings.registrable_scopes.clone(),
+        max_registered_clients: settings.max_registered_clients,
+        max_redirect_uris: settings.max_redirect_uris,
+        max_daily_registrations: settings.max_daily_registrations,
+    }
+}
+
+/// An initial access token as an administrator sees it: never the token.
+pub(super) fn show_initial_token(token: &InitialAccessToken) -> InitialTokenView {
+    InitialTokenView {
+        id: token.id.to_string(),
+        uses_left: token.uses_left,
+        expires_at: write_instant(token.expires_at),
+        created_at: write_instant(token.created_at),
+        created_by: token.created_by.clone(),
     }
 }
 

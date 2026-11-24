@@ -30,6 +30,7 @@ async fn an_application_with_a_capability_a_service_without_a_secret_and_a_flow_
         capabilities: Vec::new(),
         id_token_signed_response_alg: None,
         enabled: true,
+        self_registered: false,
         created_at: app.now(),
     };
     let insert = |client: Client| {

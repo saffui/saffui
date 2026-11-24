@@ -53,6 +53,12 @@ pub enum EventKind {
     ClientCapabilitiesGranted,
     ClientSecretRotated,
     ClientAuthMethodChanged,
+    RealmSettingsChanged,
+    InitialTokenCreated,
+    InitialTokenDeleted,
+    ClientRegistered,
+    ClientRegistrationUpdated,
+    ClientRegistrationDeleted,
 }
 
 impl EventKind {
@@ -98,6 +104,12 @@ impl EventKind {
             Self::ClientCapabilitiesGranted => "client.capabilities_granted",
             Self::ClientSecretRotated => "client.secret_rotated",
             Self::ClientAuthMethodChanged => "client.auth_method_changed",
+            Self::RealmSettingsChanged => "realm.settings_changed",
+            Self::InitialTokenCreated => "client.initial_token_created",
+            Self::InitialTokenDeleted => "client.initial_token_deleted",
+            Self::ClientRegistered => "client.registered",
+            Self::ClientRegistrationUpdated => "client.registration_updated",
+            Self::ClientRegistrationDeleted => "client.registration_deleted",
         }
     }
 }

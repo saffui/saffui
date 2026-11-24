@@ -13,9 +13,9 @@ use uuid::Uuid;
 use super::digest::WeakDigester;
 use crate::ports::crypto::{
     CryptoFailure, Digester, EnrolledKey, GeneratedSigningKey, HashingGuard, KeyCeremony,
-    KeyMakingFailure, KeyMakingGuard, KeyProof, KeyRefusal, OneTimeCodes, PasswordHasher,
-    PasswordHashingFailure, SealPlace, Sealer, SecurityKeys, SignatureAlgorithm, Signer,
-    TotpEnrollmentText, WrappedDataKey,
+    KeyCheckLane, KeyMakingFailure, KeyMakingGuard, KeyProof, KeyRefusal, OneTimeCodes,
+    PasswordHasher, PasswordHashingFailure, SealPlace, Sealer, SecurityKeys, SignatureAlgorithm,
+    Signer, TotpEnrollmentText, WrappedDataKey,
 };
 use crate::secret::Secret;
 
@@ -181,6 +181,7 @@ impl Signer for WeakSigner {
     async fn check_client_keys(
         &self,
         keys: Vec<(SignatureAlgorithm, Value)>,
+        _lane: KeyCheckLane,
         _guard: KeyMakingGuard,
     ) -> Result<bool, KeyMakingFailure> {
         Ok(keys

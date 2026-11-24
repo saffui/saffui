@@ -7,6 +7,7 @@ use actix_web::http::header::{CACHE_CONTROL, PRAGMA, WWW_AUTHENTICATE};
 use actix_web::{HttpRequest, HttpResponse};
 use saffui_core::error::{ErrorCode, ErrorKind, Failure};
 use saffui_core::oidc::errors::{OAuthError, OAuthFailure};
+use saffui_core::oidc::registration::{RegistrationError, RegistrationFailure};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -121,6 +122,33 @@ pub(crate) fn render_protocol_failure(
     response.json(OAuthErrorBody {
         error: failure.error.name(),
         error_description: failure.describe(),
+    })
+}
+
+/// Renders a refusal of the registration endpoints (RFC 7591, section
+/// 3.2.2, and RFC 7592, section 2), never kept by a cache. The message of
+/// the catalog names what was refused, never a value the client sent.
+pub(crate) fn render_registration_failure(failure: &RegistrationFailure) -> HttpResponse {
+    let status = match failure.error {
+        RegistrationError::InvalidToken => StatusCode::UNAUTHORIZED,
+        RegistrationError::AccessDenied => StatusCode::FORBIDDEN,
+        RegistrationError::ServerError => StatusCode::INTERNAL_SERVER_ERROR,
+        RegistrationError::TemporarilyUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+        RegistrationError::InvalidRedirectUri
+        | RegistrationError::InvalidClientMetadata
+        | RegistrationError::InvalidSoftwareStatement => StatusCode::BAD_REQUEST,
+    };
+    journal_failure(&failure.cause);
+    let mut response = HttpResponse::build(status);
+    response
+        .insert_header((CACHE_CONTROL, "no-store"))
+        .insert_header((PRAGMA, "no-cache"));
+    if failure.error == RegistrationError::InvalidToken {
+        response.insert_header((WWW_AUTHENTICATE, "Bearer error=\"invalid_token\""));
+    }
+    response.json(OAuthErrorBody {
+        error: failure.error.name(),
+        error_description: failure.cause.code.message(),
     })
 }
 

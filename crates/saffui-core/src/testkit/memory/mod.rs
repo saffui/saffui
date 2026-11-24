@@ -35,6 +35,7 @@ use crate::authz::relations::{AdmittedRelation, RelationTuple, StoredSchema};
 use crate::authz::roles::{Group, Role};
 use crate::claims::Mapper;
 use crate::clients::Client;
+use crate::clients::registration::InitialAccessToken;
 use crate::consent::Consent;
 use crate::directory::Person;
 use crate::keys::SealedSigningKey;
@@ -111,6 +112,21 @@ pub(crate) struct State {
     pub(crate) mappers: HashMap<Uuid, Vec<Mapper>>,
     /// The attributes of a person, by realm then person.
     pub(crate) attributes: HashMap<(Uuid, Uuid), serde_json::Map<String, serde_json::Value>>,
+    /// The settings document of each realm, by realm.
+    pub(crate) realm_settings: HashMap<Uuid, serde_json::Value>,
+    /// The initial access tokens of each realm, with their digests, by realm.
+    pub(crate) initial_tokens: HashMap<Uuid, Vec<(InitialAccessToken, Vec<u8>)>>,
+    /// The registration of each client that registered itself, by realm
+    /// and client.
+    pub(crate) registrations: HashMap<(Uuid, String), HeldRegistration>,
+}
+
+/// A registration as the double keeps it: its token while it lasts.
+#[derive(Clone, Debug)]
+pub(crate) struct HeldRegistration {
+    pub(crate) token_digest: Option<Vec<u8>>,
+    pub(crate) registered_at: OffsetDateTime,
+    pub(crate) ended_at: Option<OffsetDateTime>,
 }
 
 /// A code as the double keeps it: spent codes stay, so that a replay is told.
@@ -219,6 +235,7 @@ impl MemoryStorage {
             hashing_shares: Arc::new(crate::login::fairness::HashingShares::new(4)),
             decision_shares: Arc::default(),
             key_shares: Arc::default(),
+            registration_key_shares: Arc::default(),
             decoy_hash: Arc::new(OnceLock::new()),
         };
         (app, storage, clock)
@@ -477,12 +494,12 @@ mod tests {
     use super::MemoryStorage;
     use crate::testkit::contract::{
         check_audit_contract, check_authenticators_contract, check_claims_contract,
-        check_clients_contract, check_codes_contract, check_consents_contract,
-        check_ended_sessions_contract, check_grants_contract, check_keys_contract,
-        check_known_browsers_contract, check_member_groups_contract, check_persons_contract,
-        check_policies_contract, check_refresh_contract, check_relations_contract,
-        check_roles_contract, check_security_keys_contract, check_sign_in_contract,
-        check_tenancy_contract,
+        check_client_grants_contract, check_clients_contract, check_codes_contract,
+        check_consents_contract, check_ended_sessions_contract, check_grants_contract,
+        check_keys_contract, check_known_browsers_contract, check_member_groups_contract,
+        check_persons_contract, check_policies_contract, check_refresh_contract,
+        check_registration_contract, check_relations_contract, check_roles_contract,
+        check_security_keys_contract, check_sign_in_contract, check_tenancy_contract,
     };
     use crate::testkit::drive::complete;
 
@@ -592,6 +609,18 @@ mod tests {
     fn the_double_passes_the_consents_contract() {
         let (app, _storage) = MemoryStorage::wire();
         complete(check_consents_contract(&app));
+    }
+
+    #[test]
+    fn the_double_passes_the_registration_contract() {
+        let (app, _storage) = MemoryStorage::wire();
+        complete(check_registration_contract(&app));
+    }
+
+    #[test]
+    fn the_double_passes_the_client_grants_contract() {
+        let (app, _storage) = MemoryStorage::wire();
+        complete(check_client_grants_contract(&app));
     }
 
     #[test]

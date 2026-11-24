@@ -52,6 +52,7 @@ pub fn wire_app(database: &TestDatabase, root_key: &Secret) -> App {
         hashing_shares: Arc::new(hashing_shares),
         decision_shares: Arc::default(),
         key_shares: Arc::default(),
+        registration_key_shares: Arc::default(),
         signer: Arc::new(JoseSigner::new(provider)),
         decoy_hash: Arc::new(std::sync::OnceLock::new()),
     }

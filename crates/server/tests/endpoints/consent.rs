@@ -67,11 +67,12 @@ fn write_authorize_path(product: &saffui_core::app::App, scope: &str) -> String 
 }
 
 /// What a browser holds once `ada` signed in for `partner`: the request that
-/// waits for her answer, and its cookies.
+/// waits for her answer, its cookies, and what its page showed.
 struct Waiting {
     request: String,
     flow: String,
     session: String,
+    shown: String,
 }
 
 impl Waiting {
@@ -80,8 +81,19 @@ impl Waiting {
     }
 
     fn write_answer(&self, decision: &str) -> String {
-        format!("request={}&decision={decision}", self.request)
+        format!(
+            "request={}&decision={decision}&shown={}",
+            self.request, self.shown
+        )
     }
+}
+
+/// What a page of consent says it showed of the client, for its answer.
+fn read_shown(page: &str) -> String {
+    page.split_once(r#"name="shown" value=""#)
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(shown, _)| shown.to_owned())
+        .expect("what the page showed")
 }
 
 async fn sign_in_for_partner(product: &saffui_core::app::App) -> (Waiting, Answer) {
@@ -111,10 +123,17 @@ async fn sign_in_for_partner_asking(
     let session = signed_in
         .read_cookie("__Host-saffui_session_acme=")
         .expect("a session cookie");
+    let page = get(
+        product,
+        &format!("{CONSENT}?request={request}"),
+        &[(COOKIE.as_str(), &format!("{flow}; {session}"))],
+    )
+    .await;
     let waiting = Waiting {
         request,
         flow,
         session,
+        shown: read_shown(&page.body),
     };
     (waiting, signed_in)
 }
@@ -211,6 +230,54 @@ async fn a_person_who_signed_in_is_asked_on_a_page_and_sent_back_with_a_code_onc
 }
 
 #[actix_web::test]
+async fn an_answer_to_a_page_that_no_longer_shows_the_client_as_it_is_brings_the_page_back() {
+    let (product, _) = start("Partner").await;
+    let (waiting, _) = sign_in_for_partner(&product).await;
+    let both = waiting.send_both();
+    let page_path = format!("{CONSENT}?request={}", waiting.request);
+
+    for stale in [
+        format!("request={}&decision=allow&shown=c3RhbGU", waiting.request),
+        format!("request={}&decision=allow", waiting.request),
+    ] {
+        let asked_again = post(&product, CONSENT, &[(COOKIE.as_str(), &both)], &stale).await;
+        assert_eq!(
+            asked_again.status,
+            StatusCode::SEE_OTHER,
+            "{}",
+            asked_again.body
+        );
+        assert_eq!(
+            asked_again.location.as_deref(),
+            Some(page_path.as_str()),
+            "{stale}"
+        );
+        assert!(
+            asked_again.cookies.is_empty(),
+            "the flow goes on: {:?}",
+            asked_again.cookies
+        );
+    }
+    let page = get(&product, &page_path, &[(COOKIE.as_str(), &both)]).await;
+    assert_eq!(page.status, StatusCode::OK, "the request still waits");
+    let allowed = post(
+        &product,
+        CONSENT,
+        &[(COOKIE.as_str(), &both)],
+        &waiting.write_answer("allow"),
+    )
+    .await;
+    assert!(
+        allowed
+            .location
+            .as_deref()
+            .is_some_and(|back| back.starts_with(&format!("{CALLBACK}?code="))),
+        "answered on the page as it is: {:?}",
+        allowed.location
+    );
+}
+
+#[actix_web::test]
 async fn the_page_answers_only_the_browser_and_the_session_the_request_waits_for() {
     let (product, _) = start("Partner").await;
     let (waiting, _) = sign_in_for_partner(&product).await;
@@ -287,6 +354,7 @@ async fn a_name_that_changes_direction_is_shown_with_the_change_replaced() {
         capabilities: Vec::new(),
         id_token_signed_response_alg: None,
         enabled: true,
+        self_registered: false,
         created_at: product.now(),
     };
     let mut work = product.storage.begin(scope).await.expect("a unit of work");

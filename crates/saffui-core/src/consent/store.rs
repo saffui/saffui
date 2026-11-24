@@ -47,4 +47,8 @@ pub trait ConsentStore {
     /// Answers whether there was one.
     async fn delete_consent(&mut self, person: Uuid, client_id: &str)
     -> Result<bool, StorageError>;
+
+    /// Removes every consent a client was given, in one statement. Answers
+    /// how many there were.
+    async fn delete_consents_of_client(&mut self, client_id: &str) -> Result<u64, StorageError>;
 }

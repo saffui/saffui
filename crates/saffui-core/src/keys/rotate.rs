@@ -210,8 +210,8 @@ mod tests {
     use crate::oidc::token::{TokenRequest, grant_token};
     use crate::oidc::userinfo::read_user_info;
     use crate::ports::crypto::{
-        CryptoFailure, GeneratedSigningKey, KeyMakingFailure, KeyMakingGuard, SignatureAlgorithm,
-        Signer,
+        CryptoFailure, GeneratedSigningKey, KeyCheckLane, KeyMakingFailure, KeyMakingGuard,
+        SignatureAlgorithm, Signer,
     };
     use crate::secret::Secret;
     use crate::testkit::crypto::WeakSigner;
@@ -268,9 +268,10 @@ mod tests {
         async fn check_client_keys(
             &self,
             keys: Vec<(SignatureAlgorithm, Value)>,
+            lane: KeyCheckLane,
             guard: KeyMakingGuard,
         ) -> Result<bool, KeyMakingFailure> {
-            self.signer.check_client_keys(keys, guard).await
+            self.signer.check_client_keys(keys, lane, guard).await
         }
 
         fn verify(

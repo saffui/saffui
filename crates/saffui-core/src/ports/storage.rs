@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use crate::audit::store::AuditStore;
 use crate::authz::store::{PolicyStore, RelationStore, RoleStore};
 use crate::claims::store::ClaimStore;
-use crate::clients::store::ClientStore;
+use crate::clients::store::{ClientStore, RegistrationStore};
 use crate::consent::store::ConsentStore;
 use crate::directory::store::PersonStore;
 use crate::keys::store::KeyStore;
@@ -62,6 +62,7 @@ pub trait UnitOfWork:
     + RefreshStore
     + ConsentStore
     + ClaimStore
+    + RegistrationStore
     + Send
 {
     fn scope(&self) -> RealmScope;

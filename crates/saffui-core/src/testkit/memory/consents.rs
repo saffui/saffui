@@ -126,4 +126,15 @@ impl ConsentStore for MemoryUnitOfWork {
         let key = self.key_consent(person, client_id);
         Ok(self.working.consents.remove(&key).is_some())
     }
+
+    async fn delete_consents_of_client(&mut self, client_id: &str) -> Result<u64, StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        let realm = self.scope.realm().as_uuid();
+        let before = self.working.consents.len();
+        self.working
+            .consents
+            .retain(|(of, _, client), _| *of != realm || client != client_id);
+        u64::try_from(before - self.working.consents.len()).map_err(|_| StorageError::Failed)
+    }
 }

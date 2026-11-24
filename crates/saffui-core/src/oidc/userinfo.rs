@@ -8,6 +8,7 @@ use crate::app::App;
 use crate::claims::ClaimTarget;
 use crate::claims::gather::gather_claim_inputs;
 use crate::claims::rules::{ClaimGrant, write_claims};
+use crate::clients::is_client_enabled;
 use crate::error::{ErrorCode, Failure};
 use crate::login::session::read_live_subject;
 use crate::tenancy::resolve::resolve_realm;
@@ -18,8 +19,9 @@ use crate::tokens::verify::verify_access_token;
 /// # Errors
 ///
 /// Returns [`ErrorCode::TokenInvalid`] for a token that does not verify,
-/// that is not for this realm, that was issued to a client for itself, or
-/// whose session ended or whose person was disabled. Returns
+/// that is not for this realm, that was issued to a client for itself or to
+/// a client disabled since, or whose session ended or whose person was
+/// disabled. Returns
 /// [`ErrorCode::TokenScopeInsufficient`] for a token without the `openid`
 /// scope, [`ErrorCode::HeldTooMany`] for a person whose roles a mapper says
 /// and who holds them by more ways than are read,
@@ -37,7 +39,9 @@ pub async fn read_user_info(app: &App, realm: &str, token: &str) -> Result<Value
     let mut work = app.storage.begin(scope).await?;
     let issuer = name_issuer(&app.settings, &realm_name);
     let claims = verify_access_token(app, work.as_mut(), &issuer, token).await?;
-    if !claims.audiences.contains(&issuer) {
+    if !claims.audiences.contains(&issuer)
+        || !is_client_enabled(work.as_mut(), &claims.client_id).await?
+    {
         return Err(invalid());
     }
 

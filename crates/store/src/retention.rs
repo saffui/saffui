@@ -16,7 +16,7 @@ use tokio_postgres::Client;
 pub const RETENTION_LOCK: i64 = 0x7361_6666_7569_0003;
 
 /// The tables a pass removes from, and the only ones its role may.
-const PURGED_TABLES: [&str; 8] = [
+const PURGED_TABLES: [&str; 10] = [
     "authorization_requests",
     "authorization_codes",
     "refresh_tokens",
@@ -25,6 +25,8 @@ const PURGED_TABLES: [&str; 8] = [
     "login_failures",
     "security_key_enrollments",
     "client_assertions",
+    "client_registrations",
+    "clients",
 ];
 
 pub struct PgRetention {
@@ -152,53 +154,102 @@ fn report_failure(error: &tokio_postgres::Error) -> StorageError {
 /// time of a thousand rows, never of a table.
 const BATCH_ROWS: i64 = 1_000;
 
-/// Constant SQL, across realms on purpose, one statement for each purged
-/// table and in its order. Each names what has no use left, and nothing else,
-/// finds it by an index, and asks again of each row it removes whether it
-/// still has none: a row made to live longer meanwhile stays. Names are
-/// qualified: the link sets no search path.
-const PURGES: [&str; 8] = [
-    "DELETE FROM public.authorization_requests
-     WHERE ctid = ANY (ARRAY(SELECT ctid FROM public.authorization_requests
-                             WHERE expires_at < $1 LIMIT $2))
-       AND expires_at < $1",
-    "DELETE FROM public.authorization_codes
-     WHERE ctid = ANY (ARRAY(SELECT ctid FROM public.authorization_codes
-                             WHERE expires_at < $1 LIMIT $2))
-       AND expires_at < $1",
-    "DELETE FROM public.refresh_tokens
-     WHERE ctid = ANY (ARRAY(SELECT ctid FROM public.refresh_tokens
-                             WHERE expires_at < $1 LIMIT $2))
-       AND expires_at < $1",
+/// Constant SQL, across realms on purpose, one statement for each purge and
+/// in its order: under the name the report gives it, each names what has no
+/// use left, and nothing else, finds it by an index, and asks again of each
+/// row it removes whether it still has none: a row made to live longer
+/// meanwhile stays. Names are qualified: the link sets no search path.
+const PURGES: [(&str, &str); 9] = [
+    (
+        "authorization_requests",
+        "DELETE FROM public.authorization_requests
+         WHERE ctid = ANY (ARRAY(SELECT ctid FROM public.authorization_requests
+                                 WHERE expires_at < $1 LIMIT $2))
+           AND expires_at < $1",
+    ),
+    (
+        "authorization_codes",
+        "DELETE FROM public.authorization_codes
+         WHERE ctid = ANY (ARRAY(SELECT ctid FROM public.authorization_codes
+                                 WHERE expires_at < $1 LIMIT $2))
+           AND expires_at < $1",
+    ),
+    (
+        "refresh_tokens",
+        "DELETE FROM public.refresh_tokens
+         WHERE ctid = ANY (ARRAY(SELECT ctid FROM public.refresh_tokens
+                                 WHERE expires_at < $1 LIMIT $2))
+           AND expires_at < $1",
+    ),
     // A session takes its refresh tokens along in the statement that removes
     // it: one that still has some waits for them to go, so that no batch
     // removes more than its rows.
-    "DELETE FROM public.sessions
-     WHERE ctid = ANY (ARRAY(
-               SELECT ctid FROM public.sessions AS session
-               WHERE expires_at < $1
-                 AND NOT EXISTS (SELECT 1 FROM public.refresh_tokens AS token
-                                 WHERE token.tenant_id = session.tenant_id
-                                   AND token.realm_id = session.realm_id
-                                   AND token.session_id = session.session_id)
-               LIMIT $2))
-       AND expires_at < $1",
-    "DELETE FROM public.known_browsers
-     WHERE ctid = ANY (ARRAY(SELECT ctid FROM public.known_browsers
-                             WHERE expires_at < $1 LIMIT $2))
-       AND expires_at < $1",
-    "DELETE FROM public.login_failures
-     WHERE ctid = ANY (ARRAY(SELECT ctid FROM public.login_failures
-                             WHERE bucket_start < $1 LIMIT $2))
-       AND bucket_start < $1",
-    "DELETE FROM public.security_key_enrollments
-     WHERE ctid = ANY (ARRAY(SELECT ctid FROM public.security_key_enrollments
-                             WHERE expires_at < $1 LIMIT $2))
-       AND expires_at < $1",
-    "DELETE FROM public.client_assertions
-     WHERE ctid = ANY (ARRAY(SELECT ctid FROM public.client_assertions
-                             WHERE kept_until < $1 LIMIT $2))
-       AND kept_until < $1",
+    (
+        "sessions",
+        "DELETE FROM public.sessions
+         WHERE ctid = ANY (ARRAY(
+                   SELECT ctid FROM public.sessions AS session
+                   WHERE expires_at < $1
+                     AND NOT EXISTS (SELECT 1 FROM public.refresh_tokens AS token
+                                     WHERE token.tenant_id = session.tenant_id
+                                       AND token.realm_id = session.realm_id
+                                       AND token.session_id = session.session_id)
+                   LIMIT $2))
+           AND expires_at < $1",
+    ),
+    (
+        "known_browsers",
+        "DELETE FROM public.known_browsers
+         WHERE ctid = ANY (ARRAY(SELECT ctid FROM public.known_browsers
+                                 WHERE expires_at < $1 LIMIT $2))
+           AND expires_at < $1",
+    ),
+    (
+        "login_failures",
+        "DELETE FROM public.login_failures
+         WHERE ctid = ANY (ARRAY(SELECT ctid FROM public.login_failures
+                                 WHERE bucket_start < $1 LIMIT $2))
+           AND bucket_start < $1",
+    ),
+    (
+        "security_key_enrollments",
+        "DELETE FROM public.security_key_enrollments
+         WHERE ctid = ANY (ARRAY(SELECT ctid FROM public.security_key_enrollments
+                                 WHERE expires_at < $1 LIMIT $2))
+           AND expires_at < $1",
+    ),
+    (
+        "client_assertions",
+        "DELETE FROM public.client_assertions
+         WHERE ctid = ANY (ARRAY(SELECT ctid FROM public.client_assertions
+                                 WHERE kept_until < $1 LIMIT $2))
+           AND kept_until < $1",
+    ),
+    // A client goes with its registration, in one statement: what else of
+    // it hangs on its keys (consents, roles, mappers, policies) goes by them,
+    // and its tokens and sessions, ended with the registration, expire. Only
+    // a client the table lets go is chosen, that registered itself and was
+    // turned off: another would fail its whole batch.
+    (
+        "registered_clients",
+        "WITH ended AS (
+             DELETE FROM public.client_registrations
+             WHERE ctid = ANY (ARRAY(
+                       SELECT registration.ctid
+                       FROM public.client_registrations AS registration
+                       JOIN public.clients AS client
+                         ON client.tenant_id = registration.tenant_id
+                        AND client.realm_id = registration.realm_id
+                        AND client.client_id = registration.client_id
+                       WHERE registration.ended_at < $1
+                         AND client.self_registered AND NOT client.enabled
+                       LIMIT $2))
+               AND ended_at < $1
+             RETURNING tenant_id, realm_id, client_id)
+         DELETE FROM public.clients AS client USING ended
+         WHERE client.tenant_id = ended.tenant_id AND client.realm_id = ended.realm_id
+           AND client.client_id = ended.client_id",
+    ),
 ];
 
 /// Removes the rows a statement finds, a batch at a time, as long as the
@@ -285,14 +336,15 @@ impl Retention for PgRetention {
             cutoffs.counters_before,
             cutoffs.expired_before,
             cutoffs.expired_before,
+            cutoffs.registrations_ended_before,
         ];
         let started = Instant::now();
-        let mut purged = [TablePurge::default(); 8];
+        let mut purged = [TablePurge::default(); 9];
         // Each table is given an equal part of what is left: one that anybody
         // can fill spends its own part only, and one done early leaves its
         // part to the tables after it. Each gets a batch at least.
-        let mut tables_left = 8_u32;
-        let tables = PURGED_TABLES.into_iter().zip(PURGES).zip(cutoff_of_each);
+        let mut tables_left = 9_u32;
+        let tables = PURGES.into_iter().zip(cutoff_of_each);
         for (slot, ((table, statement), before)) in purged.iter_mut().zip(tables) {
             let share = budget.saturating_sub(started.elapsed()) / tables_left;
             tables_left -= 1;
@@ -317,6 +369,7 @@ impl Retention for PgRetention {
             failure_counters,
             key_enrollments,
             client_assertions,
+            registered_clients,
         ] = purged;
         Ok(Some(PurgeReport {
             pending_requests,
@@ -327,6 +380,7 @@ impl Retention for PgRetention {
             failure_counters,
             key_enrollments,
             client_assertions,
+            registered_clients,
         }))
     }
 }

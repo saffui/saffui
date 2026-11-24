@@ -8,7 +8,8 @@ use super::MemoryUnitOfWork;
 use crate::login::session::{Session, SessionKind, SessionState};
 use crate::ports::storage::StorageError;
 use crate::tokens::store::{
-    EndedFamily, RefreshStore, RefreshToken, RevokedFamilies, StoredRefreshToken,
+    EndedFamily, RefreshStore, RefreshToken, RevokedClientGrants, RevokedFamilies,
+    StoredRefreshToken,
 };
 
 impl MemoryUnitOfWork {
@@ -265,6 +266,36 @@ impl RefreshStore for MemoryUnitOfWork {
                 .take(usize::try_from(most).unwrap_or(usize::MAX))
                 .collect(),
             offline_sessions,
+        })
+    }
+
+    async fn revoke_every_refresh_family_of_client(
+        &mut self,
+        client_id: &str,
+        now: OffsetDateTime,
+        most: u32,
+    ) -> Result<RevokedClientGrants, StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        // The sessions first, found by a live token of the client, as
+        // Postgres finds them.
+        let holding: BTreeSet<Uuid> = self
+            .refresh_tokens_of_the_realm()
+            .iter()
+            .filter(|stored| stored.token.client_id == client_id && stored.revoked_at.is_none())
+            .map(|stored| stored.token.session)
+            .collect();
+        let mut offline_sessions =
+            self.end_offline_sessions_where(|session| holding.contains(&session.id));
+        offline_sessions.sort_unstable();
+        let (ended, tokens) = self.revoke_families_where(now, |token| token.client_id == client_id);
+        let most = usize::try_from(most).unwrap_or(usize::MAX);
+        Ok(RevokedClientGrants {
+            families: u64::try_from(ended.len()).unwrap_or(u64::MAX),
+            tokens,
+            named: ended.into_iter().take(most).collect(),
+            offline_sessions: u64::try_from(offline_sessions.len()).unwrap_or(u64::MAX),
+            named_offline_sessions: offline_sessions.into_iter().take(most).collect(),
         })
     }
 

@@ -260,6 +260,34 @@ pub(crate) mod client_mappers {
     ];
 }
 
+pub(crate) mod client_registrations {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "client_registrations",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// text
+    pub(crate) const CLIENT_ID: Column = Column("client_id");
+    /// boolean
+    pub(crate) const SELF_REGISTERED: Column = Column("self_registered");
+    /// bytea, nullable
+    pub(crate) const TOKEN_DIGEST: Column = Column("token_digest");
+    /// timestamp with time zone
+    pub(crate) const REGISTERED_AT: Column = Column("registered_at");
+    /// timestamp with time zone, nullable
+    pub(crate) const ENDED_AT: Column = Column("ended_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[
+        CLIENT_ID,
+        SELF_REGISTERED,
+        TOKEN_DIGEST,
+        REGISTERED_AT,
+        ENDED_AT,
+    ];
+}
+
 pub(crate) mod clients {
     use super::{Column, ScopeKeys, Table};
 
@@ -303,6 +331,8 @@ pub(crate) mod clients {
     pub(crate) const JWKS: Column = Column("jwks");
     /// text, nullable
     pub(crate) const AUTH_SIGNING_ALG: Column = Column("auth_signing_alg");
+    /// boolean
+    pub(crate) const SELF_REGISTERED: Column = Column("self_registered");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -324,6 +354,7 @@ pub(crate) mod clients {
         SEALED_SECRET,
         JWKS,
         AUTH_SIGNING_ALG,
+        SELF_REGISTERED,
     ];
 }
 
@@ -451,6 +482,37 @@ pub(crate) mod groups {
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[GROUP_ID, NAME, DESCRIPTION, CREATED_AT];
+}
+
+pub(crate) mod initial_access_tokens {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "initial_access_tokens",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// uuid
+    pub(crate) const TOKEN_ID: Column = Column("token_id");
+    /// bytea
+    pub(crate) const TOKEN_DIGEST: Column = Column("token_digest");
+    /// integer
+    pub(crate) const USES_LEFT: Column = Column("uses_left");
+    /// timestamp with time zone
+    pub(crate) const EXPIRES_AT: Column = Column("expires_at");
+    /// timestamp with time zone
+    pub(crate) const CREATED_AT: Column = Column("created_at");
+    /// text
+    pub(crate) const CREATED_BY: Column = Column("created_by");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[
+        TOKEN_ID,
+        TOKEN_DIGEST,
+        USES_LEFT,
+        EXPIRES_AT,
+        CREATED_AT,
+        CREATED_BY,
+    ];
 }
 
 pub(crate) mod known_browsers {
@@ -592,6 +654,20 @@ pub(crate) mod realm_data_keys {
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[GENERATION, WRAPPED];
+}
+
+pub(crate) mod realm_settings {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "realm_settings",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// jsonb
+    pub(crate) const SETTINGS: Column = Column("settings");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[SETTINGS];
 }
 
 pub(crate) mod realms {
@@ -932,18 +1008,21 @@ pub(crate) const TABLES: &[(Table, &[Column])] = &[
     (authz_policies::TABLE, authz_policies::ALL),
     (client_assertions::TABLE, client_assertions::ALL),
     (client_mappers::TABLE, client_mappers::ALL),
+    (client_registrations::TABLE, client_registrations::ALL),
     (clients::TABLE, clients::ALL),
     (code_attempts::TABLE, code_attempts::ALL),
     (consents::TABLE, consents::ALL),
     (group_members::TABLE, group_members::ALL),
     (group_roles::TABLE, group_roles::ALL),
     (groups::TABLE, groups::ALL),
+    (initial_access_tokens::TABLE, initial_access_tokens::ALL),
     (known_browsers::TABLE, known_browsers::ALL),
     (login_failures::TABLE, login_failures::ALL),
     (password_credentials::TABLE, password_credentials::ALL),
     (person_roles::TABLE, person_roles::ALL),
     (persons::TABLE, persons::ALL),
     (realm_data_keys::TABLE, realm_data_keys::ALL),
+    (realm_settings::TABLE, realm_settings::ALL),
     (realms::TABLE, realms::ALL),
     (refresh_tokens::TABLE, refresh_tokens::ALL),
     (relation_guards::TABLE, relation_guards::ALL),

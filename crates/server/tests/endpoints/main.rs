@@ -12,6 +12,7 @@ mod health;
 mod introspect;
 mod keys;
 mod login;
+mod registration;
 mod roles;
 mod second_factor;
 mod token;

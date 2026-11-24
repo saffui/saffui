@@ -16,10 +16,23 @@ use crate::authz::capability::Capability;
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
 use crate::keys::rotate::list_active_algorithms;
-use crate::ports::crypto::{KeyMakingFailure, SealPlace, SignatureAlgorithm};
+use crate::ports::crypto::{
+    KeyCheckLane, KeyMakingFailure, KeyMakingGuard, SealPlace, SignatureAlgorithm,
+};
 use crate::ports::storage::{StorageError, UnitOfWork};
 use crate::secret::Secret;
-use crate::tenancy::TenantId;
+use crate::tenancy::{RealmId, TenantId};
+
+/// Who asks for a client to be checked, and so on whose share its keys are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClientChecker {
+    /// An administrator of a realm of this tenant, who proved who they are:
+    /// the share of the tenant, on the key makers of the node.
+    Administrator(TenantId),
+    /// The client itself, registering in this realm through the protocol:
+    /// the share of the realm, on a lane that takes no key maker.
+    Registration(RealmId),
+}
 
 /// A client to register. With redirect URIs it sends people through the
 /// authorization endpoint; without, it asks for tokens as itself.
@@ -91,11 +104,11 @@ fn check_assertion_algorithm(
 
 /// The key set a client is kept with: given inline, by a client that proves
 /// itself with a key and by no other. Each key is read by the rules, then
-/// checked by the signer for its algorithm, on the share of `tenant`.
-/// Nothing is read from storage.
+/// checked by the signer for its algorithm, on the share and the lane of
+/// whoever asks. Nothing is read from storage.
 async fn keep_client_keys(
     app: &App,
-    tenant: TenantId,
+    checker: ClientChecker,
     method: ClientAuthMethod,
     jwks: Option<&Value>,
     registered: Option<AssertionAlgorithm>,
@@ -118,12 +131,20 @@ async fn keep_client_keys(
             if !usable {
                 return Err(invalid());
             }
-            let Some(checking) = app.key_shares.take(tenant) else {
-                return Err(Failure::new(ErrorCode::KeyMakingBusy));
+            let busy = || Failure::new(ErrorCode::KeyMakingBusy);
+            let (lane, share): (KeyCheckLane, KeyMakingGuard) = match checker {
+                ClientChecker::Administrator(tenant) => (
+                    KeyCheckLane::KeyMakers,
+                    Box::new(app.key_shares.take(tenant).ok_or_else(busy)?),
+                ),
+                ClientChecker::Registration(realm) => (
+                    KeyCheckLane::Registration,
+                    Box::new(app.registration_key_shares.take(realm).ok_or_else(busy)?),
+                ),
             };
             match app
                 .signer
-                .check_client_keys(keys.clone(), Box::new(checking))
+                .check_client_keys(keys.clone(), lane, share)
                 .await
             {
                 Ok(true) => {}
@@ -213,21 +234,54 @@ pub struct CheckedClient<'a> {
     name: &'a str,
     method: ClientAuthMethod,
     jwks: Option<Value>,
+    checker: ClientChecker,
 }
 
-/// Checks a client to register in a realm of `tenant` as far as it can be
-/// checked without a unit of work. It runs before one opens: an RSA key
-/// costs a core for a while to check, and no connection waits in a
-/// transaction meanwhile.
+impl<'a> CheckedClient<'a> {
+    /// The keys the client will be kept with, as the rules wrote them.
+    #[must_use]
+    pub fn kept_keys(&self) -> Option<&Value> {
+        self.jwks.as_ref()
+    }
+
+    /// The client as checked, with the scopes its realm lets it have when it
+    /// is written, each checked as a scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorCode::ScopeInvalid`].
+    pub fn with_scopes<'b>(self, scopes: &'b [String]) -> Result<CheckedClient<'b>, Failure>
+    where
+        'a: 'b,
+    {
+        for scope in scopes {
+            check_scope_token(scope)?;
+        }
+        Ok(CheckedClient {
+            wanted: NewClient {
+                scopes,
+                ..self.wanted
+            },
+            name: self.name,
+            method: self.method,
+            jwks: self.jwks,
+            checker: self.checker,
+        })
+    }
+}
+
+/// Checks a client to register as far as it can be checked without a unit
+/// of work. It runs before one opens: an RSA key costs a core for a while
+/// to check, and no connection waits in a transaction meanwhile.
 ///
 /// # Errors
 ///
 /// Returns the code of what is refused, [`ErrorCode::KeyMakingBusy`] while
-/// `tenant` makes or checks other keys or every key maker is at work, or
-/// [`ErrorCode::CryptoUnavailable`].
+/// the share of `checker` makes or checks other keys or every place of its
+/// lane is at work, or [`ErrorCode::CryptoUnavailable`].
 pub async fn check_new_client<'a>(
     app: &App,
-    tenant: TenantId,
+    checker: ClientChecker,
     wanted: NewClient<'a>,
 ) -> Result<CheckedClient<'a>, Failure> {
     check_client_identifier(wanted.client_id)?;
@@ -271,13 +325,33 @@ pub async fn check_new_client<'a>(
     }
     let method = choose_auth_method(&wanted)?;
     check_assertion_algorithm(app, method, wanted.auth_signing_alg)?;
-    let jwks = keep_client_keys(app, tenant, method, wanted.jwks, wanted.auth_signing_alg).await?;
+    let jwks = keep_client_keys(app, checker, method, wanted.jwks, wanted.auth_signing_alg).await?;
     Ok(CheckedClient {
         wanted,
         name,
         method,
         jwks,
+        checker,
     })
+}
+
+/// Refuses an algorithm of identity tokens the realm has no active key of:
+/// a token is never signed in another algorithm than the one registered, so
+/// one the realm cannot sign in now is refused here, not at a sign-in.
+async fn check_id_token_algorithm(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    algorithm: Option<SignatureAlgorithm>,
+) -> Result<(), Failure> {
+    let Some(algorithm) = algorithm else {
+        return Ok(());
+    };
+    let keys = work.list_signing_keys().await?;
+    if list_active_algorithms(app.signer.as_ref(), &keys).contains(&algorithm) {
+        Ok(())
+    } else {
+        Err(Failure::new(ErrorCode::KeyAlgorithmUnavailable))
+    }
 }
 
 /// Registers a client checked by [`check_new_client`], and returns the
@@ -295,20 +369,26 @@ pub async fn register_client(
     work: &mut dyn UnitOfWork,
     checked: CheckedClient<'_>,
 ) -> Result<(Client, Option<Secret>), Failure> {
+    let (client, secret, created) = insert_checked_client(app, work, checked).await?;
+    record_event(app, work, EventKind::ClientCreated, created).await?;
+    Ok((client, secret))
+}
+
+/// As [`register_client`], and records no event: returns what the event of
+/// the creation says, for the caller to say it in its own.
+pub(crate) async fn insert_checked_client(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    checked: CheckedClient<'_>,
+) -> Result<(Client, Option<Secret>, Value), Failure> {
     let CheckedClient {
         wanted,
         name,
         method,
         jwks,
+        checker,
     } = checked;
-    // A token is never signed in another algorithm than the one registered:
-    // one the realm cannot sign in now is refused here, not at a sign-in.
-    if let Some(algorithm) = wanted.id_token_signed_response_alg {
-        let keys = work.list_signing_keys().await?;
-        if !list_active_algorithms(app.signer.as_ref(), &keys).contains(&algorithm) {
-            return Err(Failure::new(ErrorCode::KeyAlgorithmUnavailable));
-        }
-    }
+    check_id_token_algorithm(app, work, wanted.id_token_signed_response_alg).await?;
 
     let id = mint_id(app)?;
     let (secret, proof) = if method.keeps_secret() {
@@ -339,6 +419,7 @@ pub async fn register_client(
         capabilities: wanted.capabilities.to_vec(),
         id_token_signed_response_alg: wanted.id_token_signed_response_alg,
         enabled: true,
+        self_registered: matches!(checker, ClientChecker::Registration(_)),
         created_at: app.now(),
     };
     work.insert_client(&client, &proof)
@@ -368,8 +449,54 @@ pub async fn register_client(
     if let Some(algorithm) = client.id_token_signed_response_alg {
         created["id_token_signed_response_alg"] = json!(algorithm.name());
     }
-    record_event(app, work, EventKind::ClientCreated, created).await?;
-    Ok((client, secret))
+    Ok((client, secret, created))
+}
+
+/// Rewrites the client of the row `kept`, read and taken in `work`, with
+/// what [`check_new_client`] let through of its metadata, and returns it
+/// with the keys it is now kept with. Its identifier, its method, its
+/// secret, its grants and capabilities, whether it asks each person and
+/// whether it is enabled stay as they were kept: a client that would prove
+/// itself another way registers again.
+///
+/// # Errors
+///
+/// Returns [`ErrorCode::ClientMetadataInvalid`] for another method than
+/// kept, [`ErrorCode::KeyAlgorithmUnavailable`],
+/// [`ErrorCode::ClientNotFound`], or the storage failure.
+pub async fn rewrite_client(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    kept: Client,
+    checked: CheckedClient<'_>,
+) -> Result<(Client, Option<Value>), Failure> {
+    let CheckedClient {
+        wanted,
+        name,
+        method,
+        jwks,
+        ..
+    } = checked;
+    if method != kept.auth_method {
+        return Err(Failure::with_detail(
+            ErrorCode::ClientMetadataInvalid,
+            "token_endpoint_auth_method",
+        ));
+    }
+    check_id_token_algorithm(app, work, wanted.id_token_signed_response_alg).await?;
+    let client = Client {
+        name: name.to_owned(),
+        auth_signing_alg: wanted.auth_signing_alg,
+        redirect_uris: wanted.redirect_uris.to_vec(),
+        post_logout_redirect_uris: wanted.post_logout_redirect_uris.to_vec(),
+        scopes: wanted.scopes.to_vec(),
+        id_token_signed_response_alg: wanted.id_token_signed_response_alg,
+        ..kept
+    };
+    if !work.write_client_metadata(&client, jwks.as_ref()).await? {
+        return Err(Failure::new(ErrorCode::ClientNotFound));
+    }
+    Ok((client, jwks))
 }
 
 /// Registers a client that authenticates as itself, and returns the secret
@@ -385,7 +512,7 @@ pub async fn register_service_client(
 ) -> Result<(Client, Secret), Failure> {
     let checked = check_new_client(
         app,
-        work.scope().tenant(),
+        ClientChecker::Administrator(work.scope().tenant()),
         NewClient {
             client_id: wanted.client_id,
             name: wanted.name,

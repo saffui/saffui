@@ -1,28 +1,37 @@
-//! The authorization endpoint: the code flow, with PKCE.
+//! The authorization endpoint: the code flow with PKCE, and the implicit and
+//! hybrid flows a client declared.
 //!
 //! The order of the checks is the security of this file. Until the client
 //! and its redirect URI are trusted, a refusal is shown to the person and
 //! nothing is sent anywhere. Only after that may a refusal travel to the
-//! client, on the redirect URI it registered.
+//! client, on the redirect URI it registered, as its answer would have.
 
 use std::fmt::{self, Write as _};
 use std::net::IpAddr;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use serde_json::Value;
 use time::Duration;
 use uuid::Uuid;
 
 use super::code::{AuthorizationCode, PendingAuthorization, PendingKeyProof};
 use super::discovery::name_issuer;
 use super::errors::OAuthError;
+use super::implicit::{AnswerSubject, AuthorizationSigning, sign_at_authorization};
 use super::pkce::is_well_formed_challenge;
+use super::response::{
+    AuthorizationResponse, ResponseMode, ResponseType, choose_refusal_mode, choose_response_mode,
+};
 use super::token::OFFLINE_ACCESS_SCOPE;
 use crate::app::App;
+use crate::audit::EventKind;
+use crate::audit::append::record_event;
 use crate::clients::{
-    Client, check_scope_token, is_loopback_host, read_named_client, read_redirect_host,
+    Client, check_scope_token, is_loopback_host, is_on_origin, read_named_client,
+    read_redirect_host,
 };
-use crate::consent::{ConsentTerms, is_consent_owed};
+use crate::consent::{ConsentHold, ConsentTerms, is_consent_owed};
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
 use crate::login::device::DeviceMark;
@@ -55,6 +64,8 @@ pub struct AuthorizationParameters<'a> {
     pub nonce: Option<&'a str>,
     pub code_challenge: Option<&'a str>,
     pub code_challenge_method: Option<&'a str>,
+    /// How the answer travels: `query`, `fragment` or `form_post`.
+    pub response_mode: Option<&'a str>,
     /// `none`, `login`, `consent`, `select_account`, separated by spaces.
     pub prompt: Option<&'a str>,
     /// The longest time, in seconds, since the person last proved who they are.
@@ -70,8 +81,9 @@ pub struct AuthorizationParameters<'a> {
 }
 
 pub enum Authorization {
-    /// The person is signed in: the browser goes back to the client with a code.
-    Granted { location: String },
+    /// The person is signed in: the browser goes back to the client with
+    /// what it asked for.
+    Granted { response: AuthorizationResponse },
     /// The person must sign in. The request waits under this identifier, and
     /// only the browser that holds this secret can finish it.
     SignInRequired {
@@ -91,16 +103,16 @@ pub enum AuthorizationRefusal {
     /// Told to the person: the client or its redirect URI is not trusted.
     Shown(Failure),
     /// Sent to the client, on the redirect URI it registered.
-    Returned { location: String },
+    Returned { response: AuthorizationResponse },
 }
 
-// Written by hand: the location of a granted request carries the code.
+// Written by hand: the secret of a waiting request is not printed.
 impl fmt::Debug for Authorization {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Granted { .. } => formatter
+            Self::Granted { response } => formatter
                 .debug_struct("Granted")
-                .field("location", &"..")
+                .field("response", response)
                 .finish(),
             Self::SignInRequired { request, .. } => formatter
                 .debug_struct("SignInRequired")
@@ -127,6 +139,7 @@ impl fmt::Debug for AuthorizationParameters<'_> {
             .field("nonce", &self.nonce)
             .field("code_challenge", &self.code_challenge)
             .field("code_challenge_method", &self.code_challenge_method)
+            .field("response_mode", &self.response_mode)
             .field("prompt", &self.prompt)
             .field("max_age", &self.max_age)
             .field("id_token_hint", &self.id_token_hint.map(|_| ".."))
@@ -149,7 +162,10 @@ struct TrustedRequest {
     scopes: Vec<String>,
     state: Option<String>,
     nonce: Option<String>,
-    code_challenge: String,
+    response_type: ResponseType,
+    response_mode: ResponseMode,
+    /// None for a request that asks for no code.
+    code_challenge: Option<String>,
     /// How the person must have proved who they are for a session to serve.
     proof: ProofAsked,
 }
@@ -229,30 +245,52 @@ pub(super) fn write_query_value(location: &mut String, value: &str) {
     }
 }
 
-/// Builds the redirection back to the client. The issuer travels with every
-/// answer, so that a client talking to several providers knows who answered.
-pub(crate) fn write_return_location(
-    redirect_uri: &str,
-    issuer: &str,
-    state: Option<&str>,
-    answer: &[(&str, &str)],
-) -> String {
-    let mut location = redirect_uri.to_owned();
-    location.push(if redirect_uri.contains('?') { '&' } else { '?' });
-    for (name, value) in answer {
-        location.push_str(name);
-        location.push('=');
-        write_query_value(&mut location, value);
-        location.push('&');
+/// The scopes a request asks, each once and in its order. Nothing when one
+/// is not written as a scope, or is not one the client may be given.
+fn read_asked_scopes(asked: Option<&str>, client: &Client) -> Option<Vec<String>> {
+    let mut scopes = Vec::new();
+    for token in asked
+        .unwrap_or_default()
+        .split(' ')
+        .filter(|token| !token.is_empty())
+    {
+        if check_scope_token(token).is_err()
+            || !client.scopes.iter().any(|allowed| allowed == token)
+        {
+            return None;
+        }
+        if !scopes.iter().any(|known| known == token) {
+            scopes.push(token.to_owned());
+        }
     }
-    if let Some(state) = state {
-        location.push_str("state=");
-        write_query_value(&mut location, state);
-        location.push('&');
+    Some(scopes)
+}
+
+/// The redirect URI a request is answered on: one its client registered,
+/// compared by equality. Posted from this origin to its own host, a form
+/// carries the cookies of the person to whichever of its pages the address
+/// names, as if that page sent it: no page that posts there is served, a
+/// refusal included.
+fn trust_redirect_uri(
+    app: &App,
+    client: &Client,
+    parameters: AuthorizationParameters<'_>,
+) -> Result<String, Failure> {
+    let redirect_uri = parameters
+        .redirect_uri
+        .filter(|asked| {
+            client
+                .redirect_uris
+                .iter()
+                .any(|registered| registered == asked)
+        })
+        .ok_or(Failure::new(ErrorCode::RedirectUriMismatch))?;
+    let posted =
+        parameters.response_mode.and_then(ResponseMode::parse) == Some(ResponseMode::FormPost);
+    if posted && is_on_origin(redirect_uri, &app.settings.public_origin) {
+        return Err(Failure::new(ErrorCode::AnswerPostedToDeployment));
     }
-    location.push_str("iss=");
-    write_query_value(&mut location, issuer);
-    location
+    Ok(redirect_uri.to_owned())
 }
 
 async fn trust_request(
@@ -273,16 +311,7 @@ async fn trust_request(
         .map_err(Failure::from)?
         .filter(|client| client.enabled && client.allows_authorization_code)
         .ok_or(Failure::new(ErrorCode::ClientNotFound))?;
-    let redirect_uri = parameters
-        .redirect_uri
-        .filter(|asked| {
-            client
-                .redirect_uris
-                .iter()
-                .any(|registered| registered == asked)
-        })
-        .ok_or(Failure::new(ErrorCode::RedirectUriMismatch))?
-        .to_owned();
+    let redirect_uri = trust_redirect_uri(app, &client, parameters)?;
 
     let issuer = name_issuer(&app.settings, &realm);
     // Too long, or with a character no client writes on purpose: such a value
@@ -290,22 +319,55 @@ async fn trust_request(
     let unacceptable =
         |value: &str| value.len() > OPAQUE_VALUE_MAX_BYTES || value.chars().any(char::is_control);
     let state = parameters.state.filter(|state| !unacceptable(state));
+    let asked_type = parameters.response_type.and_then(ResponseType::read);
+    let declared = &client.response_types;
+    let refused_in = choose_refusal_mode(
+        parameters.response_mode,
+        asked_type,
+        declared,
+        &redirect_uri,
+    );
     let returned = |error: OAuthError| AuthorizationRefusal::Returned {
-        location: write_return_location(&redirect_uri, &issuer, state, &[("error", error.name())]),
+        response: AuthorizationResponse::write(
+            &redirect_uri,
+            refused_in,
+            &issuer,
+            state,
+            vec![("error", error.name().to_owned())],
+        ),
     };
 
     if parameters.state.is_some_and(unacceptable) || parameters.nonce.is_some_and(unacceptable) {
         return Err(returned(OAuthError::InvalidRequest));
     }
-    if parameters.response_type != Some("code") {
-        return Err(returned(OAuthError::UnsupportedResponseType));
+    let response_type = asked_type.ok_or_else(|| returned(OAuthError::UnsupportedResponseType))?;
+    // Declared one by one: a client is handed back nothing it was not given.
+    if !declared.contains(&response_type) {
+        return Err(returned(OAuthError::UnauthorizedClient));
     }
-    let challenge = parameters
-        .code_challenge
-        .filter(|challenge| is_well_formed_challenge(challenge));
-    let (Some(code_challenge), Some("S256")) = (challenge, parameters.code_challenge_method) else {
-        return Err(returned(OAuthError::InvalidRequest));
+    let response_mode = choose_response_mode(
+        parameters.response_mode,
+        response_type,
+        declared,
+        &redirect_uri,
+    )
+    .map_err(returned)?;
+    let code_challenge = if response_type.issues_code() {
+        let challenge = parameters
+            .code_challenge
+            .filter(|challenge| is_well_formed_challenge(challenge));
+        let (Some(challenge), Some("S256")) = (challenge, parameters.code_challenge_method) else {
+            return Err(returned(OAuthError::InvalidRequest));
+        };
+        Some(challenge.to_owned())
+    } else {
+        None
     };
+    // Nothing else binds an identity token signed here to the request that
+    // asked for it (OpenID Connect Core 1.0, sections 3.2.2.1 and 3.3.2.11).
+    if response_type.issues_id_token() && parameters.nonce.is_none_or(str::is_empty) {
+        return Err(returned(OAuthError::InvalidRequest));
+    }
     let mut proof = read_proof_asked(parameters.prompt, parameters.max_age)
         .ok_or_else(|| returned(OAuthError::InvalidRequest))?;
     // Sent back to this machine, a public client is whatever listens there
@@ -315,21 +377,15 @@ async fn trust_request(
     if client.is_public() && (return_host.is_empty() || is_loopback_host(return_host)) {
         proof.consent = true;
     }
-    let mut scopes = Vec::new();
-    for token in parameters
-        .scope
-        .unwrap_or_default()
-        .split(' ')
-        .filter(|token| !token.is_empty())
-    {
-        if check_scope_token(token).is_err()
-            || !client.scopes.iter().any(|allowed| allowed == token)
-        {
-            return Err(returned(OAuthError::InvalidScope));
-        }
-        if !scopes.iter().any(|known| known == token) {
-            scopes.push(token.to_owned());
-        }
+    let mut scopes = read_asked_scopes(parameters.scope, &client)
+        .ok_or_else(|| returned(OAuthError::InvalidScope))?;
+    // An identity token answers a request of OpenID Connect, and only that.
+    if response_type.issues_id_token() && !scopes.iter().any(|scope| scope == "openid") {
+        return Err(returned(OAuthError::InvalidRequest));
+    }
+    // Without a code nothing is ever refreshed: no grant offline is asked.
+    if !response_type.issues_code() {
+        scopes.retain(|scope| scope != OFFLINE_ACCESS_SCOPE);
     }
     Ok(TrustedRequest {
         realm,
@@ -338,30 +394,41 @@ async fn trust_request(
         scopes,
         state: state.map(str::to_owned),
         nonce: parameters.nonce.map(str::to_owned),
-        code_challenge: code_challenge.to_owned(),
+        response_type,
+        response_mode,
+        code_challenge,
         proof,
     })
 }
 
-pub(crate) struct CodeGrant<'a> {
+pub(crate) struct AnswerGrant<'a> {
     pub(crate) realm: &'a RealmName,
-    pub(crate) client_id: &'a str,
+    pub(crate) subject: AnswerSubject<'a>,
     pub(crate) redirect_uri: &'a str,
     pub(crate) scopes: &'a [String],
     pub(crate) state: Option<&'a str>,
     pub(crate) nonce: Option<&'a str>,
-    pub(crate) code_challenge: &'a str,
-    pub(crate) person: Uuid,
-    pub(crate) session: Uuid,
+    pub(crate) response_type: ResponseType,
+    pub(crate) response_mode: ResponseMode,
+    pub(crate) code_challenge: Option<&'a str>,
     pub(crate) authenticated_at: time::OffsetDateTime,
 }
 
-/// Mints a code, keeps its digest, and returns where to send the browser.
-pub(crate) async fn issue_code(
+/// The answer to a request, and what the chain is to say of what it signed.
+pub(crate) struct IssuedAnswer {
+    pub(crate) response: AuthorizationResponse,
+    pub(crate) told: Option<Value>,
+}
+
+/// Mints a code, keeps its digest, and returns it.
+async fn issue_code(
     app: &App,
     work: &mut dyn UnitOfWork,
-    grant: CodeGrant<'_>,
+    grant: &AnswerGrant<'_>,
 ) -> Result<String, Failure> {
+    let code_challenge = grant
+        .code_challenge
+        .ok_or(Failure::new(ErrorCode::Internal))?;
     let mut random = [0_u8; 32];
     app.random
         .fill(&mut random)
@@ -369,24 +436,75 @@ pub(crate) async fn issue_code(
     let code = URL_SAFE_NO_PAD.encode(random);
     work.insert_authorization_code(&AuthorizationCode {
         code_digest: app.digester.sha256(code.as_bytes()).to_vec(),
-        client_id: grant.client_id.to_owned(),
-        person: grant.person,
-        session: grant.session,
+        client_id: grant.subject.client_id().to_owned(),
+        person: grant.subject.person(),
+        session: grant.subject.session(),
         redirect_uri: grant.redirect_uri.to_owned(),
         scopes: grant.scopes.to_vec(),
         nonce: grant.nonce.map(str::to_owned),
-        code_challenge: grant.code_challenge.to_owned(),
+        code_challenge: code_challenge.to_owned(),
         authenticated_at: grant.authenticated_at,
         expires_at: app.now() + CODE_LIFETIME,
     })
     .await?;
+    Ok(code)
+}
+
+/// Issues what the request asked for: a code, the tokens signed here, or
+/// both, the code first since the identity token may bind it. Records
+/// nothing: the caller says in the chain what was signed, last.
+pub(crate) async fn issue_answer(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    grant: AnswerGrant<'_>,
+) -> Result<IssuedAnswer, Failure> {
     let issuer = name_issuer(&app.settings, grant.realm);
-    Ok(write_return_location(
+    let code = if grant.response_type.issues_code() {
+        Some(issue_code(app, work, &grant).await?)
+    } else {
+        None
+    };
+    let mut answer: Vec<(&'static str, String)> =
+        code.iter().map(|code| ("code", code.clone())).collect();
+    let mut told = None;
+    if grant.response_type.issues_token() {
+        let signed = sign_at_authorization(
+            app,
+            work,
+            AuthorizationSigning {
+                issuer: &issuer,
+                subject: grant.subject,
+                scopes: grant.scopes,
+                nonce: grant.nonce,
+                response_type: grant.response_type,
+                code: code.as_deref(),
+            },
+        )
+        .await?;
+        answer.extend(signed.parameters);
+        told = Some(signed.told);
+    }
+    let response = AuthorizationResponse::write(
         grant.redirect_uri,
+        grant.response_mode,
         &issuer,
         grant.state,
-        &[("code", &code)],
-    ))
+        answer,
+    );
+    Ok(IssuedAnswer { response, told })
+}
+
+/// Says in the chain what an answer signed, if it signed anything. Called
+/// last: the head of the chain stays locked from the event to the commit.
+pub(crate) async fn record_signed_answer(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    told: Option<Value>,
+) -> Result<(), Failure> {
+    match told {
+        Some(told) => record_event(app, work, EventKind::TokenIssued, told).await,
+        None => Ok(()),
+    }
 }
 
 /// A hint names the person the client expects. The session of someone else
@@ -407,14 +525,7 @@ async fn hold_session_to_hint(
         .filter(|named| named.client_id == trusted.client.client_id)
         .and_then(|named| Uuid::parse_str(&named.subject).ok());
     let Some(expected) = expected else {
-        return Err(AuthorizationRefusal::Returned {
-            location: write_return_location(
-                &trusted.redirect_uri,
-                issuer,
-                trusted.state.as_deref(),
-                &[("error", OAuthError::InvalidRequest.name())],
-            ),
-        });
+        return Err(tell_client(trusted, issuer, OAuthError::InvalidRequest));
     };
     Ok((
         session.filter(|session| session.person == expected),
@@ -422,22 +533,32 @@ async fn hold_session_to_hint(
     ))
 }
 
-/// Whether `person` must allow the client before it gets a code, read in the
-/// unit of work that would issue it. What they allowed is read only where it
-/// decides: for a client that requires consent, unless it asked again.
+/// Whether `person` must allow the client before it gets an answer of
+/// `response_type`, read in the unit of work that would issue it. What they
+/// allowed is read only where it decides: for a client that requires
+/// consent, unless it asked again. It is held until the commit when the
+/// answer signs tokens here: a withdrawal waits, and nothing reads it again.
 async fn is_consent_owed_by(
     work: &mut dyn UnitOfWork,
     client: &Client,
     prompted: bool,
     person: Uuid,
     scopes: &[String],
+    response_type: ResponseType,
 ) -> Result<bool, Failure> {
-    let allowed = if client.requires_consent && !prompted {
-        work.read_consent(person, &client.client_id)
+    let allowed = match (
+        client.requires_consent && !prompted,
+        response_type.issues_token(),
+    ) {
+        (false, _) => None,
+        (true, true) => {
+            work.hold_consent(person, &client.client_id, ConsentHold::Shared)
+                .await?
+        }
+        (true, false) => work
+            .read_consent(person, &client.client_id)
             .await?
-            .map(|held| held.scopes)
-    } else {
-        None
+            .map(|held| held.scopes),
     };
     let terms = ConsentTerms {
         requires_consent: client.requires_consent,
@@ -468,6 +589,8 @@ async fn keep_pending_authorization(
         scopes: trusted.scopes,
         state: trusted.state,
         nonce: trusted.nonce,
+        response_type: trusted.response_type,
+        response_mode: trusted.response_mode,
         code_challenge: trusted.code_challenge,
         expires_at: app.now() + PENDING_LIFETIME,
         expected_person,
@@ -513,17 +636,56 @@ async fn leave_request_waiting(
     Ok((request, Secret::new(browser_secret)))
 }
 
-/// Sends the client back the error of a request it got right: no page was
-/// allowed, and one was needed.
+/// Sends the client back the error of a request it got right, as its
+/// answer would have gone.
 fn tell_client(trusted: &TrustedRequest, issuer: &str, error: OAuthError) -> AuthorizationRefusal {
     AuthorizationRefusal::Returned {
-        location: write_return_location(
+        response: AuthorizationResponse::write(
             &trusted.redirect_uri,
+            trusted.response_mode,
             issuer,
             trusted.state.as_deref(),
-            &[("error", error.name())],
+            vec![("error", error.name().to_owned())],
         ),
     }
+}
+
+/// Answers a request that a session answers without a page, and commits.
+/// The client, the session and the consent were read in the unit of work
+/// it answers in.
+async fn answer_with_session(
+    app: &App,
+    work_slot: &mut Option<Box<dyn UnitOfWork>>,
+    trusted: &TrustedRequest,
+    session: &Session,
+) -> Result<Authorization, Failure> {
+    let mut work = work_slot.take().ok_or(Failure::new(ErrorCode::Internal))?;
+    let scopes = leave_out_offline_access(&trusted.scopes);
+    let answered = issue_answer(
+        app,
+        work.as_mut(),
+        AnswerGrant {
+            realm: &trusted.realm,
+            subject: AnswerSubject::Read {
+                client: &trusted.client,
+                session,
+            },
+            redirect_uri: &trusted.redirect_uri,
+            scopes: &scopes,
+            state: trusted.state.as_deref(),
+            nonce: trusted.nonce.as_deref(),
+            response_type: trusted.response_type,
+            response_mode: trusted.response_mode,
+            code_challenge: trusted.code_challenge.as_deref(),
+            authenticated_at: session.authenticated_at,
+        },
+    )
+    .await?;
+    record_signed_answer(app, work.as_mut(), answered.told).await?;
+    work.commit().await?;
+    Ok(Authorization::Granted {
+        response: answered.response,
+    })
 }
 
 /// Handles a request to the authorization endpoint.
@@ -579,6 +741,7 @@ pub async fn begin_authorization(
             trusted.proof.consent,
             session.person,
             &trusted.scopes,
+            trusted.response_type,
         )
         .await?;
         // A session alone gives no code to a client the person must allow:
@@ -602,31 +765,7 @@ pub async fn begin_authorization(
                 browser_secret,
             });
         }
-        let scopes = leave_out_offline_access(&trusted.scopes);
-        let location = issue_code(
-            app,
-            work.as_mut(),
-            CodeGrant {
-                realm: &trusted.realm,
-                client_id: &trusted.client.client_id,
-                redirect_uri: &trusted.redirect_uri,
-                scopes: &scopes,
-                state: trusted.state.as_deref(),
-                nonce: trusted.nonce.as_deref(),
-                code_challenge: &trusted.code_challenge,
-                person: session.person,
-                session: session.id,
-                authenticated_at: session.authenticated_at,
-            },
-        )
-        .await?;
-        work_slot
-            .take()
-            .ok_or(Failure::new(ErrorCode::Internal))?
-            .commit()
-            .await
-            .map_err(Failure::from)?;
-        return Ok(Authorization::Granted { location });
+        return Ok(answer_with_session(app, &mut work_slot, &trusted, &session).await?);
     }
 
     let (request, browser_secret) = leave_request_waiting(
@@ -646,8 +785,8 @@ pub async fn begin_authorization(
 
 /// A person signed in on the login page of a pending request.
 pub struct SignedInForRequest {
-    /// Where the browser goes next: back to the client, with a code.
-    pub location: String,
+    /// Where the browser goes next: back to the client, with what it asked.
+    pub response: AuthorizationResponse,
     pub ticket: SessionTicket,
     /// What the browser keeps, to be counted apart at its next sign-in.
     pub device_mark: DeviceMark,
@@ -675,12 +814,12 @@ pub struct TypedSignIn<'a> {
     pub known_browsers: &'a [DeviceMark],
 }
 
-// Written by hand: the location carries the code.
+// Written by hand: the mark of the browser is not printed.
 impl fmt::Debug for SignedInForRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("SignedInForRequest")
-            .field("location", &"..")
+            .field("response", &self.response)
             .field("ticket", &self.ticket)
             .field("device_mark", &"..")
             .finish()
@@ -820,7 +959,29 @@ pub async fn finish_sign_in(
         Ok(signed_in) => signed_in,
         Err(owed) => return Ok(SignInStep::SecondFactorRequired(owed)),
     };
+    let session = signed_in.session;
+    match answer_signed_in(app, &realm, scope, &pending, signed_in).await {
+        Ok(step) => Ok(step),
+        // Whatever failed, its unit is gone with the call: the session opened
+        // for nothing ends in a unit of its own, and the refusal is told.
+        Err(refused) => {
+            end_orphan_session(app, scope, session).await;
+            Err(refused)
+        }
+    }
+}
 
+/// Answers a pending request for the person who just signed in for it, in
+/// one unit of work: the consent they owe first, or what the client asked.
+async fn answer_signed_in(
+    app: &App,
+    realm: &RealmName,
+    scope: RealmScope,
+    pending: &PendingAuthorization,
+    signed_in: SignedIn,
+) -> Result<SignInStep, Failure> {
+    let request = pending.id;
+    let expired = || Failure::new(ErrorCode::AuthorizationRequestExpired);
     let mut work = app.storage.begin(scope).await?;
     // Someone else than the person a hint named is sent back below, and is
     // asked nothing.
@@ -828,15 +989,14 @@ pub async fn finish_sign_in(
         .expected_person
         .is_some_and(|expected| expected != signed_in.person.id);
     if !hinted_at_another
-        && is_consent_owed_after_sign_in(work.as_mut(), &pending, signed_in.person.id).await?
+        && is_consent_owed_after_sign_in(work.as_mut(), pending, signed_in.person.id).await?
     {
         // Marked once: of two submissions of one page, the other signed in
-        // for nothing, and its session ends here.
+        // for nothing.
         if !work
             .mark_consent_owed(request, signed_in.session, app.now())
             .await?
         {
-            end_orphan_session(app, work, signed_in.session).await?;
             return Err(expired());
         }
         work.commit().await?;
@@ -847,9 +1007,8 @@ pub async fn finish_sign_in(
         }));
     }
     // Taken, not read: of two submissions of one page, one finishes the
-    // request. The other signed in for nothing, and its session ends here.
+    // request. The other signed in for nothing.
     let Some(pending) = work.take_pending_authorization(request, app.now()).await? else {
-        end_orphan_session(app, work, signed_in.session).await?;
         return Err(expired());
     };
     // The person a hint named is the one the client waits for: anyone else
@@ -859,39 +1018,45 @@ pub async fn finish_sign_in(
         .is_some_and(|expected| expected != signed_in.person.id)
     {
         work.commit().await?;
-        let issuer = name_issuer(&app.settings, &realm);
+        let issuer = name_issuer(&app.settings, realm);
         return Ok(SignInStep::Finished(SignedInForRequest {
-            location: write_return_location(
+            response: AuthorizationResponse::write(
                 &pending.redirect_uri,
+                pending.response_mode,
                 &issuer,
                 pending.state.as_deref(),
-                &[("error", OAuthError::LoginRequired.name())],
+                vec![("error", OAuthError::LoginRequired.name().to_owned())],
             ),
             ticket: signed_in.ticket,
             device_mark: signed_in.device_mark,
         }));
     }
     let scopes = leave_out_offline_access(&pending.scopes);
-    let location = issue_code(
+    let issued = issue_answer(
         app,
         work.as_mut(),
-        CodeGrant {
-            realm: &realm,
-            client_id: &pending.client_id,
+        AnswerGrant {
+            realm,
+            subject: AnswerSubject::Named {
+                client_id: &pending.client_id,
+                session: signed_in.session,
+                person: signed_in.person.id,
+            },
             redirect_uri: &pending.redirect_uri,
             scopes: &scopes,
             state: pending.state.as_deref(),
             nonce: pending.nonce.as_deref(),
-            code_challenge: &pending.code_challenge,
-            person: signed_in.person.id,
-            session: signed_in.session,
+            response_type: pending.response_type,
+            response_mode: pending.response_mode,
+            code_challenge: pending.code_challenge.as_deref(),
             authenticated_at: app.now(),
         },
     )
     .await?;
+    record_signed_answer(app, work.as_mut(), issued.told).await?;
     work.commit().await?;
     Ok(SignInStep::Finished(SignedInForRequest {
-        location,
+        response: issued.response,
         ticket: signed_in.ticket,
         device_mark: signed_in.device_mark,
     }))
@@ -916,17 +1081,28 @@ async fn is_consent_owed_after_sign_in(
     Ok(is_consent_owed(&terms, false, &pending.scopes))
 }
 
-/// Ends the session of a submission that lost its request to another.
-async fn end_orphan_session(
-    app: &App,
-    mut work: Box<dyn UnitOfWork>,
-    session: Uuid,
-) -> Result<(), Failure> {
-    if let Some(orphan) = work.read_session(session).await? {
-        close_session(app, work.as_mut(), &orphan.session).await?;
-        work.commit().await?;
+/// Ends the session of a submission that lost its request to another, or
+/// whose request was answered nothing. A failure goes to the journal and no
+/// further: the caller tells its own refusal, and the session ends when it
+/// expires.
+async fn end_orphan_session(app: &App, scope: RealmScope, session: Uuid) {
+    let ended = async {
+        let mut work = app.storage.begin(scope).await?;
+        if let Some(orphan) = work.read_session(session).await? {
+            close_session(app, work.as_mut(), &orphan.session).await?;
+            work.commit().await?;
+        }
+        Ok::<(), Failure>(())
     }
-    Ok(())
+    .await;
+    if let Err(failure) = ended {
+        tracing::error!(
+            code = failure.code.slug(),
+            detail = failure.detail.as_deref(),
+            %session,
+            "a session opened for a request answered nothing stays open until it expires"
+        );
+    }
 }
 
 /// Tells what a pending request still asks of the browser that started it,
@@ -1011,6 +1187,7 @@ mod tests {
             nonce: Some("n-0S6_WzA2Mj"),
             code_challenge: Some(challenge),
             code_challenge_method: Some("S256"),
+            response_mode: None,
             prompt: None,
             max_age: None,
             id_token_hint: None,
@@ -1081,7 +1258,10 @@ mod tests {
         .expect("a signed-in person")
         .into_finished()
         .expect("a person who owes no code");
-        (signed_in.location, signed_in.ticket)
+        (
+            signed_in.response.write_location().expect("an address"),
+            signed_in.ticket,
+        )
     }
 
     fn exchange(
@@ -1382,7 +1562,8 @@ mod tests {
         let returned = |parameters: AuthorizationParameters<'_>| match complete(
             begin_authorization(&app, "acme", parameters, None),
         ) {
-            Err(AuthorizationRefusal::Returned { location }) => {
+            Err(AuthorizationRefusal::Returned { response }) => {
+                let location = response.write_location().expect("an address");
                 assert!(
                     location.starts_with(&format!("{CALLBACK}?error=")),
                     "{location}"
@@ -1565,9 +1746,10 @@ mod tests {
                 ..ask(&challenge)
             };
             let returned = complete(begin_authorization(&app, "acme", parameters, None));
-            let Err(AuthorizationRefusal::Returned { location }) = returned else {
+            let Err(AuthorizationRefusal::Returned { response }) = returned else {
                 panic!("a trusted client gets its error back: {returned:?}");
             };
+            let location = response.write_location().expect("an address");
             assert_eq!(
                 read_query(&location, "error").as_deref(),
                 Some("invalid_request")
@@ -1759,7 +1941,8 @@ mod tests {
                 Ok(Authorization::Granted { .. }) => "granted".to_owned(),
                 Ok(Authorization::SignInRequired { .. }) => "sign in".to_owned(),
                 Ok(Authorization::ConsentRequired { .. }) => "consent".to_owned(),
-                Err(AuthorizationRefusal::Returned { location }) => {
+                Err(AuthorizationRefusal::Returned { response }) => {
+                    let location = response.write_location().expect("an address");
                     read_query(&location, "error").expect("an error")
                 }
                 Err(AuthorizationRefusal::Shown(failure)) => panic!("shown: {failure:?}"),
@@ -1817,7 +2000,8 @@ mod tests {
                 Ok(Authorization::Granted { .. }) => "granted".to_owned(),
                 Ok(Authorization::SignInRequired { .. }) => "sign in".to_owned(),
                 Ok(Authorization::ConsentRequired { .. }) => "consent".to_owned(),
-                Err(AuthorizationRefusal::Returned { location }) => {
+                Err(AuthorizationRefusal::Returned { response }) => {
+                    let location = response.write_location().expect("an address");
                     read_query(&location, "error").expect("an error")
                 }
                 Err(AuthorizationRefusal::Shown(failure)) => panic!("shown: {failure:?}"),
@@ -1894,7 +2078,9 @@ mod tests {
             .expect("a signed-in person")
             .into_finished()
             .expect("a person who owes no code")
-            .location
+            .response
+            .write_location()
+            .expect("an address")
         };
 
         let of_bob = sign_in_with_hint("bob");
@@ -1940,9 +2126,10 @@ mod tests {
 
         let refused = complete(begin_authorization(&app, "acme", parameters, Some(&ticket)));
 
-        let Err(AuthorizationRefusal::Returned { location }) = refused else {
+        let Err(AuthorizationRefusal::Returned { response }) = refused else {
             panic!("returned to the client: {refused:?}");
         };
+        let location = response.write_location().expect("an address");
         assert!(location.starts_with(other_callback), "{location}");
         assert_eq!(
             read_query(&location, "error").as_deref(),
@@ -1968,9 +2155,10 @@ mod tests {
                 ..ask(&challenge)
             };
             let returned = complete(begin_authorization(&app, "acme", parameters, None));
-            let Err(AuthorizationRefusal::Returned { location }) = returned else {
+            let Err(AuthorizationRefusal::Returned { response }) = returned else {
                 panic!("returned to the client: {returned:?}");
             };
+            let location = response.write_location().expect("an address");
             assert_eq!(
                 read_query(&location, "error").as_deref(),
                 Some("invalid_request"),
@@ -2058,7 +2246,11 @@ mod tests {
             .expect("a finished request");
         assert_eq!(opened(&scenario), opened_before + 1);
 
-        let code = read_query(&finished.location, "code").expect("a code");
+        let code = read_query(
+            &finished.response.write_location().expect("an address"),
+            "code",
+        )
+        .expect("a code");
         let request = TokenRequest {
             grant_type: Some("authorization_code"),
             client_id: Some("webapp"),
@@ -2152,7 +2344,11 @@ mod tests {
         .into_finished()
         .expect("a finished request");
 
-        let code = read_query(&finished.location, "code").expect("a code");
+        let code = read_query(
+            &finished.response.write_location().expect("an address"),
+            "code",
+        )
+        .expect("a code");
         let request = TokenRequest {
             grant_type: Some("authorization_code"),
             client_id: Some("webapp"),
@@ -2176,7 +2372,8 @@ mod tests {
             Ok(Authorization::Granted { .. }) => "granted".to_owned(),
             Ok(Authorization::SignInRequired { .. }) => "sign in".to_owned(),
             Ok(Authorization::ConsentRequired { .. }) => "consent".to_owned(),
-            Err(AuthorizationRefusal::Returned { location }) => {
+            Err(AuthorizationRefusal::Returned { response }) => {
+                let location = response.write_location().expect("an address");
                 read_query(&location, "error").expect("an error")
             }
             Err(AuthorizationRefusal::Shown(failure)) => panic!("shown: {failure:?}"),
@@ -2318,9 +2515,10 @@ mod tests {
             silent,
             Some(&signed_in.ticket),
         ));
-        let Ok(Authorization::Granted { location }) = answered else {
+        let Ok(Authorization::Granted { response }) = answered else {
             panic!("a session answers at once: {answered:?}");
         };
+        let location = response.write_location().expect("an address");
         assert_eq!(granted_scope(&location), "openid");
 
         scenario.register_partner();
@@ -2335,8 +2533,15 @@ mod tests {
         use crate::testkit::fixtures::check_and_register_client;
 
         const LOOPBACK: &str = "http://127.0.0.1:8400/callback";
+        const WRITTEN_OTHERWISE: [&str; 4] = [
+            "https://127.0.0.2:8443/cb",
+            "https://[0:0:0:0:0:0:0:1]/cb",
+            "https://localhost./cb",
+            "https://app.localhost/cb",
+        ];
         let scenario = Scenario::start();
-        let callbacks = [LOOPBACK.to_owned(), CALLBACK.to_owned()];
+        let mut callbacks = vec![LOOPBACK.to_owned(), CALLBACK.to_owned()];
+        callbacks.extend(WRITTEN_OTHERWISE.map(str::to_owned));
         let scopes = ["openid".to_owned()];
         let native = |client_id, public| NewClient {
             client_id,
@@ -2345,6 +2550,7 @@ mod tests {
             capabilities: &[],
             redirect_uris: &callbacks,
             post_logout_redirect_uris: &[],
+            response_types: &[],
             public,
             requires_consent: true,
             id_token_signed_response_alg: None,
@@ -2393,6 +2599,13 @@ mod tests {
             "consent_required",
             "whatever listens on this machine is not known by its address"
         );
+        for redirect_uri in WRITTEN_OTHERWISE {
+            assert_eq!(
+                ask_as("native", redirect_uri, Some("none")),
+                "consent_required",
+                "this machine, however it is written: {redirect_uri}"
+            );
+        }
         assert_eq!(ask_as("native", LOOPBACK, None), "consent");
         assert_eq!(
             ask_as("native-secret", LOOPBACK, Some("none")),
@@ -2424,6 +2637,7 @@ mod tests {
                 KEPT_BEFORE.to_owned(),
                 NAMED_IN_CAPITALS.to_owned(),
             ],
+            response_types: vec![crate::oidc::response::ResponseType::Code],
             post_logout_redirect_uris: Vec::new(),
             requires_consent: true,
             scopes: vec!["openid".to_owned()],
@@ -2473,6 +2687,40 @@ mod tests {
             ask_silently(NAMED_IN_CAPITALS),
             "consent_required",
             "this machine, however its name is written"
+        );
+    }
+
+    #[test]
+    fn an_answer_to_an_address_of_this_deployment_travels_in_the_address_and_is_never_posted() {
+        const PORTAL: &str = "https://id.example.test/portal/callback";
+        let (app, _storage) = MemoryStorage::wire();
+        let scope = complete(create_realm(&app, "acme"));
+        complete(create_application(&app, scope, "webapp", PORTAL, false));
+        let challenge = challenge();
+        let ask_in = |response_mode| {
+            let parameters = AuthorizationParameters {
+                redirect_uri: Some(PORTAL),
+                response_mode,
+                ..ask(&challenge)
+            };
+            complete(begin_authorization(&app, "acme", parameters, None))
+        };
+
+        for response_mode in [None, Some("query")] {
+            let begun = ask_in(response_mode);
+            assert!(
+                matches!(begun, Ok(Authorization::SignInRequired { .. })),
+                "{response_mode:?}: {begun:?}"
+            );
+        }
+        let posted = ask_in(Some("form_post"));
+        assert!(
+            matches!(
+                &posted,
+                Err(AuthorizationRefusal::Shown(failure))
+                    if failure.code == ErrorCode::AnswerPostedToDeployment
+            ),
+            "shown, with a code of its own: {posted:?}"
         );
     }
 }

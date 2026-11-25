@@ -13,9 +13,9 @@ use super::refresh::{end_grant, rotate_refresh_token};
 use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
-use crate::claims::ClaimTarget;
 use crate::claims::gather::gather_claim_inputs;
-use crate::claims::rules::{ClaimGrant, write_claims};
+use crate::claims::rules::{ClaimGrant, WrittenClaims, write_claims};
+use crate::claims::{ClaimInputs, ClaimTarget};
 use crate::clients::authenticate::{
     PresentedProof, PresentedSecret, identify_client, read_client_proof,
 };
@@ -29,11 +29,11 @@ use crate::ports::crypto::SignatureAlgorithm;
 use crate::ports::storage::UnitOfWork;
 use crate::tenancy::RealmScope;
 use crate::tenancy::resolve::resolve_realm;
-use crate::tokens::DEFAULT_ALGORITHM;
 use crate::tokens::mint::{
     AccessTokenSubject, IdentityTokenSubject, RefreshGrant, issue_refresh_token, mint_access_token,
     mint_identity_token, open_minting_key, open_minting_keys,
 };
+use crate::tokens::{DEFAULT_ALGORITHM, IssuedAccessToken};
 
 /// The scope by which a client asks to act while the person is away.
 pub const OFFLINE_ACCESS_SCOPE: &str = "offline_access";
@@ -322,7 +322,7 @@ async fn exchange_code(
 /// nothing to hold. An exchange that opens an offline grant holds it alone:
 /// two of them for one person take turns, and the second counts the grant of
 /// the first against the bound. Answers whether every scope was allowed.
-async fn hold_consent_for(
+pub(super) async fn hold_consent_for(
     work: &mut dyn UnitOfWork,
     client: &Client,
     person: Uuid,
@@ -426,69 +426,169 @@ pub(super) async fn answer_for_person(
     work: &mut dyn UnitOfWork,
     granted: Granted<'_>,
 ) -> Result<TokenResponse, Failure> {
-    let subject = granted.person.id.to_string();
-    // Read each time a token is made, a refresh included: a role taken away
-    // or an attribute changed is gone from the next token.
-    let grant = ClaimGrant {
-        person: Some(granted.person),
-        client_id: granted.client_id,
-        scopes: granted.scopes,
-    };
     let says_identity = granted.scopes.iter().any(|scope| scope == "openid");
-    let targets: &[ClaimTarget] = if says_identity {
-        &[ClaimTarget::AccessToken, ClaimTarget::IdToken]
-    } else {
-        &[ClaimTarget::AccessToken]
-    };
-    let inputs = gather_claim_inputs(work, &grant, targets, app.now()).await?;
-    let for_access = write_claims(ClaimTarget::AccessToken, &grant, &inputs)?;
-    // Signed in the algorithm the client registered, and in no other.
-    let identity_algorithm = if says_identity {
-        granted.id_token_algorithm
-    } else {
-        DEFAULT_ALGORITHM
-    };
-    let (key, identity_key) =
-        open_minting_keys(app, work, DEFAULT_ALGORITHM, identity_algorithm).await?;
-    let minted = mint_access_token(
+    let signed = sign_for_person(
         app,
-        &key,
-        AccessTokenSubject {
+        work,
+        PersonTokens {
             issuer: granted.issuer,
-            subject: &subject,
             client_id: granted.client_id,
-            scopes: granted.scopes,
-            session: Some(granted.session),
-            claims: Some(&for_access),
-        },
-    )?;
-    let id_token = if says_identity {
-        let for_identity = write_claims(ClaimTarget::IdToken, &grant, &inputs)?;
-        let identity = IdentityTokenSubject {
-            issuer: granted.issuer,
-            person: granted.person,
-            client_id: granted.client_id,
-            claims: &for_identity,
-            nonce: granted.nonce,
             session: granted.session,
-        };
-        Some(mint_identity_token(
-            app,
-            identity_key.as_ref().unwrap_or(&key),
-            identity,
-        )?)
-    } else {
-        None
-    };
+            person: granted.person,
+            scopes: granted.scopes,
+            nonce: granted.nonce,
+            id_token_algorithm: granted.id_token_algorithm,
+            signed: if says_identity {
+                Signed::AccessAndIdentity
+            } else {
+                Signed::Access
+            },
+            code: None,
+        },
+    )
+    .await?;
+    let minted = signed.access.ok_or(Failure::new(ErrorCode::Internal))?;
     let refresh_token = issue_refresh_token(app, work, granted.family).await?;
     Ok(TokenResponse {
         access_token: minted.token,
         token_type: "Bearer",
         expires_in: minted.expires_in,
         scope: minted.scope,
-        id_token,
+        id_token: signed.identity,
         refresh_token: Some(refresh_token),
     })
+}
+
+/// Which tokens one answer signs for a person.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Signed {
+    Access,
+    /// An identity token alone, from the authorization endpoint: it says
+    /// what the scopes name, as nothing else will (OpenID Connect Core, 5.4).
+    Identity,
+    /// An identity token beside a code, from the authorization endpoint: it
+    /// binds the code, and says who signed in and how, nothing more.
+    BoundIdentity,
+    /// Both, as the token endpoint signs them.
+    AccessAndIdentity,
+    /// Both, from the authorization endpoint: the identity token binds the
+    /// access token, and says who signed in and how, nothing more.
+    AccessAndBoundIdentity,
+}
+
+/// The tokens of one answer for a person.
+pub(super) struct PersonTokens<'a> {
+    pub(super) issuer: &'a str,
+    pub(super) client_id: &'a str,
+    pub(super) session: &'a Session,
+    pub(super) person: &'a Person,
+    pub(super) scopes: &'a [String],
+    pub(super) nonce: Option<&'a str>,
+    /// The algorithm the client registered for its identity tokens.
+    pub(super) id_token_algorithm: SignatureAlgorithm,
+    pub(super) signed: Signed,
+    /// The code the identity token is bound to, when one came back beside it.
+    pub(super) code: Option<&'a str>,
+}
+
+/// What [`sign_for_person`] signed.
+pub(super) struct SignedForPerson {
+    pub(super) access: Option<IssuedAccessToken>,
+    pub(super) identity: Option<String>,
+}
+
+/// Signs the tokens of one answer for a person, wherever it is given: the
+/// same claims, mappers, audiences, lifetimes and session at the token
+/// endpoint and at the authorization endpoint. The access token is signed
+/// first: the identity token may say its hash.
+pub(super) async fn sign_for_person(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    asked: PersonTokens<'_>,
+) -> Result<SignedForPerson, Failure> {
+    let subject = asked.person.id.to_string();
+    // Read each time a token is made, a refresh included: a role taken away
+    // or an attribute changed is gone from the next token.
+    let grant = ClaimGrant {
+        person: Some(asked.person),
+        client_id: asked.client_id,
+        scopes: asked.scopes,
+    };
+    // What each token says beyond who signed in and how. An identity token
+    // that comes back beside a code or an access token says nothing more:
+    // the client asks the rest with them (OpenID Connect Core 1.0, 5.4).
+    let targets: &[ClaimTarget] = match asked.signed {
+        Signed::Access | Signed::AccessAndBoundIdentity => &[ClaimTarget::AccessToken],
+        Signed::Identity => &[ClaimTarget::IdToken],
+        Signed::BoundIdentity => &[],
+        Signed::AccessAndIdentity => &[ClaimTarget::AccessToken, ClaimTarget::IdToken],
+    };
+    let inputs = if targets.is_empty() {
+        ClaimInputs::default()
+    } else {
+        gather_claim_inputs(work, &grant, targets, app.now()).await?
+    };
+    // Signed in the algorithm the client registered, and in no other. An
+    // access token is always signed in the default one.
+    let (access_algorithm, identity_algorithm) = match asked.signed {
+        Signed::Access => (DEFAULT_ALGORITHM, DEFAULT_ALGORITHM),
+        Signed::Identity | Signed::BoundIdentity => {
+            (asked.id_token_algorithm, asked.id_token_algorithm)
+        }
+        Signed::AccessAndIdentity | Signed::AccessAndBoundIdentity => {
+            (DEFAULT_ALGORITHM, asked.id_token_algorithm)
+        }
+    };
+    let (key, identity_key) =
+        open_minting_keys(app, work, access_algorithm, identity_algorithm).await?;
+    let access = if targets.contains(&ClaimTarget::AccessToken) {
+        let for_access = write_claims(ClaimTarget::AccessToken, &grant, &inputs)?;
+        Some(mint_access_token(
+            app,
+            &key,
+            AccessTokenSubject {
+                issuer: asked.issuer,
+                subject: &subject,
+                client_id: asked.client_id,
+                scopes: asked.scopes,
+                session: Some(asked.session),
+                claims: Some(&for_access),
+            },
+        )?)
+    } else {
+        None
+    };
+    // What the identity token says beyond who signed in and how, and the
+    // access token it binds by its hash.
+    let identity = match asked.signed {
+        Signed::Access => None,
+        Signed::Identity | Signed::AccessAndIdentity => {
+            Some((write_claims(ClaimTarget::IdToken, &grant, &inputs)?, None))
+        }
+        Signed::BoundIdentity => Some((WrittenClaims::default(), None)),
+        Signed::AccessAndBoundIdentity => Some((
+            WrittenClaims::default(),
+            access.as_ref().map(|minted| minted.token.as_str()),
+        )),
+    };
+    let identity = match identity {
+        Some((for_identity, bound)) => Some(mint_identity_token(
+            app,
+            identity_key.as_ref().unwrap_or(&key),
+            IdentityTokenSubject {
+                issuer: asked.issuer,
+                person: asked.person,
+                client_id: asked.client_id,
+                claims: &for_identity,
+                nonce: asked.nonce,
+                session: asked.session,
+                access_token: bound,
+                code: asked.code,
+            },
+        )?),
+        None => None,
+    };
+    Ok(SignedForPerson { access, identity })
 }
 
 #[cfg(test)]

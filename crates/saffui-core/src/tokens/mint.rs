@@ -19,7 +19,7 @@ use crate::keys::SigningKey;
 use crate::keys::jwks::open_signing_keys;
 use crate::login::assurance::Assurance;
 use crate::login::session::{AuthenticationMethod, Session};
-use crate::ports::crypto::SignatureAlgorithm;
+use crate::ports::crypto::{Digester, SignatureAlgorithm};
 use crate::ports::storage::UnitOfWork;
 use crate::secret::Secret;
 
@@ -50,6 +50,10 @@ pub struct IdentityTokenSubject<'a> {
     /// The session behind the token: when the person proved who they are,
     /// and with what.
     pub session: &'a Session,
+    /// What came back beside the token from the authorization endpoint: the
+    /// token says their hashes, `at_hash` and `c_hash`, and so binds them.
+    pub access_token: Option<&'a str>,
+    pub code: Option<&'a str>,
 }
 
 /// A key of the realm, opened once for every token of one answer it signs.
@@ -200,7 +204,8 @@ pub fn mint_access_token(
 ///
 /// # Errors
 ///
-/// Returns [`ErrorCode::CryptoUnavailable`] when the key does not sign.
+/// Returns [`ErrorCode::CryptoUnavailable`] when the key does not sign, or
+/// when the hash of a value it binds cannot be made.
 pub fn mint_identity_token(
     app: &App,
     key: &MintingKey,
@@ -221,10 +226,54 @@ pub fn mint_identity_token(
     if let Some(nonce) = subject.nonce {
         claims["nonce"] = Value::String(nonce.to_owned());
     }
+    // In the algorithm of the key that signs: a verifier reads it from the
+    // header, and hashes in it.
+    let algorithm = key.key.algorithm;
+    if let Some(access_token) = subject.access_token {
+        claims["at_hash"] = json!(write_half_hash(
+            app.digester.as_ref(),
+            algorithm,
+            access_token
+        )?);
+    }
+    if let Some(code) = subject.code {
+        claims["c_hash"] = json!(write_half_hash(app.digester.as_ref(), algorithm, code)?);
+    }
     claims["amr"] = write_methods(&subject.session.methods);
     claims["acr"] = json!(Assurance::reached_by(subject.session).name());
     add_evaluated_claims(&mut claims, subject.claims);
     sign_claims(app, key, IDENTITY_TOKEN_TYPE, &claims)
+}
+
+/// The left half of the digest a signature in `algorithm` is made over, in
+/// base64url: what an identity token says of a value it came back beside
+/// (OpenID Connect Core 1.0, sections 3.2.2.9 and 3.3.2.11).
+///
+/// # Errors
+///
+/// Returns [`ErrorCode::CryptoUnavailable`] when the digest cannot be made.
+pub fn write_half_hash(
+    digester: &dyn Digester,
+    algorithm: SignatureAlgorithm,
+    value: &str,
+) -> Result<String, Failure> {
+    let unavailable =
+        |_| Failure::with_detail(ErrorCode::CryptoUnavailable, "a hash cannot be made");
+    let digest = match algorithm {
+        SignatureAlgorithm::Es256 | SignatureAlgorithm::Rs256 | SignatureAlgorithm::Ps256 => {
+            digester.sha256(value.as_bytes()).to_vec()
+        }
+        SignatureAlgorithm::Es384 => digester
+            .sha384(value.as_bytes())
+            .map_err(unavailable)?
+            .to_vec(),
+        // Ed25519 signs over SHA-512.
+        SignatureAlgorithm::EdDsa => digester
+            .sha512(value.as_bytes())
+            .map_err(unavailable)?
+            .to_vec(),
+    };
+    Ok(URL_SAFE_NO_PAD.encode(&digest[..digest.len() / 2]))
 }
 
 /// Names what proved the person (RFC 8176), and says so when it took more
@@ -324,6 +373,38 @@ mod tests {
         let payload = minted.token.split('.').nth(1).expect("a compact token");
         serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).expect("base64url"))
             .expect("claims")
+    }
+
+    #[test]
+    fn a_half_hash_is_the_left_half_of_the_digest_the_algorithm_signs_over() {
+        use base64::Engine as _;
+
+        use super::write_half_hash;
+        use crate::ports::crypto::{Digester, SignatureAlgorithm};
+        use crate::testkit::digest::WeakDigester;
+
+        let half =
+            |algorithm| write_half_hash(&WeakDigester, algorithm, "a-token").expect("a hash");
+        let left = |digest: &[u8]| URL_SAFE_NO_PAD.encode(&digest[..digest.len() / 2]);
+
+        let sha256 = left(&WeakDigester.sha256(b"a-token"));
+        for algorithm in [
+            SignatureAlgorithm::Es256,
+            SignatureAlgorithm::Rs256,
+            SignatureAlgorithm::Ps256,
+        ] {
+            assert_eq!(half(algorithm), sha256, "{algorithm:?}");
+        }
+        assert_eq!(
+            half(SignatureAlgorithm::Es384),
+            left(&WeakDigester.sha384(b"a-token").expect("a digest"))
+        );
+        assert_eq!(
+            half(SignatureAlgorithm::EdDsa),
+            left(&WeakDigester.sha512(b"a-token").expect("a digest")),
+            "Ed25519 signs over SHA-512"
+        );
+        assert_eq!(half(SignatureAlgorithm::Es384).len(), 32);
     }
 
     #[test]

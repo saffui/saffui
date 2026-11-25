@@ -1,5 +1,6 @@
 //! What every answer of the data plane says to the browser that receives
-//! it, whatever handler wrote it. A page adds its own content policy.
+//! it, whatever handler wrote it. A page adds its own content policy, and
+//! may name its own referrer policy.
 
 use actix_web::middleware::DefaultHeaders;
 use saffui_core::app::App as Product;

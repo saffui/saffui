@@ -28,6 +28,7 @@ use super::crypto::{InstantHasher, PredictableCodes, TransparentSealer, Trusting
 use super::digest::WeakDigester;
 use super::random::CountingRandom;
 use crate::app::App;
+use crate::audit::EventKind;
 use crate::audit::store::ChainedEvent;
 use crate::authz::grants::{Membership, RoleGrant};
 use crate::authz::policy::Policy;
@@ -146,6 +147,8 @@ pub(crate) struct CountedReads {
     pub(crate) pending_authorizations: AtomicUsize,
     /// A client alone, by its identifier.
     pub(crate) clients: AtomicUsize,
+    /// A session, by its identifier.
+    pub(crate) sessions: AtomicUsize,
     /// The attributes of a person, read without taking them.
     pub(crate) attributes: AtomicUsize,
     /// The roles a person holds at an instant.
@@ -165,6 +168,8 @@ pub struct MemoryStorage {
     /// The units of work opened and not yet dropped.
     live_units: Arc<AtomicUsize>,
     reads: Arc<CountedReads>,
+    /// A unit of work that records an event of this kind is refused its commit.
+    refused_commits: Arc<Mutex<Option<EventKind>>>,
 }
 
 pub struct MemoryUnitOfWork {
@@ -178,6 +183,7 @@ pub struct MemoryUnitOfWork {
     /// Opened as a snapshot: every write is refused.
     read_only: bool,
     live_units: Arc<AtomicUsize>,
+    refused_commits: Arc<Mutex<Option<EventKind>>>,
 }
 
 impl MemoryUnitOfWork {
@@ -263,6 +269,12 @@ impl MemoryStorage {
         *lock(&self.outage) = Some(reason);
     }
 
+    /// Refuses the commit of every unit of work that records an event of
+    /// `kind`, as a database that loses the link at that commit would.
+    pub fn refuse_commits_recording(&self, kind: EventKind) {
+        *lock(&self.refused_commits) = Some(kind);
+    }
+
     #[must_use]
     pub fn count_probes(&self) -> usize {
         self.probes.load(Ordering::Relaxed)
@@ -295,6 +307,26 @@ impl MemoryStorage {
     #[must_use]
     pub fn count_client_reads(&self) -> usize {
         self.reads.clients.load(Ordering::Relaxed)
+    }
+
+    /// How many statements read a session, by its identifier.
+    #[must_use]
+    pub fn count_session_reads(&self) -> usize {
+        self.reads.sessions.load(Ordering::Relaxed)
+    }
+
+    /// How many sessions of `person` are active, in every realm.
+    #[must_use]
+    pub fn count_active_sessions(&self, person: Uuid) -> usize {
+        lock(&self.state)
+            .sessions
+            .values()
+            .flatten()
+            .filter(|session| {
+                session.person == person
+                    && session.state == crate::login::session::SessionState::Active
+            })
+            .count()
     }
 
     /// How many statements read the attributes of a person without taking them.
@@ -421,6 +453,7 @@ impl MemoryStorage {
             failed: false,
             live_units: Arc::clone(&self.live_units),
             read_only,
+            refused_commits: Arc::clone(&self.refused_commits),
         }))
     }
 
@@ -477,6 +510,10 @@ impl UnitOfWork for MemoryUnitOfWork {
     async fn commit(mut self: Box<Self>) -> Result<(), StorageError> {
         if self.failed {
             return Err(StorageError::Failed);
+        }
+        let refused = *lock(&self.refused_commits);
+        if refused.is_some_and(|kind| self.records_event(kind)) {
+            return Err(StorageError::Unavailable(StorageUnavailable::Unreachable));
         }
         *lock(&self.shared) = std::mem::take(&mut self.working);
         Ok(())

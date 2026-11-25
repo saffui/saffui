@@ -7,7 +7,8 @@ use super::assertion::read_key_set;
 use super::authenticate::CLIENT_SECRET_PURPOSE;
 use super::{
     AssertionAlgorithm, Client, ClientAuthMethod, KeptProof, check_client_identifier,
-    check_redirect_uri, check_scope_token, is_unshowable,
+    check_redirect_uri, check_scope_token, is_deployment_page, is_loopback_host, is_unshowable,
+    read_redirect_host,
 };
 use crate::app::App;
 use crate::audit::EventKind;
@@ -16,6 +17,7 @@ use crate::authz::capability::Capability;
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
 use crate::keys::rotate::list_active_algorithms;
+use crate::oidc::response::ResponseType;
 use crate::ports::crypto::{
     KeyCheckLane, KeyMakingFailure, KeyMakingGuard, SealPlace, SignatureAlgorithm,
 };
@@ -43,6 +45,9 @@ pub struct NewClient<'a> {
     pub capabilities: &'a [Capability],
     pub redirect_uris: &'a [String],
     pub post_logout_redirect_uris: &'a [String],
+    /// What it may ask the authorization endpoint to hand back. Empty: a
+    /// code alone, the one way a client that names none is answered.
+    pub response_types: &'a [ResponseType],
     /// A public application runs where no secret can be kept: it gets none.
     pub public: bool,
     /// Each person is asked before the client gets a code in their name.
@@ -294,6 +299,11 @@ pub async fn check_new_client<'a>(
         .chain(wanted.post_logout_redirect_uris)
     {
         check_redirect_uri(uri)?;
+        // A browser sent there carries the cookies of the person to a page of
+        // their realm, or of another, as if it came from that page itself.
+        if is_deployment_page(uri, &app.settings.public_origin) {
+            return Err(Failure::new(ErrorCode::RedirectUriInvalid));
+        }
     }
     // Only a client that signs people in has anyone to send back after they
     // sign out, or anyone to ask.
@@ -311,6 +321,7 @@ pub async fn check_new_client<'a>(
     if wanted.public && wanted.redirect_uris.is_empty() {
         return Err(Failure::new(ErrorCode::RequestInvalid));
     }
+    check_response_types(&wanted, checker)?;
     // A capability is held by a client that acts as itself. An application
     // gets tokens in the name of people: granted one, it would lend it to
     // every person of the realm.
@@ -333,6 +344,46 @@ pub async fn check_new_client<'a>(
         jwks,
         checker,
     })
+}
+
+/// Checks what a client may ask the authorization endpoint to hand back:
+/// each type once, for a client that sends people through it, and a code
+/// alone for one that registered itself. A type that puts an access token
+/// in an address is never a default: an administrator names it (RFC 9700,
+/// section 2.1.2). An application sent back to this machine declares no
+/// type without a code, nor one with an access token (RFC 8252, 8.2).
+fn check_response_types(wanted: &NewClient<'_>, checker: ClientChecker) -> Result<(), Failure> {
+    let invalid = || Failure::new(ErrorCode::ResponseTypesInvalid);
+    let named_once = wanted
+        .response_types
+        .iter()
+        .enumerate()
+        .all(|(at, kind)| !wanted.response_types[..at].contains(kind));
+    if !named_once {
+        return Err(invalid());
+    }
+    let beyond_a_code = wanted
+        .response_types
+        .iter()
+        .any(|kind| *kind != ResponseType::Code);
+    let self_registered = matches!(checker, ClientChecker::Registration(_));
+    if beyond_a_code && (wanted.redirect_uris.is_empty() || self_registered) {
+        return Err(invalid());
+    }
+    // Whatever listens on this machine reads what comes back there: a code
+    // its verifier binds, and never an access token.
+    let native = wanted
+        .redirect_uris
+        .iter()
+        .any(|uri| is_loopback_host(read_redirect_host(uri)));
+    let implicit = wanted
+        .response_types
+        .iter()
+        .any(|kind| !kind.issues_code() || kind.issues_access_token());
+    if native && implicit {
+        return Err(invalid());
+    }
+    Ok(())
 }
 
 /// Refuses an algorithm of identity tokens the realm has no active key of:
@@ -413,6 +464,11 @@ pub(crate) async fn insert_checked_client(
             && wanted.redirect_uris.is_empty(),
         allows_authorization_code: !wanted.redirect_uris.is_empty(),
         redirect_uris: wanted.redirect_uris.to_vec(),
+        response_types: if wanted.response_types.is_empty() {
+            vec![ResponseType::Code]
+        } else {
+            wanted.response_types.to_vec()
+        },
         post_logout_redirect_uris: wanted.post_logout_redirect_uris.to_vec(),
         requires_consent: wanted.requires_consent,
         scopes: wanted.scopes.to_vec(),
@@ -448,6 +504,14 @@ pub(crate) async fn insert_checked_client(
     }
     if let Some(algorithm) = client.id_token_signed_response_alg {
         created["id_token_signed_response_alg"] = json!(algorithm.name());
+    }
+    if client.response_types != [ResponseType::Code] {
+        let declared: Vec<&str> = client
+            .response_types
+            .iter()
+            .map(|kind| kind.name())
+            .collect();
+        created["response_types"] = json!(declared);
     }
     Ok((client, secret, created))
 }
@@ -520,6 +584,7 @@ pub async fn register_service_client(
             capabilities: wanted.capabilities,
             redirect_uris: &[],
             post_logout_redirect_uris: &[],
+            response_types: &[],
             public: false,
             requires_consent: false,
             id_token_signed_response_alg: None,
@@ -650,6 +715,7 @@ mod tests {
                 capabilities: &[],
                 redirect_uris: &callbacks,
                 post_logout_redirect_uris: &[],
+                response_types: &[],
                 public: true,
                 requires_consent: false,
                 id_token_signed_response_alg: None,
@@ -696,6 +762,7 @@ mod tests {
                     capabilities,
                     redirect_uris,
                     post_logout_redirect_uris: &[],
+                    response_types: &[],
                     public,
                     requires_consent: false,
                     id_token_signed_response_alg: None,
@@ -723,6 +790,94 @@ mod tests {
     }
 
     #[test]
+    fn an_application_is_handed_back_what_it_declares_and_a_client_of_its_own_a_code_alone() {
+        use super::{ClientChecker, NewClient, check_new_client, register_client};
+        use crate::oidc::response::ResponseType;
+
+        let (app, storage) = MemoryStorage::wire();
+        let scope = complete(create_realm(&app, "acme"));
+        let callbacks = ["https://app.example.org/callback".to_owned()];
+        let register = |client_id: &str,
+                        redirect_uris: &[String],
+                        response_types: &[ResponseType],
+                        checker: ClientChecker| {
+            let wanted = NewClient {
+                client_id,
+                name: client_id,
+                scopes: &[],
+                capabilities: &[],
+                redirect_uris,
+                post_logout_redirect_uris: &[],
+                response_types,
+                public: false,
+                requires_consent: false,
+                id_token_signed_response_alg: None,
+                auth_method: None,
+                jwks: None,
+                jwks_uri: None,
+                auth_signing_alg: None,
+                created_by: None,
+            };
+            let checked = complete(check_new_client(&app, checker, wanted))
+                .map_err(|failure| failure.code)?;
+            let mut work = complete(app.storage.begin(scope)).expect("a unit of work");
+            let (client, _) = complete(register_client(&app, work.as_mut(), checked))
+                .map_err(|failure| failure.code)?;
+            complete(work.commit()).expect("a commit");
+            Ok(client.response_types)
+        };
+        let administrator = ClientChecker::Administrator(scope.tenant());
+        let itself = ClientChecker::Registration(scope.realm());
+        let declared = [ResponseType::IdTokenToken, ResponseType::Code];
+
+        assert_eq!(
+            register("plain", &callbacks, &[], administrator),
+            Ok(vec![ResponseType::Code]),
+            "a code alone when none is named"
+        );
+        assert_eq!(
+            register("spa", &callbacks, &declared, administrator),
+            Ok(declared.to_vec())
+        );
+        for (client_id, redirect_uris, response_types, checker) in [
+            (
+                "twice",
+                &callbacks[..],
+                &[ResponseType::Code, ResponseType::Code][..],
+                administrator,
+            ),
+            ("service", &[], &[ResponseType::IdToken], administrator),
+            ("itself", &callbacks, &[ResponseType::CodeIdToken], itself),
+        ] {
+            assert_eq!(
+                register(client_id, redirect_uris, response_types, checker),
+                Err(ErrorCode::ResponseTypesInvalid),
+                "{client_id}"
+            );
+        }
+        assert_eq!(
+            register("itself", &callbacks, &[ResponseType::Code], itself),
+            Ok(vec![ResponseType::Code])
+        );
+        let created = |client_id: &str| {
+            storage
+                .read_audit_envelopes(scope.realm())
+                .into_iter()
+                .find(|event| {
+                    event["kind"] == "client.created" && event["payload"]["client_id"] == client_id
+                })
+                .expect("its creation")["payload"]
+                .clone()
+        };
+        assert_eq!(
+            created("spa")["response_types"],
+            serde_json::json!(["id_token token", "code"]),
+            "the chain says what was declared beyond a code"
+        );
+        assert!(created("plain").get("response_types").is_none());
+    }
+
+    #[test]
     fn an_address_after_sign_out_is_checked_and_belongs_to_an_application_only() {
         use super::NewClient;
 
@@ -742,6 +897,7 @@ mod tests {
                     capabilities: &[],
                     redirect_uris,
                     post_logout_redirect_uris: &goodbyes,
+                    response_types: &[],
                     public: false,
                     requires_consent: false,
                     id_token_signed_response_alg: None,
@@ -772,6 +928,137 @@ mod tests {
     }
 
     #[test]
+    fn an_application_sent_back_to_this_machine_is_handed_back_a_code_and_no_access_token() {
+        use super::NewClient;
+        use crate::oidc::response::ResponseType;
+
+        let (app, _storage) = MemoryStorage::wire();
+        let scope = complete(create_realm(&app, "acme"));
+        let register = |client_id: &str, local: &str, response_types: &[ResponseType]| {
+            let native = [
+                "https://app.example.org/callback".to_owned(),
+                local.to_owned(),
+            ];
+            let mut work = complete(app.storage.begin(scope)).expect("a unit of work");
+            complete(check_and_register_client(
+                &app,
+                work.as_mut(),
+                NewClient {
+                    client_id,
+                    name: "Native",
+                    scopes: &[],
+                    capabilities: &[],
+                    redirect_uris: &native,
+                    post_logout_redirect_uris: &[],
+                    response_types,
+                    public: true,
+                    requires_consent: false,
+                    id_token_signed_response_alg: None,
+                    auth_method: None,
+                    jwks: None,
+                    jwks_uri: None,
+                    auth_signing_alg: None,
+                    created_by: None,
+                },
+            ))
+            .map(|(client, _)| client.response_types)
+            .map_err(|failure| failure.code)
+        };
+
+        for local in [
+            "http://127.0.0.1:8080/callback",
+            "https://127.0.0.2:8443/cb",
+            "https://[0:0:0:0:0:0:0:1]/cb",
+            "https://localhost./cb",
+            "https://app.localhost/cb",
+        ] {
+            for refused in [
+                ResponseType::IdToken,
+                ResponseType::IdTokenToken,
+                ResponseType::CodeToken,
+                ResponseType::CodeIdTokenToken,
+            ] {
+                assert_eq!(
+                    register("native", local, &[ResponseType::Code, refused]),
+                    Err(ErrorCode::ResponseTypesInvalid),
+                    "{local} {refused:?}"
+                );
+            }
+        }
+        let with_a_code = [ResponseType::Code, ResponseType::CodeIdToken];
+        assert_eq!(
+            register("native", "http://127.0.0.1:8080/callback", &with_a_code),
+            Ok(with_a_code.to_vec())
+        );
+        let implicit = [ResponseType::IdTokenToken];
+        assert_eq!(
+            register("spa", "https://app.example.org/other", &implicit),
+            Ok(implicit.to_vec()),
+            "not refused for want of an address of this machine"
+        );
+    }
+
+    #[test]
+    fn no_page_of_this_deployment_is_an_address_to_send_anyone_back_to() {
+        use super::NewClient;
+
+        let (app, _storage) = MemoryStorage::wire();
+        let scope = complete(create_realm(&app, "acme"));
+        let register = |redirect_uri: &str, goodbye: Option<&str>| {
+            let callbacks = [redirect_uri.to_owned()];
+            let goodbyes: Vec<String> = goodbye.into_iter().map(str::to_owned).collect();
+            let mut work = complete(app.storage.begin(scope)).expect("a unit of work");
+            complete(check_and_register_client(
+                &app,
+                work.as_mut(),
+                NewClient {
+                    client_id: "relay",
+                    name: "Relay",
+                    scopes: &[],
+                    capabilities: &[],
+                    redirect_uris: &callbacks,
+                    post_logout_redirect_uris: &goodbyes,
+                    response_types: &[],
+                    public: false,
+                    requires_consent: false,
+                    id_token_signed_response_alg: None,
+                    auth_method: None,
+                    jwks: None,
+                    jwks_uri: None,
+                    auth_signing_alg: None,
+                    created_by: None,
+                },
+            ))
+            .map(|_| ())
+            .map_err(|failure| failure.code)
+        };
+
+        for (redirect_uri, goodbye) in [
+            ("https://id.example.test/realms/beta/oauth2/logout", None),
+            (
+                "https://id.example.test:8443/realms/beta/oauth2/logout",
+                None,
+            ),
+            ("https://id.example.test/admin/v1/realms/beta/clients", None),
+            (
+                "https://app.example.org/callback",
+                Some("https://id.example.test/realms/beta/oauth2/logout"),
+            ),
+        ] {
+            assert_eq!(
+                register(redirect_uri, goodbye),
+                Err(ErrorCode::RedirectUriInvalid),
+                "{redirect_uri} {goodbye:?}"
+            );
+        }
+        assert_eq!(
+            register("https://id.example.test/portal/callback", None),
+            Ok(()),
+            "an address of the origin outside the pages of the deployment"
+        );
+    }
+
+    #[test]
     fn only_an_application_asks_people_for_their_consent() {
         use super::NewClient;
 
@@ -790,6 +1077,7 @@ mod tests {
                     capabilities: &[],
                     redirect_uris,
                     post_logout_redirect_uris: &[],
+                    response_types: &[],
                     public: false,
                     requires_consent: true,
                     id_token_signed_response_alg: None,
@@ -849,6 +1137,7 @@ mod tests {
                 capabilities: &[],
                 redirect_uris: &[],
                 post_logout_redirect_uris: &[],
+                response_types: &[],
                 public: false,
                 requires_consent: false,
                 id_token_signed_response_alg: None,
@@ -1173,6 +1462,7 @@ mod tests {
                     capabilities: &[],
                     redirect_uris: &callbacks,
                     post_logout_redirect_uris: &[],
+                    response_types: &[],
                     public: true,
                     requires_consent: false,
                     id_token_signed_response_alg: None,

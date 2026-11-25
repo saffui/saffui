@@ -716,6 +716,7 @@ mod tests {
             nonce: None,
             code_challenge: Some("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"),
             code_challenge_method: Some("S256"),
+            response_mode: None,
             prompt: None,
             max_age: None,
             id_token_hint: None,

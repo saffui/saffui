@@ -17,13 +17,33 @@ fn mix(seed: u64, data: &[u8]) -> u64 {
     state.wrapping_mul(0x9E37_79B9_7F4A_7C15)
 }
 
+/// Fills `digest` eight bytes at a time, each from its own seed, the first
+/// being `first_seed`.
+fn fill_weak_digest(digest: &mut [u8], first_seed: u64, data: &[u8]) {
+    for (seed, chunk) in (first_seed..).zip(digest.chunks_mut(8)) {
+        chunk.copy_from_slice(&mix(seed, data).to_be_bytes());
+    }
+}
+
 impl Digester for WeakDigester {
     fn sha256(&self, data: &[u8]) -> [u8; 32] {
         let mut digest = [0_u8; 32];
-        for (seed, chunk) in (1_u64..).zip(digest.chunks_mut(8)) {
-            chunk.copy_from_slice(&mix(seed, data).to_be_bytes());
-        }
+        fill_weak_digest(&mut digest, 1, data);
         digest
+    }
+
+    /// Other seeds than those of the shorter digests: no two lengths share
+    /// their first bytes.
+    fn sha384(&self, data: &[u8]) -> Result<[u8; 48], CryptoFailure> {
+        let mut digest = [0_u8; 48];
+        fill_weak_digest(&mut digest, 101, data);
+        Ok(digest)
+    }
+
+    fn sha512(&self, data: &[u8]) -> Result<[u8; 64], CryptoFailure> {
+        let mut digest = [0_u8; 64];
+        fill_weak_digest(&mut digest, 201, data);
+        Ok(digest)
     }
 
     /// The digest of the length of the key, the key, then the data: two keys

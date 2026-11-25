@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use super::page::{Frame, is_posted_from_elsewhere, is_realm_label, render_page, render_refusal};
 use crate::api::rest::endpoints::account::authenticator::read_ticket;
+use crate::api::rest::endpoints::oidc::answer::send_answer_to_client;
 use crate::extract::cookies::{is_served_over_tls, name_flow_cookie, read_cookie, write_cookie};
 use crate::extract::form::read_posted_form;
 
@@ -132,17 +133,15 @@ pub async fn submit_consent(
     )
     .await
     {
-        Ok(location) => {
+        Ok(answer) => {
             let secure = is_served_over_tls(&product);
-            HttpResponse::SeeOther()
-                .insert_header((LOCATION, location))
-                .insert_header((CACHE_CONTROL, "no-store"))
-                // The flow is over: its cookie goes with it.
-                .insert_header((
-                    SET_COOKIE,
-                    write_cookie(&name_flow_cookie(request, secure), "", Some(0), secure),
-                ))
-                .finish()
+            let mut response = HttpResponse::SeeOther();
+            // The flow is over: its cookie goes with it.
+            response.insert_header((
+                SET_COOKIE,
+                write_cookie(&name_flow_cookie(request, secure), "", Some(0), secure),
+            ));
+            send_answer_to_client(&product, response, &answer)
         }
         // The request still waits: the page says again what it covers.
         Err(failure) if failure.code == ErrorCode::ConsentPageOutdated => HttpResponse::SeeOther()

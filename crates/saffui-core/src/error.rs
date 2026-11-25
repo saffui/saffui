@@ -85,6 +85,8 @@ pub enum ErrorCode {
     InitialTokenLimitReached = 328,
     RegistrationNotFound = 329,
     RegistrationChangesSpent = 330,
+    ResponseTypesInvalid = 331,
+    AnswerPostedToDeployment = 332,
     AdminAuthenticationFailed = 400,
     CapabilityMissing = 401,
     SignInFailed = 402,
@@ -133,6 +135,7 @@ impl ErrorCode {
     }
 
     #[must_use]
+    #[expect(clippy::too_many_lines, reason = "one arm per code of the catalog")]
     pub fn kind(self) -> ErrorKind {
         match self {
             Self::Internal | Self::RandomUnavailable | Self::CryptoUnavailable => {
@@ -231,12 +234,15 @@ impl ErrorCode {
             | Self::RealmSettingsInvalid
             | Self::ClientMetadataInvalid
             | Self::SoftwareStatementRefused
+            | Self::ResponseTypesInvalid
+            | Self::AnswerPostedToDeployment
             | Self::AuthMethodInvalid => ErrorKind::Invalid,
         }
     }
 
     /// The stable name clients match on.
     #[must_use]
+    #[expect(clippy::too_many_lines, reason = "one arm per code of the catalog")]
     pub fn slug(self) -> &'static str {
         match self {
             Self::Internal => "platform.internal",
@@ -294,6 +300,8 @@ impl ErrorCode {
             Self::InitialTokenLimitReached => "client.initial_token_limit_reached",
             Self::RegistrationNotFound => "client.registration_not_found",
             Self::RegistrationChangesSpent => "client.registration_changes_spent",
+            Self::ResponseTypesInvalid => "client.response_types_invalid",
+            Self::AnswerPostedToDeployment => "client.answer_posted_to_deployment",
             Self::TokenInvalid => "token.invalid",
             Self::GrantInvalid => "token.grant_invalid",
             Self::TokenScopeInsufficient => "token.scope_insufficient",
@@ -409,7 +417,7 @@ impl ErrorCode {
             Self::PersonNotFound => "No such person.",
             Self::CapabilityUnknown => "A capability that was asked for does not exist.",
             Self::RedirectUriInvalid => {
-                "A redirect URI is an https URL, or an http URL of this machine, without a fragment."
+                "A redirect URI is an https URL, or an http URL of this machine, without a fragment, that leads to no page of this deployment."
             }
             Self::TokenInvalid => "The token is not valid.",
             Self::GrantInvalid => "The grant is invalid, expired, or was already used.",
@@ -512,6 +520,12 @@ impl ErrorCode {
             Self::RegistrationChangesSpent => {
                 "This client changed its registration as often as it may in a day. Try again later."
             }
+            Self::ResponseTypesInvalid => {
+                "A response type is code, id_token, id_token token, code id_token, code token or code id_token token, each named once, for a client with a redirect URI."
+            }
+            Self::AnswerPostedToDeployment => {
+                "An answer is never posted to this deployment itself."
+            }
             Self::ClaimsTooLarge => "The mappers of this client write more than a token can carry.",
         }
     }
@@ -575,7 +589,7 @@ mod tests {
 
     use super::ErrorCode;
 
-    const ALL: [ErrorCode; 97] = [
+    const ALL: [ErrorCode; 99] = [
         ErrorCode::Internal,
         ErrorCode::StorageUnavailable,
         ErrorCode::Conflict,
@@ -673,6 +687,8 @@ mod tests {
         ErrorCode::InitialTokenLimitReached,
         ErrorCode::RegistrationNotFound,
         ErrorCode::RegistrationChangesSpent,
+        ErrorCode::ResponseTypesInvalid,
+        ErrorCode::AnswerPostedToDeployment,
     ];
 
     #[test]

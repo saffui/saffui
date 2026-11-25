@@ -58,6 +58,11 @@ pub(super) fn show_client(client: &Client) -> ClientView {
         public: client.is_public(),
         redirect_uris: client.redirect_uris.clone(),
         post_logout_redirect_uris: client.post_logout_redirect_uris.clone(),
+        response_types: client
+            .response_types
+            .iter()
+            .map(|kind| kind.name().to_owned())
+            .collect(),
         consent: client.requires_consent,
         scopes: client.scopes.clone(),
         capabilities: client

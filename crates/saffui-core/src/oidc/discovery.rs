@@ -3,6 +3,7 @@
 
 use serde::Serialize;
 
+use super::response::{ResponseMode, ResponseType};
 use super::token::OFFLINE_ACCESS_SCOPE;
 use crate::app::App;
 use crate::clients::{AssertionAlgorithm, ClientAuthMethod};
@@ -117,8 +118,13 @@ pub fn describe_provider(
         revocation_endpoint: format!("{issuer}/oauth2/revoke"),
         end_session_endpoint: format!("{issuer}/oauth2/logout"),
         registration_endpoint: None,
-        response_types_supported: vec!["code"],
-        grant_types_supported: vec!["authorization_code", "client_credentials", "refresh_token"],
+        response_types_supported: ResponseType::ALL.map(ResponseType::name).to_vec(),
+        grant_types_supported: vec![
+            "authorization_code",
+            "implicit",
+            "client_credentials",
+            "refresh_token",
+        ],
         subject_types_supported: vec!["public"],
         id_token_signing_alg_values_supported: signing
             .iter()
@@ -134,7 +140,7 @@ pub fn describe_provider(
         scopes_supported: vec!["openid", "profile", "email", "roles", OFFLINE_ACCESS_SCOPE],
         acr_values_supported: Assurance::ALL.map(Assurance::name).to_vec(),
         authorization_response_iss_parameter_supported: true,
-        response_modes_supported: vec!["query"],
+        response_modes_supported: ResponseMode::ALL.map(ResponseMode::name).to_vec(),
         request_parameter_supported: false,
         request_uri_parameter_supported: false,
         claims_parameter_supported: false,
@@ -194,7 +200,28 @@ mod tests {
         );
         assert_eq!(
             document.grant_types_supported,
-            ["authorization_code", "client_credentials", "refresh_token"]
+            [
+                "authorization_code",
+                "implicit",
+                "client_credentials",
+                "refresh_token"
+            ]
+        );
+        assert_eq!(
+            document.response_types_supported,
+            [
+                "code",
+                "id_token",
+                "id_token token",
+                "code id_token",
+                "code token",
+                "code id_token token"
+            ],
+            "each served to a client that declares it"
+        );
+        assert_eq!(
+            document.response_modes_supported,
+            ["query", "fragment", "form_post"]
         );
         assert_eq!(document.code_challenge_methods_supported, ["S256"]);
         assert_eq!(document.acr_values_supported, ["1", "2"]);

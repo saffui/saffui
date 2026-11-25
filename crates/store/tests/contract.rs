@@ -943,6 +943,98 @@ async fn an_exchange_that_comes_during_a_withdrawal_finds_no_consent_to_hold() {
     assert_eq!(exchange.await.expect("the exchange"), Ok(None));
 }
 
+/// A session that answers a client which asks each person, with tokens
+/// signed at once, holds what the person allowed until it commits: a
+/// withdrawal that came first is waited for, and leaves nothing to sign.
+#[tokio::test]
+async fn a_session_answer_that_comes_during_a_withdrawal_waits_for_it_and_signs_nothing() {
+    use saffui_core::consent::Consent;
+    use saffui_core::login::session::{
+        AuthenticationMethod, Session, SessionKind, SessionState, SessionTicket,
+    };
+    use saffui_core::oidc::authorize::{
+        Authorization, AuthorizationParameters, begin_authorization,
+    };
+    use saffui_core::oidc::response::ResponseType;
+    use saffui_core::secret::Secret;
+    use saffui_core::testkit::fixtures::{
+        Application, create_person, create_realm, register_answered_application,
+    };
+
+    const TICKET_SECRET: &[u8] = b"the secret of her browser";
+
+    let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let observer = database
+        .plan(pgcore::APP_ROLE)
+        .connect_directly()
+        .await
+        .expect("a connection");
+    let scope = create_realm(&app, "acme").await;
+    let ada = create_person(&app, scope, "ada", "correct horse battery").await;
+    let partner = Application {
+        client_id: "partner",
+        redirect_uri: CALLBACK,
+        post_logout_redirect_uri: None,
+        public: true,
+        requires_consent: true,
+    };
+    register_answered_application(&app, scope, partner, &[ResponseType::IdTokenToken]).await;
+    let now = app.now();
+    let session = Session {
+        id: uuid::Uuid::from_u128(7),
+        person: ada.id,
+        secret_digest: app.digester.sha256(TICKET_SECRET).to_vec(),
+        state: SessionState::Active,
+        kind: SessionKind::Browser,
+        methods: vec![AuthenticationMethod::Password],
+        authenticated_at: now,
+        expires_at: now + time::Duration::hours(1),
+    };
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.insert_session(&session).await.expect("a session");
+    work.add_consent(&Consent {
+        person: ada.id,
+        client_id: "partner".to_owned(),
+        scopes: vec!["openid".to_owned()],
+        granted_at: now,
+    })
+    .await
+    .expect("a consent");
+    work.commit().await.expect("a commit");
+
+    let mut withdrawal = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(withdrawal.delete_consent(ada.id, "partner").await, Ok(true));
+    let answer = {
+        let app = app.clone();
+        tokio::spawn(async move {
+            let ticket = SessionTicket {
+                session: session.id,
+                secret: Secret::new(TICKET_SECRET.to_vec()),
+            };
+            let parameters = AuthorizationParameters {
+                response_type: Some("id_token token"),
+                client_id: Some("partner"),
+                redirect_uri: Some(CALLBACK),
+                scope: Some("openid"),
+                nonce: Some("a-nonce"),
+                ..AuthorizationParameters::default()
+            };
+            begin_authorization(&app, "acme", parameters, Some(&ticket)).await
+        })
+    };
+    assert!(
+        wait_for_a_waiter(&observer, &answer).await,
+        "the answer waits for the withdrawal"
+    );
+    withdrawal.commit().await.expect("a commit");
+
+    let answered = answer.await.expect("the answer");
+    assert!(
+        matches!(answered, Ok(Authorization::ConsentRequired { .. })),
+        "she is asked again, and nothing is signed: {answered:?}"
+    );
+}
+
 /// A factor set up and an offline token replayed at once. The first ends the
 /// sessions the password alone opened, then their tokens; the second ends the
 /// offline session of its family, then its tokens. Both lock the session

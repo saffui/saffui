@@ -8,6 +8,7 @@ use crate::clients::register::{
     register_service_client,
 };
 use crate::error::Failure;
+use crate::oidc::response::ResponseType;
 use crate::ports::storage::UnitOfWork;
 use crate::secret::Secret;
 use crate::tenancy::RealmScope;
@@ -263,6 +264,20 @@ pub async fn register_application(
     scope: RealmScope,
     wanted: Application<'_>,
 ) -> Option<Secret> {
+    register_answered_application(app, scope, wanted, &[]).await
+}
+
+/// As [`register_application`], handed back what `response_types` declares.
+///
+/// # Panics
+///
+/// Panics when the application cannot be registered.
+pub async fn register_answered_application(
+    app: &App,
+    scope: RealmScope,
+    wanted: Application<'_>,
+    response_types: &[ResponseType],
+) -> Option<Secret> {
     let scopes = ["openid", "profile", "email", "roles", "offline_access"].map(str::to_owned);
     let callbacks = [wanted.redirect_uri.to_owned()];
     let goodbyes: Vec<String> = wanted
@@ -281,6 +296,7 @@ pub async fn register_application(
             capabilities: &[],
             redirect_uris: &callbacks,
             post_logout_redirect_uris: &goodbyes,
+            response_types,
             public: wanted.public,
             requires_consent: wanted.requires_consent,
             id_token_signed_response_alg: None,
@@ -393,10 +409,9 @@ pub async fn run_code_flow(app: &App, flow: CodeFlow<'_>) -> SignedInApplication
         .into_finished()
         .expect("a person who owes no code");
     let code = signed_in
-        .location
-        .split_once("code=")
-        .and_then(|(_, rest)| rest.split('&').next())
-        .expect("a code in the redirection")
+        .response
+        .read_parameter("code")
+        .expect("a code in the answer")
         .to_owned();
     let exchange = TokenRequest {
         grant_type: Some("authorization_code"),
@@ -487,7 +502,7 @@ pub async fn allow_consented_code(
     .await
     .expect("the page")
     .shown;
-    let location = answer_consent(
+    let answered = answer_consent(
         app,
         flow.realm,
         request,
@@ -497,10 +512,9 @@ pub async fn allow_consented_code(
     )
     .await
     .expect("an allowed client");
-    let code = location
-        .split_once("code=")
-        .and_then(|(_, rest)| rest.split('&').next())
-        .expect("a code in the redirection")
+    let code = answered
+        .read_parameter("code")
+        .expect("a code in the answer")
         .to_owned();
     (code, signed_in.ticket)
 }

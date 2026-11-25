@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 
 use super::super::digest::WeakDigester;
-use super::MemoryUnitOfWork;
+use super::{MemoryUnitOfWork, lock};
 use crate::audit::store::{AuditStore, ChainPosition, ChainedEvent};
-use crate::audit::{GENESIS_HASH, hash_link};
+use crate::audit::{EventKind, GENESIS_HASH, hash_link};
 use crate::ports::storage::StorageError;
 
 impl MemoryUnitOfWork {
@@ -35,6 +35,22 @@ impl MemoryUnitOfWork {
             envelope: envelope.to_vec(),
         });
         Ok(ChainPosition { seq, hash })
+    }
+
+    /// Whether this unit adds an event of `kind` to the chain of its realm.
+    pub(crate) fn records_event(&self, kind: EventKind) -> bool {
+        let realm = self.scope.realm().as_uuid();
+        let kept = lock(&self.shared).audit.get(&realm).map_or(0, Vec::len);
+        self.working
+            .audit
+            .get(&realm)
+            .into_iter()
+            .flatten()
+            .skip(kept)
+            .any(|event| {
+                serde_json::from_slice::<serde_json::Value>(&event.envelope)
+                    .is_ok_and(|read| read["kind"] == kind.name())
+            })
     }
 }
 

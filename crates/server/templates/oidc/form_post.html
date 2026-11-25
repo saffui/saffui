@@ -1,0 +1,15 @@
+{#- An answer posted as a form, and nothing else: the policy of the page names
+    its script by its hash, and the one address its form goes to. Each value
+    came from a client or was signed for one, and is written as text. -#}
+<!doctype html><html lang="en"><head><meta charset="utf-8">{# -#}
+<title>Signing in</title></head><body>{# -#}
+<form method="post" action="{{ action }}">
+    {%- for (name, value) in parameters -%}
+        <input type="hidden" name="{{ name }}" value="{{ value }}">
+    {%- endfor -%}
+    <noscript><button type="submit">Continue</button></noscript>{# -#}
+</form>
+{#- Hashed as it is written here, by the policy of the page: a change of one
+    character is a script that no longer runs. -#}
+<script>document.forms[0].submit();</script>{# -#}
+</body></html>

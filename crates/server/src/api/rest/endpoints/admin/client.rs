@@ -8,6 +8,7 @@ use saffui_core::clients::register::NewClient as WantedClient;
 use saffui_core::clients::{AssertionAlgorithm, ClientAuthMethod};
 use saffui_core::error::{ErrorCode, Failure};
 use saffui_core::oidc::registration::end_registration_as_administrator;
+use saffui_core::oidc::response::ResponseType;
 use saffui_core::ports::crypto::SignatureAlgorithm;
 
 use super::listing::{ListParameters, answer_page};
@@ -72,6 +73,13 @@ pub async fn create_client(
                 ClientAuthMethod::parse(name).ok_or(Failure::new(ErrorCode::AuthMethodInvalid))
             })
             .transpose()?;
+        let response_types = wanted
+            .response_types
+            .iter()
+            .map(|named| {
+                ResponseType::read(named).ok_or(Failure::new(ErrorCode::ResponseTypesInvalid))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let auth_signing_alg = wanted
             .token_endpoint_auth_signing_alg
             .as_deref()
@@ -86,6 +94,7 @@ pub async fn create_client(
             capabilities: &capabilities,
             redirect_uris: &wanted.redirect_uris,
             post_logout_redirect_uris: &wanted.post_logout_redirect_uris,
+            response_types: &response_types,
             public: wanted.public,
             requires_consent: wanted.consent,
             id_token_signed_response_alg: id_token_algorithm,

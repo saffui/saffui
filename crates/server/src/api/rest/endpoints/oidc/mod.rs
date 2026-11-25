@@ -1,3 +1,4 @@
+pub(crate) mod answer;
 pub mod authorize;
 pub mod certs;
 pub mod discovery;

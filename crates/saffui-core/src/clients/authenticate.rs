@@ -4,7 +4,7 @@
 //! signs. A public client proves nothing: it only names itself.
 
 use super::assertion::{
-    ASSERTION_TYPE, CLOCK_SKEW, ReadAssertion, check_assertion_claims, choose_client_key,
+    ASSERTION_TYPE, CLOCK_SKEW, check_assertion_claims, choose_client_key,
     fits_registered_algorithm, read_assertion,
 };
 use super::{AssertionAlgorithm, Client, ClientAuthMethod, KeptProof, check_client_identifier};
@@ -156,16 +156,26 @@ pub(crate) async fn is_current_secret(
         .equal_in_constant_time(&app.digester.sha256(presented), &kept))
 }
 
-/// Tells whether the signature of an assertion is the one the client makes:
-/// with its sealed secret, or with the key the assertion names.
-async fn verify_assertion_signature(
+/// What a client signed, as its header names it: an assertion, or a request
+/// object.
+pub(crate) struct ClientSignature<'a> {
+    pub(crate) algorithm: AssertionAlgorithm,
+    pub(crate) key_id: Option<&'a str>,
+    /// The header and the claims, as they were signed.
+    pub(crate) signing_input: &'a [u8],
+    pub(crate) signature: &'a [u8],
+}
+
+/// Tells whether a signature is the one the client makes: with its sealed
+/// secret, or with the key its header names.
+pub(crate) async fn verify_client_signature(
     app: &App,
     work: &mut dyn UnitOfWork,
     client: &Client,
     proof: &KeptProof,
-    read: &ReadAssertion,
+    signed: &ClientSignature<'_>,
 ) -> Result<bool, Failure> {
-    match (client.auth_method, read.algorithm) {
+    match (client.auth_method, signed.algorithm) {
         (ClientAuthMethod::ClientSecretJwt, AssertionAlgorithm::Hs256) => {
             let Some(sealed) = &proof.sealed_secret else {
                 return Ok(false);
@@ -174,21 +184,18 @@ async fn verify_assertion_signature(
             let secret = open_client_secret(app, work, client, sealed).await?;
             let mac = app
                 .digester
-                .hmac_sha256(&secret, read.signing_input.as_bytes())
-                .map_err(|_| unavailable("a client assertion cannot be checked"))?;
-            Ok(app.digester.equal_in_constant_time(&mac, &read.signature))
+                .hmac_sha256(&secret, signed.signing_input)
+                .map_err(|_| unavailable("a signature of a client cannot be checked"))?;
+            Ok(app.digester.equal_in_constant_time(&mac, signed.signature))
         }
         (ClientAuthMethod::PrivateKeyJwt, AssertionAlgorithm::Signed(algorithm)) => Ok(proof
             .jwks
             .as_ref()
-            .and_then(|jwks| choose_client_key(jwks, read))
+            .and_then(|jwks| choose_client_key(jwks, signed.algorithm, signed.key_id))
             .is_some_and(|key| {
-                app.signer.verify(
-                    algorithm,
-                    key,
-                    read.signing_input.as_bytes(),
-                    &read.signature,
-                ) == Ok(true)
+                app.signer
+                    .verify(algorithm, key, signed.signing_input, signed.signature)
+                    == Ok(true)
             })),
         _ => Ok(false),
     }
@@ -262,7 +269,13 @@ pub async fn identify_client(
             if !fits_registered_algorithm(client.auth_signing_alg, &read) {
                 return Err(failed());
             }
-            if !verify_assertion_signature(app, work.as_mut(), &client, &kept, &read).await? {
+            let signed = ClientSignature {
+                algorithm: read.algorithm,
+                key_id: read.key_id.as_deref(),
+                signing_input: read.signing_input.as_bytes(),
+                signature: &read.signature,
+            };
+            if !verify_client_signature(app, work.as_mut(), &client, &kept, &signed).await? {
                 return Err(failed());
             }
             // Kept past its expiry by the skew a node may have: one whose
@@ -355,6 +368,8 @@ mod tests {
             jwks: (!keys.is_empty()).then_some(&jwks),
             jwks_uri: None,
             auth_signing_alg: signing,
+            request_object_signing_alg: None,
+            require_signed_request_object: false,
             created_by: None,
         };
         let (_client, secret) = complete(check_and_register_client(

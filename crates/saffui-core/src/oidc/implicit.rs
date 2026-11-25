@@ -237,6 +237,8 @@ mod tests {
                 jwks: None,
                 jwks_uri: None,
                 auth_signing_alg: None,
+                request_object_signing_alg: None,
+                require_signed_request_object: false,
                 created_by: None,
             },
         ))
@@ -272,6 +274,10 @@ mod tests {
 
     /// Signs `ada` in for the request, and returns what the client is
     /// handed back, and her ticket.
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "handed on as the endpoint hands it on"
+    )]
     fn sign_in(
         scenario: &Scenario,
         parameters: AuthorizationParameters<'_>,
@@ -306,6 +312,10 @@ mod tests {
     }
 
     /// What the client is told when the request is refused at once.
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "handed on as the endpoint hands it on"
+    )]
     fn refuse(
         scenario: &Scenario,
         parameters: AuthorizationParameters<'_>,
@@ -1059,6 +1069,10 @@ mod tests {
 
     /// Signs `ada` in for a request of a client that asks her first, and
     /// returns the request, its browser secret and her ticket.
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "handed on as the endpoint hands it on"
+    )]
     fn sign_in_to_consent(
         scenario: &Scenario,
         parameters: AuthorizationParameters<'_>,

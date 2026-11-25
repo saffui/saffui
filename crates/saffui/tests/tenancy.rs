@@ -246,7 +246,9 @@ fn a_bootstrapped_realm_is_published_by_a_node_on_its_data_plane_only() {
             r#""acr_values_supported":["1","2"],"#,
             r#""authorization_response_iss_parameter_supported":true,"#,
             r#""response_modes_supported":["query","fragment","form_post"],"#,
-            r#""request_parameter_supported":false,"#,
+            r#""request_object_signing_alg_values_supported":["HS256","ES256","ES384","RS256","#,
+            r#""PS256","EdDSA"],"#,
+            r#""request_parameter_supported":true,"#,
             r#""request_uri_parameter_supported":false,"#,
             r#""claims_parameter_supported":false}"#,
         )

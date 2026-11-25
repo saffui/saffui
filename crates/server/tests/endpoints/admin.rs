@@ -677,6 +677,86 @@ async fn a_client_of_a_key_gives_it_inline_and_names_its_method_and_algorithm_by
 }
 
 #[actix_web::test]
+async fn an_administrator_names_how_an_application_signs_its_requests_and_whether_it_must() {
+    use saffui_core::ports::crypto::SignatureAlgorithm;
+
+    let (product, token) = start(&[Capability::ClientRead, Capability::ClientWrite]).await;
+    let path = "/admin/v1/realms/acme/clients";
+    let key = product
+        .signer
+        .generate_key(SignatureAlgorithm::Es256, Box::new(()))
+        .await
+        .expect("a key");
+    let application = |changes: Value| {
+        let mut wanted = json!({
+            "client_id": "signing",
+            "redirect_uris": ["https://app.example.org/callback"],
+            "token_endpoint_auth_method": "private_key_jwt",
+            "jwks": { "keys": [key.public_jwk.clone()] },
+            "request_object_signing_alg": "ES256",
+            "require_signed_request_object": true,
+        });
+        for (name, value) in changes.as_object().expect("an object") {
+            wanted[name] = value.clone();
+        }
+        wanted.to_string()
+    };
+
+    for (changes, code) in [
+        (
+            json!({ "request_object_signing_alg": "none" }),
+            "realm.algorithm_unknown",
+        ),
+        (
+            json!({ "request_object_signing_alg": "HS256" }),
+            "client.auth_method_invalid",
+        ),
+        (
+            json!({ "request_object_signing_alg": null }),
+            "platform.request_invalid",
+        ),
+    ] {
+        let refused = call(
+            &product,
+            Method::POST,
+            path,
+            Some(&token),
+            Some(&application(changes.clone())),
+        )
+        .await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{changes}");
+        assert_eq!(refused.body["code"], code, "{changes}");
+    }
+    let created = call(
+        &product,
+        Method::POST,
+        path,
+        Some(&token),
+        Some(&application(json!({}))),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(
+        created.body["client"]["request_object_signing_alg"],
+        "ES256"
+    );
+    assert_eq!(
+        created.body["client"]["require_signed_request_object"],
+        true
+    );
+    let read = call(
+        &product,
+        Method::GET,
+        &format!("{path}/signing"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(read.body["request_object_signing_alg"], "ES256");
+    assert_eq!(read.body["require_signed_request_object"], true);
+}
+
+#[actix_web::test]
 async fn an_administrator_moves_a_secret_between_the_header_and_the_form_and_nowhere_else() {
     let (product, token) = start(&[Capability::ClientRead, Capability::ClientWrite]).await;
     let path = "/admin/v1/realms/acme/clients";

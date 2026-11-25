@@ -48,6 +48,8 @@ async fn start(name: &str) -> (saffui_core::app::App, RealmScope) {
             jwks: None,
             jwks_uri: None,
             auth_signing_alg: None,
+            request_object_signing_alg: None,
+            require_signed_request_object: false,
             created_by: None,
         },
     )
@@ -355,6 +357,8 @@ async fn a_name_that_changes_direction_is_shown_with_the_change_replaced() {
         scopes: vec!["openid".to_owned(), "email".to_owned()],
         capabilities: Vec::new(),
         id_token_signed_response_alg: None,
+        request_object_signing_alg: None,
+        require_signed_request_object: false,
         enabled: true,
         self_registered: false,
         created_at: product.now(),

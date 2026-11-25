@@ -40,6 +40,8 @@ pub struct AuthorizeQuery {
     prompt: Option<String>,
     max_age: Option<String>,
     id_token_hint: Option<String>,
+    request: Option<String>,
+    request_uri: Option<String>,
 }
 
 /// Sends the browser to a hosted page of the realm, `login` or `consent`,
@@ -93,6 +95,8 @@ pub async fn begin(
         prompt: query.prompt.as_deref(),
         max_age: query.max_age.as_deref(),
         id_token_hint: query.id_token_hint.as_deref(),
+        request: query.request.as_deref(),
+        request_uri: query.request_uri.as_deref(),
         caller: read_caller_address(&product, &http),
         known_browsers: &known_browsers,
     };

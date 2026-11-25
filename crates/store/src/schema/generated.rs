@@ -341,6 +341,11 @@ pub(crate) mod clients {
     pub(crate) const SELF_REGISTERED: Column = Column("self_registered");
     /// ARRAY
     pub(crate) const RESPONSE_TYPES: Column = Column("response_types");
+    /// text, nullable
+    pub(crate) const REQUEST_OBJECT_SIGNING_ALG: Column = Column("request_object_signing_alg");
+    /// boolean
+    pub(crate) const REQUIRE_SIGNED_REQUEST_OBJECT: Column =
+        Column("require_signed_request_object");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -364,6 +369,8 @@ pub(crate) mod clients {
         AUTH_SIGNING_ALG,
         SELF_REGISTERED,
         RESPONSE_TYPES,
+        REQUEST_OBJECT_SIGNING_ALG,
+        REQUIRE_SIGNED_REQUEST_OBJECT,
     ];
 }
 

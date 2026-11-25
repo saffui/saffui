@@ -80,12 +80,18 @@ pub async fn create_client(
                 ResponseType::read(named).ok_or(Failure::new(ErrorCode::ResponseTypesInvalid))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let read_algorithm = |name: &str| {
+            AssertionAlgorithm::parse(name).ok_or(Failure::new(ErrorCode::AlgorithmUnknown))
+        };
         let auth_signing_alg = wanted
             .token_endpoint_auth_signing_alg
             .as_deref()
-            .map(|name| {
-                AssertionAlgorithm::parse(name).ok_or(Failure::new(ErrorCode::AlgorithmUnknown))
-            })
+            .map(read_algorithm)
+            .transpose()?;
+        let request_object_signing_alg = wanted
+            .request_object_signing_alg
+            .as_deref()
+            .map(read_algorithm)
             .transpose()?;
         let client = WantedClient {
             client_id: &wanted.client_id,
@@ -102,6 +108,8 @@ pub async fn create_client(
             jwks: wanted.jwks.as_ref(),
             jwks_uri: wanted.jwks_uri.as_deref(),
             auth_signing_alg,
+            request_object_signing_alg,
+            require_signed_request_object: wanted.require_signed_request_object,
             created_by: None,
         };
         manage::create_client(&product, &caller, client).await

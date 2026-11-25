@@ -63,6 +63,10 @@ pub struct NewClient<'a> {
     pub jwks_uri: Option<&'a str>,
     /// The one algorithm its assertions may be signed in.
     pub auth_signing_alg: Option<AssertionAlgorithm>,
+    /// The one algorithm its request objects are read in.
+    pub request_object_signing_alg: Option<AssertionAlgorithm>,
+    /// Each of its requests is to be a request object.
+    pub require_signed_request_object: bool,
     /// The client of the administration plane that asks, when one does.
     pub created_by: Option<&'a str>,
 }
@@ -101,6 +105,59 @@ fn check_assertion_algorithm(
                 Ok(())
             } else {
                 Err(Failure::new(ErrorCode::AlgorithmUnknown))
+            }
+        }
+        _ => Err(Failure::new(ErrorCode::AuthMethodInvalid)),
+    }
+}
+
+/// Checks how a client signs its request objects (RFC 9101), for a client
+/// that sends people through the authorization endpoint: with its secret in
+/// HS256, or in a signature this build serves that one of its keys verifies
+/// in. A client that registered itself signs none, and one that requires
+/// them names the algorithm.
+fn check_request_object_signing(
+    app: &App,
+    wanted: &NewClient<'_>,
+    method: ClientAuthMethod,
+    jwks: Option<&Value>,
+    checker: ClientChecker,
+) -> Result<(), Failure> {
+    let algorithm = wanted.request_object_signing_alg;
+    if matches!(checker, ClientChecker::Registration(_))
+        && (algorithm.is_some() || wanted.require_signed_request_object)
+    {
+        return Err(Failure::with_detail(
+            ErrorCode::ClientMetadataInvalid,
+            "request_object_signing_alg",
+        ));
+    }
+    let Some(algorithm) = algorithm else {
+        return if wanted.require_signed_request_object {
+            Err(Failure::new(ErrorCode::RequestInvalid))
+        } else {
+            Ok(())
+        };
+    };
+    if wanted.redirect_uris.is_empty() {
+        return Err(Failure::new(ErrorCode::RequestInvalid));
+    }
+    match (method, algorithm) {
+        (ClientAuthMethod::ClientSecretJwt, AssertionAlgorithm::Hs256) => Ok(()),
+        (ClientAuthMethod::PrivateKeyJwt, AssertionAlgorithm::Signed(signed)) => {
+            if !app.signer.signs_in(signed) {
+                return Err(Failure::new(ErrorCode::AlgorithmUnknown));
+            }
+            let verifies_in =
+                |key: &Value| key.get("alg").and_then(Value::as_str) == Some(signed.name());
+            let kept = jwks
+                .and_then(|jwks| jwks.get("keys"))
+                .and_then(Value::as_array)
+                .is_some_and(|keys| keys.iter().any(verifies_in));
+            if kept {
+                Ok(())
+            } else {
+                Err(Failure::new(ErrorCode::ClientJwksInvalid))
             }
         }
         _ => Err(Failure::new(ErrorCode::AuthMethodInvalid)),
@@ -337,6 +394,7 @@ pub async fn check_new_client<'a>(
     let method = choose_auth_method(&wanted)?;
     check_assertion_algorithm(app, method, wanted.auth_signing_alg)?;
     let jwks = keep_client_keys(app, checker, method, wanted.jwks, wanted.auth_signing_alg).await?;
+    check_request_object_signing(app, &wanted, method, jwks.as_ref(), checker)?;
     Ok(CheckedClient {
         wanted,
         name,
@@ -474,6 +532,8 @@ pub(crate) async fn insert_checked_client(
         scopes: wanted.scopes.to_vec(),
         capabilities: wanted.capabilities.to_vec(),
         id_token_signed_response_alg: wanted.id_token_signed_response_alg,
+        request_object_signing_alg: wanted.request_object_signing_alg,
+        require_signed_request_object: wanted.require_signed_request_object,
         enabled: true,
         self_registered: matches!(checker, ClientChecker::Registration(_)),
         created_at: app.now(),
@@ -504,6 +564,10 @@ pub(crate) async fn insert_checked_client(
     }
     if let Some(algorithm) = client.id_token_signed_response_alg {
         created["id_token_signed_response_alg"] = json!(algorithm.name());
+    }
+    if let Some(algorithm) = client.request_object_signing_alg {
+        created["request_object_signing_alg"] = json!(algorithm.name());
+        created["require_signed_request_object"] = json!(client.require_signed_request_object);
     }
     if client.response_types != [ResponseType::Code] {
         let declared: Vec<&str> = client
@@ -592,6 +656,8 @@ pub async fn register_service_client(
             jwks: None,
             jwks_uri: None,
             auth_signing_alg: None,
+            request_object_signing_alg: None,
+            require_signed_request_object: false,
             created_by: None,
         },
     )
@@ -723,6 +789,8 @@ mod tests {
                 jwks: None,
                 jwks_uri: None,
                 auth_signing_alg: None,
+                request_object_signing_alg: None,
+                require_signed_request_object: false,
                 created_by: Some("operator"),
             },
         ))
@@ -770,6 +838,8 @@ mod tests {
                     jwks: None,
                     jwks_uri: None,
                     auth_signing_alg: None,
+                    request_object_signing_alg: None,
+                    require_signed_request_object: false,
                     created_by: None,
                 },
             ))
@@ -816,6 +886,8 @@ mod tests {
                 jwks: None,
                 jwks_uri: None,
                 auth_signing_alg: None,
+                request_object_signing_alg: None,
+                require_signed_request_object: false,
                 created_by: None,
             };
             let checked = complete(check_new_client(&app, checker, wanted))
@@ -905,6 +977,8 @@ mod tests {
                     jwks: None,
                     jwks_uri: None,
                     auth_signing_alg: None,
+                    request_object_signing_alg: None,
+                    require_signed_request_object: false,
                     created_by: None,
                 },
             ))
@@ -958,6 +1032,8 @@ mod tests {
                     jwks: None,
                     jwks_uri: None,
                     auth_signing_alg: None,
+                    request_object_signing_alg: None,
+                    require_signed_request_object: false,
                     created_by: None,
                 },
             ))
@@ -1026,6 +1102,8 @@ mod tests {
                     jwks: None,
                     jwks_uri: None,
                     auth_signing_alg: None,
+                    request_object_signing_alg: None,
+                    require_signed_request_object: false,
                     created_by: None,
                 },
             ))
@@ -1085,6 +1163,8 @@ mod tests {
                     jwks: None,
                     jwks_uri: None,
                     auth_signing_alg: None,
+                    request_object_signing_alg: None,
+                    require_signed_request_object: false,
                     created_by: None,
                 },
             ))
@@ -1145,6 +1225,8 @@ mod tests {
                 jwks: proof.jwks,
                 jwks_uri: proof.jwks_uri,
                 auth_signing_alg: proof.signing,
+                request_object_signing_alg: None,
+                require_signed_request_object: false,
                 created_by: None,
             },
         ))
@@ -1470,6 +1552,8 @@ mod tests {
                     jwks: None,
                     jwks_uri: None,
                     auth_signing_alg: None,
+                    request_object_signing_alg: None,
+                    require_signed_request_object: false,
                     created_by: None,
                 },
             ))
@@ -1486,6 +1570,236 @@ mod tests {
         assert_eq!(
             register("webapp", ClientAuthMethod::None),
             Ok(ClientAuthMethod::None)
+        );
+    }
+
+    /// How an application of `acme` would sign its request objects.
+    struct Requesting<'a> {
+        method: ClientAuthMethod,
+        jwks: Option<&'a serde_json::Value>,
+        algorithm: Option<AssertionAlgorithm>,
+        required: bool,
+        callbacks: &'a [String],
+    }
+
+    fn register_requesting(
+        app: &crate::app::App,
+        checker: super::ClientChecker,
+        client_id: &str,
+        wanted: &Requesting<'_>,
+    ) -> Result<Client, ErrorCode> {
+        use super::{NewClient, check_new_client, register_client};
+
+        let scope = complete(crate::tenancy::resolve::resolve_realm(app, "acme"))
+            .expect("the realm")
+            .1;
+        let admitted = complete(check_new_client(
+            app,
+            checker,
+            NewClient {
+                client_id,
+                name: "Web app",
+                scopes: &[],
+                capabilities: &[],
+                redirect_uris: wanted.callbacks,
+                post_logout_redirect_uris: &[],
+                response_types: &[],
+                public: false,
+                requires_consent: false,
+                id_token_signed_response_alg: None,
+                auth_method: Some(wanted.method),
+                jwks: wanted.jwks,
+                jwks_uri: None,
+                auth_signing_alg: None,
+                request_object_signing_alg: wanted.algorithm,
+                require_signed_request_object: wanted.required,
+                created_by: None,
+            },
+        ))
+        .map_err(|failure| failure.code)?;
+        let mut work = complete(app.storage.begin(scope)).expect("a unit of work");
+        let (client, _) = complete(register_client(app, work.as_mut(), admitted))
+            .map_err(|failure| failure.code)?;
+        complete(work.commit()).expect("a commit");
+        Ok(client)
+    }
+
+    #[test]
+    fn a_client_signs_its_request_objects_as_it_proves_itself_and_one_that_requires_them_names_how()
+    {
+        let (app, storage) = MemoryStorage::wire();
+        let scope = complete(create_realm(&app, "acme"));
+        let administrator = super::ClientChecker::Administrator(scope.tenant());
+        let callbacks = ["https://app.example.org/callback".to_owned()];
+        let keys = make_key_set(SignatureAlgorithm::Es256);
+        let es256 = AssertionAlgorithm::parse("ES256");
+        let by_secret = Requesting {
+            method: ClientAuthMethod::ClientSecretJwt,
+            jwks: None,
+            algorithm: Some(AssertionAlgorithm::Hs256),
+            required: true,
+            callbacks: &callbacks,
+        };
+        let by_key = Requesting {
+            method: ClientAuthMethod::PrivateKeyJwt,
+            jwks: Some(&keys),
+            algorithm: es256,
+            required: false,
+            ..by_secret
+        };
+
+        let signed = register_requesting(&app, administrator, "signed", &by_secret)
+            .expect("a client that signs with its secret");
+        assert_eq!(
+            (
+                signed.request_object_signing_alg,
+                signed.require_signed_request_object
+            ),
+            (Some(AssertionAlgorithm::Hs256), true)
+        );
+        let created = storage
+            .read_audit_envelopes(scope.realm())
+            .last()
+            .cloned()
+            .expect("an event");
+        assert_eq!(created["payload"]["request_object_signing_alg"], "HS256");
+        assert_eq!(created["payload"]["require_signed_request_object"], true);
+        let keyed = register_requesting(&app, administrator, "keyed", &by_key)
+            .expect("a client that signs with a key");
+        assert_eq!(keyed.request_object_signing_alg, es256);
+        assert!(!keyed.require_signed_request_object);
+
+        for (refused, code, why) in [
+            (
+                Requesting {
+                    method: ClientAuthMethod::ClientSecretBasic,
+                    ..by_secret
+                },
+                ErrorCode::AuthMethodInvalid,
+                "a secret it presents signs nothing",
+            ),
+            (
+                Requesting {
+                    algorithm: es256,
+                    ..by_secret
+                },
+                ErrorCode::AuthMethodInvalid,
+                "a secret does not sign as a key",
+            ),
+            (
+                Requesting {
+                    algorithm: Some(AssertionAlgorithm::Hs256),
+                    ..by_key
+                },
+                ErrorCode::AuthMethodInvalid,
+                "a key does not sign with a secret",
+            ),
+            (
+                Requesting {
+                    algorithm: AssertionAlgorithm::parse("ES384"),
+                    ..by_key
+                },
+                ErrorCode::ClientJwksInvalid,
+                "no key of the client verifies in it",
+            ),
+            (
+                Requesting {
+                    algorithm: None,
+                    ..by_secret
+                },
+                ErrorCode::RequestInvalid,
+                "required, and read in no algorithm",
+            ),
+            (
+                Requesting {
+                    callbacks: &[],
+                    method: ClientAuthMethod::ClientSecretJwt,
+                    required: false,
+                    ..by_secret
+                },
+                ErrorCode::RequestInvalid,
+                "a service sends nobody through the authorization endpoint",
+            ),
+        ] {
+            assert_eq!(
+                register_requesting(&app, administrator, "odd", &refused).map(|_| ()),
+                Err(code),
+                "{why}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_client_that_registers_itself_signs_no_request_object() {
+        let (app, _storage) = MemoryStorage::wire();
+        let scope = complete(create_realm(&app, "acme"));
+        let callbacks = ["https://app.example.org/callback".to_owned()];
+        let keys = make_key_set(SignatureAlgorithm::Es256);
+        let by_key = Requesting {
+            method: ClientAuthMethod::PrivateKeyJwt,
+            jwks: Some(&keys),
+            algorithm: AssertionAlgorithm::parse("ES256"),
+            required: false,
+            callbacks: &callbacks,
+        };
+        let registering = super::ClientChecker::Registration(scope.realm());
+
+        for wanted in [
+            &by_key,
+            &Requesting {
+                algorithm: None,
+                required: true,
+                ..by_key
+            },
+        ] {
+            assert_eq!(
+                register_requesting(&app, registering, "itself", wanted).map(|_| ()),
+                Err(ErrorCode::ClientMetadataInvalid)
+            );
+        }
+        let signing_none = Requesting {
+            algorithm: None,
+            ..by_key
+        };
+        assert!(
+            register_requesting(&app, registering, "itself", &signing_none).is_ok(),
+            "the same client, signing no request object"
+        );
+    }
+
+    #[test]
+    fn a_request_object_is_signed_only_in_an_algorithm_this_build_serves() {
+        use std::sync::Arc;
+
+        let (mut app, _storage) = MemoryStorage::wire();
+        let scope = complete(create_realm(&app, "acme"));
+        let callbacks = ["https://app.example.org/callback".to_owned()];
+        let signer = WeakSigner::default();
+        let keys = serde_json::json!({ "keys": [
+            make_key(&signer, SignatureAlgorithm::EdDsa),
+            make_key(&signer, SignatureAlgorithm::Es256),
+        ] });
+        let requesting = |algorithm| Requesting {
+            method: ClientAuthMethod::PrivateKeyJwt,
+            jwks: Some(&keys),
+            algorithm: AssertionAlgorithm::parse(algorithm),
+            required: false,
+            callbacks: &callbacks,
+        };
+        let administrator = super::ClientChecker::Administrator(scope.tenant());
+        assert!(register_requesting(&app, administrator, "eddsa", &requesting("EdDSA")).is_ok());
+
+        // As a `fips-strict` build reads no EdDSA, it checks no key of it
+        // either: the set is one of ES256 alone.
+        app.signer = Arc::new(WeakSigner::refusing(SignatureAlgorithm::EdDsa));
+        let es256 = make_key_set(SignatureAlgorithm::Es256);
+        let refused = Requesting {
+            jwks: Some(&es256),
+            ..requesting("EdDSA")
+        };
+        assert_eq!(
+            register_requesting(&app, administrator, "refused", &refused).map(|_| ()),
+            Err(ErrorCode::AlgorithmUnknown)
         );
     }
 }

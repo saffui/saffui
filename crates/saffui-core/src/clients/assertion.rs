@@ -29,6 +29,9 @@ const MAX_KEY_SET_BYTES: usize = 16 * 1024;
 /// The members of a JWK that carry private key material.
 const PRIVATE_MEMBERS: [&str; 8] = ["d", "p", "q", "dp", "dq", "qi", "oth", "k"];
 
+/// The one type a request object may name (RFC 9101, section 10.8).
+const REQUEST_OBJECT_TYPE: &str = "oauth-authz-req+jwt";
+
 /// An assertion as it was written, not yet believed.
 // No `Debug`: it is the assertion, signature included.
 pub struct ReadAssertion {
@@ -60,10 +63,22 @@ fn read_instant(claims: &Value, name: &str) -> Result<Option<OffsetDateTime>, ()
     }
 }
 
+/// Whether a header names the type of a request object: as itself, or
+/// under `application/`, in any case (RFC 7515, section 4.1.9).
+pub(crate) fn is_request_object_type(named: &str) -> bool {
+    let subtype = match named.split_once('/') {
+        Some((top, subtype)) if top.eq_ignore_ascii_case("application") => subtype,
+        Some(_) => return false,
+        None => named,
+    };
+    subtype.eq_ignore_ascii_case(REQUEST_OBJECT_TYPE)
+}
+
 /// Reads an assertion without believing anything in it: what it names only
-/// tells which client to check it against. A header with `crit`, an
-/// algorithm that is not served, `iss` unlike `sub`, or a claim of the
-/// wrong type is no assertion.
+/// tells which client to check it against. A header with `crit` or the type
+/// of a request object, an algorithm that is not served, `iss` unlike
+/// `sub`, a claim of the wrong type, or claims of an authorization request
+/// are no assertion.
 #[must_use]
 pub fn read_assertion(text: &str) -> Option<ReadAssertion> {
     if text.len() > MAX_ASSERTION_BYTES {
@@ -79,6 +94,18 @@ pub fn read_assertion(text: &str) -> Option<ReadAssertion> {
     };
     let (header_json, claims_json) = (read_json(header)?, read_json(claims)?);
     if header_json.get("crit").is_some() {
+        return None;
+    }
+    // A client signs its request objects with the same key, and anyone who
+    // read the address of one holds it: neither kind is read as the other,
+    // typed or not (RFC 8725, sections 3.11 and 3.12).
+    if header_json
+        .get("typ")
+        .and_then(Value::as_str)
+        .is_some_and(is_request_object_type)
+        || claims_json.get("response_type").is_some()
+        || claims_json.get("redirect_uri").is_some()
+    {
         return None;
     }
     let algorithm = AssertionAlgorithm::parse(header_json.get("alg")?.as_str()?)?;
@@ -141,18 +168,22 @@ pub fn fits_registered_algorithm(
     registered.is_none_or(|algorithm| algorithm == read.algorithm)
 }
 
-/// Chooses the key of a client that verifies an assertion: the one its
-/// `kid` names, or the only key when it names none. A key kept for another
-/// algorithm is never chosen.
+/// Chooses the key of a client that verifies what it signed in `algorithm`:
+/// the one `key_id` names, or the only key when it names none. A key kept
+/// for another algorithm is never chosen.
 #[must_use]
-pub fn choose_client_key<'a>(jwks: &'a Value, read: &ReadAssertion) -> Option<&'a Value> {
+pub fn choose_client_key<'a>(
+    jwks: &'a Value,
+    algorithm: AssertionAlgorithm,
+    key_id: Option<&str>,
+) -> Option<&'a Value> {
     let keys = jwks.get("keys")?.as_array()?;
-    let fits = |key: &&Value| key.get("alg").and_then(Value::as_str) == Some(read.algorithm.name());
-    match &read.key_id {
+    let fits = |key: &&Value| key.get("alg").and_then(Value::as_str) == Some(algorithm.name());
+    match key_id {
         Some(kid) => keys
             .iter()
             .filter(fits)
-            .find(|key| key.get("kid").and_then(Value::as_str) == Some(kid.as_str())),
+            .find(|key| key.get("kid").and_then(Value::as_str) == Some(kid)),
         None if keys.len() == 1 => keys.first().filter(fits),
         None => None,
     }
@@ -352,6 +383,38 @@ mod tests {
     }
 
     #[test]
+    fn a_request_object_is_no_assertion_typed_as_one_or_not() {
+        let header = json!({ "alg": "RS256" });
+        assert!(
+            stands(&json!({ "alg": "RS256", "typ": "JWT" }), &json!({})),
+            "a token of no particular type"
+        );
+        for typ in [
+            "oauth-authz-req+jwt",
+            "application/oauth-authz-req+jwt",
+            "OAuth-Authz-Req+JWT",
+        ] {
+            assert!(
+                !stands(&json!({ "alg": "RS256", "typ": typ }), &json!({})),
+                "{typ}"
+            );
+        }
+        for (claims, why) in [
+            (json!({ "response_type": "code" }), "a response type"),
+            (
+                json!({ "redirect_uri": "https://app.example.org/callback" }),
+                "a redirect URI",
+            ),
+            (
+                json!({ "response_type": ["code"] }),
+                "a response type of another shape",
+            ),
+        ] {
+            assert!(!stands(&header, &claims), "{why}");
+        }
+    }
+
+    #[test]
     fn an_assertion_in_another_algorithm_than_the_one_registered_does_not_stand() {
         let assertion = read(&json!({ "alg": "ES384" }), &json!({})).expect("an assertion");
         let registered = |name| AssertionAlgorithm::parse(name);
@@ -369,7 +432,8 @@ mod tests {
         ] });
         let chosen = |jwks: &Value, header: Value| {
             let assertion = read(&header, &json!({})).expect("an assertion");
-            choose_client_key(jwks, &assertion).map(|key| key["kid"].clone())
+            choose_client_key(jwks, assertion.algorithm, assertion.key_id.as_deref())
+                .map(|key| key["kid"].clone())
         };
 
         assert_eq!(

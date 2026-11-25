@@ -284,6 +284,8 @@ async fn check_registered_metadata<'a>(
         jwks: wanted.jwks.as_ref(),
         jwks_uri: None,
         auth_signing_alg: wanted.signing,
+        request_object_signing_alg: None,
+        require_signed_request_object: false,
         created_by: None,
     };
     check_new_client(app, ClientChecker::Registration(scope.realm()), wanted).await
@@ -2051,6 +2053,8 @@ mod tests {
                 jwks: Some(&keys),
                 jwks_uri: None,
                 auth_signing_alg: None,
+                request_object_signing_alg: None,
+                require_signed_request_object: false,
                 created_by: None,
             },
         ));
@@ -2745,6 +2749,8 @@ mod tests {
                 jwks: None,
                 jwks_uri: None,
                 auth_signing_alg: None,
+                request_object_signing_alg: None,
+                require_signed_request_object: false,
                 created_by: Some("operator"),
             },
         ))

@@ -20,6 +20,7 @@ use super::discovery::name_issuer;
 use super::errors::OAuthError;
 use super::implicit::{AnswerSubject, AuthorizationSigning, sign_at_authorization};
 use super::pkce::is_well_formed_challenge;
+use super::request_object::{CarriedParameters, read_signed_request};
 use super::response::{
     AuthorizationResponse, ResponseMode, ResponseType, choose_refusal_mode, choose_response_mode,
 };
@@ -28,8 +29,8 @@ use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
 use crate::clients::{
-    Client, check_scope_token, is_loopback_host, is_on_origin, read_named_client,
-    read_redirect_host,
+    Client, KeptProof, check_scope_token, is_loopback_host, is_on_origin, read_named_client,
+    read_named_client_with_proof, read_redirect_host,
 };
 use crate::consent::{ConsentHold, ConsentTerms, is_consent_owed};
 use crate::error::{ErrorCode, Failure};
@@ -72,6 +73,10 @@ pub struct AuthorizationParameters<'a> {
     pub max_age: Option<&'a str>,
     /// An identity token the client was given earlier: the person it expects.
     pub id_token_hint: Option<&'a str>,
+    /// The request itself, signed by its client: read in place of the rest.
+    pub request: Option<&'a str>,
+    /// An address to fetch the request from: refused, it is never fetched.
+    pub request_uri: Option<&'a str>,
     /// The address of the browser, as a believed proxy said: the sign-ins
     /// it leaves waiting are counted under it.
     pub caller: Option<IpAddr>,
@@ -126,7 +131,8 @@ impl fmt::Debug for Authorization {
     }
 }
 
-// Written by hand: an identity token hint says who the person is.
+// Written by hand: an identity token hint says who the person is, and so
+// may a request object.
 impl fmt::Debug for AuthorizationParameters<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -143,6 +149,8 @@ impl fmt::Debug for AuthorizationParameters<'_> {
             .field("prompt", &self.prompt)
             .field("max_age", &self.max_age)
             .field("id_token_hint", &self.id_token_hint.map(|_| ".."))
+            .field("request", &self.request.map(|_| ".."))
+            .field("request_uri", &self.request_uri)
             .field("caller", &self.caller)
             .field("known_browsers", &self.known_browsers)
             .finish()
@@ -168,6 +176,8 @@ struct TrustedRequest {
     code_challenge: Option<String>,
     /// How the person must have proved who they are for a session to serve.
     proof: ProofAsked,
+    /// The identity token that names the person the client expects.
+    id_token_hint: Option<String>,
 }
 
 /// What `prompt` and `max_age` ask of the session that would answer.
@@ -274,7 +284,7 @@ fn read_asked_scopes(asked: Option<&str>, client: &Client) -> Option<Vec<String>
 fn trust_redirect_uri(
     app: &App,
     client: &Client,
-    parameters: AuthorizationParameters<'_>,
+    parameters: &AuthorizationParameters<'_>,
 ) -> Result<String, Failure> {
     let redirect_uri = parameters
         .redirect_uri
@@ -293,51 +303,164 @@ fn trust_redirect_uri(
     Ok(redirect_uri.to_owned())
 }
 
+/// Whether a value a client sends to be kept and echoed back is too long,
+/// or holds a character no client writes on purpose: such a value is
+/// neither kept nor echoed back.
+fn is_unacceptable_value(value: &str) -> bool {
+    value.len() > OPAQUE_VALUE_MAX_BYTES || value.chars().any(char::is_control)
+}
+
+/// The refusal of a request whose redirect URI is trusted, sent there as
+/// its answer would have gone, with the `state` it sent when it may be
+/// echoed back.
+fn write_refusal(
+    redirect_uri: &str,
+    parameters: &AuthorizationParameters<'_>,
+    declared: &[ResponseType],
+    issuer: &str,
+    error: OAuthError,
+) -> AuthorizationRefusal {
+    let refused_in = choose_refusal_mode(
+        parameters.response_mode,
+        parameters.response_type.and_then(ResponseType::read),
+        declared,
+        redirect_uri,
+    );
+    AuthorizationRefusal::Returned {
+        response: AuthorizationResponse::write(
+            redirect_uri,
+            refused_in,
+            issuer,
+            parameters
+                .state
+                .filter(|state| !is_unacceptable_value(state)),
+            vec![("error", error.name().to_owned())],
+        ),
+    }
+}
+
+/// Refuses a request on what its query says, before anything it carries is
+/// believed: sent to the redirect URI of the query when its client
+/// registered it, else shown as `shown`.
+fn refuse_on_query(
+    app: &App,
+    client: &Client,
+    query: &AuthorizationParameters<'_>,
+    issuer: &str,
+    error: OAuthError,
+    shown: ErrorCode,
+) -> AuthorizationRefusal {
+    match trust_redirect_uri(app, client, query) {
+        Ok(redirect_uri) => {
+            write_refusal(&redirect_uri, query, &client.response_types, issuer, error)
+        }
+        Err(_) => Failure::new(shown).into(),
+    }
+}
+
+/// Reads the client a request names, enabled and sending people through
+/// this endpoint, with what proves it when the request is signed: read by
+/// the one statement that identifies a client.
+async fn read_requesting_client(
+    work: &mut dyn UnitOfWork,
+    query: &AuthorizationParameters<'_>,
+) -> Result<(Client, Option<KeptProof>), Failure> {
+    let client_id = query
+        .client_id
+        .ok_or(Failure::new(ErrorCode::ClientNotFound))?;
+    let found = match query.request {
+        Some(_) => read_named_client_with_proof(work, client_id)
+            .await?
+            .map(|(client, kept)| (client, Some(kept))),
+        None => read_named_client(work, client_id)
+            .await?
+            .map(|client| (client, None)),
+    };
+    found
+        .filter(|(client, _)| client.enabled && client.allows_authorization_code)
+        .ok_or(Failure::new(ErrorCode::ClientNotFound))
+}
+
+/// Reads what a request carries in place of its query: the parameters of
+/// its request object, or nothing when the query is the request. Refused on
+/// what the query says, its object believed in nothing.
+async fn read_carried_request(
+    app: &App,
+    work: &mut dyn UnitOfWork,
+    client: &Client,
+    kept: Option<&KeptProof>,
+    issuer: &str,
+    query: &AuthorizationParameters<'_>,
+) -> Result<Option<CarriedParameters>, AuthorizationRefusal> {
+    let refuse = |error, shown| refuse_on_query(app, client, query, issuer, error, shown);
+    match (query.request, query.request_uri) {
+        // A client that requires its requests signed sends no other (RFC 9101, 10.5).
+        (None, None) if client.require_signed_request_object => Err(refuse(
+            OAuthError::InvalidRequest,
+            ErrorCode::RequestInvalid,
+        )),
+        (None, None) => Ok(None),
+        (Some(_), None) => {
+            let kept = kept.ok_or(Failure::new(ErrorCode::Internal))?;
+            read_signed_request(app, work, client, kept, issuer, query)
+                .await?
+                .map(Some)
+                .ok_or_else(|| {
+                    refuse(
+                        OAuthError::InvalidRequestObject,
+                        ErrorCode::RequestObjectInvalid,
+                    )
+                })
+        }
+        // Fetching an address a caller names is a request made in its name,
+        // from inside, to wherever it points.
+        (None, Some(_)) => Err(refuse(
+            OAuthError::RequestUriNotSupported,
+            ErrorCode::RequestInvalid,
+        )),
+        (Some(_), Some(_)) => Err(refuse(
+            OAuthError::InvalidRequest,
+            ErrorCode::RequestInvalid,
+        )),
+    }
+}
+
 async fn trust_request(
     app: &App,
     realm: &str,
-    parameters: AuthorizationParameters<'_>,
+    query: &AuthorizationParameters<'_>,
     work_slot: &mut Option<Box<dyn UnitOfWork>>,
 ) -> Result<TrustedRequest, AuthorizationRefusal> {
     let (realm, scope) = resolve_realm(app, realm).await?;
     let work = work_slot.insert(app.storage.begin(scope).await.map_err(Failure::from)?);
 
+    // A parameter sent without a value is one that was not sent (RFC 6749, 3.1).
+    let query = AuthorizationParameters {
+        request: query.request.filter(|text| !text.is_empty()),
+        request_uri: query.request_uri.filter(|text| !text.is_empty()),
+        ..*query
+    };
     // Shown, never returned: there is nowhere trusted to return to yet.
-    let client_id = parameters
-        .client_id
-        .ok_or(Failure::new(ErrorCode::ClientNotFound))?;
-    let client = read_named_client(work.as_mut(), client_id)
-        .await
-        .map_err(Failure::from)?
-        .filter(|client| client.enabled && client.allows_authorization_code)
-        .ok_or(Failure::new(ErrorCode::ClientNotFound))?;
-    let redirect_uri = trust_redirect_uri(app, &client, parameters)?;
-
+    let (client, kept) = read_requesting_client(work.as_mut(), &query).await?;
     let issuer = name_issuer(&app.settings, &realm);
-    // Too long, or with a character no client writes on purpose: such a value
-    // is neither kept nor echoed back.
-    let unacceptable =
-        |value: &str| value.len() > OPAQUE_VALUE_MAX_BYTES || value.chars().any(char::is_control);
-    let state = parameters.state.filter(|state| !unacceptable(state));
+    let carried =
+        read_carried_request(app, work.as_mut(), &client, kept.as_ref(), &issuer, &query).await?;
+    let parameters = carried
+        .as_ref()
+        .map_or(query, |carried| carried.over(&query));
+    let redirect_uri = trust_redirect_uri(app, &client, &parameters)?;
+
+    let state = parameters
+        .state
+        .filter(|state| !is_unacceptable_value(state));
     let asked_type = parameters.response_type.and_then(ResponseType::read);
     let declared = &client.response_types;
-    let refused_in = choose_refusal_mode(
-        parameters.response_mode,
-        asked_type,
-        declared,
-        &redirect_uri,
-    );
-    let returned = |error: OAuthError| AuthorizationRefusal::Returned {
-        response: AuthorizationResponse::write(
-            &redirect_uri,
-            refused_in,
-            &issuer,
-            state,
-            vec![("error", error.name().to_owned())],
-        ),
-    };
+    let returned =
+        |error: OAuthError| write_refusal(&redirect_uri, &parameters, declared, &issuer, error);
 
-    if parameters.state.is_some_and(unacceptable) || parameters.nonce.is_some_and(unacceptable) {
+    if parameters.state.is_some_and(is_unacceptable_value)
+        || parameters.nonce.is_some_and(is_unacceptable_value)
+    {
         return Err(returned(OAuthError::InvalidRequest));
     }
     let response_type = asked_type.ok_or_else(|| returned(OAuthError::UnsupportedResponseType))?;
@@ -398,6 +521,10 @@ async fn trust_request(
         response_mode,
         code_challenge,
         proof,
+        id_token_hint: parameters
+            .id_token_hint
+            .filter(|hint| !hint.is_empty())
+            .map(str::to_owned),
     })
 }
 
@@ -611,7 +738,7 @@ async fn keep_pending_authorization(
 async fn leave_request_waiting(
     app: &App,
     work_slot: &mut Option<Box<dyn UnitOfWork>>,
-    parameters: AuthorizationParameters<'_>,
+    parameters: &AuthorizationParameters<'_>,
     trusted: TrustedRequest,
     expected_person: Option<Uuid>,
     consent_session: Option<Uuid>,
@@ -701,7 +828,7 @@ pub async fn begin_authorization(
     ticket: Option<&SessionTicket>,
 ) -> Result<Authorization, AuthorizationRefusal> {
     let mut work_slot = None;
-    let trusted = trust_request(app, realm, parameters, &mut work_slot).await?;
+    let trusted = trust_request(app, realm, &parameters, &mut work_slot).await?;
     let work = work_slot
         .as_mut()
         .ok_or(Failure::new(ErrorCode::Internal))?;
@@ -722,8 +849,7 @@ pub async fn begin_authorization(
             .is_none_or(|max_age| (now - session.authenticated_at).whole_seconds() < max_age)
     });
     let issuer = name_issuer(&app.settings, &trusted.realm);
-    let (session, expected_person) = match parameters.id_token_hint.filter(|hint| !hint.is_empty())
-    {
+    let (session, expected_person) = match trusted.id_token_hint.as_deref() {
         Some(hint) => {
             let (session, expected) =
                 hold_session_to_hint(app, work.as_mut(), &trusted, &issuer, hint, session).await?;
@@ -754,7 +880,7 @@ pub async fn begin_authorization(
             let (request, browser_secret) = leave_request_waiting(
                 app,
                 &mut work_slot,
-                parameters,
+                &parameters,
                 trusted,
                 expected_person,
                 waiting_in,
@@ -771,7 +897,7 @@ pub async fn begin_authorization(
     let (request, browser_secret) = leave_request_waiting(
         app,
         &mut work_slot,
-        parameters,
+        &parameters,
         trusted,
         expected_person,
         None,
@@ -1172,6 +1298,7 @@ mod tests {
     const CALLBACK: &str = "https://app.example.org/callback";
     const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
     const PASSWORD: &str = "correct horse battery";
+    const ISSUER: &str = "https://id.example.test/realms/acme";
 
     fn challenge() -> String {
         URL_SAFE_NO_PAD.encode(WeakDigester.sha256(VERIFIER.as_bytes()))
@@ -1191,6 +1318,8 @@ mod tests {
             prompt: None,
             max_age: None,
             id_token_hint: None,
+            request: None,
+            request_uri: None,
             caller: None,
             known_browsers: &[],
         }
@@ -2416,6 +2545,228 @@ mod tests {
         assert_eq!(ask_with("61"), "granted");
     }
 
+    /// The realm of `start(false)` with `bob`, and `signer`, which proves
+    /// itself and signs its requests with its secret.
+    struct SigningRealm {
+        app: App,
+        secret: Secret,
+        /// An identity token of `ada` that `signer` was given.
+        of_ada: String,
+        ada: SessionTicket,
+        bob: SessionTicket,
+    }
+
+    impl SigningRealm {
+        fn prepare() -> Self {
+            use crate::clients::assertion::ASSERTION_TYPE;
+            use crate::clients::register::NewClient;
+            use crate::clients::{AssertionAlgorithm, ClientAuthMethod};
+            use crate::testkit::fixtures::{check_and_register_client, sign_client_assertion};
+
+            let (app, _storage, _clock, _secret) = start(false);
+            let (_, scope) =
+                complete(crate::tenancy::resolve::resolve_realm(&app, "acme")).expect("the realm");
+            complete(create_person(&app, scope, "bob", PASSWORD));
+            let (scopes, callbacks) = (["openid".to_owned()], [CALLBACK.to_owned()]);
+            let mut work = complete(app.storage.begin(scope)).expect("a unit of work");
+            let wanted = NewClient {
+                client_id: "signer",
+                name: "signer",
+                scopes: &scopes,
+                capabilities: &[],
+                redirect_uris: &callbacks,
+                post_logout_redirect_uris: &[],
+                response_types: &[],
+                public: false,
+                requires_consent: false,
+                id_token_signed_response_alg: None,
+                auth_method: Some(ClientAuthMethod::ClientSecretJwt),
+                jwks: None,
+                jwks_uri: None,
+                auth_signing_alg: None,
+                request_object_signing_alg: Some(AssertionAlgorithm::Hs256),
+                require_signed_request_object: false,
+                created_by: None,
+            };
+            let (_, secret) = complete(check_and_register_client(&app, work.as_mut(), wanted))
+                .expect("a client that signs its requests");
+            complete(work.commit()).expect("a commit");
+            let secret = secret.expect("a secret, shown once");
+
+            let signed = sign_request(&app, &secret, &serde_json::json!({}));
+            let parameters = AuthorizationParameters {
+                client_id: Some("signer"),
+                request: Some(&signed),
+                ..AuthorizationParameters::default()
+            };
+            let Ok(Authorization::SignInRequired {
+                request,
+                browser_secret,
+            }) = complete(begin_authorization(&app, "acme", parameters, None))
+            else {
+                panic!("a person without a session signs in first");
+            };
+            let typed = TypedSignIn {
+                answer: SignInAnswer::Password {
+                    name: "ada",
+                    password: Secret::new(PASSWORD.as_bytes().to_vec()),
+                },
+                caller: None,
+                known_browsers: &[],
+            };
+            let signed_in = complete(finish_sign_in(
+                &app,
+                "acme",
+                request,
+                &browser_secret,
+                typed,
+            ))
+            .expect("a signed-in person")
+            .into_finished()
+            .expect("a person who owes no code");
+            let assertion = sign_client_assertion(&app, "signer", &secret, ISSUER, "x-1");
+            let exchange = TokenRequest {
+                grant_type: Some("authorization_code"),
+                code: signed_in.response.read_parameter("code"),
+                redirect_uri: Some(CALLBACK),
+                code_verifier: Some(VERIFIER),
+                client_assertion_type: Some(ASSERTION_TYPE),
+                client_assertion: Some(&assertion),
+                ..TokenRequest::default()
+            };
+            let of_ada = complete(grant_token(&app, "acme", exchange))
+                .expect("tokens")
+                .id_token
+                .expect("an identity token");
+            let (_, bob) = sign_in_as(&app, "bob");
+            Self {
+                app,
+                secret,
+                of_ada,
+                ada: signed_in.ticket,
+                bob,
+            }
+        }
+
+        /// Sends a request of `signer` with each of `changes` signed in it,
+        /// beside `query`, for the browser of `ticket`.
+        fn send(
+            &self,
+            changes: &Value,
+            query: &AuthorizationParameters<'_>,
+            ticket: &SessionTicket,
+        ) -> String {
+            let signed = sign_request(&self.app, &self.secret, changes);
+            let parameters = AuthorizationParameters {
+                client_id: Some("signer"),
+                request: Some(&signed),
+                ..*query
+            };
+            read_outcome(complete(begin_authorization(
+                &self.app,
+                "acme",
+                parameters,
+                Some(ticket),
+            )))
+        }
+    }
+
+    /// A request of `signer` for a code, signed with its secret, with each
+    /// of `changes` written in it.
+    fn sign_request(app: &App, secret: &Secret, changes: &Value) -> String {
+        let mut claims = serde_json::json!({
+            "iss": "signer",
+            "aud": ISSUER,
+            "exp": app.now().unix_timestamp() + 60,
+            "response_type": "code",
+            "redirect_uri": CALLBACK,
+            "scope": "openid",
+            "nonce": "n-1",
+            "code_challenge": challenge(),
+            "code_challenge_method": "S256",
+        });
+        for (name, value) in changes.as_object().expect("changes") {
+            claims[name] = value.clone();
+        }
+        let input = format!(
+            "{}.{}",
+            URL_SAFE_NO_PAD.encode(r#"{"alg":"HS256"}"#),
+            URL_SAFE_NO_PAD.encode(claims.to_string())
+        );
+        let tag = app
+            .digester
+            .hmac_sha256(secret, input.as_bytes())
+            .expect("a tag");
+        format!("{input}.{}", URL_SAFE_NO_PAD.encode(tag))
+    }
+
+    #[test]
+    fn a_hint_a_signed_request_carries_holds_the_session_to_its_person_as_in_a_query() {
+        let realm = SigningRealm::prepare();
+        let silent_for_ada = serde_json::json!({ "prompt": "none", "id_token_hint": realm.of_ada });
+        let alone = AuthorizationParameters::default();
+
+        assert_eq!(realm.send(&silent_for_ada, &alone, &realm.ada), "granted");
+        assert_eq!(
+            realm.send(&silent_for_ada, &alone, &realm.bob),
+            "login_required",
+            "the session of bob does not answer for ada"
+        );
+        let challenge = challenge();
+        let in_the_query = AuthorizationParameters {
+            client_id: Some("signer"),
+            scope: Some("openid"),
+            prompt: Some("none"),
+            id_token_hint: Some(&realm.of_ada),
+            ..ask(&challenge)
+        };
+        assert_eq!(
+            read_outcome(complete(begin_authorization(
+                &realm.app,
+                "acme",
+                in_the_query,
+                Some(&realm.bob),
+            ))),
+            "login_required",
+            "the same refusal, asked in the query"
+        );
+    }
+
+    #[test]
+    fn a_hint_in_the_query_beside_a_signed_request_is_not_read() {
+        let realm = SigningRealm::prepare();
+        let beside = AuthorizationParameters {
+            id_token_hint: Some(&realm.of_ada),
+            ..AuthorizationParameters::default()
+        };
+
+        assert_eq!(
+            realm.send(
+                &serde_json::json!({ "prompt": "none" }),
+                &beside,
+                &realm.bob
+            ),
+            "granted",
+            "the session of bob answers: the object names nobody"
+        );
+    }
+
+    #[test]
+    fn an_age_a_signed_request_carries_asks_an_older_session_to_sign_in_again() {
+        let realm = SigningRealm::prepare();
+        let alone = AuthorizationParameters::default();
+
+        assert_eq!(
+            realm.send(&serde_json::json!({}), &alone, &realm.ada),
+            "granted"
+        );
+        assert_eq!(
+            realm.send(&serde_json::json!({ "max_age": 0 }), &alone, &realm.ada),
+            "sign in",
+            "proven longer ago than the object allows"
+        );
+    }
+
     #[test]
     fn the_parameters_of_a_request_print_no_identity_token_hint() {
         let parameters = AuthorizationParameters {
@@ -2558,6 +2909,8 @@ mod tests {
             jwks: None,
             jwks_uri: None,
             auth_signing_alg: None,
+            request_object_signing_alg: None,
+            require_signed_request_object: false,
             created_by: Some("operator"),
         };
         let mut work = complete(scenario.app.storage.begin(scenario.scope)).expect("a unit");
@@ -2643,6 +2996,8 @@ mod tests {
             scopes: vec!["openid".to_owned()],
             capabilities: Vec::new(),
             id_token_signed_response_alg: None,
+            request_object_signing_alg: None,
+            require_signed_request_object: false,
             enabled: true,
             self_registered: false,
             created_at: scenario.app.now(),

@@ -174,6 +174,32 @@ async fn an_open_realm_registers_a_client_and_manages_it_with_a_token_that_serve
 }
 
 #[actix_web::test]
+async fn a_client_that_registers_itself_is_refused_how_it_would_sign_its_requests() {
+    let (product, operator) = start(&[Capability::RealmWrite, Capability::UserRead]).await;
+    let opened = send(
+        &product,
+        Method::PUT,
+        "/admin/v1/realms/acme/settings/registration",
+        Some(&operator),
+        Some(&json!({ "registration": "open" })),
+    )
+    .await;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+
+    for (member, value) in [
+        ("request_object_signing_alg", json!("RS256")),
+        ("require_signed_request_object", json!(true)),
+    ] {
+        let mut metadata = json!({ "redirect_uris": ["https://app.example.org/cb"] });
+        metadata[member] = value;
+        let refused = send(&product, Method::POST, REGISTER, None, Some(&metadata)).await;
+
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{member}");
+        assert_eq!(refused.body["error"], "invalid_client_metadata", "{member}");
+    }
+}
+
+#[actix_web::test]
 async fn a_body_past_its_limit_or_that_is_not_json_is_metadata_that_cannot_be_read() {
     let (product, operator) = start(&[Capability::RealmWrite, Capability::UserRead]).await;
     send(

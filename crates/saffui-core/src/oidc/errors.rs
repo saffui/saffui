@@ -13,6 +13,8 @@ pub enum OAuthError {
     InvalidScope,
     UnsupportedResponseType,
     UnsupportedResponseMode,
+    InvalidRequestObject,
+    RequestUriNotSupported,
     LoginRequired,
     ConsentRequired,
     AccessDenied,
@@ -33,6 +35,8 @@ impl OAuthError {
             Self::InvalidScope => "invalid_scope",
             Self::UnsupportedResponseType => "unsupported_response_type",
             Self::UnsupportedResponseMode => "unsupported_response_mode",
+            Self::InvalidRequestObject => "invalid_request_object",
+            Self::RequestUriNotSupported => "request_uri_not_supported",
             Self::LoginRequired => "login_required",
             Self::ConsentRequired => "consent_required",
             Self::AccessDenied => "access_denied",
@@ -58,6 +62,12 @@ impl OAuthError {
             Self::InvalidScope => "A scope that was asked for is unknown or not allowed.",
             Self::UnsupportedResponseType => "This response type is not served.",
             Self::UnsupportedResponseMode => "This response mode is not served for this request.",
+            Self::InvalidRequestObject => {
+                "The request object cannot be read, or was not made for this request."
+            }
+            Self::RequestUriNotSupported => {
+                "A request is read by value, never fetched from an address."
+            }
             Self::LoginRequired => "The person must sign in.",
             Self::ConsentRequired => "The person must allow the client first.",
             Self::AccessDenied => "The person did not allow the client.",

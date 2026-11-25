@@ -720,6 +720,8 @@ mod tests {
             prompt: None,
             max_age: None,
             id_token_hint: None,
+            request: None,
+            request_uri: None,
             caller: None,
             known_browsers: &[],
         };

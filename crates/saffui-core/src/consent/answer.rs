@@ -353,6 +353,8 @@ mod tests {
                 jwks: None,
                 jwks_uri: None,
                 auth_signing_alg: None,
+                request_object_signing_alg: None,
+                require_signed_request_object: false,
                 created_by: None,
             },
         ))
@@ -863,6 +865,8 @@ mod tests {
             scopes: vec!["openid".to_owned()],
             capabilities: Vec::new(),
             id_token_signed_response_alg: None,
+            request_object_signing_alg: None,
+            require_signed_request_object: false,
             enabled: true,
             self_registered: false,
             created_at: scenario.app.now(),

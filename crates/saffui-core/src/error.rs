@@ -87,6 +87,7 @@ pub enum ErrorCode {
     RegistrationChangesSpent = 330,
     ResponseTypesInvalid = 331,
     AnswerPostedToDeployment = 332,
+    RequestObjectInvalid = 333,
     AdminAuthenticationFailed = 400,
     CapabilityMissing = 401,
     SignInFailed = 402,
@@ -236,6 +237,7 @@ impl ErrorCode {
             | Self::SoftwareStatementRefused
             | Self::ResponseTypesInvalid
             | Self::AnswerPostedToDeployment
+            | Self::RequestObjectInvalid
             | Self::AuthMethodInvalid => ErrorKind::Invalid,
         }
     }
@@ -302,6 +304,7 @@ impl ErrorCode {
             Self::RegistrationChangesSpent => "client.registration_changes_spent",
             Self::ResponseTypesInvalid => "client.response_types_invalid",
             Self::AnswerPostedToDeployment => "client.answer_posted_to_deployment",
+            Self::RequestObjectInvalid => "client.request_object_invalid",
             Self::TokenInvalid => "token.invalid",
             Self::GrantInvalid => "token.grant_invalid",
             Self::TokenScopeInsufficient => "token.scope_insufficient",
@@ -526,6 +529,9 @@ impl ErrorCode {
             Self::AnswerPostedToDeployment => {
                 "An answer is never posted to this deployment itself."
             }
+            Self::RequestObjectInvalid => {
+                "The application signed a request that cannot be read, or that was not made for this realm now."
+            }
             Self::ClaimsTooLarge => "The mappers of this client write more than a token can carry.",
         }
     }
@@ -589,7 +595,7 @@ mod tests {
 
     use super::ErrorCode;
 
-    const ALL: [ErrorCode; 99] = [
+    const ALL: [ErrorCode; 100] = [
         ErrorCode::Internal,
         ErrorCode::StorageUnavailable,
         ErrorCode::Conflict,
@@ -689,6 +695,7 @@ mod tests {
         ErrorCode::RegistrationChangesSpent,
         ErrorCode::ResponseTypesInvalid,
         ErrorCode::AnswerPostedToDeployment,
+        ErrorCode::RequestObjectInvalid,
     ];
 
     #[test]

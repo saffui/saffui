@@ -16,7 +16,7 @@ use time::Duration;
 use tokio_postgres::error::SqlState;
 use uuid::Uuid;
 
-mod support;
+use crate::support;
 
 /// Runs `update`, which names the row `id` as `$1`, as the owner of the
 /// schema under `scope`, and rolls it back. Returns the rule that refused

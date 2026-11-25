@@ -13,7 +13,7 @@ use saffui_core::testkit::fixtures::{
     check_and_register_client, create_realm, sign_client_assertion,
 };
 
-mod support;
+use crate::support;
 
 /// Registers `signer`, which signs its assertions with its secret, in the
 /// realm `acme`, and returns the secret.

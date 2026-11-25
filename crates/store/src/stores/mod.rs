@@ -1,20 +1,14 @@
-//! One file per storage interface of the core.
+//! One folder per domain of the core, and in it one file per storage
+//! interface.
 
 mod audit;
-mod authenticators;
-mod browsers;
+mod authz;
 mod claims;
 mod clients;
-mod codes;
-mod consents;
+mod consent;
+mod directory;
 mod keys;
-mod persons;
-mod policies;
-mod realms;
-mod registrations;
-mod relations;
-mod roles;
-mod security_keys;
-mod sessions;
-mod throttle;
+mod login;
+mod oidc;
+mod tenancy;
 mod tokens;

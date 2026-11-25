@@ -13,7 +13,7 @@ use saffui_core::testkit::contract::{
     check_sign_in_contract, check_tenancy_contract,
 };
 
-mod support;
+use crate::support;
 
 #[tokio::test]
 async fn postgres_passes_the_tenancy_contract() {

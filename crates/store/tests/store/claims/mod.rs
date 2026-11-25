@@ -5,11 +5,9 @@
 //! proves itself takes the same row: a grant of the operator waits for it.
 
 use std::future::Future;
-use std::time::{Duration, Instant};
 
 use pgcore::APP_ROLE;
 use pgcore::pool::PoolSettings;
-use pgcore::testkit::TestDatabase;
 use saffui_core::app::App;
 use saffui_core::authz::admin::{AdminCaller, authorize_admin_call};
 use saffui_core::authz::capability::Capability;
@@ -26,85 +24,11 @@ use saffui_core::testkit::fixtures::{
     register_application,
 };
 use serde_json::{Map, Value, json};
-use tokio::task::JoinHandle;
-use tokio_postgres::Client;
 use tokio_postgres::error::SqlState;
 use uuid::Uuid;
 
-mod support;
-
-/// What a session waits on for a row another holds, and for a table.
-const ON_A_ROW: &[&str] = &["transactionid", "tuple"];
-const ON_A_TABLE: &[&str] = &["relation"];
-
-async fn connect(database: &TestDatabase, role: &str) -> Client {
-    database
-        .plan(role)
-        .connect_directly()
-        .await
-        .expect("a connection")
-}
-
-/// Waits until a session of the database waits on a lock of one of `kinds`,
-/// until `task` is done, or three seconds at most: short of what a unit of
-/// work waits for a lock, so that a writer left waiting is not timed out.
-async fn wait_for_waiter<T>(observer: &Client, kinds: &[&str], task: &JoinHandle<T>) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while !task.is_finished() && Instant::now() < deadline {
-        let waiting: i64 = observer
-            .query_one(
-                "SELECT count(*) FROM pg_stat_activity
-                 WHERE datname = current_database() AND wait_event_type = 'Lock'
-                   AND wait_event = ANY($1)",
-                &[&kinds],
-            )
-            .await
-            .expect("a count")
-            .get(0);
-        if waiting > 0 {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    false
-}
-
-/// Plays two writers against each other. The first stops on `table`, which
-/// an operator holds, after it has taken its row; the second starts then.
-/// Returns whether the second waited on a row, and what each answered.
-async fn race_two_writers<A, B>(
-    database: &TestDatabase,
-    table: &str,
-    first: impl Future<Output = A> + Send + 'static,
-    second: impl Future<Output = B> + Send + 'static,
-) -> (bool, A, B)
-where
-    A: Send + 'static,
-    B: Send + 'static,
-{
-    let observer = connect(database, APP_ROLE).await;
-    let operator = connect(database, "saffui_owner").await;
-    operator
-        .batch_execute(&format!(
-            "BEGIN; LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE"
-        ))
-        .await
-        .expect("the table held");
-    let first = tokio::spawn(first);
-    assert!(
-        wait_for_waiter(&observer, ON_A_TABLE, &first).await,
-        "the first writer reaches the table"
-    );
-    let second = tokio::spawn(second);
-    let waited = wait_for_waiter(&observer, ON_A_ROW, &second).await;
-    operator
-        .batch_execute("ROLLBACK")
-        .await
-        .expect("the table let go");
-    let first = first.await.expect("the first writer");
-    let second = second.await.expect("the second writer");
-    (waited, first, second)
-}
+use crate::support::locks::{ON_A_ROW, race_two_writers, wait_for_waiter};
+use crate::support::{self, connect};
 
 /// The client `client_id` of the realm, granted `capabilities`, as the
 /// administration plane lets it through.
@@ -190,7 +114,7 @@ async fn two_mappers_written_at_once_where_one_fits_keep_one() {
 
     let (waited, first, second) = race_two_writers(
         &database,
-        "client_mappers",
+        "LOCK TABLE client_mappers IN ACCESS EXCLUSIVE MODE",
         write_mapper(&app, &caller, "last-one".to_owned()),
         write_mapper(&app, &caller, "one-too-many".to_owned()),
     )
@@ -239,7 +163,7 @@ async fn a_writer_of_attributes_counts_what_another_left_while_it_waited() {
 
     let (waited, first, second) = race_two_writers(
         &database,
-        "audit_events",
+        "LOCK TABLE audit_events IN ACCESS EXCLUSIVE MODE",
         write_attributes_as(&app, &both, ada, left.clone()),
         write_attributes_as(&app, &clerk, ada, name_attributes("b", 32)),
     )

@@ -1,4 +1,13 @@
+pub mod database;
+pub mod http;
+pub mod jwk;
+pub mod jws;
+pub mod node;
+pub mod product;
+
 use std::process::Command;
+
+use serde_json::Value;
 
 /// The root key every journey runs under: bootstrap seals with it, and the
 /// node that serves afterwards must open with the same one.
@@ -21,4 +30,8 @@ pub fn saffui_command() -> Command {
         .env(ROOT_KEY_VARIABLE, ROOT_KEY)
         .env("SAFFUI_RETENTION", "off");
     command
+}
+
+pub fn read_json(text: &str) -> Value {
+    serde_json::from_str(text).unwrap_or_else(|_| panic!("not JSON: {text:?}"))
 }

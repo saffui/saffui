@@ -16,13 +16,8 @@ use saffui_core::ports::crypto::{Digester, SignatureAlgorithm, Signer};
 use saffui_core::tokens::mint::write_half_hash;
 use serde_json::{Value, json};
 
-#[path = "support/database.rs"]
-mod database;
-#[path = "support/http.rs"]
-mod http;
-#[path = "support/node.rs"]
-mod node;
-mod support;
+use crate::support::http::{read_cookie, read_header};
+use crate::support::{self, database, http, node, read_json};
 
 const FORM: (&str, &str) = ("Content-Type", "application/x-www-form-urlencoded");
 const JSON: (&str, &str) = ("Content-Type", "application/json");
@@ -30,26 +25,6 @@ const PASSWORD: &str = "correct horse battery";
 const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 const CALLBACK: &str = "https://app.example.test/callback";
 const TOKEN: &str = "/realms/acme/oauth2/token";
-
-fn read_json(text: &str) -> Value {
-    serde_json::from_str(text).unwrap_or_else(|_| panic!("not JSON: {text:?}"))
-}
-
-fn read_header<'a>(answer: &'a http::Answer, name: &str) -> Option<&'a str> {
-    answer.head.lines().skip(1).find_map(|line| {
-        let (key, value) = line.split_once(':')?;
-        key.eq_ignore_ascii_case(name).then(|| value.trim())
-    })
-}
-
-fn read_cookie(answer: &http::Answer, prefix: &str) -> Option<String> {
-    answer.head.lines().skip(1).find_map(|line| {
-        let (key, value) = line.split_once(':')?;
-        let value = value.trim();
-        (key.eq_ignore_ascii_case("set-cookie") && value.starts_with(prefix))
-            .then(|| value.split(';').next().unwrap_or_default().to_owned())
-    })
-}
 
 /// A parameter of what follows `separator` in an address, still encoded.
 fn read_parameter(location: &str, separator: char, name: &str) -> Option<String> {

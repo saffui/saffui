@@ -15,15 +15,7 @@ use pgcore::{APP_ROLE, MAINTENANCE_ROLE};
 use saffui_core::ports::crypto::{SignatureAlgorithm, Signer};
 use serde_json::{Value, json};
 
-#[path = "support/database.rs"]
-mod database;
-#[path = "support/http.rs"]
-mod http;
-#[path = "support/jwk.rs"]
-mod jwk;
-#[path = "support/node.rs"]
-mod node;
-mod support;
+use crate::support::{self, database, http, jwk, node, read_json};
 
 const FORM: (&str, &str) = ("Content-Type", "application/x-www-form-urlencoded");
 const JSON: (&str, &str) = ("Content-Type", "application/json");
@@ -63,10 +55,6 @@ fn bootstrap_with_administrator(database: &TestDatabase) -> Bootstrapped {
         realm: read("realm "),
         secret: read("client_secret "),
     }
-}
-
-fn read_json(text: &str) -> Value {
-    serde_json::from_str(text).unwrap_or_else(|_| panic!("not JSON: {text:?}"))
 }
 
 fn get_token(node: &node::Node, secret: &str) -> String {

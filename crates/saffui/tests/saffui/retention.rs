@@ -8,13 +8,7 @@ use pgcore::migrate::EMBEDDED;
 use pgcore::testkit::TestDatabase;
 use pgcore::{APP_ROLE, MAINTENANCE_ROLE, RETENTION_ROLE};
 
-#[path = "support/database.rs"]
-mod database;
-#[path = "support/http.rs"]
-mod http;
-#[path = "support/node.rs"]
-mod node;
-mod support;
+use crate::support::{self, database, http, node};
 
 const OWNER: &str = "saffui_owner";
 

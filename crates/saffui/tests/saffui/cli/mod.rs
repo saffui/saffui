@@ -1,6 +1,10 @@
+mod admin;
+mod migrate;
+mod serve;
+
 use std::process::Output;
 
-mod support;
+use crate::support;
 
 fn run_saffui(arguments: &[&str]) -> Output {
     support::saffui_command()

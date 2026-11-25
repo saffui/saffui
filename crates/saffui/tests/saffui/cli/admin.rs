@@ -11,15 +11,9 @@ use base64::engine::general_purpose::STANDARD;
 use pgcore::APP_ROLE;
 use pgcore::migrate::EMBEDDED;
 use pgcore::testkit::TestDatabase;
-use serde_json::{Value, json};
+use serde_json::json;
 
-#[path = "support/database.rs"]
-mod database;
-#[path = "support/http.rs"]
-mod http;
-#[path = "support/node.rs"]
-mod node;
-mod support;
+use crate::support::{self, database, http, node, read_json};
 
 const FORM: (&str, &str) = ("Content-Type", "application/x-www-form-urlencoded");
 const JSON: (&str, &str) = ("Content-Type", "application/json");
@@ -45,10 +39,6 @@ fn bootstrap_with_administrator(database: &TestDatabase) -> String {
         .find_map(|line| line.strip_prefix("client_secret "))
         .expect("the secret is printed once")
         .to_owned()
-}
-
-fn read_json(text: &str) -> Value {
-    serde_json::from_str(text).unwrap_or_else(|_| panic!("not JSON: {text:?}"))
 }
 
 fn get_token(node: &node::Node, client_id: &str, secret: &str) -> String {

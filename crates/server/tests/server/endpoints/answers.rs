@@ -17,8 +17,8 @@ use saffui_core::testkit::fixtures::{
 use saffui_core::testkit::memory::MemoryStorage;
 use serde_json::json;
 
-use crate::admin::call;
-use crate::login::{Answer, get, post};
+use crate::endpoints::admin::call;
+use crate::endpoints::login::{Answer, get, post};
 
 const PASSWORD: &str = "correct horse battery";
 const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";

@@ -9,15 +9,9 @@ use pgcore::migrate::EMBEDDED;
 use pgcore::testkit::TestDatabase;
 use pgcore::{APP_ROLE, MAINTENANCE_ROLE};
 use saffui_core::ports::crypto::{SignatureAlgorithm, Signer};
-use serde_json::Value;
 
-#[path = "support/database.rs"]
-mod database;
-#[path = "support/http.rs"]
-mod http;
-#[path = "support/node.rs"]
-mod node;
-mod support;
+use crate::support::jws::decode_part;
+use crate::support::{self, database, http, node, read_json};
 
 const FORM: (&str, &str) = ("Content-Type", "application/x-www-form-urlencoded");
 
@@ -62,14 +56,6 @@ fn ask_for_token(node: &node::Node, secret: &str, form: &str) -> http::Answer {
         form,
     )
     .expect("an answer")
-}
-
-fn read_json(text: &str) -> Value {
-    serde_json::from_str(text).unwrap_or_else(|_| panic!("not JSON: {text:?}"))
-}
-
-fn decode_part(part: &str) -> Value {
-    read_json(&String::from_utf8(URL_SAFE_NO_PAD.decode(part).expect("base64url")).expect("text"))
 }
 
 #[test]

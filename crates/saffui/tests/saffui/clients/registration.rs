@@ -17,13 +17,8 @@ use pgcore::testkit::TestDatabase;
 use saffui_core::ports::crypto::Digester;
 use serde_json::{Value, json};
 
-#[path = "support/database.rs"]
-mod database;
-#[path = "support/http.rs"]
-mod http;
-#[path = "support/node.rs"]
-mod node;
-mod support;
+use crate::support::http::{read_cookie, read_header, read_parameter, read_shown};
+use crate::support::{self, database, http, node, read_json};
 
 const FORM: (&str, &str) = ("Content-Type", "application/x-www-form-urlencoded");
 const JSON: (&str, &str) = ("Content-Type", "application/json");
@@ -67,45 +62,6 @@ fn bootstrap_with_administrator(database: &TestDatabase) -> Bootstrapped {
         realm: read("realm "),
         secret: read("client_secret "),
     }
-}
-
-/// What a page of consent says it showed of the client, for its answer.
-fn read_shown(page: &str) -> String {
-    page.split_once(r#"name="shown" value=""#)
-        .and_then(|(_, rest)| rest.split_once('"'))
-        .map(|(shown, _)| shown.to_owned())
-        .expect("what the page showed")
-}
-
-fn read_json(text: &str) -> Value {
-    serde_json::from_str(text).unwrap_or_else(|_| panic!("not JSON: {text:?}"))
-}
-
-/// The value of one header of an answer, the first when it is repeated.
-fn read_header<'a>(answer: &'a http::Answer, name: &str) -> Option<&'a str> {
-    answer.head.lines().skip(1).find_map(|line| {
-        let (key, value) = line.split_once(':')?;
-        key.eq_ignore_ascii_case(name).then(|| value.trim())
-    })
-}
-
-/// The `name=value` of the cookie an answer sets whose name starts with `prefix`.
-fn read_cookie(answer: &http::Answer, prefix: &str) -> Option<String> {
-    answer.head.lines().skip(1).find_map(|line| {
-        let (key, value) = line.split_once(':')?;
-        let value = value.trim();
-        (key.eq_ignore_ascii_case("set-cookie") && value.starts_with(prefix))
-            .then(|| value.split(';').next().unwrap_or_default().to_owned())
-    })
-}
-
-fn read_parameter(location: &str, name: &str) -> Option<String> {
-    let (_, query) = location.split_once('?')?;
-    query
-        .split('&')
-        .filter_map(|pair| pair.split_once('='))
-        .find(|(key, _)| *key == name)
-        .map(|(_, value)| value.to_owned())
 }
 
 fn get_token(node: &node::Node, secret: &str) -> String {

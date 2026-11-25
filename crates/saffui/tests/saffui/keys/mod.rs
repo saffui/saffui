@@ -1,6 +1,8 @@
 //! The keys of a realm on Postgres, sealed by the provider under a root key
 //! that never reaches the database.
 
+mod key_rotation;
+
 use crypto::envelope::is_sealed;
 use pgcore::APP_ROLE;
 use saffui_core::app::App;
@@ -11,10 +13,9 @@ use saffui_core::secret::Secret;
 use saffui_core::tenancy::RealmScope;
 use tokio_postgres::error::SqlState;
 
-#[path = "support/product.rs"]
-mod product;
-
-use product::{ROOT_KEY, connect_as, create_realm, scope_statement, wire_app, wire_on_postgres};
+use crate::support::product::{
+    ROOT_KEY, connect_as, create_realm, scope_statement, wire_app, wire_on_postgres,
+};
 
 const OWNER: &str = "saffui_owner";
 

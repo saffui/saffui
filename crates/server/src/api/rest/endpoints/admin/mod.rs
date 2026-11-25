@@ -1,5 +1,6 @@
 //! The administration plane, under `/admin/v1`. Every handler declares the
-//! capability it requires in its macro: `tests/capabilities.rs` reads them.
+//! capability it requires in its macro: `tests/server/capabilities.rs` reads
+//! them.
 
 pub mod audit;
 pub mod client;

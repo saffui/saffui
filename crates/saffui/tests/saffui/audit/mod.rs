@@ -11,10 +11,7 @@ use saffui_core::testkit::contract::check_audit_contract;
 use serde_json::json;
 use tokio_postgres::error::SqlState;
 
-#[path = "support/product.rs"]
-mod product;
-
-use product::{connect_as, create_realm, scope_statement, wire_on_postgres};
+use crate::support::product::{connect_as, create_realm, scope_statement, wire_on_postgres};
 
 const OWNER: &str = "saffui_owner";
 

@@ -10,6 +10,11 @@ updates:
       default-days: 7
     commit-message:
       prefix: ci
+    groups:
+      # Restore and save move together: an entry one release saves, another may not find.
+      actions-cache:
+        patterns:
+          - "actions/cache*"
 
   - package-ecosystem: cargo
     directory: /

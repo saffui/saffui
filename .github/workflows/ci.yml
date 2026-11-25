@@ -18,11 +18,22 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Nothing is reused incrementally from one run to the next, and its files would swell the cache.
+  CARGO_INCREMENTAL: "0"
+  # A failing test still points at its file and line, and what is linked and cached is smaller.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  # A cache is found again only under the paths it was saved with: restore and save both read these.
+  CACHED_PATHS: |
+    ~/.cargo/registry/index/
+    ~/.cargo/registry/cache/
+    ~/.cargo/git/db/
+    target/
 
 jobs:
   fmt:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    cache-mode: none
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -36,9 +47,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cache
+        with:
+          path: ${{ env.CACHED_PATHS }}
+          key: ${{ runner.os }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+          # The daily run builds from source, so that its verdict owes nothing to a cache.
+          lookup-only: ${{ github.event_name == 'schedule' }}
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       # The workspace leaves this feature off: the crypto crate is checked under it too.
       - run: cargo clippy -p crypto --features fips-strict --all-targets --locked -- -D warnings
+      # GitHub keeps a pull request's entries under its merge ref, which only its own re-runs read: leaving pull requests out only spares the quota.
+      # Anything a push or schedule run executes can write here too: after a bad merge, delete every cache (gh cache delete --all) before trusting a run again.
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.cache.outputs.cache-hit != 'true' && (github.event_name == 'push' || github.event_name == 'schedule')
+        with:
+          path: ${{ env.CACHED_PATHS }}
+          key: ${{ steps.cache.outputs.cache-primary-key }}
 
   test:
     runs-on: ubuntu-latest
@@ -50,6 +75,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cache
+        with:
+          path: ${{ env.CACHED_PATHS }}
+          key: ${{ runner.os }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+          lookup-only: ${{ github.event_name == 'schedule' }}
       - name: Start a throwaway PostgreSQL cluster
         run: |
           # The server the runner image carries, the newest of them: nothing is downloaded.
@@ -60,10 +91,16 @@ jobs:
       # The constants of the schema are the ones the migrations build.
       - name: Check the generated schema
         run: SAFFUI_DEV_PG_BIN="$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -n 1)" scripts/dev-postgres.sh gen-schema --check
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.cache.outputs.cache-hit != 'true' && (github.event_name == 'push' || github.event_name == 'schedule')
+        with:
+          path: ${{ env.CACHED_PATHS }}
+          key: ${{ steps.cache.outputs.cache-primary-key }}
 
   deny:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    cache-mode: none
     env:
       # A version bump waits seven days after the release, the cooldown dependabot.yml already sets.
       DENY_VERSION: "0.20.2"

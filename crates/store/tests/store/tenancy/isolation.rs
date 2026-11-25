@@ -4,7 +4,6 @@
 use std::time::{Duration, Instant};
 
 use pgcore::pool::PoolSettings;
-use pgcore::testkit::TestDatabase;
 use pgcore::{APP_ROLE, MAINTENANCE_ROLE};
 use saffui_core::app::App;
 use saffui_core::error::ErrorCode;
@@ -14,7 +13,7 @@ use saffui_core::tenancy::realm::{NewRealm, Provisioned, provision_first_realm};
 use tokio_postgres::Client;
 use tokio_postgres::error::{DbError, SqlState};
 
-mod support;
+use crate::support::{self, connect};
 
 const OWNER: &str = "saffui_owner";
 
@@ -28,14 +27,6 @@ async fn provision(app: &App, tenant_name: &str, realm_name: &str) -> Provisione
     )
     .await
     .expect("a provisioned realm")
-}
-
-async fn connect(database: &TestDatabase, role: &str) -> Client {
-    database
-        .plan(role)
-        .connect_directly()
-        .await
-        .expect("a connection")
 }
 
 async fn count_rows(client: &Client, table: &str) -> i64 {

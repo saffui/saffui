@@ -13,7 +13,7 @@ use saffui_core::oidc::errors::OAuthError;
 use saffui_core::testkit::fixtures::{create_administrator, create_realm, create_service_client};
 use serde_json::Map;
 
-mod support;
+use crate::support;
 
 #[tokio::test]
 async fn a_walk_the_database_cannot_answer_is_to_be_asked_again() {

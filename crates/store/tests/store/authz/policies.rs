@@ -26,48 +26,11 @@ use saffui_core::tenancy::RealmScope;
 use saffui_core::testkit::fixtures::{create_administrator, create_realm};
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
-use tokio_postgres::Client;
 
-mod support;
-
-/// What a session waits on for a row another holds, and for a table.
-const ON_A_ROW: &[&str] = &["transactionid", "tuple"];
-const ON_A_TABLE: &[&str] = &["relation"];
+use crate::support::locks::{ON_A_ROW, race_two_writers, wait_for_waiter};
+use crate::support::{self, connect};
 
 const READERS: &str = "definition user {}\ndefinition document {\n  relation reader: user\n}";
-
-async fn connect(database: &TestDatabase, role: &str) -> Client {
-    database
-        .plan(role)
-        .connect_directly()
-        .await
-        .expect("a connection")
-}
-
-/// Waits until a session of the database waits on a lock of one of `kinds`,
-/// until `task` is done, or three seconds at most: short of what a unit of
-/// work waits for a lock, so that a writer left waiting is not timed out.
-/// The observer is of the serving role: it sees what its sessions wait on.
-async fn wait_for_waiter<T>(observer: &Client, kinds: &[&str], task: &JoinHandle<T>) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while !task.is_finished() && Instant::now() < deadline {
-        let waiting: i64 = observer
-            .query_one(
-                "SELECT count(*) FROM pg_stat_activity
-                 WHERE datname = current_database() AND wait_event_type = 'Lock'
-                   AND wait_event = ANY($1)",
-                &[&kinds],
-            )
-            .await
-            .expect("a count")
-            .get(0);
-        if waiting > 0 {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    false
-}
 
 /// `document:q3#reader@user:{user}`.
 fn read_by(user: &str) -> RelationTuple {
@@ -353,44 +316,6 @@ async fn a_realm_without_its_row_refuses_every_writer_and_keeps_nothing() {
     assert!(policies.is_empty(), "no policy was kept: {policies:?}");
 }
 
-/// Plays two writers of one realm against each other. The first stops on
-/// `table`, which an operator holds, after it has taken the row of the
-/// definitions; the second starts then. Returns whether the second waited
-/// on a row, and what each answered.
-async fn cross<A, B>(
-    database: &TestDatabase,
-    table: &str,
-    first: impl Future<Output = A> + Send + 'static,
-    second: impl Future<Output = B> + Send + 'static,
-) -> (bool, A, B)
-where
-    A: Send + 'static,
-    B: Send + 'static,
-{
-    let observer = connect(database, APP_ROLE).await;
-    let operator = connect(database, "saffui_owner").await;
-    operator
-        .batch_execute(&format!(
-            "BEGIN; LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE"
-        ))
-        .await
-        .expect("the table held");
-    let first = tokio::spawn(first);
-    assert!(
-        wait_for_waiter(&observer, ON_A_TABLE, &first).await,
-        "the first writer reaches the table"
-    );
-    let second = tokio::spawn(second);
-    let waited = wait_for_waiter(&observer, ON_A_ROW, &second).await;
-    operator
-        .batch_execute("ROLLBACK")
-        .await
-        .expect("the table let go");
-    let first = first.await.expect("the first writer");
-    let second = second.await.expect("the second writer");
-    (waited, first, second)
-}
-
 fn write_policy(
     app: &App,
     caller: &AdminCaller,
@@ -455,9 +380,9 @@ async fn a_policy_being_written_holds_back_whatever_would_make_it_wrong() {
                 .map_err(|failure| failure.code)
         }
     };
-    let (waited, policy, removed) = cross(
+    let (waited, policy, removed) = race_two_writers(
         &database,
-        "clients",
+        "LOCK TABLE clients IN ACCESS EXCLUSIVE MODE",
         write_policy(&app, &caller, "invoice", json!([{ "group": night }])),
         removal,
     )
@@ -474,9 +399,9 @@ async fn a_policy_being_written_holds_back_whatever_would_make_it_wrong() {
                 .map_err(|failure| failure.code)
         }
     };
-    let (waited, policy, removed) = cross(
+    let (waited, policy, removed) = race_two_writers(
         &database,
-        "clients",
+        "LOCK TABLE clients IN ACCESS EXCLUSIVE MODE",
         write_policy(&app, &caller, "receipt", json!([{ "role": approver }])),
         removal,
     )
@@ -494,9 +419,9 @@ async fn a_policy_being_written_holds_back_whatever_would_make_it_wrong() {
                 .map(|(_, removed)| removed)
         }
     };
-    let (waited, policy, written) = cross(
+    let (waited, policy, written) = race_two_writers(
         &database,
-        "clients",
+        "LOCK TABLE clients IN ACCESS EXCLUSIVE MODE",
         write_policy(&app, &caller, "voucher", json!([{ "role": approver }])),
         schema,
     )
@@ -551,9 +476,9 @@ async fn two_policies_written_at_once_where_one_fits_keep_one() {
             .expect("a policy with room for it");
     }
 
-    let (waited, first, second) = cross(
+    let (waited, first, second) = race_two_writers(
         &database,
-        "authz_policies",
+        "LOCK TABLE authz_policies IN ACCESS EXCLUSIVE MODE",
         write_policy(&app, &caller, "last-one", conditions.clone()),
         write_policy(&app, &caller, "one-too-many", conditions.clone()),
     )
@@ -612,7 +537,13 @@ async fn a_relation_written_while_the_schema_narrows_is_checked_against_the_narr
                 .map_err(|failure| failure.code)
         }
     };
-    let (waited, narrowed, related) = cross(&database, "authz_policies", narrowing, relating).await;
+    let (waited, narrowed, related) = race_two_writers(
+        &database,
+        "LOCK TABLE authz_policies IN ACCESS EXCLUSIVE MODE",
+        narrowing,
+        relating,
+    )
+    .await;
     assert!(waited, "the relation waits for the schema");
     assert_eq!(narrowed, Ok(0));
     assert_eq!(

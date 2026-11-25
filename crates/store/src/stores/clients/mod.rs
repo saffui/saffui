@@ -1,3 +1,5 @@
+mod registrations;
+
 use async_trait::async_trait;
 use saffui_core::authz::capability::Capability;
 use saffui_core::clients::store::{ClientStore, ListWindow};

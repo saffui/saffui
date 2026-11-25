@@ -19,7 +19,7 @@ use store::retention::{PgRetention, RETENTION_LOCK};
 use time::{Duration, OffsetDateTime};
 use tokio_postgres::Client;
 
-mod support;
+use crate::support;
 
 /// More than any of these passes needs.
 const TIME_ENOUGH: std::time::Duration = std::time::Duration::from_mins(1);

@@ -1,4 +1,7 @@
-//! An application wired on a database of its own.
+//! An application wired on a database of its own, and sessions opened on
+//! that database by hand.
+
+pub mod locks;
 
 use std::sync::{Arc, OnceLock};
 
@@ -16,6 +19,7 @@ use saffui_core::testkit::crypto::{
 use saffui_core::testkit::digest::WeakDigester;
 use saffui_core::testkit::random::CountingRandom;
 use store::PgStorage;
+use tokio_postgres::Client;
 
 pub async fn wire_on_postgres(pool: PoolSettings) -> (App, TestDatabase) {
     let database = TestDatabase::create(EMBEDDED).await;
@@ -41,4 +45,12 @@ pub async fn wire_on_postgres(pool: PoolSettings) -> (App, TestDatabase) {
         decoy_hash: Arc::new(OnceLock::new()),
     };
     (app, database)
+}
+
+pub async fn connect(database: &TestDatabase, role: &str) -> Client {
+    database
+        .plan(role)
+        .connect_directly()
+        .await
+        .expect("a connection")
 }

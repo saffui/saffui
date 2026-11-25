@@ -7,11 +7,10 @@
 //! after the other; an answer on the page of consent holds its client; and
 //! a client whose registration ended counts until retention removes it.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use pgcore::APP_ROLE;
 use pgcore::pool::PoolSettings;
-use pgcore::testkit::TestDatabase;
 use saffui_core::app::App;
 use saffui_core::clients::registration::{InitialAccessToken, MOST_LIVE_INITIAL_TOKENS};
 use saffui_core::clients::{ClientAuthMethod, KeptProof};
@@ -23,42 +22,9 @@ use saffui_core::oidc::registration::{
 use saffui_core::tenancy::RealmScope;
 use saffui_core::testkit::fixtures::{Application, create_realm, register_application};
 use serde_json::json;
-use tokio::task::JoinHandle;
-use tokio_postgres::Client;
 
-mod support;
-
-async fn connect(database: &TestDatabase) -> Client {
-    database
-        .plan(APP_ROLE)
-        .connect_directly()
-        .await
-        .expect("a connection")
-}
-
-/// Waits until a session of the database waits on the lock of a row, until
-/// `task` is done, or three seconds at most: short of what a unit of work
-/// waits for a lock.
-async fn wait_for_waiter<T>(observer: &Client, task: &JoinHandle<T>) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while !task.is_finished() && Instant::now() < deadline {
-        let waiting: i64 = observer
-            .query_one(
-                "SELECT count(*) FROM pg_stat_activity
-                 WHERE datname = current_database() AND wait_event_type = 'Lock'
-                   AND wait_event IN ('transactionid', 'tuple')",
-                &[],
-            )
-            .await
-            .expect("a count")
-            .get(0);
-        if waiting > 0 {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    false
-}
+use crate::support::locks::{ON_A_ROW, wait_for_waiter};
+use crate::support::{self, connect};
 
 /// The realm `acme`, open to registration with room for `bound` clients,
 /// its application `portal`, made by an administrator, and `registered`, a
@@ -137,7 +103,7 @@ async fn of_two_requests_that_present_one_registration_token_one_replaces_it() {
         .await
         .expect("a registration");
     work.commit().await.expect("a commit");
-    let observer = connect(&database).await;
+    let observer = connect(&database, APP_ROLE).await;
 
     let mut first = app.storage.begin(scope).await.expect("a unit of work");
     assert_eq!(
@@ -157,7 +123,7 @@ async fn of_two_requests_that_present_one_registration_token_one_replaces_it() {
             rotated
         })
     };
-    let waited = wait_for_waiter(&observer, &second).await;
+    let waited = wait_for_waiter(&observer, ON_A_ROW, &second).await;
     first.commit().await.expect("a commit");
 
     assert!(waited, "the second waits on the row of the registration");
@@ -190,7 +156,7 @@ async fn of_two_spends_of_the_last_use_of_an_initial_token_one_spends_it() {
         .await
         .expect("a token");
     work.commit().await.expect("a commit");
-    let observer = connect(&database).await;
+    let observer = connect(&database, APP_ROLE).await;
 
     let mut first = app.storage.begin(scope).await.expect("a unit of work");
     assert_eq!(
@@ -206,7 +172,7 @@ async fn of_two_spends_of_the_last_use_of_an_initial_token_one_spends_it() {
             spent
         })
     };
-    let waited = wait_for_waiter(&observer, &second).await;
+    let waited = wait_for_waiter(&observer, ON_A_ROW, &second).await;
     first.commit().await.expect("a commit");
 
     assert!(waited, "the second waits on the row of the token");
@@ -235,7 +201,7 @@ async fn two_registrations_of_a_realm_count_its_clients_one_after_the_other() {
 async fn count_two_registrations_at_once(settings: serde_json::Value, refused: ErrorCode) {
     let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
     let scope = open_realm_with(&app, settings).await;
-    let observer = connect(&database).await;
+    let observer = connect(&database, APP_ROLE).await;
 
     let mut in_flight = app.storage.begin(scope).await.expect("a unit of work");
     in_flight
@@ -264,7 +230,7 @@ async fn count_two_registrations_at_once(settings: serde_json::Value, refused: E
             .await
         })
     };
-    let waited = wait_for_waiter(&observer, &second).await;
+    let waited = wait_for_waiter(&observer, ON_A_ROW, &second).await;
     in_flight.commit().await.expect("a commit");
 
     assert!(waited, "the second waits on the row of the settings");
@@ -282,7 +248,7 @@ async fn count_two_registrations_at_once(settings: serde_json::Value, refused: E
 async fn a_registration_is_judged_by_the_settings_it_holds_when_it_inserts() {
     let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
     let scope = open_realm(&app, 10).await;
-    let observer = connect(&database).await;
+    let observer = connect(&database, APP_ROLE).await;
     let spawn_registration = |metadata: serde_json::Value| {
         let app = app.clone();
         tokio::spawn(async move { register(&app, metadata).await })
@@ -326,7 +292,7 @@ async fn a_registration_is_judged_by_the_settings_it_holds_when_it_inserts() {
             .await
             .expect("settings changed");
         let waiting = spawn_registration(metadata);
-        let waited = wait_for_waiter(&observer, &waiting).await;
+        let waited = wait_for_waiter(&observer, ON_A_ROW, &waiting).await;
         changing.commit().await.expect("a commit");
 
         assert!(waited, "the registration waits on the row of the settings");
@@ -347,7 +313,7 @@ async fn of_two_attempts_at_once_at_the_bound_of_the_brake_one_is_counted() {
 
     let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
     let scope = open_realm(&app, 10).await;
-    let observer = connect(&database).await;
+    let observer = connect(&database, APP_ROLE).await;
     let now = app.now();
     let counter = [7_u8; 32];
 
@@ -369,7 +335,7 @@ async fn of_two_attempts_at_once_at_the_bound_of_the_brake_one_is_counted() {
             recorded
         })
     };
-    let waited = wait_for_waiter(&observer, &second).await;
+    let waited = wait_for_waiter(&observer, ON_A_ROW, &second).await;
     first.commit().await.expect("a commit");
 
     assert!(waited, "the second waits on the bucket of the first");
@@ -472,7 +438,7 @@ async fn an_attempt_past_a_bound_already_reached_waits_for_no_other() {
 
     let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
     let scope = open_realm(&app, 10).await;
-    let observer = connect(&database).await;
+    let observer = connect(&database, APP_ROLE).await;
     let now = app.now();
     let counter = [9_u8; 32];
     let attempt = async |work: &mut Box<dyn saffui_core::ports::storage::UnitOfWork>| {
@@ -496,7 +462,7 @@ async fn an_attempt_past_a_bound_already_reached_waits_for_no_other() {
             recorded
         })
     };
-    let waited = wait_for_waiter(&observer, &third).await;
+    let waited = wait_for_waiter(&observer, ON_A_ROW, &third).await;
     drop(held);
 
     assert!(!waited, "refused at once, the third waits for nobody");
@@ -509,7 +475,7 @@ async fn an_attempt_past_a_bound_already_reached_waits_for_no_other() {
 async fn two_administrators_one_token_short_of_the_bound_make_one_token_between_them() {
     let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
     let scope = open_realm(&app, 10).await;
-    let observer = connect(&database).await;
+    let observer = connect(&database, APP_ROLE).await;
     let now = app.now();
     let make = |digest: u32| InitialAccessToken {
         id: mint_id(&app).expect("an identifier"),
@@ -548,7 +514,7 @@ async fn two_administrators_one_token_short_of_the_bound_make_one_token_between_
             work.count_live_initial_access_tokens(now).await
         })
     };
-    let waited = wait_for_waiter(&observer, &second).await;
+    let waited = wait_for_waiter(&observer, ON_A_ROW, &second).await;
     first.commit().await.expect("a commit");
 
     assert!(waited, "the second waits on the tokens the first holds");
@@ -565,7 +531,7 @@ async fn two_administrators_one_token_short_of_the_bound_make_one_token_between_
 async fn an_answer_on_the_page_of_consent_holds_its_client_until_it_commits() {
     let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
     let scope = open_realm(&app, 10).await;
-    let observer = connect(&database).await;
+    let observer = connect(&database, APP_ROLE).await;
 
     let mut answering = app.storage.begin(scope).await.expect("a unit of work");
     assert!(
@@ -584,7 +550,7 @@ async fn an_answer_on_the_page_of_consent_holds_its_client_until_it_commits() {
             read.map(|client| client.is_some())
         })
     };
-    let waited = wait_for_waiter(&observer, &changing).await;
+    let waited = wait_for_waiter(&observer, ON_A_ROW, &changing).await;
     answering.commit().await.expect("a commit");
 
     assert!(waited, "the change waits on the row the answer shares");
@@ -597,7 +563,7 @@ async fn an_answer_on_the_page_of_consent_holds_its_client_until_it_commits() {
 async fn a_change_of_a_registration_is_judged_by_the_settings_it_holds_when_it_writes() {
     let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
     let scope = open_realm(&app, 10).await;
-    let observer = connect(&database).await;
+    let observer = connect(&database, APP_ROLE).await;
     let body = json!({ "redirect_uris": ["https://registered.example.org/cb"] }).to_string();
     let request = RegistrationRequest {
         caller: None,
@@ -639,7 +605,7 @@ async fn a_change_of_a_registration_is_judged_by_the_settings_it_holds_when_it_w
                 .map_err(|failure| failure.error)
         })
     };
-    let waited = wait_for_waiter(&observer, &waiting).await;
+    let waited = wait_for_waiter(&observer, ON_A_ROW, &waiting).await;
     changing.commit().await.expect("a commit");
 
     assert!(waited, "the change waits on the row of the settings");
@@ -674,7 +640,7 @@ async fn an_answer_waits_for_a_change_of_its_client_and_holds_only_for_what_its_
         .await
         .expect("its registration");
     work.commit().await.expect("a commit");
-    let observer = connect(&database).await;
+    let observer = connect(&database, APP_ROLE).await;
     // The challenge of RFC 7636, appendix B: no code is exchanged here.
     let parameters = AuthorizationParameters {
         response_type: Some("code"),
@@ -751,7 +717,7 @@ async fn an_answer_waits_for_a_change_of_its_client_and_holds_only_for_what_its_
             .map_err(|failure| failure.code)
         })
     };
-    let waited = wait_for_waiter(&observer, &answering).await;
+    let waited = wait_for_waiter(&observer, ON_A_ROW, &answering).await;
     changing.commit().await.expect("a commit");
 
     assert!(waited, "the answer waits on the row of its client");

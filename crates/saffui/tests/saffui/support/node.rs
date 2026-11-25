@@ -1,8 +1,5 @@
 //! A serving node on a database a test owns, killed when the test ends.
 
-// Each crate of tests that includes this module uses a part of it.
-#![allow(dead_code)]
-
 use std::io::{BufRead, BufReader};
 use std::net::SocketAddr;
 use std::process::{Child, Command, Stdio};
@@ -72,15 +69,9 @@ impl Node {
             line.contains(" listening "),
             "the node did not start: {line:?}"
         );
-        let read_address = |key: &str| -> SocketAddr {
-            line.split_whitespace()
-                .find_map(|field| field.strip_prefix(key))
-                .and_then(|address| address.parse().ok())
-                .unwrap_or_else(|| panic!("no {key} address in {line:?}"))
-        };
         Self {
-            data: read_address("data="),
-            ops: read_address("ops="),
+            data: read_address(&line, "data="),
+            ops: read_address(&line, "ops="),
             journal: kept,
             process,
         }
@@ -103,4 +94,12 @@ impl Node {
             thread::sleep(Duration::from_millis(20));
         }
     }
+}
+
+/// The address a journal line gives after `key`, as in `data=127.0.0.1:8080`.
+pub fn read_address(line: &str, key: &str) -> SocketAddr {
+    line.split_whitespace()
+        .find_map(|field| field.strip_prefix(key))
+        .and_then(|address| address.parse().ok())
+        .unwrap_or_else(|| panic!("no {key} address in {line:?}"))
 }

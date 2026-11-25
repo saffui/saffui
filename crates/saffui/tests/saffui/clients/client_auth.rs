@@ -19,13 +19,8 @@ use saffui_core::ports::crypto::{Digester, GeneratedSigningKey, SignatureAlgorit
 use saffui_core::secret::Secret;
 use serde_json::{Value, json};
 
-#[path = "support/database.rs"]
-mod database;
-#[path = "support/http.rs"]
-mod http;
-#[path = "support/node.rs"]
-mod node;
-mod support;
+use crate::support::jws::write_input;
+use crate::support::{self, database, http, node, read_json};
 
 const FORM: (&str, &str) = ("Content-Type", "application/x-www-form-urlencoded");
 const JSON: (&str, &str) = ("Content-Type", "application/json");
@@ -55,10 +50,6 @@ fn bootstrap_with_administrator(database: &TestDatabase) -> String {
         .find_map(|line| line.strip_prefix("client_secret "))
         .expect("the secret is printed once")
         .to_owned()
-}
-
-fn read_json(text: &str) -> Value {
-    serde_json::from_str(text).unwrap_or_else(|_| panic!("not JSON: {text:?}"))
 }
 
 fn ask_in_basic(node: &node::Node, client_id: &str, secret: &str) -> http::Answer {
@@ -109,14 +100,6 @@ fn write_claims(client_id: &str, jti: &str, audience: &str) -> Value {
         "exp": now + 60,
         "iat": now,
     })
-}
-
-fn write_input(header: &Value, claims: &Value) -> String {
-    format!(
-        "{}.{}",
-        URL_SAFE_NO_PAD.encode(header.to_string()),
-        URL_SAFE_NO_PAD.encode(claims.to_string())
-    )
 }
 
 fn sign_with_secret(secret: &str, claims: &Value) -> String {

@@ -23,12 +23,8 @@ use saffui_core::secret::Secret;
 use saffui_core::tenancy::RealmScope;
 use serde_json::{Value, json};
 
-#[path = "support/product.rs"]
-#[expect(
-    dead_code,
-    reason = "its hands in the database serve the tests of the keys"
-)]
-mod product;
+use crate::support::jws::write_input;
+use crate::support::product;
 
 const ISSUER: &str = "https://id.example.test/realms/acme";
 const CALLBACK: &str = "https://app.example.org/callback";
@@ -125,14 +121,6 @@ async fn prepare_realm() -> Realm {
         secret,
         _database: database,
     }
-}
-
-fn write_input(header: &Value, claims: &Value) -> String {
-    format!(
-        "{}.{}",
-        URL_SAFE_NO_PAD.encode(header.to_string()),
-        URL_SAFE_NO_PAD.encode(claims.to_string())
-    )
 }
 
 fn sign_with_secret(secret: &Secret, claims: &Value) -> String {

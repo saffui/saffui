@@ -8,15 +8,7 @@ use pgcore::migrate::EMBEDDED;
 use pgcore::testkit::TestDatabase;
 use pgcore::{APP_ROLE, MAINTENANCE_ROLE};
 
-#[path = "support/database.rs"]
-mod database;
-#[path = "support/http.rs"]
-mod http;
-#[path = "support/jwk.rs"]
-mod jwk;
-#[path = "support/node.rs"]
-mod node;
-mod support;
+use crate::support::{self, database, http, jwk, node};
 
 /// The role the migrations run as, which owns every table.
 const OWNER: &str = "saffui_owner";

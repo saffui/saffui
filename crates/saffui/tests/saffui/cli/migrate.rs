@@ -6,9 +6,7 @@ use std::process::{Command, Output, Stdio};
 
 use pgcore::APP_ROLE;
 
-#[path = "support/database.rs"]
-mod database;
-mod support;
+use crate::support::{self, database};
 
 const OWNER: &str = "saffui_owner";
 

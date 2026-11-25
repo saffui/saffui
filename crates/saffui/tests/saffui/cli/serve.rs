@@ -14,9 +14,8 @@ use pgcore::migrate::{EMBEDDED, Migration};
 use pgcore::testkit::TestDatabase;
 use pgcore::{APP_ROLE, MAINTENANCE_ROLE};
 
-#[path = "support/database.rs"]
-mod database;
-mod support;
+use crate::support::node::read_address;
+use crate::support::{self, database};
 
 /// Longer than anything here should take, so that a hang fails instead of lasting.
 const PATIENCE: Duration = Duration::from_secs(10);
@@ -150,14 +149,6 @@ fn pass_as_variables(command: &mut Command, drain_delay: &str) {
         .env("SAFFUI_LISTEN", ANY_PORT)
         .env("SAFFUI_OPS_LISTEN", ANY_PORT)
         .env("SAFFUI_DRAIN_DELAY", drain_delay);
-}
-
-/// The address a journal line gives after `key`, as in `data=127.0.0.1:8080`.
-fn read_address(line: &str, key: &str) -> SocketAddr {
-    line.split_whitespace()
-        .find_map(|field| field.strip_prefix(key))
-        .and_then(|address| address.parse().ok())
-        .unwrap_or_else(|| panic!("no {key} address in {line:?}"))
 }
 
 /// Each line of a journal without its timestamp: the level, the target, the message.

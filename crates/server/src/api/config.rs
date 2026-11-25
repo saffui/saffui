@@ -1,7 +1,7 @@
 //! The mounting. Every handler is named here once, by its path under
 //! `rest/endpoints/` (`health::report_liveness`), under the plane that serves
 //! it. A handler that is not named here answers nowhere, and nothing but
-//! `tests/mounted.rs` would say so.
+//! `tests/server/mounted.rs` would say so.
 
 use crate::api::rest::endpoints::health::{self, DrainFlag};
 use crate::api::rest::endpoints::{account, admin, authz, login, oidc};

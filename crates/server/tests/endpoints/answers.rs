@@ -339,6 +339,8 @@ async fn plant_relay(product: &saffui_core::app::App, scope: RealmScope, redirec
         scopes: vec!["openid".to_owned()],
         capabilities: Vec::new(),
         id_token_signed_response_alg: None,
+        request_object_signing_alg: None,
+        require_signed_request_object: false,
         enabled: true,
         self_registered: false,
         created_at: product.now(),

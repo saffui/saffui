@@ -304,6 +304,8 @@ pub async fn register_answered_application(
             jwks: None,
             jwks_uri: None,
             auth_signing_alg: None,
+            request_object_signing_alg: None,
+            require_signed_request_object: false,
             created_by: None,
         },
     )

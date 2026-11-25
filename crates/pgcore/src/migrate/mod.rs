@@ -71,6 +71,8 @@ pub const EMBEDDED: &[Migration] = &[
     embed!(48, "0048_response_types"),
     embed!(49, "0049_requested_answers"),
     embed!(50, "0050_requested_answers_checked"),
+    embed!(51, "0051_request_objects"),
+    embed!(52, "0052_request_objects_checked"),
 ];
 
 /// One numbered step of the schema, as SQL text.

@@ -413,6 +413,98 @@ async fn a_request_from_an_unknown_client_or_to_an_unregistered_address_is_shown
 }
 
 #[actix_web::test]
+async fn a_request_object_and_an_address_of_one_are_read_from_the_query_and_never_fetched() {
+    let product = start().await;
+    let base = "/realms/acme/oauth2/authorize?client_id=portal";
+    let answerable =
+        format!("{base}&redirect_uri=https%3A%2F%2Fapp.example.test%2Fcallback&state=xyz");
+
+    for (query, error) in [
+        (
+            format!("{answerable}&request_uri=https%3A%2F%2Fapp.example.test%2Frequest"),
+            "request_uri_not_supported",
+        ),
+        (
+            format!("{answerable}&request=e30.e30.c2ln"),
+            "invalid_request_object",
+        ),
+    ] {
+        let returned = get(&product, &query, &[]).await;
+
+        assert_eq!(returned.status, StatusCode::SEE_OTHER, "{query}");
+        assert_eq!(
+            returned.read_location_parameter("error").as_deref(),
+            Some(error),
+            "{query}"
+        );
+        assert_eq!(
+            returned.read_location_parameter("state").as_deref(),
+            Some("xyz")
+        );
+    }
+    let shown = get(&product, &format!("{base}&request=e30.e30.c2ln"), &[]).await;
+    assert_eq!(shown.status, StatusCode::BAD_REQUEST);
+    assert_eq!(shown.location, None);
+    assert!(
+        shown.body.contains("The application signed a request"),
+        "{}",
+        shown.body
+    );
+}
+
+#[actix_web::test]
+async fn a_request_without_an_object_from_a_client_that_requires_one_and_no_address_is_shown() {
+    use saffui_core::clients::register::NewClient;
+    use saffui_core::clients::{AssertionAlgorithm, ClientAuthMethod};
+    use saffui_core::testkit::fixtures::check_and_register_client;
+
+    let (product, _storage) = MemoryStorage::wire();
+    let scope = create_realm(&product, "acme").await;
+    let callbacks = [REDIRECT.to_owned()];
+    let strict = NewClient {
+        client_id: "strict",
+        name: "strict",
+        scopes: &[],
+        capabilities: &[],
+        redirect_uris: &callbacks,
+        post_logout_redirect_uris: &[],
+        response_types: &[],
+        public: false,
+        requires_consent: false,
+        id_token_signed_response_alg: None,
+        auth_method: Some(ClientAuthMethod::ClientSecretJwt),
+        jwks: None,
+        jwks_uri: None,
+        auth_signing_alg: None,
+        request_object_signing_alg: Some(AssertionAlgorithm::Hs256),
+        require_signed_request_object: true,
+        created_by: None,
+    };
+    let mut work = product.storage.begin(scope).await.expect("a unit of work");
+    check_and_register_client(&product, work.as_mut(), strict)
+        .await
+        .expect("a client that requires its requests signed");
+    work.commit().await.expect("a commit");
+
+    let shown = get(
+        &product,
+        "/realms/acme/oauth2/authorize?response_type=code&client_id=strict&state=xyz",
+        &[],
+    )
+    .await;
+
+    assert_eq!(shown.status, StatusCode::BAD_REQUEST);
+    assert_eq!(shown.location, None);
+    assert!(
+        shown
+            .body
+            .contains("The request is missing a parameter or carries one it cannot."),
+        "{}",
+        shown.body
+    );
+}
+
+#[actix_web::test]
 async fn a_trusted_client_that_asks_wrongly_gets_its_error_back_with_its_state_and_the_issuer() {
     let product = start().await;
     let challenge = URL_SAFE_NO_PAD.encode(product.digester.sha256(VERIFIER.as_bytes()));

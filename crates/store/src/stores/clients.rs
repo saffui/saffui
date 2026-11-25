@@ -72,6 +72,8 @@ const CLIENT: &[Column] = &[
     clients::AUTH_SIGNING_ALG,
     clients::SELF_REGISTERED,
     clients::RESPONSE_TYPES,
+    clients::REQUEST_OBJECT_SIGNING_ALG,
+    clients::REQUIRE_SIGNED_REQUEST_OBJECT,
 ];
 
 /// Constant SQL: the columns of [`CLIENT`], in its order, and the row stays
@@ -80,7 +82,8 @@ const READ_CLIENT_FOR_UPDATE: &str = "
     SELECT client_row_id, client_id, name, allows_client_credentials, scopes, capabilities,
         enabled, created_at, allows_authorization_code, redirect_uris,
         post_logout_redirect_uris, requires_consent, id_token_signed_response_alg, auth_method,
-        auth_signing_alg, self_registered, response_types
+        auth_signing_alg, self_registered, response_types, request_object_signing_alg,
+        require_signed_request_object
     FROM clients
     WHERE tenant_id = $1 AND realm_id = $2 AND client_id = $3
     FOR NO KEY UPDATE";
@@ -92,7 +95,8 @@ const READ_CLIENT_FOR_SHARE: &str = "
     SELECT client_row_id, client_id, name, allows_client_credentials, scopes, capabilities,
         enabled, created_at, allows_authorization_code, redirect_uris,
         post_logout_redirect_uris, requires_consent, id_token_signed_response_alg, auth_method,
-        auth_signing_alg, self_registered, response_types
+        auth_signing_alg, self_registered, response_types, request_object_signing_alg,
+        require_signed_request_object
     FROM clients
     WHERE tenant_id = $1 AND realm_id = $2 AND client_id = $3
     FOR SHARE";
@@ -119,6 +123,8 @@ const CLIENT_WITH_PROOF: &[Column] = &[
     clients::AUTH_SIGNING_ALG,
     clients::SELF_REGISTERED,
     clients::RESPONSE_TYPES,
+    clients::REQUEST_OBJECT_SIGNING_ALG,
+    clients::REQUIRE_SIGNED_REQUEST_OBJECT,
     clients::SECRET_DIGEST,
     clients::SEALED_SECRET,
     clients::JWKS,
@@ -130,6 +136,7 @@ fn read_client_row(row: &Row) -> Result<Client, StorageError> {
     let auth_method: String = row.get(13);
     let auth_signing_alg: Option<String> = row.get(14);
     let response_types: Vec<String> = row.get(16);
+    let request_object_signing_alg: Option<String> = row.get(17);
     // The schema holds the same lists: a name unknown here was not written
     // by this binary.
     Ok(Client {
@@ -157,6 +164,10 @@ fn read_client_row(row: &Row) -> Result<Client, StorageError> {
         id_token_signed_response_alg: id_token_algorithm
             .map(|name| SignatureAlgorithm::parse(&name).ok_or(StorageError::Failed))
             .transpose()?,
+        request_object_signing_alg: request_object_signing_alg
+            .map(|name| AssertionAlgorithm::parse(&name).ok_or(StorageError::Failed))
+            .transpose()?,
+        require_signed_request_object: row.get(18),
         enabled: row.get(6),
         self_registered: row.get(15),
         created_at: row.get(7),
@@ -202,6 +213,9 @@ impl ClientStore for PgUnitOfWork {
             .map(SignatureAlgorithm::name);
         let auth_method = client.auth_method.name();
         let auth_signing_alg = client.auth_signing_alg.map(AssertionAlgorithm::name);
+        let request_object_signing_alg = client
+            .request_object_signing_alg
+            .map(AssertionAlgorithm::name);
         let response_types: Vec<&str> = client
             .response_types
             .iter()
@@ -237,6 +251,14 @@ impl ClientStore for PgUnitOfWork {
                 col(clients::SCOPES, &client.scopes),
                 col(clients::CAPABILITIES, &capabilities),
                 col(clients::ID_TOKEN_SIGNED_RESPONSE_ALG, &id_token_algorithm),
+                col(
+                    clients::REQUEST_OBJECT_SIGNING_ALG,
+                    &request_object_signing_alg,
+                ),
+                col(
+                    clients::REQUIRE_SIGNED_REQUEST_OBJECT,
+                    &client.require_signed_request_object,
+                ),
                 col(clients::ENABLED, &client.enabled),
                 col(clients::CREATED_AT, &client.created_at),
             ],

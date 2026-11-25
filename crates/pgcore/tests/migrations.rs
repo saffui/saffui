@@ -704,6 +704,7 @@ async fn no_migration_from_the_consent_on_blocks_writes_to_two_tables_served_bef
         "0042_client_auth",
         "0044_registration",
         "0048_response_types",
+        "0051_request_objects",
     ];
     let first = EMBEDDED
         .iter()
@@ -813,6 +814,13 @@ async fn a_rule_set_on_a_served_table_is_checked_apart_from_the_lock_that_sets_i
                 "authorization_requests_response_type_known",
                 "authorization_requests_response_mode_known",
                 "authorization_requests_challenge_for_a_code",
+            ],
+        ),
+        (
+            "0051_request_objects",
+            &[
+                "clients_request_object_algorithm_fits_method",
+                "clients_registered_sign_no_request",
             ],
         ),
     ] {

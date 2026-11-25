@@ -502,6 +502,7 @@ pub async fn check_clients_contract(app: &App) {
     use crate::authz::capability::Capability;
     use crate::clients::{AssertionAlgorithm, Client, ClientAuthMethod, KeptProof};
     use crate::oidc::response::ResponseType;
+    use crate::ports::crypto::SignatureAlgorithm;
     use crate::tenancy::realm::{NewRealm, provision_first_realm};
 
     let mut scopes = Vec::new();
@@ -546,6 +547,8 @@ pub async fn check_clients_contract(app: &App) {
             crate::authz::capability::Capability::AuditRead,
         ],
         id_token_signed_response_alg: None,
+        request_object_signing_alg: None,
+        require_signed_request_object: false,
         enabled: true,
         self_registered: false,
         created_at: app.now(),
@@ -685,12 +688,15 @@ pub async fn check_clients_contract(app: &App) {
     drop(work);
 
     // A client that signs with a key, and one that signs with a sealed
-    // secret, are read back as written, with what proves them read apart.
+    // secret, are read back as written, how they sign their requests
+    // included, with what proves them read apart.
     let keyed = Client {
         id: mint_id(app).expect("an identifier"),
         client_id: "keyed".to_owned(),
         auth_method: ClientAuthMethod::PrivateKeyJwt,
         auth_signing_alg: AssertionAlgorithm::parse("ES256"),
+        request_object_signing_alg: AssertionAlgorithm::parse("ES256"),
+        require_signed_request_object: true,
         ..client.clone()
     };
     let keys = serde_json::json!({ "keys": [
@@ -701,6 +707,7 @@ pub async fn check_clients_contract(app: &App) {
         client_id: "sealed".to_owned(),
         auth_method: ClientAuthMethod::ClientSecretJwt,
         auth_signing_alg: Some(AssertionAlgorithm::Hs256),
+        request_object_signing_alg: Some(AssertionAlgorithm::Hs256),
         ..client.clone()
     };
     let mut work = app.storage.begin(scopes[0]).await.expect("a unit of work");
@@ -715,6 +722,25 @@ pub async fn check_clients_contract(app: &App) {
         .expect("an application");
     assert_eq!(work.read_client("keyed").await, Ok(Some(keyed.clone())));
     assert_eq!(work.read_client("sealed").await, Ok(Some(sealed.clone())));
+    // Each signature this build reads is one a client may sign its requests in.
+    for algorithm in SignatureAlgorithm::ALL
+        .into_iter()
+        .filter(|algorithm| app.signer.signs_in(*algorithm))
+    {
+        let signing = Client {
+            id: mint_id(app).expect("an identifier"),
+            client_id: format!("requests-{}", algorithm.name()),
+            request_object_signing_alg: Some(AssertionAlgorithm::Signed(algorithm)),
+            ..keyed.clone()
+        };
+        work.insert_client(&signing, &proof(None, None, Some(keys.clone())))
+            .await
+            .unwrap_or_else(|_| panic!("requests signed in {}", algorithm.name()));
+        assert_eq!(
+            work.read_client(&signing.client_id).await,
+            Ok(Some(signing))
+        );
+    }
     assert_eq!(
         work.read_client_for_update("keyed").await,
         Ok(Some(keyed.clone()))
@@ -889,6 +915,47 @@ pub async fn check_clients_contract(app: &App) {
             },
             digested(),
             "an algorithm for a client that signs nothing",
+        ),
+        (
+            Client {
+                request_object_signing_alg: Some(AssertionAlgorithm::Hs256),
+                ..keyed.clone()
+            },
+            proof(None, None, Some(keys.clone())),
+            "a key that signs its requests with a secret",
+        ),
+        (
+            Client {
+                request_object_signing_alg: AssertionAlgorithm::parse("ES256"),
+                ..sealed.clone()
+            },
+            proof(None, Some(&[9; 48]), None),
+            "a secret that signs its requests as a key",
+        ),
+        (
+            Client {
+                request_object_signing_alg: Some(AssertionAlgorithm::Hs256),
+                ..client.clone()
+            },
+            digested(),
+            "requests signed by a client that signs nothing",
+        ),
+        (
+            Client {
+                request_object_signing_alg: None,
+                ..keyed.clone()
+            },
+            proof(None, None, Some(keys.clone())),
+            "requests required and read in no algorithm",
+        ),
+        (
+            Client {
+                self_registered: true,
+                require_signed_request_object: false,
+                ..keyed.clone()
+            },
+            proof(None, None, Some(keys.clone())),
+            "requests signed by a client that registered itself",
         ),
         (
             keyed.clone(),

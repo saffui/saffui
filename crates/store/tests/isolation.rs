@@ -821,6 +821,8 @@ async fn an_operator_the_serving_role_plants_does_not_unbind_a_change_of_method(
             jwks: None,
             jwks_uri: None,
             auth_signing_alg: None,
+            request_object_signing_alg: None,
+            require_signed_request_object: false,
             created_by: None,
         },
     )
@@ -1349,6 +1351,8 @@ async fn plant_registered_client(
         scopes: vec!["openid".to_owned()],
         capabilities: Vec::new(),
         id_token_signed_response_alg: None,
+        request_object_signing_alg: None,
+        require_signed_request_object: false,
         enabled: true,
         self_registered: true,
         created_at: app.now(),

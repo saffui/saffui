@@ -75,7 +75,8 @@ impl ClientAuthMethod {
     }
 }
 
-/// What signs the assertion of a client: its secret, or one of its keys.
+/// What signs an assertion or a request object of a client: its secret, or
+/// one of its keys.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AssertionAlgorithm {
     /// HMAC with SHA-256, keyed by the secret.
@@ -136,6 +137,10 @@ pub struct Client {
     pub capabilities: Vec<Capability>,
     /// The algorithm of its identity tokens. None: the default of the realm.
     pub id_token_signed_response_alg: Option<SignatureAlgorithm>,
+    /// The one algorithm its request objects are read in. None: it sends none.
+    pub request_object_signing_alg: Option<AssertionAlgorithm>,
+    /// Every request of the client is a request object (RFC 9101, 10.5).
+    pub require_signed_request_object: bool,
     pub enabled: bool,
     /// Registered by itself through the protocol, vetted by nobody of the
     /// realm. Written when it is made, never after.
@@ -452,6 +457,22 @@ pub async fn read_named_client(
         return Ok(None);
     }
     work.read_client(client_id).await
+}
+
+/// Reads the client a caller names with what proves it, for a request it
+/// signed. What is not written as a client identifier names no client.
+///
+/// # Errors
+///
+/// Returns the storage failure.
+pub async fn read_named_client_with_proof(
+    work: &mut dyn UnitOfWork,
+    client_id: &str,
+) -> Result<Option<(Client, KeptProof)>, StorageError> {
+    if check_client_identifier(client_id).is_err() {
+        return Ok(None);
+    }
+    work.read_client_with_proof(client_id).await
 }
 
 /// What the realm says now of the client a token names, read alone. What is

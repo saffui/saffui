@@ -55,7 +55,11 @@ pub struct ProviderMetadata {
     pub acr_values_supported: Vec<&'static str>,
     pub authorization_response_iss_parameter_supported: bool,
     pub response_modes_supported: Vec<&'static str>,
-    /// Three parameters whose absence from this document would mean yes.
+    /// What a request object may be signed in: the algorithms of the
+    /// assertions of a client, never `none`.
+    pub request_object_signing_alg_values_supported: Vec<&'static str>,
+    /// Each written out. Absent, `request_uri_parameter_supported` would
+    /// mean yes, and the two others no.
     pub request_parameter_supported: bool,
     pub request_uri_parameter_supported: bool,
     pub claims_parameter_supported: bool,
@@ -135,13 +139,14 @@ pub fn describe_provider(
         introspection_endpoint_auth_methods_supported: confidential,
         introspection_endpoint_auth_signing_alg_values_supported: assertion_algorithms.clone(),
         revocation_endpoint_auth_methods_supported: methods,
-        revocation_endpoint_auth_signing_alg_values_supported: assertion_algorithms,
+        revocation_endpoint_auth_signing_alg_values_supported: assertion_algorithms.clone(),
         code_challenge_methods_supported: vec!["S256"],
         scopes_supported: vec!["openid", "profile", "email", "roles", OFFLINE_ACCESS_SCOPE],
         acr_values_supported: Assurance::ALL.map(Assurance::name).to_vec(),
         authorization_response_iss_parameter_supported: true,
         response_modes_supported: ResponseMode::ALL.map(ResponseMode::name).to_vec(),
-        request_parameter_supported: false,
+        request_object_signing_alg_values_supported: assertion_algorithms,
+        request_parameter_supported: true,
         request_uri_parameter_supported: false,
         claims_parameter_supported: false,
         issuer,
@@ -227,8 +232,8 @@ mod tests {
         assert_eq!(document.acr_values_supported, ["1", "2"]);
         assert!(document.scopes_supported.contains(&"offline_access"));
         assert!(
-            !document.request_parameter_supported && !document.claims_parameter_supported,
-            "an absent member would mean yes"
+            !document.claims_parameter_supported,
+            "written, not left to its default"
         );
     }
 
@@ -263,5 +268,32 @@ mod tests {
         ] {
             assert_eq!(*signed, ["HS256", "ES256", "RS256"], "only what is served");
         }
+    }
+
+    #[test]
+    fn a_request_object_is_read_by_value_in_what_this_build_serves_and_never_fetched() {
+        let settings = Settings::reached_directly(
+            PublicOrigin::parse("https://id.example.org").expect("an origin"),
+        );
+        let realm = RealmName::parse("acme").expect("a realm name");
+        let served = [SignatureAlgorithm::Es256, SignatureAlgorithm::EdDsa];
+
+        let document = describe_provider(&settings, &realm, &[SignatureAlgorithm::Es256], &served);
+
+        assert!(document.request_parameter_supported);
+        assert!(
+            !document.request_uri_parameter_supported,
+            "an absent member would mean yes"
+        );
+        assert_eq!(
+            document.request_object_signing_alg_values_supported,
+            ["HS256", "ES256", "EdDSA"],
+            "never none"
+        );
+        let written = serde_json::to_value(&document).expect("a document");
+        assert!(
+            written.get("require_signed_request_object").is_none(),
+            "a client says it of itself"
+        );
     }
 }

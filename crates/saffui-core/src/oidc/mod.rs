@@ -10,6 +10,7 @@ pub mod logout;
 pub mod pkce;
 pub(crate) mod refresh;
 pub mod registration;
+pub(crate) mod request_object;
 pub mod response;
 pub mod revoke;
 #[cfg(test)]

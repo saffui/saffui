@@ -35,7 +35,8 @@ pub const UNHONORED_MEMBERS: [&str; 32] = [
     "introspection_signed_response_alg",
     "introspection_encrypted_response_alg",
     "introspection_encrypted_response_enc",
-    // Requests signed, encrypted, or pushed first (RFC 9101, RFC 9126).
+    // Requests signed, encrypted, or pushed first (RFC 9101, RFC 9126): an
+    // administrator alone names how a client signs them.
     "request_object_signing_alg",
     "request_object_encryption_alg",
     "request_object_encryption_enc",

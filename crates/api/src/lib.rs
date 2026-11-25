@@ -27,6 +27,10 @@ pub struct RealmView {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each is a member of the client the administration API names"
+)]
 pub struct ClientView {
     pub client_id: String,
     pub name: String,
@@ -46,6 +50,10 @@ pub struct ClientView {
     pub token_endpoint_auth_method: String,
     /// The one algorithm its assertions are signed in. Null: any it may.
     pub token_endpoint_auth_signing_alg: Option<String>,
+    /// The one algorithm its request objects are read in. Null: none is read.
+    pub request_object_signing_alg: Option<String>,
+    /// Whether each of its requests must be a request object.
+    pub require_signed_request_object: bool,
     pub enabled: bool,
     pub created_at: String,
 }
@@ -96,6 +104,13 @@ pub struct NewClient {
     /// The one algorithm its assertions may be signed in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_endpoint_auth_signing_alg: Option<String>,
+    /// The one algorithm its request objects are read in: HS256 for a client
+    /// that signs with its secret, a signature of its keys for one with keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_object_signing_alg: Option<String>,
+    /// Each of its requests must be a request object, signed in that algorithm.
+    #[serde(default)]
+    pub require_signed_request_object: bool,
 }
 
 /// A client that was just created, with the one showing of its secret.
@@ -470,6 +485,8 @@ mod tests {
                 id_token_signed_response_alg: None,
                 token_endpoint_auth_method: "client_secret_basic".to_owned(),
                 token_endpoint_auth_signing_alg: None,
+                request_object_signing_alg: None,
+                require_signed_request_object: false,
                 enabled: true,
                 created_at: "2026-10-31T00:00:00Z".to_owned(),
             },

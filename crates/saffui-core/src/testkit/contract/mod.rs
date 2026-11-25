@@ -501,6 +501,7 @@ pub async fn check_keys_contract(app: &App) {
 pub async fn check_clients_contract(app: &App) {
     use crate::authz::capability::Capability;
     use crate::clients::{AssertionAlgorithm, Client, ClientAuthMethod, KeptProof};
+    use crate::oidc::response::ResponseType;
     use crate::tenancy::realm::{NewRealm, provision_first_realm};
 
     let mut scopes = Vec::new();
@@ -536,6 +537,7 @@ pub async fn check_clients_contract(app: &App) {
         allows_client_credentials: true,
         allows_authorization_code: false,
         redirect_uris: Vec::new(),
+        response_types: vec![ResponseType::Code],
         post_logout_redirect_uris: Vec::new(),
         requires_consent: false,
         scopes: vec!["invoices:read".to_owned(), "invoices:write".to_owned()],
@@ -591,6 +593,19 @@ pub async fn check_clients_contract(app: &App) {
         work.read_client_for_update("webapp").await,
         Ok(Some(application.clone()))
     );
+    // What an application may be handed back is read back as it declared it:
+    // each type, in its order.
+    let declared = Client {
+        id: mint_id(app).expect("an identifier"),
+        client_id: "spa".to_owned(),
+        response_types: ResponseType::ALL.into_iter().rev().collect(),
+        self_registered: false,
+        ..application.clone()
+    };
+    work.insert_client(&declared, &nothing())
+        .await
+        .expect("an application that declared what it is handed back");
+    assert_eq!(work.read_client("spa").await, Ok(Some(declared)));
 
     // An identifier is taken once in its realm, and free in every other.
     let again = Client {
@@ -1157,6 +1172,7 @@ pub async fn check_codes_contract(app: &App) {
 
     use crate::login::session::{AuthenticationMethod, Session, SessionKind, SessionState};
     use crate::oidc::code::PendingAuthorization;
+    use crate::oidc::response::{ResponseMode, ResponseType};
     use crate::testkit::fixtures::{create_person, create_realm};
 
     let scope = create_realm(app, "contract-codes").await;
@@ -1201,7 +1217,9 @@ pub async fn check_codes_contract(app: &App) {
         scopes: vec!["openid".to_owned()],
         state: Some("state".to_owned()),
         nonce: None,
-        code_challenge: "challenge".to_owned(),
+        response_type: ResponseType::Code,
+        response_mode: ResponseMode::Query,
+        code_challenge: Some("challenge".to_owned()),
         expires_at: now + Duration::minutes(10),
         expected_person: Some(ada.id),
         first_factor: None,
@@ -1244,7 +1262,43 @@ pub async fn check_codes_contract(app: &App) {
     );
 
     work.commit().await.expect("a commit");
+    check_that_each_answer_is_kept(app, scope, &pending).await;
     check_that_a_code_is_spent_once(app, scope, other, &session).await;
+}
+
+/// A request is read back with what it asks to be handed back and how:
+/// each type, in the mode it goes in by default and in a form.
+async fn check_that_each_answer_is_kept(
+    app: &App,
+    scope: RealmScope,
+    like: &crate::oidc::code::PendingAuthorization,
+) {
+    use crate::oidc::code::PendingAuthorization;
+    use crate::oidc::response::{ResponseMode, ResponseType, choose_response_mode};
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    for response_type in ResponseType::ALL {
+        let by_default = choose_response_mode(None, response_type, &[], &like.redirect_uri)
+            .expect("a default mode");
+        for response_mode in [by_default, ResponseMode::FormPost] {
+            let pending = PendingAuthorization {
+                id: mint_id(app).expect("an identifier"),
+                nonce: Some("nonce".to_owned()),
+                response_type,
+                response_mode,
+                code_challenge: response_type.issues_code().then(|| "challenge".to_owned()),
+                ..like.clone()
+            };
+            work.insert_pending_authorization(&pending)
+                .await
+                .expect("a pending request");
+            assert_eq!(
+                work.read_pending_authorization(pending.id, app.now()).await,
+                Ok(Some(pending)),
+                "{response_type:?} {response_mode:?}"
+            );
+        }
+    }
 }
 
 /// Who proved their password is written on a request that still waits,
@@ -3618,6 +3672,7 @@ async fn check_that_a_request_waits_for_one_consent(app: &App, scope: RealmScope
     use time::Duration;
 
     use crate::oidc::code::PendingAuthorization;
+    use crate::oidc::response::{ResponseMode, ResponseType};
 
     let now = app.now();
     let pending = PendingAuthorization {
@@ -3627,8 +3682,10 @@ async fn check_that_a_request_waits_for_one_consent(app: &App, scope: RealmScope
         redirect_uri: "https://app.example.org/cb".to_owned(),
         scopes: vec!["openid".to_owned()],
         state: None,
-        nonce: None,
-        code_challenge: "challenge".to_owned(),
+        nonce: Some("nonce".to_owned()),
+        response_type: ResponseType::IdTokenToken,
+        response_mode: ResponseMode::FormPost,
+        code_challenge: None,
         expires_at: now + Duration::minutes(10),
         expected_person: None,
         first_factor: None,

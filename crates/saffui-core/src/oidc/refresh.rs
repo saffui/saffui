@@ -700,10 +700,7 @@ mod tests {
             ConsentDecision::Allow { shown },
         ))
         .expect("an allowed client");
-        let code = location
-            .split_once("code=")
-            .and_then(|(_, rest)| rest.split('&').next())
-            .expect("a code");
+        let code = location.read_parameter("code").expect("a code");
         let presented = scenario
             .exchange_as("partner", code)
             .refresh_token

@@ -200,9 +200,8 @@ impl Scenario {
         ))
         .expect("an allowed client");
         let code = location
-            .split_once("code=")
-            .and_then(|(_, rest)| rest.split('&').next())
-            .expect("a code in the redirection")
+            .read_parameter("code")
+            .expect("a code in the answer")
             .to_owned();
         (code, signed_in.ticket)
     }

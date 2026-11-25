@@ -703,6 +703,7 @@ async fn no_migration_from_the_consent_on_blocks_writes_to_two_tables_served_bef
         "0039_signing_key_status",
         "0042_client_auth",
         "0044_registration",
+        "0048_response_types",
     ];
     let first = EMBEDDED
         .iter()
@@ -766,39 +767,64 @@ async fn no_migration_from_the_consent_on_blocks_writes_to_two_tables_served_bef
 /// A rule set on a table that serves binds the rows written once it is set,
 /// without scanning those already there under the lock that sets it: they
 /// are checked by the migration after, under a lock that blocks no write.
+/// One database for each migration that sets rules.
 #[tokio::test]
 async fn a_rule_set_on_a_served_table_is_checked_apart_from_the_lock_that_sets_it() {
-    for (set_by, rule) in [
-        ("0032_consent_clients", "clients_consent_for_applications"),
-        ("0034_offline_sessions", "sessions_kind_known"),
-        ("0034_offline_sessions", "sessions_kind_secret"),
-        ("0036_person_attributes", "persons_attributes_object"),
-        ("0039_signing_key_status", "signing_keys_status_known"),
-        ("0039_signing_key_status", "signing_keys_algorithm_check"),
+    for (set_by, rules) in [
+        (
+            "0032_consent_clients",
+            &["clients_consent_for_applications"][..],
+        ),
+        (
+            "0034_offline_sessions",
+            &["sessions_kind_known", "sessions_kind_secret"],
+        ),
+        ("0036_person_attributes", &["persons_attributes_object"]),
+        (
+            "0039_signing_key_status",
+            &["signing_keys_status_known", "signing_keys_algorithm_check"],
+        ),
         (
             "0040_id_token_algorithm",
-            "clients_id_token_algorithm_known",
+            &[
+                "clients_id_token_algorithm_known",
+                "clients_capabilities_known",
+            ],
         ),
-        ("0040_id_token_algorithm", "clients_capabilities_known"),
-        ("0042_client_auth", "clients_proof_fits_method"),
         (
             "0042_client_auth",
-            "clients_assertion_algorithm_fits_method",
+            &[
+                "clients_proof_fits_method",
+                "clients_assertion_algorithm_fits_method",
+                "clients_jwks_bounded",
+            ],
         ),
-        ("0042_client_auth", "clients_jwks_bounded"),
-        ("0045_client_registrations", "clients_capabilities_known"),
+        ("0045_client_registrations", &["clients_capabilities_known"]),
+        (
+            "0048_response_types",
+            &[
+                "clients_response_types_known",
+                "clients_registered_ask_a_code",
+            ],
+        ),
+        (
+            "0049_requested_answers",
+            &[
+                "authorization_requests_response_type_known",
+                "authorization_requests_response_mode_known",
+                "authorization_requests_challenge_for_a_code",
+            ],
+        ),
     ] {
         let set_at = EMBEDDED
             .iter()
             .position(|migration| migration.name == set_by)
-            .expect("the migration that sets the rule");
+            .expect("the migration that sets the rules");
         let database = TestDatabase::create(&[]).await;
         let owner = database.plan(OWNER);
-        let read_validated = async || -> bool {
-            owner
-                .connect_directly()
-                .await
-                .expect("a connection")
+        let reader = owner.connect_directly().await.expect("a connection");
+        let read_validated = async |rule: &str| -> bool {
+            reader
                 .query_one(
                     "SELECT convalidated FROM pg_constraint WHERE conname = $1",
                     &[&rule],
@@ -810,15 +836,19 @@ async fn a_rule_set_on_a_served_table_is_checked_apart_from_the_lock_that_sets_i
 
         apply_pending(&owner, &EMBEDDED[..=set_at])
             .await
-            .expect("the migrations up to the rule");
-        assert!(
-            !read_validated().await,
-            "{rule} set without checking the rows there"
-        );
+            .expect("the migrations up to the rules");
+        for rule in rules {
+            assert!(
+                !read_validated(rule).await,
+                "{rule} set without checking the rows there"
+            );
+        }
         apply_pending(&owner, &EMBEDDED[..=set_at + 1])
             .await
             .expect("the migration after it");
-        assert!(read_validated().await, "{rule} checked by the next one");
+        for rule in rules {
+            assert!(read_validated(rule).await, "{rule} checked by the next one");
+        }
     }
 }
 

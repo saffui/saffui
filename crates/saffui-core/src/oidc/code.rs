@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use super::response::{ResponseMode, ResponseType};
 use crate::ports::storage::StorageError;
 
 /// An authorization request that waits for its person to sign in, or to
@@ -19,7 +20,12 @@ pub struct PendingAuthorization {
     pub scopes: Vec<String>,
     pub state: Option<String>,
     pub nonce: Option<String>,
-    pub code_challenge: String,
+    /// What the request asks to be handed back, and how.
+    pub response_type: ResponseType,
+    pub response_mode: ResponseMode,
+    /// The challenge of the verifier the code will be spent with. None for
+    /// a request that asks for no code.
+    pub code_challenge: Option<String>,
     pub expires_at: OffsetDateTime,
     /// The person an identity token hint named: anyone else who signs in
     /// for this request gets no code.

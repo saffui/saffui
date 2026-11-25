@@ -2,8 +2,10 @@ use async_trait::async_trait;
 use saffui_core::oidc::code::{
     AuthorizationCode, CodeStore, PendingAuthorization, PendingKeyProof, ReplayedCode,
 };
+use saffui_core::oidc::response::{ResponseMode, ResponseType};
 use saffui_core::ports::storage::StorageError;
 use time::OffsetDateTime;
+use tokio_postgres::Row;
 use uuid::Uuid;
 
 use crate::query::bind::col;
@@ -30,6 +32,8 @@ const PENDING: &[Column] = &[
     authorization_requests::KEY_PROOF_OPTIONS,
     authorization_requests::CONSENT_PROMPTED,
     authorization_requests::CONSENT_SESSION_ID,
+    authorization_requests::RESPONSE_TYPE,
+    authorization_requests::RESPONSE_MODE,
 ];
 
 /// The proof by a key a row keeps, when the two columns hold one.
@@ -40,6 +44,31 @@ fn read_key_proof(
     Some(PendingKeyProof {
         state: state?,
         options: options?,
+    })
+}
+
+/// A request read in the order of [`PENDING`]. The schema holds the same
+/// names: one unknown here was not written by this binary.
+fn read_pending_row(id: Uuid, row: &Row) -> Result<PendingAuthorization, StorageError> {
+    let response_type: String = row.get(14);
+    let response_mode: String = row.get(15);
+    Ok(PendingAuthorization {
+        id,
+        browser_digest: row.get(0),
+        client_id: row.get(1),
+        redirect_uri: row.get(2),
+        scopes: row.get(3),
+        state: row.get(4),
+        nonce: row.get(5),
+        response_type: ResponseType::read(&response_type).ok_or(StorageError::Failed)?,
+        response_mode: ResponseMode::parse(&response_mode).ok_or(StorageError::Failed)?,
+        code_challenge: row.get(6),
+        expires_at: row.get(7),
+        expected_person: row.get(8),
+        first_factor: row.get(9),
+        key_proof: read_key_proof(row.get(10), row.get(11)),
+        consent_prompted: row.get(12),
+        consent_session: row.get(13),
     })
 }
 
@@ -54,6 +83,8 @@ impl CodeStore for PgUnitOfWork {
             .key_proof
             .as_ref()
             .map(|proof| proof.options.clone());
+        let response_type = pending.response_type.name();
+        let response_mode = pending.response_mode.name();
         let insert = Insert::into(
             authorization_requests::TABLE,
             vec![
@@ -67,6 +98,8 @@ impl CodeStore for PgUnitOfWork {
                 col(authorization_requests::SCOPES, &pending.scopes),
                 col(authorization_requests::STATE, &pending.state),
                 col(authorization_requests::NONCE, &pending.nonce),
+                col(authorization_requests::RESPONSE_TYPE, &response_type),
+                col(authorization_requests::RESPONSE_MODE, &response_mode),
                 col(
                     authorization_requests::CODE_CHALLENGE,
                     &pending.code_challenge,
@@ -108,25 +141,10 @@ impl CodeStore for PgUnitOfWork {
                     .where_greater(authorization_requests::EXPIRES_AT, &now),
             )
             .build();
-        Ok(self
-            .read_one(&select)
+        self.read_one(&select)
             .await?
-            .map(|row| PendingAuthorization {
-                id,
-                browser_digest: row.get(0),
-                client_id: row.get(1),
-                redirect_uri: row.get(2),
-                scopes: row.get(3),
-                state: row.get(4),
-                nonce: row.get(5),
-                code_challenge: row.get(6),
-                expires_at: row.get(7),
-                expected_person: row.get(8),
-                first_factor: row.get(9),
-                key_proof: read_key_proof(row.get(10), row.get(11)),
-                consent_prompted: row.get(12),
-                consent_session: row.get(13),
-            }))
+            .map(|row| read_pending_row(id, &row))
+            .transpose()
     }
 
     async fn mark_first_factor(
@@ -195,26 +213,13 @@ impl CodeStore for PgUnitOfWork {
                  RETURNING browser_digest, client_id, redirect_uri, scopes, state, nonce,
                            code_challenge, expires_at, expected_person, first_factor_person_id,
                            key_proof_state, key_proof_options, consent_prompted,
-                           consent_session_id",
+                           consent_session_id, response_type, response_mode",
                 &[&tenant, &realm, &id, &now],
             )
             .await?;
-        Ok(rows.first().map(|row| PendingAuthorization {
-            id,
-            browser_digest: row.get(0),
-            client_id: row.get(1),
-            redirect_uri: row.get(2),
-            scopes: row.get(3),
-            state: row.get(4),
-            nonce: row.get(5),
-            code_challenge: row.get(6),
-            expires_at: row.get(7),
-            expected_person: row.get(8),
-            first_factor: row.get(9),
-            key_proof: read_key_proof(row.get(10), row.get(11)),
-            consent_prompted: row.get(12),
-            consent_session: row.get(13),
-        }))
+        rows.first()
+            .map(|row| read_pending_row(id, row))
+            .transpose()
     }
 
     async fn insert_authorization_code(

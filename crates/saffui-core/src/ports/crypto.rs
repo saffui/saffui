@@ -18,6 +18,20 @@ pub trait Digester: Send + Sync {
     /// the digest, since every link compared with it would then match.
     fn sha256(&self, data: &[u8]) -> [u8; 32];
 
+    /// SHA-384 of `data`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the library cannot compute it.
+    fn sha384(&self, data: &[u8]) -> Result<[u8; 48], CryptoFailure>;
+
+    /// SHA-512 of `data`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the library cannot compute it.
+    fn sha512(&self, data: &[u8]) -> Result<[u8; 64], CryptoFailure>;
+
     /// HMAC-SHA-256 of `data` under `key`.
     ///
     /// # Errors

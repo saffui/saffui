@@ -2,6 +2,7 @@
 //! registration functions as the binary, and no socket is opened.
 
 mod admin;
+mod answers;
 mod certs;
 mod claims;
 mod consent;

@@ -148,6 +148,7 @@ impl SessionStore for MemoryUnitOfWork {
     }
 
     async fn read_session(&mut self, id: Uuid) -> Result<Option<ReadSession>, StorageError> {
+        self.reads.sessions.fetch_add(1, Ordering::Relaxed);
         let session = self
             .working
             .sessions

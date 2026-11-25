@@ -14,6 +14,7 @@ use saffui_core::secret::Secret;
 use serde::Deserialize;
 use uuid::Uuid;
 
+use super::answer::send_answer_to_client;
 use crate::api::rest::endpoints::login::page::render_refusal;
 use crate::extract::cookies::{
     is_served_over_tls, name_device_cookie, name_flow_cookie, name_session_cookie, read_cookie,
@@ -35,16 +36,10 @@ pub struct AuthorizeQuery {
     nonce: Option<String>,
     code_challenge: Option<String>,
     code_challenge_method: Option<String>,
+    response_mode: Option<String>,
     prompt: Option<String>,
     max_age: Option<String>,
     id_token_hint: Option<String>,
-}
-
-fn redirect_to(location: &str) -> HttpResponse {
-    HttpResponse::SeeOther()
-        .insert_header((LOCATION, location))
-        .insert_header((CACHE_CONTROL, "no-store"))
-        .finish()
 }
 
 /// Sends the browser to a hosted page of the realm, `login` or `consent`,
@@ -94,6 +89,7 @@ pub async fn begin(
         nonce: query.nonce.as_deref(),
         code_challenge: query.code_challenge.as_deref(),
         code_challenge_method: query.code_challenge_method.as_deref(),
+        response_mode: query.response_mode.as_deref(),
         prompt: query.prompt.as_deref(),
         max_age: query.max_age.as_deref(),
         id_token_hint: query.id_token_hint.as_deref(),
@@ -101,9 +97,12 @@ pub async fn begin(
         known_browsers: &known_browsers,
     };
     match begin_authorization(&product, &realm, parameters, ticket.as_ref()).await {
-        // With a code or with an error, the browser goes back to a trusted address.
-        Ok(Authorization::Granted { location })
-        | Err(AuthorizationRefusal::Returned { location }) => redirect_to(&location),
+        // With what it asked for or with an error, the browser goes back to
+        // a trusted address, as the request asked.
+        Ok(Authorization::Granted { response })
+        | Err(AuthorizationRefusal::Returned { response }) => {
+            send_answer_to_client(&product, HttpResponse::SeeOther(), &response)
+        }
         Ok(Authorization::SignInRequired {
             request,
             browser_secret,

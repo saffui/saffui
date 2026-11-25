@@ -383,6 +383,11 @@ mod tests {
                 with("response_types", json!(["code", "token"])),
                 "a token in the address",
             ),
+            (
+                with("response_types", json!(["code", "code id_token"])),
+                "an identity token from the authorization endpoint",
+            ),
+            (with("response_types", json!(["id_token"])), "no code"),
             (with("response_types", json!([])), "no answer at all"),
             (
                 with("subject_type", json!("pairwise")),

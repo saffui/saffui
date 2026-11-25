@@ -21,6 +21,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use super::key_form::{KEY_SILENT, KeyCeremonyKind, KeyPrompt};
+use crate::api::rest::endpoints::oidc::answer::send_answer_to_client;
 use crate::extract::cookies::{
     is_served_over_tls, name_device_cookie, name_flow_cookie, name_session_cookie, read_cookie,
     write_cookie,
@@ -327,9 +328,8 @@ fn send_back_to_client(
     signed_in: SignedInForRequest,
     known_browsers: &[DeviceMark],
 ) -> HttpResponse {
-    HttpResponse::SeeOther()
-        .insert_header((LOCATION, signed_in.location))
-        .insert_header((CACHE_CONTROL, "no-store"))
+    let mut response = HttpResponse::SeeOther();
+    response
         .append_header((
             SET_COOKIE,
             write_cookie(
@@ -358,8 +358,8 @@ fn send_back_to_client(
             ),
         ))
         // The flow is over: its cookie goes with it.
-        .append_header((SET_COOKIE, write_cookie(flow_cookie, "", Some(0), secure)))
-        .finish()
+        .append_header((SET_COOKIE, write_cookie(flow_cookie, "", Some(0), secure)));
+    send_answer_to_client(product, response, &signed_in.response)
 }
 
 /// Where a browser goes once its person signed in for a client they must

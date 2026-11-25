@@ -13,6 +13,7 @@ use time::Duration;
 use uuid::Uuid;
 
 use super::discovery::name_issuer;
+use super::response::ResponseType;
 use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
@@ -259,8 +260,9 @@ async fn look_at_id_token_algorithm(
 /// Checks what a client asks of its registration as any client is checked,
 /// by [`check_new_client`]: its addresses, name, method, keys with the share
 /// of the realm, and algorithms. Registered by anyone the realm let in, it
-/// asks each person before it acts in their name, and holds no capability.
-/// Its scopes are judged on the settings held where it is written.
+/// asks each person before it acts in their name, holds no capability, and
+/// is handed back a code alone. Its scopes are judged on the settings held
+/// where it is written.
 async fn check_registered_metadata<'a>(
     app: &App,
     scope: RealmScope,
@@ -274,6 +276,7 @@ async fn check_registered_metadata<'a>(
         capabilities: &[],
         redirect_uris: &wanted.redirect_uris,
         post_logout_redirect_uris: &wanted.post_logout_redirect_uris,
+        response_types: &[ResponseType::Code],
         public: wanted.method == ClientAuthMethod::None,
         requires_consent: true,
         id_token_signed_response_alg: Some(wanted.id_token_alg),
@@ -1139,6 +1142,51 @@ mod tests {
     }
 
     #[test]
+    fn no_registration_and_no_change_sends_people_back_to_a_page_of_this_deployment() {
+        let scenario = Scenario::start();
+        open(&scenario, RegistrationPolicy::Open);
+        let logout = "https://id.example.test/realms/acme/oauth2/logout";
+        let logout_on_another_port = "https://id.example.test:8443/realms/acme/oauth2/logout";
+        for metadata in [
+            json!({ "redirect_uris": [logout] }),
+            json!({ "redirect_uris": [logout_on_another_port] }),
+            json!({
+                "redirect_uris": [CALLBACK],
+                "post_logout_redirect_uris": ["https://id.example.test/admin/v1/realms/acme"],
+            }),
+        ] {
+            assert_eq!(
+                register(&scenario, &metadata).map(|_| ()),
+                Err(RegistrationError::InvalidRedirectUri),
+                "{metadata}"
+            );
+        }
+        let registered =
+            register(&scenario, &json!({ "redirect_uris": [CALLBACK] })).expect("a client");
+        let client_id = text(&registered, "client_id");
+        let token = text(&registered, "registration_access_token");
+
+        let change_to = |redirect_uri| {
+            update_as(
+                &scenario,
+                &client_id,
+                &token,
+                &json!({ "client_id": client_id, "redirect_uris": [redirect_uri] }),
+            )
+            .map(|_| ())
+        };
+
+        for redirect_uri in [logout, logout_on_another_port] {
+            assert_eq!(
+                change_to(redirect_uri),
+                Err(RegistrationError::InvalidRedirectUri),
+                "{redirect_uri}"
+            );
+        }
+        assert_eq!(read_client(&scenario, &client_id).redirect_uris, [CALLBACK]);
+    }
+
+    #[test]
     fn a_registered_client_signs_in_rs256_and_one_an_administrator_made_keeps_es256() {
         let scenario = Scenario::start();
         open(&scenario, RegistrationPolicy::Open);
@@ -1269,9 +1317,10 @@ mod tests {
             ask(Some("none")),
             Some(&session.ticket),
         ));
-        let Err(AuthorizationRefusal::Returned { location }) = silent else {
+        let Err(AuthorizationRefusal::Returned { response }) = silent else {
             panic!("a silent request is answered at the client: {silent:?}");
         };
+        let location = response.write_location().expect("an address");
         assert!(location.contains("error=consent_required"), "{location}");
         let asked = complete(begin_authorization(
             &scenario.app,
@@ -1283,6 +1332,50 @@ mod tests {
             matches!(asked, Ok(Authorization::ConsentRequired { .. })),
             "the person answers on a page first: {asked:?}"
         );
+    }
+
+    #[test]
+    fn a_client_registered_by_anyone_is_handed_back_a_code_and_nothing_signed_on_the_way() {
+        let scenario = Scenario::start();
+        open(&scenario, RegistrationPolicy::Open);
+        let registered = register(
+            &scenario,
+            &json!({ "redirect_uris": [CALLBACK], "token_endpoint_auth_method": "none" }),
+        )
+        .expect("a public client");
+        let client_id = text(&registered, "client_id");
+        assert_eq!(registered["response_types"], json!(["code"]));
+        let challenge = URL_SAFE_NO_PAD.encode(scenario.app.digester.sha256(VERIFIER.as_bytes()));
+
+        for asked in [
+            "id_token",
+            "id_token token",
+            "code id_token",
+            "code token",
+            "code id_token token",
+        ] {
+            let parameters = AuthorizationParameters {
+                response_type: Some(asked),
+                client_id: Some(&client_id),
+                redirect_uri: Some(CALLBACK),
+                scope: Some("openid"),
+                nonce: Some("a-nonce"),
+                code_challenge: Some(&challenge),
+                code_challenge_method: Some("S256"),
+                ..AuthorizationParameters::default()
+            };
+
+            let refused = complete(begin_authorization(&scenario.app, "acme", parameters, None));
+
+            let Err(AuthorizationRefusal::Returned { response }) = refused else {
+                panic!("returned to the client: {refused:?}");
+            };
+            assert_eq!(
+                response.read_parameter("error"),
+                Some("unauthorized_client"),
+                "{asked}"
+            );
+        }
     }
 
     #[test]
@@ -1950,6 +2043,7 @@ mod tests {
                 capabilities: &[],
                 redirect_uris: &[],
                 post_logout_redirect_uris: &[],
+                response_types: &[],
                 public: false,
                 requires_consent: false,
                 id_token_signed_response_alg: None,
@@ -2332,7 +2426,9 @@ mod tests {
             Some(ticket),
         )) {
             Ok(Authorization::Granted { .. }) => Ok(()),
-            Err(AuthorizationRefusal::Returned { location }) => Err(location),
+            Err(AuthorizationRefusal::Returned { response }) => {
+                Err(response.write_location().expect("an address"))
+            }
             other => panic!("a silent request is granted or returned: {other:?}"),
         }
     }
@@ -2641,6 +2737,7 @@ mod tests {
                 capabilities: &[],
                 redirect_uris: &callbacks,
                 post_logout_redirect_uris: &[],
+                response_types: &[],
                 public: true,
                 requires_consent: true,
                 id_token_signed_response_alg: None,

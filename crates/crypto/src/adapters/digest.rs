@@ -32,6 +32,24 @@ impl Digester for ProviderDigester {
         digest.unwrap_or_else(|| panic!("the provider no longer computes SHA-256"))
     }
 
+    fn sha384(&self, data: &[u8]) -> Result<[u8; 48], CryptoFailure> {
+        let digest = self
+            .provider
+            .digest()
+            .hash(HashAlg::Sha384, data)
+            .map_err(|_| CryptoFailure)?;
+        <[u8; 48]>::try_from(digest).map_err(|_| CryptoFailure)
+    }
+
+    fn sha512(&self, data: &[u8]) -> Result<[u8; 64], CryptoFailure> {
+        let digest = self
+            .provider
+            .digest()
+            .hash(HashAlg::Sha512, data)
+            .map_err(|_| CryptoFailure)?;
+        <[u8; 64]>::try_from(digest).map_err(|_| CryptoFailure)
+    }
+
     fn hmac_sha256(&self, key: &Secret, data: &[u8]) -> Result<[u8; 32], CryptoFailure> {
         let key = SecretBox::new(Box::new(key.expose().to_vec()));
         let tag = self
@@ -66,6 +84,45 @@ mod tests {
                 &digester.sha256(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")
             ),
             "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
+    }
+
+    #[test]
+    fn sha384_and_sha512_answer_their_published_vectors() {
+        let digester = ProviderDigester::new(open_provider().expect("a provider"));
+        let hex = |bytes: &[u8]| data_encoding::HEXLOWER.encode(bytes);
+
+        // FIPS 180-2, appendix D.1 and C.1.
+        assert_eq!(
+            hex(&digester.sha384(b"abc").expect("a digest")),
+            "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed\
+             8086072ba1e7cc2358baeca134c825a7"
+        );
+        assert_eq!(
+            hex(&digester.sha512(b"abc").expect("a digest")),
+            "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a\
+             2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+        );
+    }
+
+    /// The example of OpenID Connect Core 1.0, section 3.2.2.9: the left half
+    /// of the SHA-256 of that access token. A right half or a whole digest
+    /// would answer something else.
+    #[test]
+    fn the_half_hash_of_an_identity_token_signed_in_rs256_is_the_one_openid_connect_publishes() {
+        use saffui_core::ports::crypto::SignatureAlgorithm;
+        use saffui_core::tokens::mint::write_half_hash;
+
+        let digester = ProviderDigester::new(open_provider().expect("a provider"));
+
+        assert_eq!(
+            write_half_hash(
+                &digester,
+                SignatureAlgorithm::Rs256,
+                "jHkWEdUXMU1BwAsC4vtUsZwnNvTIxEl0z9K3vx5KF0Y"
+            )
+            .expect("a hash"),
+            "77QmUPtjPfzWtF2AnpK9RQ"
         );
     }
 

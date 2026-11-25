@@ -123,7 +123,7 @@ pub(crate) mod authorization_requests {
     pub(crate) const STATE: Column = Column("state");
     /// text, nullable
     pub(crate) const NONCE: Column = Column("nonce");
-    /// text
+    /// text, nullable
     pub(crate) const CODE_CHALLENGE: Column = Column("code_challenge");
     /// timestamp with time zone
     pub(crate) const EXPIRES_AT: Column = Column("expires_at");
@@ -139,6 +139,10 @@ pub(crate) mod authorization_requests {
     pub(crate) const CONSENT_PROMPTED: Column = Column("consent_prompted");
     /// uuid, nullable
     pub(crate) const CONSENT_SESSION_ID: Column = Column("consent_session_id");
+    /// text
+    pub(crate) const RESPONSE_TYPE: Column = Column("response_type");
+    /// text
+    pub(crate) const RESPONSE_MODE: Column = Column("response_mode");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -157,6 +161,8 @@ pub(crate) mod authorization_requests {
         KEY_PROOF_OPTIONS,
         CONSENT_PROMPTED,
         CONSENT_SESSION_ID,
+        RESPONSE_TYPE,
+        RESPONSE_MODE,
     ];
 }
 
@@ -333,6 +339,8 @@ pub(crate) mod clients {
     pub(crate) const AUTH_SIGNING_ALG: Column = Column("auth_signing_alg");
     /// boolean
     pub(crate) const SELF_REGISTERED: Column = Column("self_registered");
+    /// ARRAY
+    pub(crate) const RESPONSE_TYPES: Column = Column("response_types");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -355,6 +363,7 @@ pub(crate) mod clients {
         JWKS,
         AUTH_SIGNING_ALG,
         SELF_REGISTERED,
+        RESPONSE_TYPES,
     ];
 }
 

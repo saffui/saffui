@@ -9,15 +9,17 @@ pub mod register;
 pub mod registration;
 pub mod store;
 
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::authz::capability::Capability;
 use crate::error::{ErrorCode, Failure};
+use crate::oidc::response::ResponseType;
 use crate::ports::crypto::SignatureAlgorithm;
 use crate::ports::storage::{StorageError, UnitOfWork};
+use crate::settings::PublicOrigin;
 
 /// How a client proves itself where it asks about tokens. The method it
 /// registered is the only one it may prove itself with.
@@ -120,6 +122,9 @@ pub struct Client {
     /// Where a person may be sent back. Compared by exact equality: an empty
     /// list sends nobody anywhere.
     pub redirect_uris: Vec<String>,
+    /// What it may ask the authorization endpoint to hand back, each named
+    /// once. A client made before they were declared asks for a code alone.
+    pub response_types: Vec<ResponseType>,
     /// Where a person may be sent after signing out, by exact equality too.
     pub post_logout_redirect_uris: Vec<String>,
     /// Each person is asked before the client gets a code in their name, and
@@ -208,6 +213,10 @@ struct ReturnAddress<'a> {
     secure: bool,
     /// An IPv6 address without its brackets.
     host: &'a str,
+    /// None when the address names none: the port of its scheme.
+    port: Option<u16>,
+    /// What follows the authority, up to the query.
+    path: &'a str,
 }
 
 /// Reads an address a person is sent back to, or nothing for one a browser
@@ -227,6 +236,10 @@ fn read_return_address(text: &str) -> Option<ReturnAddress<'_>> {
         None => (false, text.strip_prefix("http://")?),
     };
     let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let path = rest[authority.len()..]
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default();
     let (host, port) = if let Some(literal) = authority.strip_prefix('[') {
         let (address, after) = literal.split_once(']')?;
         address.parse::<Ipv6Addr>().ok()?;
@@ -242,9 +255,19 @@ fn read_return_address(text: &str) -> Option<ReturnAddress<'_>> {
         }
         (host, port)
     };
-    let port_read = port.is_empty()
-        || (port.bytes().all(|byte| byte.is_ascii_digit()) && port.parse::<u16>().is_ok());
-    port_read.then_some(ReturnAddress { secure, host })
+    let port = if port.is_empty() {
+        None
+    } else if port.bytes().all(|byte| byte.is_ascii_digit()) {
+        Some(port.parse::<u16>().ok()?)
+    } else {
+        return None;
+    };
+    Some(ReturnAddress {
+        secure,
+        host,
+        port,
+        path,
+    })
 }
 
 /// Whether a browser would read a host as an IPv4 address written otherwise
@@ -273,11 +296,73 @@ pub fn read_redirect_host(uri: &str) -> &str {
 }
 
 /// Whether a host is this machine: an address sent back there reaches
-/// whatever listens on it (RFC 8252, section 8.6). A browser reads a name
-/// in any case.
+/// whatever listens on it (RFC 8252, section 8.6). An address of loopback
+/// however it is written, `127.0.0.0/8` whole, and `localhost` and every
+/// name under it (RFC 6761, section 6.3), in any case and with or without
+/// a final dot.
 #[must_use]
 pub fn is_loopback_host(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost") || matches!(host, "127.0.0.1" | "::1")
+    if let Ok(address) = host.parse::<IpAddr>() {
+        return address.to_canonical().is_loopback();
+    }
+    host.strip_suffix('.')
+        .unwrap_or(host)
+        .rsplit('.')
+        .next()
+        .is_some_and(|last| last.eq_ignore_ascii_case("localhost"))
+}
+
+/// Whether an address a person is sent back to is on `origin`: the same
+/// scheme and host, on any port over https, since neither the cookies of
+/// the deployment nor its check of `Origin` name one. Over http the origin
+/// is this machine, where each port is an application of its own: the port
+/// counts, a port left out being that of the scheme. A host is read in any
+/// case, and with or without a final dot. What cannot be read is on no
+/// origin.
+#[must_use]
+pub fn is_on_origin(uri: &str, origin: &PublicOrigin) -> bool {
+    read_return_address(uri).is_some_and(|address| address.is_on(origin))
+}
+
+impl ReturnAddress<'_> {
+    /// As [`is_on_origin`] tells.
+    fn is_on(&self, origin: &PublicOrigin) -> bool {
+        // Every public origin reads as an address: its grammar is narrower.
+        let Some(ours) = read_return_address(origin.as_str()) else {
+            return false;
+        };
+        let port =
+            |read: &ReturnAddress<'_>| read.port.unwrap_or(if read.secure { 443 } else { 80 });
+        let same_host = match (self.host.parse::<Ipv6Addr>(), ours.host.parse::<Ipv6Addr>()) {
+            (Ok(one), Ok(other)) => one == other,
+            _ => self
+                .host
+                .trim_end_matches('.')
+                .eq_ignore_ascii_case(ours.host.trim_end_matches('.')),
+        };
+        let same_port = ours.secure || port(self) == port(&ours);
+        self.secure == ours.secure && same_port && same_host
+    }
+}
+
+/// Whether an address leads to a page this deployment serves itself: on
+/// `origin`, under `/realms/` or `/admin/`. A path that holds an escape or a
+/// dot segment is counted as one: a browser resolves the segment, and the
+/// router decodes the escape, before either reads the path.
+#[must_use]
+pub fn is_deployment_page(uri: &str, origin: &PublicOrigin) -> bool {
+    let Some(address) = read_return_address(uri).filter(|address| address.is_on(origin)) else {
+        return false;
+    };
+    let resolved_elsewhere = address.path.contains('%')
+        || address
+            .path
+            .split('/')
+            .any(|segment| matches!(segment, "." | ".."));
+    let first = address.path.split('/').nth(1).unwrap_or_default();
+    resolved_elsewhere
+        || first.eq_ignore_ascii_case("realms")
+        || first.eq_ignore_ascii_case("admin")
 }
 
 /// Checks a redirect URI at registration: an https URL, or an http URL of
@@ -422,9 +507,10 @@ pub async fn read_client_keys(
 #[cfg(test)]
 mod tests {
     use super::{
-        check_client_identifier, check_redirect_uri, check_scope_token, is_loopback_host,
-        is_unshowable, neutralize_unshowable, read_redirect_host,
+        check_client_identifier, check_redirect_uri, check_scope_token, is_deployment_page,
+        is_loopback_host, is_on_origin, is_unshowable, neutralize_unshowable, read_redirect_host,
     };
+    use crate::settings::PublicOrigin;
 
     #[test]
     fn an_https_url_and_an_http_url_of_this_machine_may_be_registered() {
@@ -434,6 +520,10 @@ mod tests {
             "http://localhost:3000/callback",
             "http://127.0.0.1/callback",
             "http://[::1]:8080/cb",
+            "http://127.0.0.2:8443/cb",
+            "http://[0:0:0:0:0:0:0:1]/cb",
+            "http://localhost./cb",
+            "http://app.localhost/cb",
             "https://xn--bcher-kva.example/cb",
             "https://app.example.org:8443/a%20b?c=%C3%A9",
             "https://203.0.113.7/cb",
@@ -478,6 +568,7 @@ mod tests {
         for uri in [
             "https://app.example.org/callback#fragment",
             "http://app.example.org/callback",
+            "http://localhost.example.org/callback",
             "myapp://callback",
             "https://user@app.example.org/callback",
             "https:///callback",
@@ -547,6 +638,19 @@ mod tests {
             ("http://localhost/cb", "localhost", true),
             ("https://LocalHost:8443/cb", "LocalHost", true),
             ("https://[::1]:8443/cb", "::1", true),
+            ("https://127.0.0.2:8443/cb", "127.0.0.2", true),
+            ("https://[0:0:0:0:0:0:0:1]/cb", "0:0:0:0:0:0:0:1", true),
+            ("https://[::ffff:127.0.0.1]/cb", "::ffff:127.0.0.1", true),
+            ("https://localhost./cb", "localhost.", true),
+            ("https://app.localhost/cb", "app.localhost", true),
+            ("https://128.0.0.1/cb", "128.0.0.1", false),
+            ("https://[::2]/cb", "::2", false),
+            (
+                "https://localhost.example.org/cb",
+                "localhost.example.org",
+                false,
+            ),
+            ("https://applocalhost/cb", "applocalhost", false),
             (
                 "https://xn--bcher-kva.example/cb",
                 "xn--bcher-kva.example",
@@ -557,6 +661,72 @@ mod tests {
         ] {
             assert_eq!(read_redirect_host(uri), host, "{uri}");
             assert_eq!(is_loopback_host(read_redirect_host(uri)), loopback, "{uri}");
+        }
+    }
+
+    #[test]
+    fn an_address_is_on_the_public_origin_as_a_browser_compares_origins() {
+        let origin = |text| PublicOrigin::parse(text).expect("an origin");
+        let ours = origin("https://id.example.org");
+        for (uri, on) in [
+            ("https://id.example.org/realms/a/oauth2/logout", true),
+            ("https://ID.Example.org/cb", true),
+            ("https://id.example.org./cb", true),
+            ("https://id.example.org:443/cb", true),
+            ("https://id.example.org", true),
+            ("https://id.example.org:8443/cb", true),
+            ("http://id.example.org/cb", false),
+            ("http://id.example.org:443/cb", false),
+            ("https://app.id.example.org/cb", false),
+            ("https://id.example.org.evil.example/cb", false),
+            ("myapp://id.example.org/cb", false),
+        ] {
+            assert_eq!(is_on_origin(uri, &ours), on, "{uri}");
+        }
+        let this_machine = origin("http://localhost");
+        for (uri, on) in [
+            ("http://localhost/cb", true),
+            ("http://localhost:80/cb", true),
+            ("http://localhost:3000/cb", false),
+            ("https://localhost/cb", false),
+        ] {
+            assert_eq!(is_on_origin(uri, &this_machine), on, "{uri}");
+        }
+        for (uri, text) in [
+            ("http://localhost:8080/cb", "http://localhost:8080"),
+            ("http://127.0.0.1:8080/cb", "http://127.0.0.1:8080"),
+            ("http://[0:0::1]:8080/cb", "http://[::1]:8080"),
+            (
+                "https://[2001:db8::1]:8443/cb",
+                "https://[2001:db8::1]:8443",
+            ),
+        ] {
+            assert!(is_on_origin(text, &origin(text)), "{text}");
+            assert!(is_on_origin(uri, &origin(text)), "{uri}");
+        }
+    }
+
+    #[test]
+    fn an_address_on_the_public_origin_under_its_realms_or_its_administration_is_one_of_its_pages()
+    {
+        let ours = PublicOrigin::parse("https://id.example.org").expect("an origin");
+        for (uri, page) in [
+            ("https://id.example.org/realms/a/oauth2/logout", true),
+            ("https://id.example.org/admin/v1/realms/a", true),
+            ("https://id.example.org/realms", true),
+            ("https://id.example.org/Realms/a/login", true),
+            ("https://id.example.org:443/realms/a/login?x=1", true),
+            ("https://id.example.org/%72ealms/a/oauth2/logout", true),
+            ("https://id.example.org/app/../realms/a/login", true),
+            ("https://id.example.org/./admin/v1", true),
+            ("https://id.example.org/app/callback", false),
+            ("https://id.example.org/realmsx/a", false),
+            ("https://id.example.org", false),
+            ("https://id.example.org/?next=/realms/a", false),
+            ("https://app.example.org/realms/a/oauth2/logout", false),
+            ("https://id.example.org:8443/realms/a/oauth2/logout", true),
+        ] {
+            assert_eq!(is_deployment_page(uri, &ours), page, "{uri}");
         }
     }
 

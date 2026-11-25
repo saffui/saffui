@@ -4,6 +4,7 @@ use saffui_core::clients::store::{ClientStore, ListWindow};
 use saffui_core::clients::{
     AssertionAlgorithm, Client, ClientAuthMethod, ClientStanding, KeptProof,
 };
+use saffui_core::oidc::response::ResponseType;
 use saffui_core::ports::crypto::SignatureAlgorithm;
 use saffui_core::ports::storage::StorageError;
 use time::OffsetDateTime;
@@ -70,6 +71,7 @@ const CLIENT: &[Column] = &[
     clients::AUTH_METHOD,
     clients::AUTH_SIGNING_ALG,
     clients::SELF_REGISTERED,
+    clients::RESPONSE_TYPES,
 ];
 
 /// Constant SQL: the columns of [`CLIENT`], in its order, and the row stays
@@ -78,7 +80,7 @@ const READ_CLIENT_FOR_UPDATE: &str = "
     SELECT client_row_id, client_id, name, allows_client_credentials, scopes, capabilities,
         enabled, created_at, allows_authorization_code, redirect_uris,
         post_logout_redirect_uris, requires_consent, id_token_signed_response_alg, auth_method,
-        auth_signing_alg, self_registered
+        auth_signing_alg, self_registered, response_types
     FROM clients
     WHERE tenant_id = $1 AND realm_id = $2 AND client_id = $3
     FOR NO KEY UPDATE";
@@ -90,7 +92,7 @@ const READ_CLIENT_FOR_SHARE: &str = "
     SELECT client_row_id, client_id, name, allows_client_credentials, scopes, capabilities,
         enabled, created_at, allows_authorization_code, redirect_uris,
         post_logout_redirect_uris, requires_consent, id_token_signed_response_alg, auth_method,
-        auth_signing_alg, self_registered
+        auth_signing_alg, self_registered, response_types
     FROM clients
     WHERE tenant_id = $1 AND realm_id = $2 AND client_id = $3
     FOR SHARE";
@@ -116,6 +118,7 @@ const CLIENT_WITH_PROOF: &[Column] = &[
     clients::AUTH_METHOD,
     clients::AUTH_SIGNING_ALG,
     clients::SELF_REGISTERED,
+    clients::RESPONSE_TYPES,
     clients::SECRET_DIGEST,
     clients::SEALED_SECRET,
     clients::JWKS,
@@ -126,6 +129,7 @@ fn read_client_row(row: &Row) -> Result<Client, StorageError> {
     let id_token_algorithm: Option<String> = row.get(12);
     let auth_method: String = row.get(13);
     let auth_signing_alg: Option<String> = row.get(14);
+    let response_types: Vec<String> = row.get(16);
     // The schema holds the same lists: a name unknown here was not written
     // by this binary.
     Ok(Client {
@@ -139,6 +143,10 @@ fn read_client_row(row: &Row) -> Result<Client, StorageError> {
         allows_client_credentials: row.get(3),
         allows_authorization_code: row.get(8),
         redirect_uris: row.get(9),
+        response_types: response_types
+            .iter()
+            .map(|name| ResponseType::read(name).ok_or(StorageError::Failed))
+            .collect::<Result<_, _>>()?,
         post_logout_redirect_uris: row.get(10),
         requires_consent: row.get(11),
         scopes: row.get(4),
@@ -194,6 +202,11 @@ impl ClientStore for PgUnitOfWork {
             .map(SignatureAlgorithm::name);
         let auth_method = client.auth_method.name();
         let auth_signing_alg = client.auth_signing_alg.map(AssertionAlgorithm::name);
+        let response_types: Vec<&str> = client
+            .response_types
+            .iter()
+            .map(|kind| kind.name())
+            .collect();
         let insert = Insert::into(
             clients::TABLE,
             vec![
@@ -214,6 +227,7 @@ impl ClientStore for PgUnitOfWork {
                     &client.allows_authorization_code,
                 ),
                 col(clients::REDIRECT_URIS, &client.redirect_uris),
+                col(clients::RESPONSE_TYPES, &response_types),
                 col(
                     clients::POST_LOGOUT_REDIRECT_URIS,
                     &client.post_logout_redirect_uris,

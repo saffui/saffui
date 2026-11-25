@@ -286,9 +286,8 @@ async fn an_exchange_binds_its_code_before_it_waits_on_the_head_of_the_chain() {
         .into_finished()
         .expect("a person who owes no code");
     let code = signed_in
-        .location
-        .split_once("code=")
-        .and_then(|(_, rest)| rest.split('&').next())
+        .response
+        .read_parameter("code")
         .expect("a code")
         .to_owned();
     let digest = app.digester.sha256(code.as_bytes());

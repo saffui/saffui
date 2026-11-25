@@ -19,6 +19,8 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 time.workspace = true
+# The journal, for a failure a use case keeps behind the refusal it returns.
+tracing.workspace = true
 # Policies name roles and groups by identifier, in the document they are written in.
 uuid = { workspace = true, features = ["serde"] }
 zeroize.workspace = true

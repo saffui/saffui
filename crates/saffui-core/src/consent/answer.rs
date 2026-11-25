@@ -20,11 +20,13 @@ use crate::login::session::{
     OFFLINE_SESSION_LIFETIME, Session, SessionTicket, find_answering_session,
 };
 use crate::oidc::authorize::{
-    CodeGrant, issue_code, leave_out_offline_access, write_return_location,
+    AnswerGrant, issue_answer, leave_out_offline_access, record_signed_answer,
 };
 use crate::oidc::code::PendingAuthorization;
 use crate::oidc::discovery::name_issuer;
 use crate::oidc::errors::OAuthError;
+use crate::oidc::implicit::AnswerSubject;
+use crate::oidc::response::AuthorizationResponse;
 use crate::oidc::token::OFFLINE_ACCESS_SCOPE;
 use crate::ports::storage::UnitOfWork;
 use crate::secret::Secret;
@@ -186,9 +188,10 @@ pub async fn describe_consent(
     })
 }
 
-/// Takes the answer of the person, and returns where the browser goes: to
-/// the client with a code, or with `access_denied`. Allowed, the scopes
-/// join what the person allowed the client before.
+/// Takes the answer of the person, and returns what the browser carries back
+/// to the client: what it asked for, or `access_denied`, as the request
+/// asked it to travel. Allowed, the scopes join what the person allowed the
+/// client before.
 ///
 /// # Errors
 ///
@@ -205,7 +208,7 @@ pub async fn answer_consent(
     browser_secret: &Secret,
     ticket: Option<&SessionTicket>,
     decision: ConsentDecision,
-) -> Result<String, Failure> {
+) -> Result<AuthorizationResponse, Failure> {
     let ticket = ticket.ok_or_else(expire)?;
     let (realm, scope) = resolve_realm(app, realm).await?;
     let mut work = app.storage.begin(scope).await?;
@@ -214,23 +217,24 @@ pub async fn answer_consent(
     let taken = work.take_pending_authorization(request, app.now()).await?;
     let (pending, session) =
         check_waiting_consent(app, work.as_mut(), taken, browser_secret, ticket).await?;
-    let location = match decision {
+    let response = match decision {
         ConsentDecision::Allow { shown } => {
             allow_client(app, work.as_mut(), &realm, &pending, &session, &shown).await?
         }
-        ConsentDecision::Deny => write_return_location(
+        ConsentDecision::Deny => AuthorizationResponse::write(
             &pending.redirect_uri,
+            pending.response_mode,
             &name_issuer(&app.settings, &realm),
             pending.state.as_deref(),
-            &[("error", OAuthError::AccessDenied.name())],
+            vec![("error", OAuthError::AccessDenied.name().to_owned())],
         ),
     };
     work.commit().await?;
-    Ok(location)
+    Ok(response)
 }
 
-/// Keeps what the person allowed, and gives the client its code, if it
-/// covers what `shown` says the page showed of the client.
+/// Keeps what the person allowed, and gives the client what it asked for,
+/// if it covers what `shown` says the page showed of the client.
 async fn allow_client(
     app: &App,
     work: &mut dyn UnitOfWork,
@@ -238,7 +242,7 @@ async fn allow_client(
     pending: &PendingAuthorization,
     session: &Session,
     shown: &str,
-) -> Result<String, Failure> {
+) -> Result<AuthorizationResponse, Failure> {
     // Shared until the commit: a change of the client in flight is waited
     // for and read, and one that comes after waits for this answer.
     let client = work
@@ -262,24 +266,28 @@ async fn allow_client(
         })
         .await?;
     }
-    let location = issue_code(
+    // The consent the client requires is the one this unit just wrote.
+    let issued = issue_answer(
         app,
         work,
-        CodeGrant {
+        AnswerGrant {
             realm,
-            client_id: &client.client_id,
+            subject: AnswerSubject::Read {
+                client: &client,
+                session,
+            },
             redirect_uri: &pending.redirect_uri,
             scopes: &given,
             state: pending.state.as_deref(),
             nonce: pending.nonce.as_deref(),
-            code_challenge: &pending.code_challenge,
-            person: session.person,
-            session: session.id,
+            response_type: pending.response_type,
+            response_mode: pending.response_mode,
+            code_challenge: pending.code_challenge.as_deref(),
             authenticated_at: session.authenticated_at,
         },
     )
     .await?;
-    // The event comes last: the head of the chain stays locked until the commit.
+    // The events come last: the head of the chain stays locked until the commit.
     let granted = json!({
         "client_id": client.client_id,
         "kept": client.requires_consent,
@@ -288,7 +296,8 @@ async fn allow_client(
         "session_id": session.id.to_string(),
     });
     record_event(app, work, EventKind::ConsentGranted, granted).await?;
-    Ok(location)
+    record_signed_answer(app, work, issued.told).await?;
+    Ok(issued.response)
 }
 
 #[cfg(test)]
@@ -336,6 +345,7 @@ mod tests {
                 capabilities: &[],
                 redirect_uris: &redirect_uris,
                 post_logout_redirect_uris: &[],
+                response_types: &[],
                 public: true,
                 requires_consent: true,
                 id_token_signed_response_alg: None,
@@ -404,9 +414,8 @@ mod tests {
             Ok(Authorization::Granted { .. }) => "granted".to_owned(),
             Ok(Authorization::SignInRequired { .. }) => "sign in".to_owned(),
             Ok(Authorization::ConsentRequired { .. }) => "consent".to_owned(),
-            Err(AuthorizationRefusal::Returned { location }) => location
-                .split_once("error=")
-                .and_then(|(_, rest)| rest.split('&').next())
+            Err(AuthorizationRefusal::Returned { response }) => response
+                .read_parameter("error")
                 .expect("an error")
                 .to_owned(),
             Err(AuthorizationRefusal::Shown(failure)) => panic!("shown: {failure:?}"),
@@ -464,6 +473,7 @@ mod tests {
             ticket,
             decision,
         ))
+        .map(|answered| answered.write_location().expect("an address"))
         .map_err(|failure| failure.code)
     }
 
@@ -822,9 +832,13 @@ mod tests {
             panic!("bob is not asked to allow a client that waits for ada: {step:?}");
         };
         assert!(
-            finished.location.contains("error=login_required"),
+            finished
+                .response
+                .write_location()
+                .expect("an address")
+                .contains("error=login_required"),
             "{}",
-            finished.location
+            finished.response.write_location().expect("an address")
         );
     }
 
@@ -843,6 +857,7 @@ mod tests {
             allows_client_credentials: false,
             allows_authorization_code: true,
             redirect_uris: vec![CALLBACK.to_owned()],
+            response_types: vec![crate::oidc::response::ResponseType::Code],
             post_logout_redirect_uris: Vec::new(),
             requires_consent: true,
             scopes: vec!["openid".to_owned()],
@@ -1029,11 +1044,12 @@ mod tests {
         let from_the_page =
             allow(&scenario, request, &browser_secret, Some(&ticket)).expect("a code");
         let Ok(Authorization::Granted {
-            location: from_the_session,
+            response: from_the_session,
         }) = ask_partner(&scenario, "openid", Some(&ticket))
         else {
             panic!("allowed once, the session answers alone");
         };
+        let from_the_session = from_the_session.write_location().expect("an address");
 
         complete(withdraw_my_consent(
             &scenario.app,

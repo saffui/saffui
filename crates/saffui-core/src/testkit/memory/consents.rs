@@ -5,8 +5,21 @@ use uuid::Uuid;
 
 use super::MemoryUnitOfWork;
 use crate::consent::store::ConsentStore;
-use crate::consent::{Consent, ConsentHold, ConsentTerms, ListedConsent};
+use crate::consent::{Allowance, Consent, ConsentHold, ConsentTerms, ListedConsent};
 use crate::ports::storage::StorageError;
+
+fn read_allowance(held: &Consent) -> Allowance {
+    Allowance {
+        scopes: held.scopes.clone(),
+        claims: held.claims.clone(),
+    }
+}
+
+/// Adds after `kept`, in their order, those of `asked` it does not hold yet.
+fn add_missing(kept: &mut Vec<String>, asked: &[String]) {
+    let before = kept.clone();
+    kept.extend(asked.iter().filter(|name| !before.contains(name)).cloned());
+}
 
 impl MemoryUnitOfWork {
     fn key_consent(&self, person: Uuid, client_id: &str) -> (Uuid, Uuid, String) {
@@ -37,14 +50,12 @@ impl ConsentStore for MemoryUnitOfWork {
         person: Uuid,
         client_id: &str,
         _hold: ConsentHold,
-    ) -> Result<Option<Vec<String>>, StorageError> {
+    ) -> Result<Option<Allowance>, StorageError> {
         // As a read-only transaction refuses a lock. The double serializes
         // nothing, whatever the hold: what is held is what is read.
         let outcome = self.refuse_in_snapshot();
         self.record_refusal(outcome)?;
-        Ok(self
-            .find_consent(person, client_id)
-            .map(|held| held.scopes.clone()))
+        Ok(self.find_consent(person, client_id).map(read_allowance))
     }
 
     async fn read_consent_terms(
@@ -52,9 +63,7 @@ impl ConsentStore for MemoryUnitOfWork {
         person: Uuid,
         client_id: &str,
     ) -> Result<Option<ConsentTerms>, StorageError> {
-        let allowed = self
-            .find_consent(person, client_id)
-            .map(|held| held.scopes.clone());
+        let allowed = self.find_consent(person, client_id).map(read_allowance);
         let realm = self.scope.realm().as_uuid();
         Ok(self
             .working
@@ -64,28 +73,24 @@ impl ConsentStore for MemoryUnitOfWork {
             .map(|client| ConsentTerms {
                 requires_consent: client.requires_consent,
                 allowed,
+                client_scopes: client.scopes.clone(),
             }))
     }
 
-    async fn add_consent(&mut self, consent: &Consent) -> Result<(), StorageError> {
+    async fn add_consent(&mut self, consent: &Consent) -> Result<Allowance, StorageError> {
         let outcome = self.refuse_in_snapshot();
         self.record_refusal(outcome)?;
         let key = self.key_consent(consent.person, &consent.client_id);
         let kept = self.working.consents.entry(key).or_insert_with(|| Consent {
             scopes: Vec::new(),
+            claims: Vec::new(),
             ..consent.clone()
         });
         // As the statement does: what is added is compared to what was kept before.
-        let before = kept.scopes.clone();
-        kept.scopes.extend(
-            consent
-                .scopes
-                .iter()
-                .filter(|scope| !before.contains(scope))
-                .cloned(),
-        );
+        add_missing(&mut kept.scopes, &consent.scopes);
+        add_missing(&mut kept.claims, &consent.claims);
         kept.granted_at = consent.granted_at;
-        Ok(())
+        Ok(read_allowance(kept))
     }
 
     async fn list_consents(

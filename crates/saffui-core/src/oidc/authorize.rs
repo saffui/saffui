@@ -28,13 +28,16 @@ use super::token::OFFLINE_ACCESS_SCOPE;
 use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
+use crate::claims::request::{ClaimsRequest, read_claims_parameter};
+use crate::claims::rules::list_claims_owing_consent;
 use crate::clients::{
     Client, KeptProof, check_scope_token, is_loopback_host, is_on_origin, read_named_client,
     read_named_client_with_proof, read_redirect_host,
 };
-use crate::consent::{ConsentHold, ConsentTerms, is_consent_owed};
+use crate::consent::{Allowance, ConsentHold, ConsentTerms, is_consent_owed, list_covering_scopes};
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
+use crate::login::assurance::{Assurance, RequiredLevel};
 use crate::login::device::DeviceMark;
 use crate::login::flow::{
     FirstStep, SignedIn, finish_sign_in_with_code, finish_sign_in_with_key, sign_in_with_password,
@@ -77,6 +80,8 @@ pub struct AuthorizationParameters<'a> {
     pub request: Option<&'a str>,
     /// An address to fetch the request from: refused, it is never fetched.
     pub request_uri: Option<&'a str>,
+    /// The claims the client names one by one, as JSON.
+    pub claims: Option<&'a str>,
     /// The address of the browser, as a believed proxy said: the sign-ins
     /// it leaves waiting are counted under it.
     pub caller: Option<IpAddr>,
@@ -132,7 +137,7 @@ impl fmt::Debug for Authorization {
 }
 
 // Written by hand: an identity token hint says who the person is, and so
-// may a request object.
+// may a request object or the claims it names.
 impl fmt::Debug for AuthorizationParameters<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -151,6 +156,7 @@ impl fmt::Debug for AuthorizationParameters<'_> {
             .field("id_token_hint", &self.id_token_hint.map(|_| ".."))
             .field("request", &self.request.map(|_| ".."))
             .field("request_uri", &self.request_uri)
+            .field("claims", &self.claims.map(|_| ".."))
             .field("caller", &self.caller)
             .field("known_browsers", &self.known_browsers)
             .finish()
@@ -178,6 +184,8 @@ struct TrustedRequest {
     proof: ProofAsked,
     /// The identity token that names the person the client expects.
     id_token_hint: Option<String>,
+    /// The claims the request names one by one, when it names any.
+    claims: Option<ClaimsRequest>,
 }
 
 /// What `prompt` and `max_age` ask of the session that would answer.
@@ -425,6 +433,34 @@ async fn read_carried_request(
     }
 }
 
+/// Reads the claims a request names, once: none when it names none. One
+/// that cannot be read, or names claims for userinfo with no access token to
+/// tell them to (OpenID Connect Core 1.0, section 5.5), is invalid. A level
+/// the realm has no name for is out of reach of any sign-in: the client is
+/// told before anyone signs in.
+fn read_named_claims(
+    written: Option<&str>,
+    response_type: ResponseType,
+) -> Result<Option<ClaimsRequest>, OAuthError> {
+    let Some(text) = written.filter(|text| !text.is_empty()) else {
+        return Ok(None);
+    };
+    let claims = read_claims_parameter(text)
+        .ok_or(OAuthError::InvalidRequest)?
+        .into_named();
+    let tells_userinfo = response_type.issues_code() || response_type.issues_access_token();
+    if claims
+        .as_ref()
+        .is_some_and(|asked| !asked.userinfo.is_empty() && !tells_userinfo)
+    {
+        return Err(OAuthError::InvalidRequest);
+    }
+    if RequiredLevel::read(claims.as_ref()) == RequiredLevel::Unknown {
+        return Err(OAuthError::UnmetAuthenticationRequirements);
+    }
+    Ok(claims)
+}
+
 async fn trust_request(
     app: &App,
     realm: &str,
@@ -510,6 +546,7 @@ async fn trust_request(
     if !response_type.issues_code() {
         scopes.retain(|scope| scope != OFFLINE_ACCESS_SCOPE);
     }
+    let claims = read_named_claims(parameters.claims, response_type).map_err(returned)?;
     Ok(TrustedRequest {
         realm,
         client,
@@ -525,6 +562,7 @@ async fn trust_request(
             .id_token_hint
             .filter(|hint| !hint.is_empty())
             .map(str::to_owned),
+        claims,
     })
 }
 
@@ -539,6 +577,7 @@ pub(crate) struct AnswerGrant<'a> {
     pub(crate) response_mode: ResponseMode,
     pub(crate) code_challenge: Option<&'a str>,
     pub(crate) authenticated_at: time::OffsetDateTime,
+    pub(crate) claims: Option<&'a ClaimsRequest>,
 }
 
 /// The answer to a request, and what the chain is to say of what it signed.
@@ -572,6 +611,7 @@ async fn issue_code(
         code_challenge: code_challenge.to_owned(),
         authenticated_at: grant.authenticated_at,
         expires_at: app.now() + CODE_LIFETIME,
+        claims: grant.claims.cloned(),
     })
     .await?;
     Ok(code)
@@ -605,6 +645,7 @@ pub(crate) async fn issue_answer(
                 nonce: grant.nonce,
                 response_type: grant.response_type,
                 code: code.as_deref(),
+                claims: grant.claims,
             },
         )
         .await?;
@@ -634,30 +675,50 @@ pub(crate) async fn record_signed_answer(
     }
 }
 
-/// A hint names the person the client expects. The session of someone else
-/// does not answer for them: the person is asked, or, without a page, the
-/// client is told a sign-in is needed. A hint that is not an identity token
-/// this realm gave this very client is refused. Returns the session that
-/// answers, and the person the hint names.
-async fn hold_session_to_hint(
+/// The person a hint names: the one the client expects, whom the session of
+/// someone else does not answer for. A hint that is not an identity token
+/// this realm gave this very client is refused, whatever session there is.
+async fn read_hinted_person(
     app: &App,
     work: &mut dyn UnitOfWork,
     trusted: &TrustedRequest,
     issuer: &str,
     hint: &str,
-    session: Option<Session>,
-) -> Result<(Option<Session>, Uuid), AuthorizationRefusal> {
-    let expected = read_identity_hint(app, work, issuer, hint)
+) -> Result<Uuid, AuthorizationRefusal> {
+    read_identity_hint(app, work, issuer, hint)
         .await?
         .filter(|named| named.client_id == trusted.client.client_id)
-        .and_then(|named| Uuid::parse_str(&named.subject).ok());
-    let Some(expected) = expected else {
-        return Err(tell_client(trusted, issuer, OAuthError::InvalidRequest));
+        .and_then(|named| Uuid::parse_str(&named.subject).ok())
+        .ok_or_else(|| tell_client(trusted, issuer, OAuthError::InvalidRequest))
+}
+
+/// The claims a request names that its person must allow one by one: those
+/// the client may be given, in `entitled`, that none of the `covering` scopes
+/// says. Read only for a request that names claims.
+pub(crate) async fn list_owing_claims(
+    work: &mut dyn UnitOfWork,
+    client_id: &str,
+    entitled: &[String],
+    covering: &[String],
+    claims: Option<&ClaimsRequest>,
+) -> Result<Vec<String>, Failure> {
+    let Some(asked) = claims else {
+        return Ok(Vec::new());
     };
-    Ok((
-        session.filter(|session| session.person == expected),
-        expected,
+    let mappers = work.list_mappers(client_id).await?;
+    Ok(list_claims_owing_consent(
+        asked, &mappers, entitled, covering,
     ))
+}
+
+/// Where what a person allowed a client leaves a request of it.
+enum ConsentStanding {
+    /// They answer on a page first.
+    Owed,
+    /// Nothing is owed. What they allowed a client that asks them, held or
+    /// read in the unit of work that answers; `None` for a client that asks
+    /// nobody.
+    Given(Option<Allowance>),
 }
 
 /// Whether `person` must allow the client before it gets an answer of
@@ -665,18 +726,15 @@ async fn hold_session_to_hint(
 /// allowed is read only where it decides: for a client that requires
 /// consent, unless it asked again. It is held until the commit when the
 /// answer signs tokens here: a withdrawal waits, and nothing reads it again.
-async fn is_consent_owed_by(
+async fn judge_consent(
     work: &mut dyn UnitOfWork,
     client: &Client,
     prompted: bool,
     person: Uuid,
-    scopes: &[String],
-    response_type: ResponseType,
-) -> Result<bool, Failure> {
-    let allowed = match (
-        client.requires_consent && !prompted,
-        response_type.issues_token(),
-    ) {
+    trusted: &TrustedRequest,
+) -> Result<ConsentStanding, Failure> {
+    let decides = client.requires_consent && !prompted;
+    let allowed = match (decides, trusted.response_type.issues_token()) {
         (false, _) => None,
         (true, true) => {
             work.hold_consent(person, &client.client_id, ConsentHold::Shared)
@@ -685,13 +743,30 @@ async fn is_consent_owed_by(
         (true, false) => work
             .read_consent(person, &client.client_id)
             .await?
-            .map(|held| held.scopes),
+            .map(|held| Allowance {
+                scopes: held.scopes,
+                claims: held.claims,
+            }),
+    };
+    let owing = if decides {
+        let covering = list_covering_scopes(&trusted.scopes, allowed.as_ref());
+        let claims = trusted.claims.as_ref();
+        list_owing_claims(work, &client.client_id, &client.scopes, &covering, claims).await?
+    } else {
+        Vec::new()
     };
     let terms = ConsentTerms {
         requires_consent: client.requires_consent,
         allowed,
+        client_scopes: client.scopes.clone(),
     };
-    Ok(is_consent_owed(&terms, prompted, scopes))
+    if is_consent_owed(&terms, prompted, &trusted.scopes, &owing) {
+        return Ok(ConsentStanding::Owed);
+    }
+    let allowed = terms.allowed.unwrap_or_default();
+    Ok(ConsentStanding::Given(
+        client.requires_consent.then_some(allowed),
+    ))
 }
 
 /// Keeps a request until a person signs in for it, or until the person of
@@ -725,6 +800,7 @@ async fn keep_pending_authorization(
         key_proof: None,
         consent_prompted: trusted.proof.consent,
         consent_session,
+        claims: trusted.claims,
     };
     work.insert_pending_authorization(&pending)
         .await
@@ -785,6 +861,7 @@ async fn answer_with_session(
     work_slot: &mut Option<Box<dyn UnitOfWork>>,
     trusted: &TrustedRequest,
     session: &Session,
+    allowed: Option<&Allowance>,
 ) -> Result<Authorization, Failure> {
     let mut work = work_slot.take().ok_or(Failure::new(ErrorCode::Internal))?;
     let scopes = leave_out_offline_access(&trusted.scopes);
@@ -796,6 +873,7 @@ async fn answer_with_session(
             subject: AnswerSubject::Read {
                 client: &trusted.client,
                 session,
+                allowed,
             },
             redirect_uri: &trusted.redirect_uri,
             scopes: &scopes,
@@ -805,6 +883,7 @@ async fn answer_with_session(
             response_mode: trusted.response_mode,
             code_challenge: trusted.code_challenge.as_deref(),
             authenticated_at: session.authenticated_at,
+            claims: trusted.claims.as_ref(),
         },
     )
     .await?;
@@ -813,6 +892,18 @@ async fn answer_with_session(
     Ok(Authorization::Granted {
         response: answered.response,
     })
+}
+
+/// Whether a session answers what a request names of its person: the one
+/// its hint names, the level it requires, and the subject it names (OpenID
+/// Connect Core 1.0, section 3.1.2.2).
+fn is_answered_by(trusted: &TrustedRequest, expected: Option<Uuid>, session: &Session) -> bool {
+    expected.is_none_or(|expected| session.person == expected)
+        && RequiredLevel::read(trusted.claims.as_ref()).is_met_by(Assurance::reached_by(session))
+        && trusted
+            .claims
+            .as_ref()
+            .is_none_or(|asked| asked.admits_subject(&session.person.to_string()))
 }
 
 /// Handles a request to the authorization endpoint.
@@ -849,33 +940,32 @@ pub async fn begin_authorization(
             .is_none_or(|max_age| (now - session.authenticated_at).whole_seconds() < max_age)
     });
     let issuer = name_issuer(&app.settings, &trusted.realm);
-    let (session, expected_person) = match trusted.id_token_hint.as_deref() {
-        Some(hint) => {
-            let (session, expected) =
-                hold_session_to_hint(app, work.as_mut(), &trusted, &issuer, hint, session).await?;
-            (session, Some(expected))
-        }
-        None => (session, None),
+    let expected_person = match trusted.id_token_hint.as_deref() {
+        Some(hint) => Some(read_hinted_person(app, work.as_mut(), &trusted, &issuer, hint).await?),
+        None => None,
     };
+    // What the person of the session allowed is judged first: without a
+    // page, a client they must allow is told so whomever the request or its
+    // hint names and whatever level it requires, and learns nothing of who
+    // signed in.
+    let mut standing = None;
+    if let Some(session) = &session {
+        let prompted = trusted.proof.consent;
+        let client = &trusted.client;
+        standing =
+            Some(judge_consent(work.as_mut(), client, prompted, session.person, &trusted).await?);
+    }
+    if trusted.proof.silent && matches!(standing, Some(ConsentStanding::Owed)) {
+        return Err(tell_client(&trusted, &issuer, OAuthError::ConsentRequired));
+    }
+    let session = session.filter(|session| is_answered_by(&trusted, expected_person, session));
     if session.is_none() && trusted.proof.silent {
         return Err(tell_client(&trusted, &issuer, OAuthError::LoginRequired));
     }
-    if let Some(session) = session {
-        let owed = is_consent_owed_by(
-            work.as_mut(),
-            &trusted.client,
-            trusted.proof.consent,
-            session.person,
-            &trusted.scopes,
-            trusted.response_type,
-        )
-        .await?;
+    if let (Some(session), Some(standing)) = (session, standing) {
         // A session alone gives no code to a client the person must allow:
-        // they answer on a page, or the client is told they must.
-        if owed && trusted.proof.silent {
-            return Err(tell_client(&trusted, &issuer, OAuthError::ConsentRequired));
-        }
-        if owed {
+        // they answer on a page.
+        let ConsentStanding::Given(allowed) = standing else {
             let waiting_in = Some(session.id);
             let (request, browser_secret) = leave_request_waiting(
                 app,
@@ -890,8 +980,10 @@ pub async fn begin_authorization(
                 request,
                 browser_secret,
             });
-        }
-        return Ok(answer_with_session(app, &mut work_slot, &trusted, &session).await?);
+        };
+        let answered =
+            answer_with_session(app, &mut work_slot, &trusted, &session, allowed.as_ref()).await?;
+        return Ok(answered);
     }
 
     let (request, browser_secret) = leave_request_waiting(
@@ -962,6 +1054,15 @@ pub struct SignedInForConsent {
     pub device_mark: DeviceMark,
 }
 
+/// A person who signed in for a request that named someone else: the
+/// browser goes back to the client with no session, and the one opened for
+/// the request is ended.
+#[derive(Debug)]
+pub struct SentBackWithoutSession {
+    pub response: AuthorizationResponse,
+    pub device_mark: DeviceMark,
+}
+
 /// Where an answer leaves a pending request.
 #[derive(Debug)]
 pub enum SignInStep {
@@ -970,6 +1071,7 @@ pub enum SignInStep {
     /// asks for it, and the request waits.
     SecondFactorRequired(OwedSecondFactor),
     ConsentRequired(SignedInForConsent),
+    SentBack(SentBackWithoutSession),
 }
 
 /// What the page of a pending request asks next. One of the two is enough.
@@ -987,7 +1089,7 @@ impl SignInStep {
     pub fn into_finished(self) -> Option<SignedInForRequest> {
         match self {
             Self::Finished(finished) => Some(finished),
-            Self::SecondFactorRequired(_) | Self::ConsentRequired(_) => None,
+            Self::SecondFactorRequired(_) | Self::ConsentRequired(_) | Self::SentBack(_) => None,
         }
     }
 }
@@ -1097,6 +1199,51 @@ pub async fn finish_sign_in(
     }
 }
 
+/// Why a person who just signed in for a request gets no answer for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SignInRefusal {
+    /// The request named another subject in its claims: no answer is ever
+    /// given for anyone else (OpenID Connect Core 1.0, section 3.1.2.2).
+    AnotherSubject,
+    /// An identity token hint named another person: whoever signed in did so
+    /// for themselves.
+    AnotherPerson,
+    /// The sign-in reached none of the levels the request required: the
+    /// person stays signed in, and the client is told.
+    LevelNotReached,
+}
+
+impl SignInRefusal {
+    fn error(self) -> OAuthError {
+        match self {
+            Self::AnotherSubject | Self::AnotherPerson => OAuthError::LoginRequired,
+            Self::LevelNotReached => OAuthError::UnmetAuthenticationRequirements,
+        }
+    }
+}
+
+/// Whether a request answers the person who just signed in for it: the
+/// subject its claims name, the person its hint names, and the level it
+/// requires, in that order.
+fn judge_sign_in(pending: &PendingAuthorization, signed_in: &SignedIn) -> Option<SignInRefusal> {
+    let person = signed_in.person.id;
+    if pending
+        .claims
+        .as_ref()
+        .is_some_and(|asked| !asked.admits_subject(&person.to_string()))
+    {
+        return Some(SignInRefusal::AnotherSubject);
+    }
+    if pending
+        .expected_person
+        .is_some_and(|expected| expected != person)
+    {
+        return Some(SignInRefusal::AnotherPerson);
+    }
+    let met = RequiredLevel::read(pending.claims.as_ref()).is_met_by(signed_in.reached);
+    (!met).then_some(SignInRefusal::LevelNotReached)
+}
+
 /// Answers a pending request for the person who just signed in for it, in
 /// one unit of work: the consent they owe first, or what the client asked.
 async fn answer_signed_in(
@@ -1109,12 +1256,10 @@ async fn answer_signed_in(
     let request = pending.id;
     let expired = || Failure::new(ErrorCode::AuthorizationRequestExpired);
     let mut work = app.storage.begin(scope).await?;
-    // Someone else than the person a hint named is sent back below, and is
-    // asked nothing.
-    let hinted_at_another = pending
-        .expected_person
-        .is_some_and(|expected| expected != signed_in.person.id);
-    if !hinted_at_another
+    // Whoever the request does not answer is sent back below, and is asked
+    // nothing.
+    let refusal = judge_sign_in(pending, &signed_in);
+    if refusal.is_none()
         && is_consent_owed_after_sign_in(work.as_mut(), pending, signed_in.person.id).await?
     {
         // Marked once: of two submissions of one page, the other signed in
@@ -1137,22 +1282,25 @@ async fn answer_signed_in(
     let Some(pending) = work.take_pending_authorization(request, app.now()).await? else {
         return Err(expired());
     };
-    // The person a hint named is the one the client waits for: anyone else
-    // signed in for themselves, and the client is told a sign-in is needed.
-    if pending
-        .expected_person
-        .is_some_and(|expected| expected != signed_in.person.id)
-    {
+    if let Some(refusal) = refusal {
         work.commit().await?;
         let issuer = name_issuer(&app.settings, realm);
+        let response = AuthorizationResponse::write(
+            &pending.redirect_uri,
+            pending.response_mode,
+            &issuer,
+            pending.state.as_deref(),
+            vec![("error", refusal.error().name().to_owned())],
+        );
+        if refusal == SignInRefusal::AnotherSubject {
+            end_orphan_session(app, scope, signed_in.session).await;
+            return Ok(SignInStep::SentBack(SentBackWithoutSession {
+                response,
+                device_mark: signed_in.device_mark,
+            }));
+        }
         return Ok(SignInStep::Finished(SignedInForRequest {
-            response: AuthorizationResponse::write(
-                &pending.redirect_uri,
-                pending.response_mode,
-                &issuer,
-                pending.state.as_deref(),
-                vec![("error", OAuthError::LoginRequired.name().to_owned())],
-            ),
+            response,
             ticket: signed_in.ticket,
             device_mark: signed_in.device_mark,
         }));
@@ -1176,6 +1324,7 @@ async fn answer_signed_in(
             response_mode: pending.response_mode,
             code_challenge: pending.code_challenge.as_deref(),
             authenticated_at: app.now(),
+            claims: pending.claims.as_ref(),
         },
     )
     .await?;
@@ -1204,7 +1353,15 @@ async fn is_consent_owed_after_sign_in(
     let Some(terms) = work.read_consent_terms(person, &pending.client_id).await? else {
         return Ok(true);
     };
-    Ok(is_consent_owed(&terms, false, &pending.scopes))
+    let owing = if terms.requires_consent {
+        let covering = list_covering_scopes(&pending.scopes, terms.allowed.as_ref());
+        let claims = pending.claims.as_ref();
+        let entitled = &terms.client_scopes;
+        list_owing_claims(work, &pending.client_id, entitled, &covering, claims).await?
+    } else {
+        Vec::new()
+    };
+    Ok(is_consent_owed(&terms, false, &pending.scopes, &owing))
 }
 
 /// Ends the session of a submission that lost its request to another, or
@@ -1320,6 +1477,7 @@ mod tests {
             id_token_hint: None,
             request: None,
             request_uri: None,
+            claims: None,
             caller: None,
             known_browsers: &[],
         }
@@ -2267,6 +2425,95 @@ mod tests {
     }
 
     #[test]
+    fn a_client_owed_a_consent_is_told_so_without_a_page_whoever_its_hint_names() {
+        use crate::clients::register::NewClient;
+        use crate::consent::manage::withdraw_my_consent;
+        use crate::oidc::scenario::Scenario;
+        use crate::testkit::fixtures::{CodeFlow, check_and_register_client, run_code_flow};
+
+        const LOOPBACK: &str = "http://127.0.0.1:8400/callback";
+        let scenario = Scenario::start();
+        let app = &scenario.app;
+        complete(create_person(app, scenario.scope, "bob", PASSWORD));
+        scenario.register_partner();
+        let scopes = ["openid".to_owned()];
+        let callbacks = [LOOPBACK.to_owned(), CALLBACK.to_owned()];
+        let native = NewClient {
+            client_id: "native",
+            name: "An application of this machine",
+            scopes: &scopes,
+            capabilities: &[],
+            redirect_uris: &callbacks,
+            post_logout_redirect_uris: &[],
+            response_types: &[],
+            public: true,
+            requires_consent: false,
+            id_token_signed_response_alg: None,
+            auth_method: None,
+            jwks: None,
+            jwks_uri: None,
+            auth_signing_alg: None,
+            request_object_signing_alg: None,
+            require_signed_request_object: false,
+            created_by: Some("operator"),
+        };
+        let mut work = complete(app.storage.begin(scenario.scope)).expect("a unit");
+        complete(check_and_register_client(app, work.as_mut(), native))
+            .expect("a client of this machine");
+        complete(work.commit()).expect("a commit");
+        let flow = |client_id, username| CodeFlow {
+            realm: "acme",
+            client_id,
+            client_secret: None,
+            redirect_uri: CALLBACK,
+            scope: "openid",
+            username,
+            password: PASSWORD,
+        };
+        let to_native = complete(run_code_flow(app, flow("native", "ada"))).tokens;
+        let bob = complete(run_code_flow(app, flow("webapp", "bob"))).ticket;
+        let to_partner = scenario.sign_in_and_consent("partner", "openid");
+        let ada = to_partner.ticket;
+        complete(withdraw_my_consent(app, "acme", Some(&ada), "partner")).expect("a withdrawal");
+        let challenge = challenge();
+        let ask_as = |client_id, redirect_uri, hint: &TokenResponse, ticket| {
+            let parameters = AuthorizationParameters {
+                client_id: Some(client_id),
+                redirect_uri: Some(redirect_uri),
+                scope: Some("openid"),
+                prompt: Some("none"),
+                id_token_hint: hint.id_token.as_deref(),
+                ..ask(&challenge)
+            };
+            read_outcome(complete(begin_authorization(
+                app,
+                "acme",
+                parameters,
+                Some(ticket),
+            )))
+        };
+
+        let owed = [
+            ("partner", CALLBACK, &to_partner.tokens),
+            ("native", LOOPBACK, &to_native),
+        ];
+        for (client_id, redirect_uri, of_ada) in owed {
+            for (person, ticket) in [("ada", &ada), ("bob", &bob)] {
+                assert_eq!(
+                    ask_as(client_id, redirect_uri, of_ada, ticket),
+                    "consent_required",
+                    "{client_id}, in the session of {person}"
+                );
+            }
+        }
+        assert_eq!(
+            ask_as("native", CALLBACK, &to_native, &bob),
+            "login_required",
+            "owed nothing, a client is told the session does not answer for ada"
+        );
+    }
+
+    #[test]
     fn a_prompt_or_an_age_the_realm_cannot_read_is_returned_as_invalid_request() {
         let (app, _storage, _clock, _secret) = start(false);
         let challenge = challenge();
@@ -2772,6 +3019,7 @@ mod tests {
         let parameters = AuthorizationParameters {
             client_id: Some("webapp"),
             id_token_hint: Some("eyJhbGciOiJFUzI1NiJ9.e30.c2ln"),
+            claims: Some(r#"{"id_token":{"sub":{"value":"someone"}}}"#),
             ..AuthorizationParameters::default()
         };
 
@@ -2779,7 +3027,469 @@ mod tests {
 
         assert!(!printed.contains("eyJ"), "{printed}");
         assert!(printed.contains("id_token_hint: Some"), "{printed}");
+        assert!(
+            !printed.contains("someone"),
+            "the claims may name a person: {printed}"
+        );
         assert!(printed.contains("webapp"), "{printed}");
+    }
+
+    /// The identifier of the person `name` of `acme`.
+    fn find_person(app: &App, name: &str) -> Uuid {
+        let (_, scope) =
+            complete(crate::tenancy::resolve::resolve_realm(app, "acme")).expect("the realm");
+        let mut work = complete(app.storage.begin(scope)).expect("a unit of work");
+        complete(work.read_person_by_username(name))
+            .expect("a read")
+            .expect("the person")
+            .id
+    }
+
+    /// The outcome of the usual request naming `claims`, for the browser of
+    /// `ticket` when there is one.
+    fn ask_naming(
+        app: &App,
+        claims: &str,
+        prompt: Option<&str>,
+        ticket: Option<&SessionTicket>,
+    ) -> String {
+        let challenge = challenge();
+        let parameters = AuthorizationParameters {
+            claims: Some(claims),
+            prompt,
+            ..ask(&challenge)
+        };
+        read_outcome(complete(begin_authorization(
+            app, "acme", parameters, ticket,
+        )))
+    }
+
+    /// A request that names the subject `subject` for the identity token.
+    fn name_subject(subject: &str) -> String {
+        serde_json::json!({ "id_token": { "sub": { "value": subject } } }).to_string()
+    }
+
+    /// A request that requires one of `levels` as essential.
+    fn require_levels(levels: &[&str]) -> String {
+        serde_json::json!({ "id_token": { "acr": { "essential": true, "values": levels } } })
+            .to_string()
+    }
+
+    /// Signs `name` in for a request of `webapp` naming `claims`, and says
+    /// where it leaves the browser.
+    fn sign_in_naming(app: &App, claims: &str, name: &str) -> super::SignInStep {
+        let challenge = challenge();
+        let parameters = AuthorizationParameters {
+            claims: Some(claims),
+            ..ask(&challenge)
+        };
+        let Ok(Authorization::SignInRequired {
+            request,
+            browser_secret,
+        }) = complete(begin_authorization(app, "acme", parameters, None))
+        else {
+            panic!("a person without a session signs in first");
+        };
+        complete(finish_sign_in(
+            app,
+            "acme",
+            request,
+            &browser_secret,
+            TypedSignIn {
+                answer: SignInAnswer::Password {
+                    name,
+                    password: Secret::new(PASSWORD.as_bytes().to_vec()),
+                },
+                caller: None,
+                known_browsers: &[],
+            },
+        ))
+        .expect("a signed-in person")
+    }
+
+    #[test]
+    fn claims_the_realm_cannot_read_are_returned_as_invalid_request_and_unknown_members_ignored() {
+        use crate::claims::request::MAX_CLAIMS_PARAMETER_BYTES;
+
+        let (app, _storage, _clock, _secret) = start(false);
+        let past_the_bound = format!(
+            r#"{{"userinfo": {{"{}": null}}}}"#,
+            "n".repeat(MAX_CLAIMS_PARAMETER_BYTES)
+        );
+
+        for unreadable in [
+            "not json",
+            "[]",
+            r#"{"userinfo": ["name"]}"#,
+            r#"{"id_token": {"name": "yes"}}"#,
+            r#"{"id_token": {"acr": {"essential": "true"}}}"#,
+            r#"{"userinfo": {"name": {"values": "Ada"}}}"#,
+            r#"{"id_token": {"sub": {"values": ["a", "b"]}}}"#,
+            r#"{"userinfo": {"na\u0000me": null}}"#,
+            past_the_bound.as_str(),
+        ] {
+            assert_eq!(
+                ask_naming(&app, unreadable, None, None),
+                "invalid_request",
+                "{unreadable:.60}"
+            );
+        }
+        for read in [
+            r#"{"access_token": {"x": 1}, "userinfo": {"name": {"purpose": "y"}}}"#,
+            r#"{"userinfo": null}"#,
+            "",
+        ] {
+            assert_eq!(ask_naming(&app, read, None, None), "sign in", "{read}");
+        }
+    }
+
+    #[test]
+    fn claims_named_for_userinfo_ask_for_an_answer_that_carries_an_access_token() {
+        use crate::oidc::response::ResponseType;
+        use crate::testkit::fixtures::{Application, register_answered_application};
+
+        let (app, _storage, _clock, _secret) = start(false);
+        let (_, scope) =
+            complete(crate::tenancy::resolve::resolve_realm(&app, "acme")).expect("the realm");
+        let spa = Application {
+            client_id: "spa",
+            redirect_uri: CALLBACK,
+            post_logout_redirect_uri: None,
+            public: true,
+            requires_consent: false,
+        };
+        complete(register_answered_application(
+            &app,
+            scope,
+            spa,
+            &[ResponseType::IdToken, ResponseType::IdTokenToken],
+        ));
+        let ask_spa = |response_type, claims| {
+            let parameters = AuthorizationParameters {
+                client_id: Some("spa"),
+                response_type: Some(response_type),
+                code_challenge: None,
+                code_challenge_method: None,
+                claims: Some(claims),
+                ..ask("")
+            };
+            // Told in the fragment, where the answer would have gone.
+            match complete(begin_authorization(&app, "acme", parameters, None)) {
+                Err(AuthorizationRefusal::Returned { response }) => response
+                    .read_parameter("error")
+                    .expect("an error")
+                    .to_owned(),
+                outcome => read_outcome(outcome),
+            }
+        };
+        let of_userinfo = r#"{"userinfo": {"email": null}}"#;
+
+        assert_eq!(ask_spa("id_token", of_userinfo), "invalid_request");
+        assert_eq!(
+            ask_spa("id_token", r#"{"id_token": {"email": null}}"#),
+            "sign in"
+        );
+        assert_eq!(ask_spa("id_token token", of_userinfo), "sign in");
+        assert_eq!(
+            ask_naming(&app, of_userinfo, None, None),
+            "sign in",
+            "a code is spent for an access token"
+        );
+    }
+
+    #[test]
+    fn a_session_answers_a_subject_the_claims_name_only_for_that_person() {
+        let (app, _storage, _clock, _secret) = start(false);
+        let (_, scope) =
+            complete(crate::tenancy::resolve::resolve_realm(&app, "acme")).expect("the realm");
+        complete(create_person(&app, scope, "bob", PASSWORD));
+        let (_, ada) = sign_in_as(&app, "ada");
+        let (_, bob) = sign_in_as(&app, "bob");
+        let of_ada = name_subject(&find_person(&app, "ada").to_string());
+
+        assert_eq!(
+            ask_naming(&app, &of_ada, Some("none"), Some(&ada)),
+            "granted"
+        );
+        assert_eq!(
+            ask_naming(&app, &of_ada, Some("none"), Some(&bob)),
+            "login_required",
+            "the session of bob does not answer for ada"
+        );
+        assert_eq!(ask_naming(&app, &of_ada, None, Some(&bob)), "sign in");
+        for nobody in [
+            name_subject("someone-else"),
+            r#"{"id_token": {"sub": {"value": 7}}}"#.to_owned(),
+        ] {
+            assert_eq!(
+                ask_naming(&app, &nobody, Some("none"), Some(&ada)),
+                "login_required",
+                "{nobody}"
+            );
+        }
+        assert_eq!(
+            ask_naming(
+                &app,
+                r#"{"id_token": {"sub": null}}"#,
+                Some("none"),
+                Some(&bob)
+            ),
+            "granted",
+            "a subject asked for without a value names nobody"
+        );
+    }
+
+    #[test]
+    fn someone_else_who_signs_in_for_a_named_subject_is_sent_back_without_a_session() {
+        let (app, storage, _clock, _secret) = start(false);
+        let (_, scope) =
+            complete(crate::tenancy::resolve::resolve_realm(&app, "acme")).expect("the realm");
+        complete(create_person(&app, scope, "bob", PASSWORD));
+        let ada = find_person(&app, "ada");
+        let bob = find_person(&app, "bob");
+        let of_ada = name_subject(&ada.to_string());
+
+        let step = sign_in_naming(&app, &of_ada, "bob");
+
+        let super::SignInStep::SentBack(sent_back) = step else {
+            panic!("bob is sent back to the client: {step:?}");
+        };
+        let location = sent_back.response.write_location().expect("an address");
+        assert!(location.starts_with(CALLBACK), "{location}");
+        assert_eq!(
+            read_query(&location, "error").as_deref(),
+            Some("login_required")
+        );
+        assert_eq!(read_query(&location, "state").as_deref(), Some("st&te"));
+        assert_eq!(read_query(&location, "code"), None);
+        assert_eq!(
+            storage.count_active_sessions(bob),
+            0,
+            "the session opened for the request is ended"
+        );
+
+        let step = sign_in_naming(&app, &of_ada, "ada");
+        let finished = step.into_finished().expect("ada is answered");
+        let location = finished.response.write_location().expect("an address");
+        assert!(read_query(&location, "code").is_some(), "{location}");
+        assert_eq!(storage.count_active_sessions(ada), 1);
+    }
+
+    #[test]
+    fn an_essential_level_the_realm_has_no_name_for_is_refused_before_anyone_signs_in() {
+        let (app, _storage, _clock, _secret) = start(false);
+        let (_, ada) = sign_in_as(&app, "ada");
+
+        for prompt in [None, Some("none"), Some("login")] {
+            assert_eq!(
+                ask_naming(&app, &require_levels(&["gold"]), prompt, None),
+                "unmet_authentication_requirements",
+                "{prompt:?}"
+            );
+        }
+        assert_eq!(
+            ask_naming(&app, &require_levels(&["gold"]), None, Some(&ada)),
+            "unmet_authentication_requirements"
+        );
+        assert_eq!(
+            ask_naming(&app, &require_levels(&["gold", "1"]), None, Some(&ada)),
+            "granted",
+            "one level it knows is enough"
+        );
+        assert_eq!(
+            ask_naming(
+                &app,
+                r#"{"id_token": {"acr": {"values": ["gold"]}}}"#,
+                None,
+                Some(&ada)
+            ),
+            "granted",
+            "asked for voluntarily, a level is a hint"
+        );
+    }
+
+    #[test]
+    fn a_session_short_of_an_essential_level_does_not_answer_and_without_a_page_is_told_so() {
+        let (app, _storage, _clock, _secret) = start(false);
+        let (_, ada) = sign_in_as(&app, "ada");
+
+        assert_eq!(
+            ask_naming(&app, &require_levels(&["2"]), None, Some(&ada)),
+            "sign in",
+            "a password alone is short of a second factor"
+        );
+        assert_eq!(
+            ask_naming(&app, &require_levels(&["2"]), Some("none"), Some(&ada)),
+            "login_required"
+        );
+        for met in [&["1"][..], &["2", "1"]] {
+            assert_eq!(
+                ask_naming(&app, &require_levels(met), Some("none"), Some(&ada)),
+                "granted",
+                "{met:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sign_in_short_of_an_essential_level_is_told_unmet_and_the_person_stays_signed_in() {
+        let (app, storage, _clock, _secret) = start(false);
+        let ada = find_person(&app, "ada");
+
+        let step = sign_in_naming(&app, &require_levels(&["2"]), "ada");
+
+        let finished = step.into_finished().expect("sent back with the session");
+        let location = finished.response.write_location().expect("an address");
+        assert_eq!(
+            read_query(&location, "error").as_deref(),
+            Some("unmet_authentication_requirements"),
+            "{location}"
+        );
+        assert_eq!(read_query(&location, "state").as_deref(), Some("st&te"));
+        assert_eq!(read_query(&location, "iss").as_deref(), Some(ISSUER));
+        assert_eq!(read_query(&location, "code"), None);
+        assert_eq!(
+            storage.count_active_sessions(ada),
+            1,
+            "the session the browser is given stands"
+        );
+    }
+
+    #[test]
+    fn a_sign_in_that_reaches_an_essential_level_is_said_in_a_level_the_client_named() {
+        use crate::oidc::scenario::Scenario;
+
+        let scenario = Scenario::start();
+        let first = scenario.sign_in("openid");
+        let secret = scenario.enroll_authenticator(&first.ticket);
+        let sign_in_requiring = |levels: &[&str]| {
+            let challenge = challenge();
+            let claims = require_levels(levels);
+            let parameters = AuthorizationParameters {
+                claims: Some(&claims),
+                ..ask(&challenge)
+            };
+            let Ok(Authorization::SignInRequired {
+                request,
+                browser_secret,
+            }) = complete(begin_authorization(&scenario.app, "acme", parameters, None))
+            else {
+                panic!("a person without a session signs in first");
+            };
+            let answer = |answer: SignInAnswer<'_>| {
+                complete(finish_sign_in(
+                    &scenario.app,
+                    "acme",
+                    request,
+                    &browser_secret,
+                    TypedSignIn {
+                        answer,
+                        caller: None,
+                        known_browsers: &[],
+                    },
+                ))
+                .expect("an answer")
+            };
+            answer(SignInAnswer::Password {
+                name: "ada",
+                password: Secret::new(PASSWORD.as_bytes().to_vec()),
+            });
+            let code = scenario.read_code_now(&secret);
+            let finished = answer(SignInAnswer::Code(&code))
+                .into_finished()
+                .expect("a finished request");
+            scenario.clock.advance(Duration::from_secs(30));
+            let code = finished
+                .response
+                .read_parameter("code")
+                .expect("a code")
+                .to_owned();
+            scenario.exchange_as("webapp", &code)
+        };
+
+        let required = sign_in_requiring(&["2"]);
+        let identity = read_claims(required.id_token.as_deref().expect("an identity token"));
+        assert_eq!(identity["acr"], "2");
+        assert_eq!(identity["amr"], serde_json::json!(["pwd", "otp", "mfa"]));
+
+        let named_lower = sign_in_requiring(&["1"]);
+        let identity = read_claims(named_lower.id_token.as_deref().expect("an identity token"));
+        assert_eq!(
+            identity["acr"], "1",
+            "the client named one factor, which two include"
+        );
+        assert_eq!(
+            read_claims(&named_lower.access_token)["acr"],
+            "2",
+            "the access token says what was reached"
+        );
+        let renewed = scenario
+            .refresh(
+                named_lower
+                    .refresh_token
+                    .as_deref()
+                    .expect("a refresh token"),
+            )
+            .expect("tokens");
+        let again = read_claims(renewed.id_token.as_deref().expect("an identity token"));
+        assert_eq!(
+            again["acr"], "1",
+            "the request is read again at each renewal"
+        );
+        assert_eq!(again["auth_time"], identity["auth_time"]);
+    }
+
+    #[test]
+    fn the_claims_a_signed_request_carries_are_read_and_those_of_the_query_beside_it_are_not() {
+        let realm = SigningRealm::prepare();
+        let of_ada = read_claims(&realm.of_ada)["sub"]
+            .as_str()
+            .expect("a subject")
+            .to_owned();
+        let naming_ada = serde_json::json!({ "id_token": { "sub": { "value": of_ada } } });
+        let alone = AuthorizationParameters::default();
+
+        assert_eq!(
+            realm.send(
+                &serde_json::json!({ "prompt": "none", "claims": naming_ada }),
+                &alone,
+                &realm.bob
+            ),
+            "login_required",
+            "carried as an object"
+        );
+        assert_eq!(
+            realm.send(
+                &serde_json::json!({ "prompt": "none", "claims": naming_ada.to_string() }),
+                &alone,
+                &realm.bob
+            ),
+            "login_required",
+            "carried as a text"
+        );
+        let text = naming_ada.to_string();
+        let beside = AuthorizationParameters {
+            claims: Some(&text),
+            ..AuthorizationParameters::default()
+        };
+        assert_eq!(
+            realm.send(
+                &serde_json::json!({ "prompt": "none" }),
+                &beside,
+                &realm.bob
+            ),
+            "granted",
+            "the object names nobody"
+        );
+        assert_eq!(
+            realm.send(
+                &serde_json::json!({ "prompt": "none", "acr_values": 7 }),
+                &alone,
+                &realm.ada
+            ),
+            "granted",
+            "acr_values is read by nobody, and refuses nothing"
+        );
     }
 
     #[test]
@@ -3077,5 +3787,201 @@ mod tests {
             ),
             "shown, with a code of its own: {posted:?}"
         );
+    }
+
+    #[test]
+    fn without_a_page_a_client_the_person_never_allowed_learns_nothing_of_who_signed_in() {
+        use crate::oidc::scenario::Scenario;
+
+        let scenario = Scenario::start();
+        scenario.register_partner();
+        let ada = scenario.sign_in("openid").ticket;
+        let of_ada = name_subject(&scenario.find_ada().to_string());
+        let ask_partner = |claims: &str, ticket| {
+            let challenge = challenge();
+            let parameters = AuthorizationParameters {
+                client_id: Some("partner"),
+                scope: Some("openid"),
+                prompt: Some("none"),
+                claims: Some(claims),
+                ..ask(&challenge)
+            };
+            read_outcome(complete(begin_authorization(
+                &scenario.app,
+                "acme",
+                parameters,
+                Some(ticket),
+            )))
+        };
+
+        for claims in [
+            of_ada.clone(),
+            name_subject("someone-else"),
+            require_levels(&["2"]),
+        ] {
+            assert_eq!(
+                ask_partner(&claims, &ada),
+                "consent_required",
+                "the same answer, whoever is named: {claims}"
+            );
+        }
+
+        let (_, allowed) = scenario.allow_on_the_page("partner", "openid");
+        assert_eq!(ask_partner(&of_ada, &allowed), "granted");
+        assert_eq!(
+            ask_partner(&name_subject("someone-else"), &allowed),
+            "login_required",
+            "allowed, the client is told when someone else is named"
+        );
+        assert_eq!(
+            ask_partner(&require_levels(&["2"]), &allowed),
+            "login_required"
+        );
+    }
+
+    #[test]
+    fn without_a_page_a_client_of_this_machine_learns_nothing_of_who_signed_in() {
+        use crate::clients::register::NewClient;
+        use crate::oidc::scenario::Scenario;
+        use crate::testkit::fixtures::check_and_register_client;
+
+        const LOOPBACK: &str = "http://127.0.0.1:8400/callback";
+        let scenario = Scenario::start();
+        let (scopes, callbacks) = (["openid".to_owned()], [LOOPBACK.to_owned()]);
+        let mut work = complete(scenario.app.storage.begin(scenario.scope)).expect("a unit");
+        let native = NewClient {
+            client_id: "native",
+            name: "An application of this machine",
+            scopes: &scopes,
+            capabilities: &[],
+            redirect_uris: &callbacks,
+            post_logout_redirect_uris: &[],
+            response_types: &[],
+            public: true,
+            requires_consent: false,
+            id_token_signed_response_alg: None,
+            auth_method: None,
+            jwks: None,
+            jwks_uri: None,
+            auth_signing_alg: None,
+            request_object_signing_alg: None,
+            require_signed_request_object: false,
+            created_by: Some("operator"),
+        };
+        complete(check_and_register_client(
+            &scenario.app,
+            work.as_mut(),
+            native,
+        ))
+        .expect("a client of this machine");
+        complete(work.commit()).expect("a commit");
+        let ada = scenario.sign_in("openid").ticket;
+        let challenge = challenge();
+
+        for claims in [
+            name_subject(&scenario.find_ada().to_string()),
+            name_subject("someone-else"),
+        ] {
+            let parameters = AuthorizationParameters {
+                client_id: Some("native"),
+                redirect_uri: Some(LOOPBACK),
+                scope: Some("openid"),
+                prompt: Some("none"),
+                claims: Some(&claims),
+                ..ask(&challenge)
+            };
+            assert_eq!(
+                read_outcome(complete(begin_authorization(
+                    &scenario.app,
+                    "acme",
+                    parameters,
+                    Some(&ada),
+                ))),
+                "consent_required",
+                "{claims}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hint_and_a_subject_that_name_two_people_send_a_third_back_without_a_session() {
+        let (app, storage, _clock, secret) = start(false);
+        let (_, scope) =
+            complete(crate::tenancy::resolve::resolve_realm(&app, "acme")).expect("the realm");
+        for name in ["bob", "carol"] {
+            complete(create_person(&app, scope, name, PASSWORD));
+        }
+        let (location, _) = sign_in_as(&app, "ada");
+        let code = read_query(&location, "code").expect("a code");
+        let of_ada = exchange(&app, &code, secret.as_ref(), VERIFIER, CALLBACK)
+            .expect("tokens")
+            .id_token
+            .expect("an identity token");
+        let of_bob = name_subject(&find_person(&app, "bob").to_string());
+        let challenge = challenge();
+        let parameters = AuthorizationParameters {
+            prompt: Some("login"),
+            id_token_hint: Some(&of_ada),
+            claims: Some(&of_bob),
+            ..ask(&challenge)
+        };
+        let Ok(Authorization::SignInRequired {
+            request,
+            browser_secret,
+        }) = complete(begin_authorization(&app, "acme", parameters, None))
+        else {
+            panic!("a fresh proof is asked");
+        };
+
+        let step = complete(finish_sign_in(
+            &app,
+            "acme",
+            request,
+            &browser_secret,
+            TypedSignIn {
+                answer: SignInAnswer::Password {
+                    name: "carol",
+                    password: Secret::new(PASSWORD.as_bytes().to_vec()),
+                },
+                caller: None,
+                known_browsers: &[],
+            },
+        ))
+        .expect("a signed-in person");
+
+        assert!(
+            matches!(step, super::SignInStep::SentBack(_)),
+            "the subject named is judged first: {step:?}"
+        );
+        assert_eq!(storage.count_active_sessions(find_person(&app, "carol")), 0);
+    }
+
+    #[test]
+    fn a_claims_parameter_that_names_nothing_keeps_nothing_with_the_request() {
+        let (app, _storage, _clock, _secret) = start(false);
+        let (_, scope) =
+            complete(crate::tenancy::resolve::resolve_realm(&app, "acme")).expect("the realm");
+        let kept = |claims: &str| {
+            let challenge = challenge();
+            let parameters = AuthorizationParameters {
+                claims: Some(claims),
+                ..ask(&challenge)
+            };
+            let Ok(Authorization::SignInRequired { request, .. }) =
+                complete(begin_authorization(&app, "acme", parameters, None))
+            else {
+                panic!("a person without a session signs in first");
+            };
+            let mut work = complete(app.storage.begin(scope)).expect("a unit of work");
+            complete(work.read_pending_authorization(request, app.now()))
+                .expect("a read")
+                .expect("the request")
+                .claims
+        };
+
+        for nothing in ["{}", r#"{"userinfo": null, "id_token": {}}"#] {
+            assert_eq!(kept(nothing), None, "{nothing}");
+        }
+        assert!(kept(r#"{"userinfo": {"name": null}}"#).is_some());
     }
 }

@@ -14,6 +14,13 @@
                     {%- if !loop.first %}, {% endif -%}
                     {{ scope }}
                 {%- endfor -%}
+                {%- if !held.consent.claims.is_empty() -%}
+                    <br>and, one by one: {# -#}
+                    {%- for claim in held.consent.claims -%}
+                        {%- if !loop.first %}, {% endif -%}
+                        {{ claim }}
+                    {%- endfor -%}
+                {%- endif -%}
                 <form method="post" action="/realms/{{ realm }}/account/consents/withdraw">{# -#}
                     <input type="hidden" name="client_id" value="{{ held.consent.client_id }}">{# -#}
                     <button type="submit">Withdraw</button>{# -#}

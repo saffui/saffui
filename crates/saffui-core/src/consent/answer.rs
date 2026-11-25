@@ -8,7 +8,7 @@ use serde_json::json;
 use time::Duration;
 use uuid::Uuid;
 
-use super::{Consent, grant_to_client};
+use super::{Allowance, Consent, grant_to_client, list_covering_scopes};
 use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
@@ -20,7 +20,7 @@ use crate::login::session::{
     OFFLINE_SESSION_LIFETIME, Session, SessionTicket, find_answering_session,
 };
 use crate::oidc::authorize::{
-    AnswerGrant, issue_answer, leave_out_offline_access, record_signed_answer,
+    AnswerGrant, issue_answer, leave_out_offline_access, list_owing_claims, record_signed_answer,
 };
 use crate::oidc::code::PendingAuthorization;
 use crate::oidc::discovery::name_issuer;
@@ -40,6 +40,9 @@ pub struct ConsentPrompt {
     /// show as it is replaced. Text on the page, never markup.
     pub client_name: String,
     pub scopes: Vec<String>,
+    /// The claims the request names that none of its scopes says, each
+    /// known to the realm: allowing grants them one by one.
+    pub claims: Vec<String>,
     /// How long the client may act while the person is away, when allowing
     /// grants it: past their sign-out, until they withdraw it from their account.
     pub offline_access: Option<Duration>,
@@ -117,22 +120,57 @@ fn list_return_hosts(client: &Client) -> Vec<&str> {
 }
 
 /// Digests what an answer covers of a client: the hosts it sends people
-/// back to, and the keys it proves itself with. The order of its addresses
-/// changes nothing of it.
+/// back to, the keys it proves itself with, and the claims allowing grants
+/// one by one. The order of its addresses changes nothing of it.
 async fn digest_covered(
     app: &App,
     work: &mut dyn UnitOfWork,
     client: &Client,
+    claims: &[String],
 ) -> Result<String, Failure> {
     let mut hosts = list_return_hosts(client);
     hosts.sort_unstable();
-    // A host holds neither a line feed nor a zero byte: each part ends here.
+    // Neither a host nor a claim holds a line feed or a zero byte, and JSON
+    // writes none: each part ends here.
     let mut written = hosts.join("\n").into_bytes();
     written.push(0);
     if let Some(keys) = read_client_keys(work, client).await? {
         written.extend_from_slice(keys.to_string().as_bytes());
     }
+    written.push(0);
+    written.extend_from_slice(claims.join("\n").as_bytes());
     Ok(URL_SAFE_NO_PAD.encode(app.digester.sha256(&written)))
+}
+
+/// What the person allowed the client before this page, read only for a
+/// request that names claims: a scope they allowed says a claim as one the
+/// request asks does.
+async fn read_allowed_before(
+    work: &mut dyn UnitOfWork,
+    pending: &PendingAuthorization,
+    person: Uuid,
+) -> Result<Option<Allowance>, Failure> {
+    if pending.claims.is_none() {
+        return Ok(None);
+    }
+    let before = work.read_consent(person, &pending.client_id).await?;
+    Ok(before.map(|held| Allowance {
+        scopes: held.scopes,
+        claims: held.claims,
+    }))
+}
+
+/// The claims the page asks the person to allow one by one.
+async fn list_page_claims(
+    work: &mut dyn UnitOfWork,
+    client: &Client,
+    pending: &PendingAuthorization,
+    granted: &[String],
+    before: Option<&Allowance>,
+) -> Result<Vec<String>, Failure> {
+    let covering = list_covering_scopes(granted, before);
+    let claims = pending.claims.as_ref();
+    list_owing_claims(work, &client.client_id, &client.scopes, &covering, claims).await
 }
 
 /// Tells the page what the client asks.
@@ -153,14 +191,17 @@ pub async fn describe_consent(
     let (_, scope) = resolve_realm(app, realm).await?;
     let mut work = app.storage.begin(scope).await?;
     let read = work.read_pending_authorization(request, app.now()).await?;
-    let (pending, _) =
+    let (pending, session) =
         check_waiting_consent(app, work.as_mut(), read, browser_secret, ticket).await?;
     let client = read_named_client(work.as_mut(), &pending.client_id)
         .await?
         .filter(|client| client.enabled && client.allows_authorization_code)
         .ok_or(Failure::new(ErrorCode::ClientNotFound))?;
     let granted = grant_to_client(&client, &pending.scopes);
-    let shown = digest_covered(app, work.as_mut(), &client).await?;
+    let before = read_allowed_before(work.as_mut(), &pending, session.person).await?;
+    let claims =
+        list_page_claims(work.as_mut(), &client, &pending, &granted, before.as_ref()).await?;
+    let shown = digest_covered(app, work.as_mut(), &client, &claims).await?;
     let origin = if client.self_registered {
         let return_host = read_redirect_host(&pending.redirect_uri);
         let other_hosts = list_return_hosts(&client)
@@ -179,6 +220,7 @@ pub async fn describe_consent(
     Ok(ConsentPrompt {
         client_name: neutralize_unshowable(&client.name),
         scopes: leave_out_offline_access(&granted),
+        claims,
         offline_access: granted
             .iter()
             .any(|scope| scope == OFFLINE_ACCESS_SCOPE)
@@ -250,23 +292,29 @@ async fn allow_client(
         .await?
         .filter(|client| client.enabled && client.allows_authorization_code)
         .ok_or(Failure::new(ErrorCode::ClientNotFound))?;
-    if digest_covered(app, work, &client).await? != shown {
+    let given = grant_to_client(&client, &pending.scopes);
+    let before = read_allowed_before(work, pending, session.person).await?;
+    let claims = list_page_claims(work, &client, pending, &given, before.as_ref()).await?;
+    if digest_covered(app, work, &client, &claims).await? != shown {
         return Err(Failure::new(ErrorCode::ConsentPageOutdated));
     }
     // Kept only for a client that requires it: to another, `prompt=consent`
     // asks once, nothing stands to be withdrawn, and so nothing is granted
-    // that outlives the browser session.
-    let given = grant_to_client(&client, &pending.scopes);
-    if client.requires_consent {
-        work.add_consent(&Consent {
+    // that outlives the browser session. What the answer signs is bound by
+    // what the write left, held until the commit: never by what was read
+    // before it, which a withdrawal may have taken back meanwhile.
+    let allowed = if client.requires_consent {
+        let consent = Consent {
             person: session.person,
             client_id: client.client_id.clone(),
             scopes: given.clone(),
+            claims: claims.clone(),
             granted_at: app.now(),
-        })
-        .await?;
-    }
-    // The consent the client requires is the one this unit just wrote.
+        };
+        Some(work.add_consent(&consent).await?)
+    } else {
+        None
+    };
     let issued = issue_answer(
         app,
         work,
@@ -275,6 +323,7 @@ async fn allow_client(
             subject: AnswerSubject::Read {
                 client: &client,
                 session,
+                allowed: allowed.as_ref(),
             },
             redirect_uri: &pending.redirect_uri,
             scopes: &given,
@@ -284,6 +333,7 @@ async fn allow_client(
             response_mode: pending.response_mode,
             code_challenge: pending.code_challenge.as_deref(),
             authenticated_at: session.authenticated_at,
+            claims: pending.claims.as_ref(),
         },
     )
     .await?;
@@ -291,6 +341,7 @@ async fn allow_client(
     let granted = json!({
         "client_id": client.client_id,
         "kept": client.requires_consent,
+        "claims": claims,
         "person_id": session.person.to_string(),
         "scopes": given,
         "session_id": session.id.to_string(),
@@ -596,6 +647,7 @@ mod tests {
             Ok(ConsentPrompt {
                 client_name: "Partner <b>Inc</b>".to_owned(),
                 scopes: vec!["openid".to_owned()],
+                claims: Vec::new(),
                 offline_access: None,
                 origin: ClientOrigin::Realm,
                 shown: String::new(),
@@ -1014,6 +1066,7 @@ mod tests {
             person: ada,
             client_id: "not a client!".to_owned(),
             scopes: vec!["openid".to_owned()],
+            claims: Vec::new(),
             granted_at: scenario.app.now(),
         };
         let mut work =
@@ -1607,11 +1660,383 @@ mod tests {
             Ok(ConsentPrompt {
                 client_name: "partner".to_owned(),
                 scopes: vec!["openid".to_owned()],
+                claims: Vec::new(),
                 offline_access: Some(OFFLINE_SESSION_LIFETIME),
                 origin: ClientOrigin::Realm,
                 shown: String::new(),
             }),
             "said in words, not as a scope"
+        );
+    }
+
+    /// A request of `partner` for `openid` naming `claims`, for the browser
+    /// of `ticket` when there is one.
+    fn ask_partner_naming(
+        scenario: &Scenario,
+        claims: &str,
+        prompt: Option<&str>,
+        ticket: Option<&SessionTicket>,
+    ) -> Result<Authorization, AuthorizationRefusal> {
+        let challenge = URL_SAFE_NO_PAD.encode(scenario.app.digester.sha256(VERIFIER.as_bytes()));
+        let parameters = AuthorizationParameters {
+            response_type: Some("code"),
+            client_id: Some("partner"),
+            redirect_uri: Some(CALLBACK),
+            scope: Some("openid"),
+            state: Some("s1"),
+            code_challenge: Some(&challenge),
+            code_challenge_method: Some("S256"),
+            prompt,
+            claims: Some(claims),
+            ..AuthorizationParameters::default()
+        };
+        complete(begin_authorization(
+            &scenario.app,
+            "acme",
+            parameters,
+            ticket,
+        ))
+    }
+
+    /// The claims of a compact token.
+    fn read_token(token: &str) -> serde_json::Value {
+        let payload = token.split('.').nth(1).expect("a compact token");
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).expect("base64url"))
+            .expect("claims")
+    }
+
+    /// `ada` signs in for `partner` naming `claims` and allows what the page
+    /// shows. Returns what the page named one by one, the tokens and her
+    /// ticket.
+    fn allow_named(
+        scenario: &Scenario,
+        claims: &str,
+    ) -> (Vec<String>, TokenResponse, SessionTicket) {
+        let Ok(Authorization::SignInRequired {
+            request,
+            browser_secret,
+        }) = ask_partner_naming(scenario, claims, None, None)
+        else {
+            panic!("a person without a session signs in first");
+        };
+        let step = complete(finish_sign_in(
+            &scenario.app,
+            "acme",
+            request,
+            &browser_secret,
+            TypedSignIn {
+                answer: SignInAnswer::Password {
+                    name: "ada",
+                    password: Secret::new(PASSWORD.as_bytes().to_vec()),
+                },
+                caller: None,
+                known_browsers: &[],
+            },
+        ))
+        .expect("a signed-in person");
+        let SignInStep::ConsentRequired(signed_in) = step else {
+            panic!("a client that requires consent asks it: {step:?}");
+        };
+        let prompt = complete(describe_consent(
+            &scenario.app,
+            "acme",
+            request,
+            &browser_secret,
+            Some(&signed_in.ticket),
+        ))
+        .expect("the page");
+        let location = answer(
+            scenario,
+            request,
+            &browser_secret,
+            Some(&signed_in.ticket),
+            ConsentDecision::Allow {
+                shown: prompt.shown,
+            },
+        )
+        .expect("a code");
+        let tokens = exchange(scenario, &read_code(&location).expect("a code"));
+        (prompt.claims, tokens, signed_in.ticket)
+    }
+
+    #[test]
+    fn a_claim_named_beyond_the_scopes_is_shown_on_the_page_kept_and_told() {
+        use crate::claims::ClaimTarget;
+        use crate::oidc::userinfo::read_user_info;
+
+        let scenario = Scenario::start();
+        register_partner(&scenario, "Partner");
+        scenario.map_attribute(
+            "partner",
+            "department",
+            "dept",
+            &[ClaimTarget::Userinfo],
+            "email",
+        );
+        scenario.write_ada_attributes(&serde_json::json!({ "department": "research" }));
+        let named = r#"{"userinfo": {"email": null}, "id_token": {"email": null, "name": null}}"#;
+
+        let (shown, tokens, ticket) = allow_named(&scenario, named);
+
+        assert_eq!(
+            shown,
+            ["email"],
+            "whether it was verified goes with the address, and the client may not be \
+             given the profile: its name is not asked"
+        );
+        assert_eq!(
+            read_last_grant(&scenario)["claims"],
+            serde_json::json!(shown)
+        );
+        let identity = read_token(tokens.id_token.as_deref().expect("an identity token"));
+        assert_eq!(identity["email"], "ada@example.org");
+        assert_eq!(identity["email_verified"], false);
+        assert!(identity.get("name").is_none(), "{identity}");
+        let told =
+            complete(read_user_info(&scenario.app, "acme", &tokens.access_token)).expect("claims");
+        assert_eq!(told["email"], "ada@example.org");
+        let kept =
+            complete(list_my_consents(&scenario.app, "acme", Some(&ticket))).expect("the consents");
+        assert_eq!(kept[0].consent.claims, shown);
+
+        assert_eq!(
+            read_outcome(ask_partner_naming(
+                &scenario,
+                named,
+                Some("none"),
+                Some(&ticket)
+            )),
+            "granted",
+            "what was allowed is not asked again"
+        );
+        let more = r#"{"userinfo": {"dept": null}}"#;
+        assert_eq!(
+            read_outcome(ask_partner_naming(
+                &scenario,
+                more,
+                Some("none"),
+                Some(&ticket)
+            )),
+            "consent_required"
+        );
+        assert_eq!(
+            read_outcome(ask_partner_naming(&scenario, more, None, Some(&ticket))),
+            "consent"
+        );
+    }
+
+    #[test]
+    fn an_answer_that_would_allow_a_claim_the_page_did_not_show_is_refused() {
+        use crate::claims::ClaimTarget;
+
+        let scenario = Scenario::start();
+        register_partner(&scenario, "Partner");
+        let named = r#"{"userinfo": {"dept": null}}"#;
+        let Ok(Authorization::SignInRequired {
+            request,
+            browser_secret,
+        }) = ask_partner_naming(&scenario, named, Some("consent"), None)
+        else {
+            panic!("a person without a session signs in first");
+        };
+        let step = sign_in_again(&scenario, request, &browser_secret).expect("a signed-in person");
+        let SignInStep::ConsentRequired(signed_in) = step else {
+            panic!("asked to consent again, the person answers on the page: {step:?}");
+        };
+        let ticket = Some(&signed_in.ticket);
+        let prompt = complete(describe_consent(
+            &scenario.app,
+            "acme",
+            request,
+            &browser_secret,
+            ticket,
+        ))
+        .expect("the page");
+        assert!(prompt.claims.is_empty(), "no source says `dept` yet");
+
+        scenario.map_attribute(
+            "partner",
+            "department",
+            "dept",
+            &[ClaimTarget::Userinfo],
+            "email",
+        );
+
+        assert_eq!(
+            answer(
+                &scenario,
+                request,
+                &browser_secret,
+                ticket,
+                ConsentDecision::Allow {
+                    shown: prompt.shown
+                },
+            ),
+            Err(ErrorCode::ConsentPageOutdated),
+            "the page did not show what the answer would allow"
+        );
+    }
+
+    #[test]
+    fn a_withdrawal_takes_what_was_allowed_by_name_out_of_userinfo_and_renewals() {
+        use crate::oidc::userinfo::read_user_info;
+
+        let scenario = Scenario::start();
+        register_partner(&scenario, "Partner");
+        let (_, tokens, ticket) = allow_named(&scenario, r#"{"userinfo": {"email": null}}"#);
+        let read =
+            |token: &str| complete(read_user_info(&scenario.app, "acme", token)).expect("claims");
+        assert_eq!(read(&tokens.access_token)["email"], "ada@example.org");
+
+        complete(withdraw_my_consent(
+            &scenario.app,
+            "acme",
+            Some(&ticket),
+            "partner",
+        ))
+        .expect("a withdrawal");
+
+        assert!(
+            read(&tokens.access_token).get("email").is_none(),
+            "the token lives on, and is told no more"
+        );
+        assert_eq!(
+            scenario.refresh_as(
+                "partner",
+                tokens.refresh_token.as_deref().expect("a refresh token"),
+                None
+            ),
+            Err(OAuthError::InvalidGrant)
+        );
+    }
+
+    #[test]
+    fn what_the_consent_no_longer_covers_is_said_neither_at_a_renewal_nor_in_userinfo() {
+        use crate::oidc::userinfo::read_user_info;
+
+        let scenario = Scenario::start();
+        register_partner(&scenario, "Partner");
+        let named = r#"{"userinfo": {"email": null}, "id_token": {"email_verified": null}}"#;
+        let (_, tokens, _) = allow_named(&scenario, named);
+        let ada = scenario.find_ada();
+        // Written in place of the consent, its grant left standing: what a
+        // withdrawal never leaves, read as each read finds it.
+        let mut work = complete(scenario.app.storage.begin(scenario.scope)).expect("a unit");
+        assert_eq!(complete(work.delete_consent(ada, "partner")), Ok(true));
+        complete(work.add_consent(&Consent {
+            person: ada,
+            client_id: "partner".to_owned(),
+            scopes: vec!["openid".to_owned()],
+            claims: Vec::new(),
+            granted_at: scenario.app.now(),
+        }))
+        .expect("a narrower consent");
+        complete(work.commit()).expect("a commit");
+
+        let renewed = scenario
+            .refresh_as(
+                "partner",
+                tokens.refresh_token.as_deref().expect("a refresh token"),
+                None,
+            )
+            .expect("tokens");
+        let identity = read_token(renewed.id_token.as_deref().expect("an identity token"));
+        assert!(identity.get("email_verified").is_none(), "{identity}");
+        let told =
+            complete(read_user_info(&scenario.app, "acme", &renewed.access_token)).expect("claims");
+        assert!(told.get("email").is_none(), "{told}");
+    }
+
+    #[test]
+    fn a_claim_of_a_scope_the_person_allowed_before_is_not_asked_by_name() {
+        let scenario = Scenario::start();
+        register_partner(&scenario, "Partner");
+        let (request, browser_secret, ticket) =
+            sign_in_for_partner(&scenario, "ada", "openid email");
+        allow(&scenario, request, &browser_secret, Some(&ticket)).expect("a code");
+        let named = r#"{"userinfo": {"email": null}}"#;
+
+        assert_eq!(
+            read_outcome(ask_partner_naming(
+                &scenario,
+                named,
+                Some("none"),
+                Some(&ticket)
+            )),
+            "granted",
+            "the scope she allowed says it"
+        );
+    }
+
+    #[test]
+    fn the_page_names_no_claim_a_scope_allowed_before_says() {
+        let scenario = Scenario::start();
+        register_partner(&scenario, "Partner");
+        let (request, browser_secret, ticket) =
+            sign_in_for_partner(&scenario, "ada", "openid email");
+        allow(&scenario, request, &browser_secret, Some(&ticket)).expect("a code");
+        let named = r#"{"userinfo": {"email": null}}"#;
+        let Ok(Authorization::ConsentRequired {
+            request,
+            browser_secret,
+        }) = ask_partner_naming(&scenario, named, Some("consent"), Some(&ticket))
+        else {
+            panic!("asked again, she answers on the page");
+        };
+
+        let prompt = complete(describe_consent(
+            &scenario.app,
+            "acme",
+            request,
+            &browser_secret,
+            Some(&ticket),
+        ))
+        .expect("the page");
+
+        assert!(prompt.claims.is_empty(), "{:?}", prompt.claims);
+    }
+
+    #[test]
+    fn a_claim_of_a_scope_allowed_before_is_not_asked_after_the_sign_in() {
+        let scenario = Scenario::start();
+        register_partner(&scenario, "Partner");
+        let (request, browser_secret, ticket) =
+            sign_in_for_partner(&scenario, "ada", "openid email");
+        allow(&scenario, request, &browser_secret, Some(&ticket)).expect("a code");
+        let Ok(Authorization::SignInRequired {
+            request,
+            browser_secret,
+        }) = ask_partner_naming(&scenario, r#"{"userinfo": {"email": null}}"#, None, None)
+        else {
+            panic!("a person without a session signs in first");
+        };
+
+        let step = sign_in_again(&scenario, request, &browser_secret).expect("a signed-in person");
+
+        assert!(
+            matches!(step, SignInStep::Finished(_)),
+            "the scope she allowed says it: {step:?}"
+        );
+    }
+
+    #[test]
+    fn a_claim_named_beyond_what_was_allowed_is_asked_after_the_sign_in() {
+        let scenario = Scenario::start();
+        register_partner(&scenario, "Partner");
+        consent_once(&scenario);
+        let Ok(Authorization::SignInRequired {
+            request,
+            browser_secret,
+        }) = ask_partner_naming(&scenario, r#"{"userinfo": {"email": null}}"#, None, None)
+        else {
+            panic!("a person without a session signs in first");
+        };
+
+        let step = sign_in_again(&scenario, request, &browser_secret).expect("a signed-in person");
+
+        assert!(
+            matches!(step, SignInStep::ConsentRequired(_)),
+            "she allowed `openid`, and never her address: {step:?}"
         );
     }
 }

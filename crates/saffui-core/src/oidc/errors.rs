@@ -17,6 +17,8 @@ pub enum OAuthError {
     RequestUriNotSupported,
     LoginRequired,
     ConsentRequired,
+    /// Registered by OpenID Connect Unmet Authentication Requirements 1.0.
+    UnmetAuthenticationRequirements,
     AccessDenied,
     UnsupportedTokenType,
     ServerError,
@@ -39,6 +41,7 @@ impl OAuthError {
             Self::RequestUriNotSupported => "request_uri_not_supported",
             Self::LoginRequired => "login_required",
             Self::ConsentRequired => "consent_required",
+            Self::UnmetAuthenticationRequirements => "unmet_authentication_requirements",
             Self::AccessDenied => "access_denied",
             Self::UnsupportedTokenType => "unsupported_token_type",
             Self::ServerError => "server_error",
@@ -70,6 +73,9 @@ impl OAuthError {
             }
             Self::LoginRequired => "The person must sign in.",
             Self::ConsentRequired => "The person must allow the client first.",
+            Self::UnmetAuthenticationRequirements => {
+                "The sign-in cannot reach the level the client requires."
+            }
             Self::AccessDenied => "The person did not allow the client.",
             Self::UnsupportedTokenType => "A token of this type cannot be revoked.",
             Self::ServerError => "The request could not be completed.",

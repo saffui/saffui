@@ -32,7 +32,7 @@ const MAX_REQUEST_OBJECT_LIFETIME: Duration = Duration::hours(1);
 
 /// The parameters of the authorization endpoint an object may carry. The
 /// client is read from the query, the browser from the request.
-const CARRIED_PARAMETERS: [&str; 11] = [
+const CARRIED_PARAMETERS: [&str; 12] = [
     "response_type",
     "redirect_uri",
     "scope",
@@ -44,6 +44,7 @@ const CARRIED_PARAMETERS: [&str; 11] = [
     "prompt",
     "max_age",
     "id_token_hint",
+    "claims",
 ];
 
 /// A request object as it was written, not yet believed.
@@ -172,7 +173,8 @@ fn check_request_object_claims(
 }
 
 /// Reads the parameters a request object carries. Each is a text, as in a
-/// query, but `max_age`, which may be a number and is then written as JSON
+/// query, but `max_age`, which may be a number, and `claims`, which may be an
+/// object (OpenID Connect Core 1.0, section 6.1): each is then written as JSON
 /// writes it. An object that carries another, by value or by reference, is
 /// refused (RFC 9101, section 4): nothing would bound the chain.
 fn read_carried_parameters(claims: &Map<String, Value>) -> Option<CarriedParameters> {
@@ -185,6 +187,7 @@ fn read_carried_parameters(claims: &Map<String, Value>) -> Option<CarriedParamet
             None => continue,
             Some(Value::String(text)) => text.clone(),
             Some(Value::Number(number)) if name == "max_age" => number.to_string(),
+            Some(asked @ Value::Object(_)) if name == "claims" => asked.to_string(),
             Some(_) => return None,
         };
         values.insert(name.to_owned(), Value::String(written));
@@ -239,6 +242,7 @@ impl CarriedParameters {
             prompt: self.read("prompt"),
             max_age: self.read("max_age"),
             id_token_hint: self.read("id_token_hint"),
+            claims: self.read("claims"),
             ..AuthorizationParameters::default()
         }
     }
@@ -583,6 +587,28 @@ mod tests {
             json!({ "request": "a.b.c" }),
             json!({ "request_uri": "https://app.example.org/r" }),
         ] {
+            assert!(carried(&refused).is_none(), "{refused}");
+        }
+    }
+
+    #[test]
+    fn the_claims_an_object_carries_are_read_as_an_object_or_a_text_and_those_of_the_query_never() {
+        let asked = json!({ "userinfo": { "name": null } });
+        let query = AuthorizationParameters {
+            claims: Some(r#"{"userinfo":{"email":null}}"#),
+            ..AuthorizationParameters::default()
+        };
+        for written in [asked.clone(), Value::String(asked.to_string())] {
+            let read = carried(&json!({ "claims": written })).expect("parameters");
+            assert_eq!(
+                read.over(&query).claims.map(str::to_owned),
+                Some(asked.to_string()),
+                "{written}"
+            );
+        }
+        let silent = carried(&json!({ "scope": "openid" })).expect("parameters");
+        assert_eq!(silent.over(&query).claims, None, "the object alone is read");
+        for refused in [json!({ "claims": 7 }), json!({ "claims": ["name"] })] {
             assert!(carried(&refused).is_none(), "{refused}");
         }
     }

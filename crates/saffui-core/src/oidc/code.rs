@@ -5,6 +5,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::response::{ResponseMode, ResponseType};
+use crate::claims::request::ClaimsRequest;
 use crate::ports::storage::StorageError;
 
 /// An authorization request that waits for its person to sign in, or to
@@ -41,6 +42,8 @@ pub struct PendingAuthorization {
     /// The session whose person the request waits for to consent. Nobody
     /// yet, when no consent was found owed.
     pub consent_session: Option<Uuid>,
+    /// The claims the request named one by one, when it named any.
+    pub claims: Option<ClaimsRequest>,
 }
 
 /// A proof by a security key that was started and waits for its answer.
@@ -66,6 +69,8 @@ pub struct AuthorizationCode {
     pub code_challenge: String,
     pub authenticated_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
+    /// The claims the request named one by one, when it named any.
+    pub claims: Option<ClaimsRequest>,
 }
 
 /// What an exchange of a code that was already spent finds.

@@ -354,3 +354,147 @@ async fn a_grant_of_the_operator_waits_for_a_client_taken_to_be_changed() {
         "then it grants"
     );
 }
+
+/// A claims request a column keeps and this binary cannot read, written
+/// there by hand, fails each read that returns it: it is never read as a
+/// request that names nothing, which would let a subject or a level named by
+/// it go unchecked.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario, read from top to bottom"
+)]
+async fn a_claims_request_written_by_hand_that_cannot_be_read_fails_each_read_of_it() {
+    use saffui_core::claims::request::read_claims_parameter;
+    use saffui_core::login::session::{AuthenticationMethod, Session, SessionKind, SessionState};
+    use saffui_core::oidc::code::{AuthorizationCode, PendingAuthorization};
+    use saffui_core::oidc::response::{ResponseMode, ResponseType};
+    use saffui_core::tokens::store::RefreshToken;
+    use time::Duration;
+
+    let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let scope = create_realm(&app, "acme").await;
+    let ada = create_person(&app, scope, "ada", "correct horse battery")
+        .await
+        .id;
+    let now = app.now();
+    let asked = read_claims_parameter(r#"{"userinfo": {"name": null}}"#);
+    let (request, family) = (Uuid::from_u128(1), Uuid::from_u128(2));
+    let session = Session {
+        id: Uuid::from_u128(3),
+        person: ada,
+        secret_digest: vec![1; 32],
+        state: SessionState::Active,
+        kind: SessionKind::Browser,
+        methods: vec![AuthenticationMethod::Password],
+        authenticated_at: now,
+        expires_at: now + Duration::hours(1),
+    };
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.insert_session(&session).await.expect("a session");
+    work.insert_pending_authorization(&PendingAuthorization {
+        id: request,
+        browser_digest: vec![2; 32],
+        client_id: "webapp".to_owned(),
+        redirect_uri: "https://app.example.org/cb".to_owned(),
+        scopes: vec!["openid".to_owned()],
+        state: None,
+        nonce: None,
+        response_type: ResponseType::Code,
+        response_mode: ResponseMode::Query,
+        code_challenge: Some("challenge".to_owned()),
+        expires_at: now + Duration::minutes(10),
+        expected_person: None,
+        first_factor: None,
+        key_proof: None,
+        consent_prompted: false,
+        consent_session: None,
+        claims: asked.clone(),
+    })
+    .await
+    .expect("a pending request");
+    work.insert_authorization_code(&AuthorizationCode {
+        code_digest: vec![4; 32],
+        client_id: "webapp".to_owned(),
+        person: ada,
+        session: session.id,
+        redirect_uri: "https://app.example.org/cb".to_owned(),
+        scopes: vec!["openid".to_owned()],
+        nonce: None,
+        code_challenge: "challenge".to_owned(),
+        authenticated_at: now,
+        expires_at: now + Duration::minutes(1),
+        claims: asked.clone(),
+    })
+    .await
+    .expect("a code");
+    work.insert_refresh_token(&RefreshToken {
+        token_digest: vec![5; 32],
+        family,
+        client_id: "webapp".to_owned(),
+        person: ada,
+        session: session.id,
+        scopes: vec!["openid".to_owned()],
+        claims: asked,
+        issued_at: now,
+        expires_at: now + Duration::minutes(30),
+    })
+    .await
+    .expect("a refresh token");
+    work.commit().await.expect("a commit");
+
+    let owner = connect(&database, "saffui_owner").await;
+    owner
+        .batch_execute(&format!(
+            "BEGIN;
+             SELECT set_config('saffui.tenant', '{}', true), set_config('saffui.realm', '{}', true);
+             UPDATE authorization_requests SET claims = '{{\"id_token\": \"x\"}}';
+             UPDATE authorization_codes SET claims = '{{\"id_token\": \"x\"}}';
+             UPDATE refresh_tokens SET claims = '{{\"id_token\": \"x\"}}';
+             COMMIT",
+            scope.tenant().as_uuid(),
+            scope.realm().as_uuid()
+        ))
+        .await
+        .expect("requests no reader of this binary reads");
+
+    let failed = Err(StorageError::Failed);
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.read_pending_authorization(request, now)
+            .await
+            .map(|_| ()),
+        failed
+    );
+    assert_eq!(work.read_refresh_token(&[5; 32]).await.map(|_| ()), failed);
+    assert_eq!(
+        work.read_family_claims(family, session.id, "webapp")
+            .await
+            .map(|_| ()),
+        failed
+    );
+    drop(work);
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.take_pending_authorization(request, now)
+            .await
+            .map(|_| ()),
+        failed
+    );
+    drop(work);
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.spend_authorization_code(&[4; 32], now)
+            .await
+            .map(|_| ()),
+        failed
+    );
+    drop(work);
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.spend_refresh_token(&[5; 32], "webapp", now)
+            .await
+            .map(|_| ()),
+        failed
+    );
+}

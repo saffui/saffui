@@ -87,6 +87,7 @@ async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
             person: person.id,
             session: session.id,
             scopes: vec!["openid".to_owned()],
+            claims: None,
             issued_at: now - Duration::hours(1),
             expires_at,
         })
@@ -109,6 +110,7 @@ async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
             key_proof: None,
             consent_prompted: false,
             consent_session: None,
+            claims: None,
         })
         .await
         .expect("a pending request");
@@ -123,6 +125,7 @@ async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
             code_challenge: "c".repeat(43),
             authenticated_at: now,
             expires_at: now + code_expires_in,
+            claims: None,
         })
         .await
         .expect("a code");
@@ -687,6 +690,7 @@ async fn plant_expired_sessions(
             person: person.id,
             session: refreshed_session.id,
             scopes: vec!["openid".to_owned()],
+            claims: None,
             issued_at: now - Duration::hours(2),
             expires_at: refreshed_session.expires_at,
         })
@@ -1081,6 +1085,7 @@ async fn an_offline_session_is_purged_at_its_end_with_its_tokens_and_kept_until_
             person: person.id,
             session: session.id,
             scopes: vec!["openid".to_owned(), "offline_access".to_owned()],
+            claims: None,
             issued_at: now - Duration::days(1),
             expires_at: session.expires_at,
         })
@@ -1207,6 +1212,7 @@ async fn retention_removes_a_client_whose_registration_ended_and_no_other() {
             person: ada.id,
             client_id: client_id.to_owned(),
             scopes: vec!["openid".to_owned()],
+            claims: Vec::new(),
             granted_at: now,
         })
         .await

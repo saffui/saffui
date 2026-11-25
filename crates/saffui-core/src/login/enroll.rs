@@ -722,6 +722,7 @@ mod tests {
             id_token_hint: None,
             request: None,
             request_uri: None,
+            claims: None,
             caller: None,
             known_browsers: &[],
         };

@@ -277,6 +277,7 @@ mod tests {
                 client_id: "operator",
                 scopes: &scopes,
                 session: Some(&session),
+                family: None,
                 claims: None,
             },
         )

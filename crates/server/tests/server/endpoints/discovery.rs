@@ -80,3 +80,62 @@ async fn a_storage_that_is_down_answers_503_and_says_nothing_of_the_cause() {
         })
     );
 }
+
+#[actix_web::test]
+async fn a_realm_publishes_the_claims_of_the_protocol_and_of_the_scopes_and_none_of_a_client() {
+    use saffui_core::claims::{ClaimTarget, Mapper, MapperKind};
+    use saffui_core::testkit::fixtures::{create_application, create_realm};
+
+    let (product, _storage) = MemoryStorage::wire();
+    let scope = create_realm(&product, "acme").await;
+    create_application(
+        &product,
+        scope,
+        "portal",
+        "https://app.example.test/cb",
+        true,
+    )
+    .await;
+    let mut work = product.storage.begin(scope).await.expect("a unit of work");
+    for (index, claim, target) in [
+        (1, "dept", ClaimTarget::Userinfo),
+        (2, "internal", ClaimTarget::AccessToken),
+    ] {
+        let mapper = Mapper {
+            id: uuid::Uuid::from_u128(index),
+            client_id: "portal".to_owned(),
+            name: claim.to_owned(),
+            kind: MapperKind::Attribute {
+                attribute: "department".to_owned(),
+            },
+            claim: Some(claim.to_owned()),
+            targets: vec![target],
+            scope: Some("profile".to_owned()),
+            created_at: product.now(),
+        };
+        assert_eq!(work.insert_mapper(&mapper).await, Ok(true));
+    }
+    work.commit().await.expect("a commit");
+
+    let (status, document) =
+        get_json(product, "/realms/acme/.well-known/openid-configuration").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(document["claims_parameter_supported"], true);
+    let supported: Vec<&str> = document["claims_supported"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    for claim in ["sub", "acr", "given_name", "email"] {
+        assert!(supported.contains(&claim), "{claim}: {supported:?}");
+    }
+    for claim in ["dept", "internal"] {
+        assert!(
+            !supported.contains(&claim),
+            "how a client is set up is told to nobody: {supported:?}"
+        );
+    }
+    assert_eq!(document["acr_values_supported"], json!(["1", "2"]));
+}

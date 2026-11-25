@@ -1002,3 +1002,126 @@ async fn a_person_signs_out_at_once_with_the_identity_token_of_the_session_and_i
     assert_eq!(confirmed.status, StatusCode::OK);
     assert!(confirmed.body.contains("You are signed out."));
 }
+
+/// Percent-encodes a value for a query string.
+fn encode_query_value(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() {
+                char::from(byte).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect()
+}
+
+#[actix_web::test]
+async fn claims_the_endpoint_cannot_read_are_told_to_the_client_and_acr_values_refuses_nothing() {
+    let product = start().await;
+
+    let unreadable = get(
+        &product,
+        &write_authorize_path(&product, "&claims=%7B%22userinfo%22%3A7%7D"),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        unreadable.status,
+        StatusCode::SEE_OTHER,
+        "{}",
+        unreadable.body
+    );
+    assert_eq!(
+        unreadable.read_location_parameter("error").as_deref(),
+        Some("invalid_request")
+    );
+    for read in [
+        "&acr_values=gold%20silver",
+        "&claims=%7B%22userinfo%22%3Anull%7D",
+    ] {
+        let asked = get(&product, &write_authorize_path(&product, read), &[]).await;
+        assert_eq!(asked.status, StatusCode::SEE_OTHER, "{read}");
+        assert!(
+            asked
+                .location
+                .as_deref()
+                .is_some_and(|location| location.starts_with("/realms/acme/login?request=")),
+            "{read}: {:?}",
+            asked.location
+        );
+    }
+}
+
+#[actix_web::test]
+async fn someone_else_who_signs_in_for_a_named_subject_goes_back_to_the_client_without_a_session() {
+    let (product, _storage) = MemoryStorage::wire();
+    let scope = create_realm(&product, "acme").await;
+    let ada = create_person(&product, scope, "ada", PASSWORD).await;
+    create_person(&product, scope, "bob", PASSWORD).await;
+    let portal = Application {
+        client_id: "portal",
+        redirect_uri: REDIRECT,
+        post_logout_redirect_uri: None,
+        public: true,
+        requires_consent: false,
+    };
+    register_application(&product, scope, portal).await;
+    let naming_ada = format!(r#"{{"id_token":{{"sub":{{"value":"{}"}}}}}}"#, ada.id);
+    let path = write_authorize_path(
+        &product,
+        &format!("&claims={}", encode_query_value(&naming_ada)),
+    );
+    let sent_to_login = get(&product, &path, &[]).await;
+    let request = sent_to_login
+        .read_location_parameter("request")
+        .expect("a pending request");
+    let flow = sent_to_login
+        .read_cookie("__Host-saffui_flow_")
+        .expect("a flow cookie");
+
+    let form = format!("request={request}&username=bob&password=correct+horse+battery");
+    let sent_back = post(
+        &product,
+        "/realms/acme/login",
+        &[(COOKIE.as_str(), &flow)],
+        &form,
+    )
+    .await;
+
+    assert_eq!(
+        sent_back.status,
+        StatusCode::SEE_OTHER,
+        "{}",
+        sent_back.body
+    );
+    let back = sent_back.location.clone().expect("a location");
+    assert!(back.starts_with(REDIRECT), "{back}");
+    assert_eq!(
+        sent_back.read_location_parameter("error").as_deref(),
+        Some("login_required")
+    );
+    assert_eq!(
+        sent_back.read_location_parameter("state").as_deref(),
+        Some("xyz")
+    );
+    assert_eq!(sent_back.read_location_parameter("code"), None);
+    assert_eq!(
+        sent_back.read_cookie("__Host-saffui_session_acme="),
+        None,
+        "no session for this request: {:?}",
+        sent_back.cookies
+    );
+    assert!(
+        sent_back.read_cookie("__Host-saffui_mark_acme=").is_some(),
+        "the browser is counted apart all the same"
+    );
+    assert!(
+        sent_back.cookies.iter().any(|cookie| cookie
+            .starts_with(&format!("__Host-saffui_flow_{request}=;"))
+            && cookie.contains("Max-Age=0")),
+        "the flow is over: {:?}",
+        sent_back.cookies
+    );
+}

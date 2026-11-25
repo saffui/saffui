@@ -11,7 +11,7 @@ use crate::ports::storage::UnitOfWork;
 
 /// Reads what writing `targets` for a grant needs: the mappers of its
 /// client, and of its person the attributes and the roles held at `now`,
-/// each only when a scope or a mapper that applies says them.
+/// each only when a scope or a mapper that applies, or a claim named, says them.
 ///
 /// # Errors
 ///
@@ -30,14 +30,14 @@ pub async fn gather_claim_inputs(
             ..ClaimInputs::default()
         });
     };
-    let attributes = if needs_attributes(&mappers, grant.scopes, targets) {
+    let attributes = if needs_attributes(&mappers, grant, targets) {
         work.read_person_attributes(person.id)
             .await?
             .unwrap_or_default()
     } else {
         Map::new()
     };
-    let held = if needs_roles(&mappers, grant.scopes, targets) {
+    let held = if needs_roles(&mappers, grant, targets) {
         read_held_roles(work, person.id, now)
             .await
             .map_err(|failure| name_client_held_for(failure, grant.client_id))?

@@ -12,9 +12,12 @@ use uuid::Uuid;
 
 use super::authorize::leave_out_offline_access;
 use super::response::ResponseType;
-use super::token::{PersonTokens, Signed, hold_consent_for, sign_for_person};
+use super::token::{HeldConsent, PersonTokens, Signed, hold_consent_for, sign_for_person};
 use crate::app::App;
+use crate::claims::request::ClaimsRequest;
+use crate::claims::rules::NamedClaims;
 use crate::clients::{Client, read_named_client};
+use crate::consent::Allowance;
 use crate::error::{ErrorCode, Failure};
 use crate::login::session::{Session, read_live_subject};
 use crate::ports::storage::UnitOfWork;
@@ -29,6 +32,9 @@ pub(crate) enum AnswerSubject<'a> {
     Read {
         client: &'a Client,
         session: &'a Session,
+        /// What the person allowed a client that asks them, as it was held
+        /// or written; `None` for a client that asks nobody.
+        allowed: Option<&'a Allowance>,
     },
     /// Named by a request read in other units: each is read again here.
     Named {
@@ -70,6 +76,7 @@ pub(crate) struct AuthorizationSigning<'a> {
     pub(crate) response_type: ResponseType,
     /// The code the answer carries too, which the identity token binds.
     pub(crate) code: Option<&'a str>,
+    pub(crate) claims: Option<&'a ClaimsRequest>,
 }
 
 /// What was signed, as the answer carries it, and what the chain is to say
@@ -104,14 +111,19 @@ pub(crate) async fn sign_at_authorization(
     // Nothing refreshes what is signed here: no grant outlives the session.
     let scopes = leave_out_offline_access(signing.scopes);
     let named;
-    let (client, session, person) = match signing.subject {
-        AnswerSubject::Read { client, session } => {
+    let held;
+    let (client, session, person, allowed) = match signing.subject {
+        AnswerSubject::Read {
+            client,
+            session,
+            allowed,
+        } => {
             let person = work
                 .read_person(session.person)
                 .await?
                 .filter(|person| person.enabled)
                 .ok_or(Failure::new(ErrorCode::SessionRequired))?;
-            (client, session, person)
+            (client, session, person, allowed)
         }
         // Read where it is signed for: a client disabled, a session ended or
         // a consent withdrawn since the request was read gets nothing.
@@ -128,13 +140,20 @@ pub(crate) async fn sign_at_authorization(
                 .await?
                 .filter(|(_, read)| read.id == person)
                 .ok_or(Failure::new(ErrorCode::SessionRequired))?;
-            if !hold_consent_for(work, &client, person.id, &scopes).await? {
-                return Err(Failure::new(ErrorCode::ConsentNotFound));
-            }
+            held = match hold_consent_for(work, &client, person.id, &scopes).await? {
+                HeldConsent::NotRequired => None,
+                HeldConsent::Allowed(allowance) => Some(allowance),
+                HeldConsent::Short => return Err(Failure::new(ErrorCode::ConsentNotFound)),
+            };
             named = (client, session);
-            (&named.0, &named.1, person)
+            (&named.0, &named.1, person, held.as_ref())
         }
     };
+    let named_claims = signing.claims.map(|request| NamedClaims {
+        request,
+        entitled: &client.scopes,
+        allowed,
+    });
     let tokens = sign_for_person(
         app,
         work,
@@ -150,6 +169,10 @@ pub(crate) async fn sign_at_authorization(
                 .unwrap_or(DEFAULT_ALGORITHM),
             signed,
             code: signing.code,
+            named: named_claims,
+            // No family is opened here: the access token names none, and
+            // userinfo tells it what its scopes say, nothing by name.
+            family: None,
         },
     )
     .await?;
@@ -337,6 +360,93 @@ mod tests {
 
     fn name_parameters(answer: &AuthorizationResponse) -> Vec<&'static str> {
         answer.parameters().iter().map(|(name, _)| *name).collect()
+    }
+
+    #[test]
+    fn an_identity_token_beside_a_code_or_an_access_token_says_what_was_named_for_it() {
+        let (scenario, challenge) = start();
+        scenario.write_ada_attributes(&serde_json::json!({ "given_name": "Ada" }));
+        let named = r#"{"id_token": {"email": null, "given_name": null}}"#;
+
+        for asked in ["id_token code", "code id_token token", "id_token token"] {
+            let (plain, _) = sign_in(&scenario, ask("spa", asked, &challenge));
+            let identity = read_token(&plain, "id_token");
+            for unsaid in ["email", "given_name"] {
+                assert!(
+                    identity.get(unsaid).is_none(),
+                    "{asked}: the scopes say nothing there"
+                );
+            }
+            let naming = AuthorizationParameters {
+                claims: Some(named),
+                ..ask("spa", asked, &challenge)
+            };
+            let (answer, _) = sign_in(&scenario, naming);
+            let identity = read_token(&answer, "id_token");
+            assert_eq!(identity["email"], "ada@example.org", "{asked}");
+            assert_eq!(identity["given_name"], "Ada", "{asked}");
+            assert!(identity.get("preferred_username").is_none(), "{asked}");
+        }
+    }
+
+    #[test]
+    fn an_access_token_signed_at_the_authorization_endpoint_is_told_nothing_by_name() {
+        use crate::tokens::FAMILY_CLAIM;
+
+        let (scenario, challenge) = start();
+        let named = r#"{"userinfo": {"email": null}}"#;
+        let told = |token: &str| {
+            complete(read_user_info(&scenario.app, "acme", token))
+                .expect("claims")
+                .get("email")
+                .cloned()
+        };
+        let in_session = |response_type, claims, ticket| {
+            let parameters = AuthorizationParameters {
+                scope: Some("openid"),
+                claims,
+                ..ask("spa", response_type, &challenge)
+            };
+            match complete(begin_authorization(
+                &scenario.app,
+                "acme",
+                parameters,
+                Some(ticket),
+            )) {
+                Ok(Authorization::Granted { response }) => response,
+                other => panic!("the session answers: {other:?}"),
+            }
+        };
+        let code_grant = AuthorizationParameters {
+            scope: Some("openid"),
+            claims: Some(named),
+            ..ask("spa", "code", &challenge)
+        };
+        let (answer, ticket) = sign_in(&scenario, code_grant);
+        let tokens = scenario.exchange_as("spa", answer.read_parameter("code").expect("a code"));
+        assert_eq!(
+            told(&tokens.access_token),
+            Some(serde_json::json!("ada@example.org"))
+        );
+
+        let implicit = in_session("id_token token", None, &ticket);
+        let access = implicit.read_parameter("access_token").expect("a token");
+        assert_eq!(
+            told(access),
+            None,
+            "a grant of the session names nothing for it"
+        );
+        assert!(read_part(access, 1).get(FAMILY_CLAIM).is_none());
+
+        let hybrid = in_session("code token", Some(named), &ticket);
+        let up_front = hybrid.read_parameter("access_token").expect("a token");
+        assert_eq!(told(up_front), None, "no family is opened at the endpoint");
+        assert!(read_part(up_front, 1).get(FAMILY_CLAIM).is_none());
+        let exchanged = scenario.exchange_as("spa", hybrid.read_parameter("code").expect("a code"));
+        assert_eq!(
+            told(&exchanged.access_token),
+            Some(serde_json::json!("ada@example.org"))
+        );
     }
 
     #[test]
@@ -1067,6 +1177,71 @@ mod tests {
         assert_eq!(denied.read_parameter("error"), Some("access_denied"));
     }
 
+    #[test]
+    fn an_identity_token_signed_after_the_page_says_a_claim_a_scope_allowed_before_covers() {
+        let (scenario, challenge) = start();
+        register(
+            &scenario,
+            "partner-spa",
+            &[ResponseType::IdToken],
+            true,
+            None,
+        );
+        let asking = |scope, prompt, claims| AuthorizationParameters {
+            scope: Some(scope),
+            prompt,
+            claims,
+            ..ask("partner-spa", "id_token", &challenge)
+        };
+        let (request, browser_secret, ticket) =
+            sign_in_to_consent(&scenario, asking("openid email", None, None));
+        let describe = |request, browser_secret: &Secret| {
+            complete(describe_consent(
+                &scenario.app,
+                "acme",
+                request,
+                browser_secret,
+                Some(&ticket),
+            ))
+            .expect("the page")
+        };
+        let allow = |request, browser_secret: &Secret, shown| {
+            complete(answer_consent(
+                &scenario.app,
+                "acme",
+                request,
+                browser_secret,
+                Some(&ticket),
+                ConsentDecision::Allow { shown },
+            ))
+        };
+        let shown = describe(request, &browser_secret).shown;
+        allow(request, &browser_secret, shown).expect("an allowed client");
+        let named = r#"{"id_token": {"email": null}}"#;
+        let again = asking("openid", Some("consent"), Some(named));
+        let begun = complete(begin_authorization(
+            &scenario.app,
+            "acme",
+            again,
+            Some(&ticket),
+        ));
+        let Ok(Authorization::ConsentRequired {
+            request,
+            browser_secret,
+        }) = begun
+        else {
+            panic!("asked again, she answers on the page: {begun:?}");
+        };
+
+        let prompt = describe(request, &browser_secret);
+        let allowed = allow(request, &browser_secret, prompt.shown);
+
+        assert!(prompt.claims.is_empty(), "{:?}", prompt.claims);
+        let identity = read_token(&allowed.expect("the page she saw"), "id_token");
+        assert_eq!(identity["email"], "ada@example.org", "{identity}");
+        assert_eq!(identity["email_verified"], false);
+    }
+
     /// Signs `ada` in for a request of a client that asks her first, and
     /// returns the request, its browser secret and her ticket.
     #[expect(
@@ -1395,6 +1570,7 @@ mod tests {
                     nonce: Some(NONCE),
                     response_type: ResponseType::IdToken,
                     code: None,
+                    claims: None,
                 },
             ))
             .map(|signed| signed.parameters.len())

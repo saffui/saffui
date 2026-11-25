@@ -2,7 +2,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::jws::verify_compact;
-use super::{ACCESS_TOKEN_TYPE, IDENTITY_TOKEN_TYPE};
+use super::{ACCESS_TOKEN_TYPE, FAMILY_CLAIM, IDENTITY_TOKEN_TYPE};
 use crate::app::App;
 use crate::error::{ErrorCode, Failure};
 use crate::ports::storage::UnitOfWork;
@@ -24,6 +24,9 @@ pub struct AccessTokenClaims {
     pub expires_at: i64,
     /// The session behind the token, when a person is.
     pub session: Option<Uuid>,
+    /// The family of refresh tokens of its grant, when the grant named claims
+    /// for userinfo. It finds them, and proves nothing.
+    pub family: Option<Uuid>,
 }
 
 /// Verifies an access token of the realm of `work`.
@@ -78,16 +81,22 @@ pub async fn verify_access_token(
         token_id: read_text("jti")?,
         issued_at,
         expires_at,
-        session: match claims.get("sid") {
-            None => None,
-            Some(session) => Some(
-                session
-                    .as_str()
-                    .and_then(|text| Uuid::parse_str(text).ok())
-                    .ok_or_else(invalid)?,
-            ),
-        },
+        session: read_identifier(claims.get("sid")).map_err(|()| invalid())?,
+        family: read_identifier(claims.get(FAMILY_CLAIM)).map_err(|()| invalid())?,
     })
+}
+
+/// Reads an identifier a token may leave out. One written otherwise is a
+/// fault, never an absence.
+fn read_identifier(written: Option<&Value>) -> Result<Option<Uuid>, ()> {
+    match written {
+        None => Ok(None),
+        Some(identifier) => identifier
+            .as_str()
+            .and_then(|text| Uuid::parse_str(text).ok())
+            .map(Some)
+            .ok_or(()),
+    }
 }
 
 /// What an identity token says when a client presents it back as a hint.

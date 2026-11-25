@@ -4,14 +4,17 @@
 use serde_json::{Map, Value, json};
 use time::OffsetDateTime;
 
+use super::request::ClaimsRequest;
 use super::{ClaimInputs, ClaimTarget, Mapper, MapperKind, NewMapper, PersonProperty};
 use crate::authz::admin::ADMIN_SCOPE;
 use crate::authz::capability::{Capability, check_capabilities_held};
 use crate::authz::grants::{ROLES_SCOPE, RoleClaims};
 use crate::authz::roles::is_role_name;
 use crate::clients::{check_client_identifier, is_unshowable};
+use crate::consent::Allowance;
 use crate::directory::Person;
 use crate::error::{ErrorCode, Failure};
+use crate::tokens::FAMILY_CLAIM;
 
 /// The most mappers one client has: each is read for every token.
 pub const MAX_MAPPERS_PER_CLIENT: u32 = 50;
@@ -33,7 +36,7 @@ pub const POLICY_ATTRIBUTE_PREFIX: &str = "policy.";
 
 /// Claims the protocol writes. A mapper that wrote one could pass a token
 /// for another subject, session or level.
-const PROTOCOL_CLAIMS: [&str; 26] = [
+const PROTOCOL_CLAIMS: [&str; 27] = [
     "iss",
     "sub",
     "aud",
@@ -60,6 +63,7 @@ const PROTOCOL_CLAIMS: [&str; 26] = [
     "org_name",
     "realm_access",
     "resource_access",
+    FAMILY_CLAIM,
 ];
 
 /// The claims of the `profile` scope said from the attributes of a person
@@ -425,6 +429,35 @@ pub struct ClaimGrant<'a> {
     pub person: Option<&'a Person>,
     pub client_id: &'a str,
     pub scopes: &'a [String],
+    /// The claims its request named one by one, when it named any.
+    pub named: Option<NamedClaims<'a>>,
+}
+
+/// The claims a request named, and what bounds what it is told by name: a
+/// claim is said only from a source of a scope the client may be given, and
+/// the person allowed, as they would have allowed that scope.
+#[derive(Clone, Copy)]
+pub struct NamedClaims<'a> {
+    pub request: &'a ClaimsRequest,
+    /// The scopes of the client.
+    pub entitled: &'a [String],
+    /// What the person allowed a client that asks them. None for a client
+    /// that asks nobody: what it may be given is what it is told.
+    pub allowed: Option<&'a Allowance>,
+}
+
+impl NamedClaims<'_> {
+    /// Whether `claim`, named for `target`, is said from a source of `scope`.
+    fn admits(&self, target: ClaimTarget, claim: &str, scope: &str) -> bool {
+        self.request
+            .list_asked(target)
+            .is_some_and(|asked| asked.contains_key(claim))
+            && is_scope_granted(self.entitled, scope)
+            && self.allowed.is_none_or(|allowed| {
+                is_scope_granted(&allowed.scopes, scope)
+                    || allowed.claims.iter().any(|named| named == claim)
+            })
+    }
 }
 
 /// What the evaluator wrote for one target.
@@ -449,16 +482,23 @@ fn is_scope_granted(scopes: &[String], scope: &str) -> bool {
     scopes.iter().any(|granted| granted == scope)
 }
 
-/// Whether a mapper writes one of `targets` for a grant of `scopes`. One
-/// that says something of the person and names no scope the person is
-/// asked about, as one kept before the rule, says nothing.
-fn is_applicable(mapper: &Mapper, targets: &[ClaimTarget], scopes: &[String]) -> bool {
-    let granted = match (mapper.scope.as_deref(), reads_person(&mapper.kind)) {
-        (None, reads) => !reads,
+/// Whether a mapper writes one of `targets` for a grant: under a scope it
+/// carries, or under one that may say the claim it was named. One that says
+/// something of the person and names no scope the person is asked about, as
+/// one kept before the rule, says nothing.
+fn is_applicable(mapper: &Mapper, targets: &[ClaimTarget], grant: &ClaimGrant<'_>) -> bool {
+    let aimed = |target: &&ClaimTarget| mapper.targets.contains(target);
+    match (mapper.scope.as_deref(), reads_person(&mapper.kind)) {
+        (None, reads) => !reads && targets.iter().any(|target| aimed(&target)),
         (Some("openid"), true) => false,
-        (Some(scope), _) => is_scope_granted(scopes, scope),
-    };
-    granted && mapper.targets.iter().any(|target| targets.contains(target))
+        (Some(scope), _) => targets
+            .iter()
+            .filter(aimed)
+            .any(|target| match &mapper.claim {
+                Some(claim) => is_said(grant, *target, claim, scope),
+                None => is_scope_granted(grant.scopes, scope),
+            }),
+    }
 }
 
 fn read_property(person: &Person, property: PersonProperty) -> Option<Value> {
@@ -483,6 +523,64 @@ fn compose_full_name(person: &Person, attributes: &Map<String, Value>) -> Option
     }
 }
 
+/// Whether an address or a number was verified, said with it and never
+/// without it, nor kept once a value it was named with takes the other away.
+const PAIRED_CLAIMS: [(&str, &str); 2] = [
+    ("email", "email_verified"),
+    ("phone_number", "phone_number_verified"),
+];
+
+fn is_paired_follower(claim: &str) -> bool {
+    PAIRED_CLAIMS.iter().any(|(_, follower)| *follower == claim)
+}
+
+/// The claims the scopes say of a person, in the order they are written.
+fn list_standard_claims() -> impl Iterator<Item = &'static str> {
+    ["preferred_username", "name"]
+        .into_iter()
+        .chain(PROFILE_ATTRIBUTES)
+        .chain(["email", "email_verified"])
+}
+
+/// The scope a claim of [`list_standard_claims`] is said under (OpenID
+/// Connect Core 1.0, section 5.4).
+fn read_standard_scope(claim: &str) -> Option<&'static str> {
+    match claim {
+        "email" | "email_verified" => Some("email"),
+        "preferred_username" | "name" => Some("profile"),
+        _ if PROFILE_ATTRIBUTES.contains(&claim) => Some("profile"),
+        _ => None,
+    }
+}
+
+/// The value of a claim of [`list_standard_claims`], when the person has one.
+fn read_standard_claim(
+    claim: &str,
+    person: &Person,
+    attributes: &Map<String, Value>,
+) -> Option<Value> {
+    match claim {
+        "preferred_username" => Some(json!(person.username)),
+        "name" => person.display_name.as_ref().map(|name| json!(name)),
+        "email" => person.email.as_ref().map(|email| json!(email)),
+        // Said beside an address, and never without one.
+        "email_verified" => person.email.as_ref().map(|_| json!(person.email_verified)),
+        attribute => attributes
+            .get(attribute)
+            .filter(|value| value.is_string())
+            .cloned(),
+    }
+}
+
+/// Whether a claim from a source of `scope` is said for `target`: the scope
+/// was granted, or the claim was named and may be said by name.
+fn is_said(grant: &ClaimGrant<'_>, target: ClaimTarget, claim: &str, scope: &str) -> bool {
+    is_scope_granted(grant.scopes, scope)
+        || grant
+            .named
+            .is_some_and(|named| named.admits(target, claim, scope))
+}
+
 /// What the scopes of a grant say, before any mapper.
 fn write_scope_claims(
     target: ClaimTarget,
@@ -503,25 +601,22 @@ fn write_scope_claims(
             written.limit_lifetime(roles.until);
         }
         (ClaimTarget::IdToken | ClaimTarget::Userinfo, Some(person)) => {
-            let claims = &mut written.claims;
-            if granted("profile") {
-                claims.insert("preferred_username".to_owned(), json!(person.username));
-                if let Some(name) = &person.display_name {
-                    claims.insert("name".to_owned(), json!(name));
+            for claim in list_standard_claims().filter(|claim| !is_paired_follower(claim)) {
+                let said = read_standard_scope(claim)
+                    .is_some_and(|scope| is_said(grant, target, claim, scope));
+                let Some(value) = said
+                    .then(|| read_standard_claim(claim, person, &inputs.attributes))
+                    .flatten()
+                else {
+                    continue;
+                };
+                written.claims.insert(claim.to_owned(), value);
+                let paired = PAIRED_CLAIMS.iter().find(|(leader, _)| *leader == claim);
+                if let Some((_, follower)) = paired
+                    && let Some(held) = read_standard_claim(follower, person, &inputs.attributes)
+                {
+                    written.claims.insert((*follower).to_owned(), held);
                 }
-                for name in PROFILE_ATTRIBUTES {
-                    if let Some(value) = inputs
-                        .attributes
-                        .get(name)
-                        .filter(|value| value.is_string())
-                    {
-                        claims.insert(name.to_owned(), value.clone());
-                    }
-                }
-            }
-            if let (true, Some(email)) = (granted("email"), &person.email) {
-                claims.insert("email".to_owned(), json!(email));
-                claims.insert("email_verified".to_owned(), json!(person.email_verified));
             }
         }
         _ => {}
@@ -545,7 +640,7 @@ pub fn write_claims(
     let mut applying: Vec<&Mapper> = inputs
         .mappers
         .iter()
-        .filter(|mapper| is_applicable(mapper, &[target], grant.scopes))
+        .filter(|mapper| is_applicable(mapper, &[target], grant))
         .collect();
     applying.sort_by(|one, other| one.name.cmp(&other.name));
     // A token for the administration plane is for the realm alone: one the
@@ -605,16 +700,30 @@ pub fn write_claims(
         ));
     }
     written.claims.extend(mapped);
+    // A claim named with values is said with one of them, or not at all.
+    if let Some(asked) = grant
+        .named
+        .and_then(|named| named.request.list_asked(target))
+    {
+        let claims = &mut written.claims;
+        claims.retain(|claim, value| asked.get(claim).is_none_or(|ask| ask.accepts(value)));
+        for (leader, follower) in PAIRED_CLAIMS {
+            if claims.contains_key(leader) != claims.contains_key(follower) {
+                claims.remove(leader);
+                claims.remove(follower);
+            }
+        }
+    }
     Ok(written)
 }
 
-/// Whether writing `targets` for a grant of `scopes` reads the roles of
-/// the person: reading them costs a query.
+/// Whether writing `targets` for a grant reads the roles of the person:
+/// reading them costs a query.
 #[must_use]
-pub fn needs_roles(mappers: &[Mapper], scopes: &[String], targets: &[ClaimTarget]) -> bool {
-    (is_scope_granted(scopes, ROLES_SCOPE) && targets.contains(&ClaimTarget::AccessToken))
+pub fn needs_roles(mappers: &[Mapper], grant: &ClaimGrant<'_>, targets: &[ClaimTarget]) -> bool {
+    (is_scope_granted(grant.scopes, ROLES_SCOPE) && targets.contains(&ClaimTarget::AccessToken))
         || mappers.iter().any(|mapper| {
-            is_applicable(mapper, targets, scopes)
+            is_applicable(mapper, targets, grant)
                 && matches!(
                     mapper.kind,
                     MapperKind::RealmRoles | MapperKind::ClientRoles { .. }
@@ -622,21 +731,78 @@ pub fn needs_roles(mappers: &[Mapper], scopes: &[String], targets: &[ClaimTarget
         })
 }
 
-/// Whether writing `targets` for a grant of `scopes` reads the attributes
-/// of the person: reading them costs a query.
+/// Whether writing `targets` for a grant reads the attributes of the
+/// person: reading them costs a query.
 #[must_use]
-pub fn needs_attributes(mappers: &[Mapper], scopes: &[String], targets: &[ClaimTarget]) -> bool {
+pub fn needs_attributes(
+    mappers: &[Mapper],
+    grant: &ClaimGrant<'_>,
+    targets: &[ClaimTarget],
+) -> bool {
     let says_profile = targets
         .iter()
-        .any(|target| matches!(target, ClaimTarget::IdToken | ClaimTarget::Userinfo));
-    (is_scope_granted(scopes, "profile") && says_profile)
+        .filter(|target| matches!(target, ClaimTarget::IdToken | ClaimTarget::Userinfo))
+        .any(|target| {
+            PROFILE_ATTRIBUTES
+                .iter()
+                .any(|claim| is_said(grant, *target, claim, "profile"))
+        });
+    says_profile
         || mappers.iter().any(|mapper| {
-            is_applicable(mapper, targets, scopes)
+            is_applicable(mapper, targets, grant)
                 && matches!(
                     mapper.kind,
                     MapperKind::Attribute { .. } | MapperKind::FullName
                 )
         })
+}
+
+/// The claims a request names that the person must allow one by one: those
+/// said, for the target they are named for, from a source of a scope the
+/// client may be given, and from none of the scopes in `covered`. Each once,
+/// in the order of their names.
+#[must_use]
+pub fn list_claims_owing_consent(
+    request: &ClaimsRequest,
+    mappers: &[Mapper],
+    entitled: &[String],
+    covered: &[String],
+) -> Vec<String> {
+    let mut owing: Vec<String> = Vec::new();
+    for target in [ClaimTarget::IdToken, ClaimTarget::Userinfo] {
+        let Some(asked) = request.list_asked(target) else {
+            continue;
+        };
+        // Whether an address was verified is allowed with the address.
+        for claim in asked.keys().filter(|claim| !is_paired_follower(claim)) {
+            // As the evaluator reads them: a mapper whose claim was reserved
+            // since it was kept says nothing.
+            let mapped = mappers.iter().filter(|mapper| {
+                mapper.claim.as_deref() == Some(claim.as_str())
+                    && is_claim_name(claim)
+                    && mapper.targets.contains(&target)
+                    && reads_person(&mapper.kind)
+            });
+            let scopes: Vec<&str> = read_standard_scope(claim)
+                .into_iter()
+                .chain(mapped.filter_map(|mapper| mapper.scope.as_deref()))
+                .filter(|scope| *scope != "openid" && is_scope_granted(entitled, scope))
+                .collect();
+            let uncovered =
+                !scopes.is_empty() && !scopes.iter().any(|scope| is_scope_granted(covered, scope));
+            if uncovered && !owing.contains(claim) {
+                owing.push(claim.clone());
+            }
+        }
+    }
+    owing.sort();
+    owing
+}
+
+/// The claims the realm may say of a person by the scopes alone.
+#[must_use]
+pub fn list_scope_claims() -> Vec<&'static str> {
+    list_standard_claims().collect()
 }
 
 #[cfg(test)]
@@ -703,6 +869,16 @@ mod tests {
 
     fn scopes(text: &str) -> Vec<String> {
         text.split(' ').map(str::to_owned).collect()
+    }
+
+    /// A grant of `scopes` to `webapp` for nobody, that names no claim.
+    fn scoped(scopes: &[String]) -> ClaimGrant<'_> {
+        ClaimGrant {
+            person: None,
+            client_id: "webapp",
+            scopes,
+            named: None,
+        }
     }
 
     fn read_object(document: &Value) -> Map<String, Value> {
@@ -1090,6 +1266,7 @@ mod tests {
             person: Some(&person),
             client_id: "webapp",
             scopes: &granted,
+            named: None,
         };
         let inputs = ClaimInputs {
             mappers: Vec::new(),
@@ -1201,6 +1378,7 @@ mod tests {
             person: Some(&person),
             client_id: "webapp",
             scopes,
+            named: None,
         };
         let write = |target, scopes| write_claims(target, &grant(scopes), &inputs).expect("claims");
 
@@ -1245,6 +1423,7 @@ mod tests {
             person: Some(&person),
             client_id: "webapp",
             scopes: &granted,
+            named: None,
         };
         let only = |kind| ClaimInputs {
             mappers: vec![make_mapper(
@@ -1344,6 +1523,7 @@ mod tests {
             person: Some(&person),
             client_id: "webapp",
             scopes,
+            named: None,
         };
 
         let access = write_claims(ClaimTarget::AccessToken, &grant(&without_email), &inputs)
@@ -1395,6 +1575,7 @@ mod tests {
             person: Some(&person),
             client_id: "webapp",
             scopes: &granted,
+            named: None,
         };
 
         let said = write_claims(ClaimTarget::IdToken, &grant, &inputs).expect("claims");
@@ -1429,6 +1610,7 @@ mod tests {
             person: None,
             client_id: "webapp",
             scopes: &granted,
+            named: None,
         };
 
         let access = write_claims(ClaimTarget::AccessToken, &grant, &inputs).expect("claims");
@@ -1445,6 +1627,7 @@ mod tests {
             person: Some(&person),
             client_id: "webapp",
             scopes: &granted,
+            named: None,
         };
         let copies: Vec<Mapper> = (0..50)
             .map(|index| {
@@ -1521,6 +1704,7 @@ mod tests {
                 person: None,
                 client_id: "operator",
                 scopes: &granted,
+                named: None,
             };
             write_claims(ClaimTarget::AccessToken, &grant, &inputs)
                 .expect("claims")
@@ -1539,6 +1723,7 @@ mod tests {
             person: Some(&person),
             client_id: "webapp",
             scopes: &granted,
+            named: None,
         };
         let mut mappers = vec![make_mapper(
             "big",
@@ -1610,12 +1795,12 @@ mod tests {
 
         assert!(needs_attributes(
             std::slice::from_ref(&full),
-            &scopes("profile"),
+            &scoped(&scopes("profile")),
             &access
         ));
         assert!(needs_roles(
             std::slice::from_ref(&of_billing),
-            &scopes("profile"),
+            &scoped(&scopes("profile")),
             &access
         ));
     }
@@ -1639,45 +1824,99 @@ mod tests {
         let tokens = [ClaimTarget::AccessToken, ClaimTarget::IdToken];
         let userinfo = [ClaimTarget::Userinfo];
 
-        assert!(needs_roles(&[], &scopes("openid roles"), &tokens));
+        assert!(needs_roles(&[], &scoped(&scopes("openid roles")), &tokens));
         assert!(
-            !needs_roles(&[], &scopes("openid roles"), &userinfo),
+            !needs_roles(&[], &scoped(&scopes("openid roles")), &userinfo),
             "the scope says roles in an access token alone"
         );
         assert!(!needs_roles(
             std::slice::from_ref(&roles),
-            &scopes("openid billing"),
+            &scoped(&scopes("openid billing")),
             &tokens
         ));
         assert!(!needs_roles(
             std::slice::from_ref(&roles),
-            &scopes("openid"),
+            &scoped(&scopes("openid")),
             &userinfo
         ));
         assert!(needs_roles(
             std::slice::from_ref(&roles),
-            &scopes("openid billing"),
+            &scoped(&scopes("openid billing")),
             &userinfo
         ));
-        assert!(needs_attributes(&[], &scopes("openid profile"), &userinfo));
-        assert!(!needs_attributes(&[], &scopes("openid"), &tokens));
+        assert!(needs_attributes(
+            &[],
+            &scoped(&scopes("openid profile")),
+            &userinfo
+        ));
+        assert!(!needs_attributes(&[], &scoped(&scopes("openid")), &tokens));
         assert!(needs_attributes(
             std::slice::from_ref(&department),
-            &scopes("openid email"),
+            &scoped(&scopes("openid email")),
             &[ClaimTarget::AccessToken]
         ));
         assert!(!needs_attributes(
             std::slice::from_ref(&department),
-            &scopes("openid"),
+            &scoped(&scopes("openid")),
             &[ClaimTarget::AccessToken]
         ));
         assert!(
             !needs_attributes(
                 std::slice::from_ref(&department),
-                &scopes("openid email"),
+                &scoped(&scopes("openid email")),
                 &userinfo
             ),
             "a mapper of another target"
+        );
+    }
+
+    #[test]
+    fn the_claim_that_names_the_family_of_a_grant_is_written_by_the_protocol_alone() {
+        use crate::tokens::FAMILY_CLAIM;
+
+        for written in [FAMILY_CLAIM, "fam.of", "f_am"] {
+            assert!(!super::is_claim_name(written), "{written}");
+        }
+    }
+
+    #[test]
+    fn a_claim_named_is_owed_by_name_only_beyond_the_scopes_asked_and_within_those_of_the_client() {
+        use super::list_claims_owing_consent;
+        use crate::claims::request::read_claims_parameter;
+
+        let request = read_claims_parameter(
+            r#"{"userinfo": {"email": null, "dept": null, "given_name": null, "acr": null,
+                             "unknown": null},
+                "id_token": {"dept": null, "email_verified": null}}"#,
+        )
+        .expect("a request");
+        let dept = make_mapper(
+            "dept",
+            attribute("department"),
+            Some("dept"),
+            &[ClaimTarget::Userinfo],
+            Some("email"),
+        );
+        let entitled = scopes("openid email");
+        let owing = |covered: &str| {
+            list_claims_owing_consent(
+                &request,
+                std::slice::from_ref(&dept),
+                &entitled,
+                &scopes(covered),
+            )
+        };
+
+        assert_eq!(
+            owing("openid"),
+            ["dept", "email"],
+            "each once, and none the client may not be given, no source says, or \
+             that goes with an address"
+        );
+        assert_eq!(
+            owing("openid email"),
+            Vec::<String>::new(),
+            "a scope asked covers what it says"
         );
     }
 

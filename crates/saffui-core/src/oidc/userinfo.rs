@@ -7,8 +7,9 @@ use super::discovery::name_issuer;
 use crate::app::App;
 use crate::claims::ClaimTarget;
 use crate::claims::gather::gather_claim_inputs;
-use crate::claims::rules::{ClaimGrant, write_claims};
-use crate::clients::is_client_enabled;
+use crate::claims::rules::{ClaimGrant, NamedClaims, write_claims};
+use crate::clients::{is_client_enabled, read_named_client};
+use crate::consent::read_allowance;
 use crate::error::{ErrorCode, Failure};
 use crate::login::session::read_live_subject;
 use crate::tenancy::resolve::resolve_realm;
@@ -39,11 +40,21 @@ pub async fn read_user_info(app: &App, realm: &str, token: &str) -> Result<Value
     let mut work = app.storage.begin(scope).await?;
     let issuer = name_issuer(&app.settings, &realm_name);
     let claims = verify_access_token(app, work.as_mut(), &issuer, token).await?;
-    if !claims.audiences.contains(&issuer)
-        || !is_client_enabled(work.as_mut(), &claims.client_id).await?
-    {
+    if !claims.audiences.contains(&issuer) {
         return Err(invalid());
     }
+    // A token of a grant that named claims is told them within the scopes
+    // of its client, read whole; any other only asks that it be enabled.
+    let client = match claims.family {
+        Some(_) => Some(
+            read_named_client(work.as_mut(), &claims.client_id)
+                .await?
+                .filter(|client| client.enabled)
+                .ok_or_else(invalid)?,
+        ),
+        None if is_client_enabled(work.as_mut(), &claims.client_id).await? => None,
+        None => return Err(invalid()),
+    };
 
     let session = claims.session.ok_or_else(invalid)?;
     let (_, person) = read_live_subject(app, work.as_mut(), session)
@@ -54,11 +65,37 @@ pub async fn read_user_info(app: &App, realm: &str, token: &str) -> Result<Value
         return Err(Failure::new(ErrorCode::TokenScopeInsufficient));
     }
 
+    // The claims the grant of the token named, read by the family it names,
+    // in its session and for its client, and bound as when its tokens are
+    // made: by the scopes of the client and what the person allows now. A
+    // token that names no family, as one signed at the authorization
+    // endpoint, is told what its scopes say and nothing by name.
+    let asked = match (claims.family, &client) {
+        (Some(family), Some(client)) => {
+            work.read_family_claims(family, session, &client.client_id)
+                .await?
+        }
+        _ => None,
+    };
+    let allowed = match (&asked, &client) {
+        (Some(_), Some(client)) => read_allowance(work.as_mut(), client, person.id).await?,
+        _ => None,
+    };
+    let named = asked
+        .as_ref()
+        .zip(client.as_ref())
+        .map(|(request, client)| NamedClaims {
+            request,
+            entitled: &client.scopes,
+            allowed: allowed.as_ref(),
+        });
+
     // Read now, as for a token made now: the three never disagree.
     let grant = ClaimGrant {
         person: Some(&person),
         client_id: &claims.client_id,
         scopes: &claims.scopes,
+        named,
     };
     let targets = [ClaimTarget::Userinfo];
     let inputs = gather_claim_inputs(work.as_mut(), &grant, &targets, app.now()).await?;
@@ -213,5 +250,191 @@ mod tests {
             ask(&scenario, "acme", &other.tokens.access_token),
             Err(ErrorCode::TokenInvalid)
         );
+    }
+
+    /// The claims of a compact token.
+    fn read_token(token: &str) -> serde_json::Value {
+        use base64::Engine as _;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+        let payload = token.split('.').nth(1).expect("a compact token");
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).expect("base64url"))
+            .expect("claims")
+    }
+
+    #[test]
+    fn claims_named_are_told_within_the_scopes_of_the_client_and_the_targets_of_its_mappers() {
+        use crate::claims::ClaimTarget;
+
+        let scenario = Scenario::start();
+        scenario.register_lean();
+        scenario.map_attribute(
+            "lean",
+            "department",
+            "dept",
+            &[ClaimTarget::Userinfo],
+            "profile",
+        );
+        scenario.write_ada_attributes(&json!({
+            "given_name": "Ada",
+            "locale": "en",
+            "department": "research",
+        }));
+        let named = r#"{
+            "id_token": {"given_name": null, "email": null, "dept": null,
+                         "nickname": {"essential": true}, "locale": {"value": "fr"}},
+            "userinfo": {"given_name": null, "dept": null, "email": {"essential": true},
+                         "locale": {"values": ["de", "en"]}}
+        }"#;
+
+        let signed_in = scenario.sign_in_naming("lean", "openid", named);
+
+        let identity = read_token(
+            signed_in
+                .tokens
+                .id_token
+                .as_deref()
+                .expect("an identity token"),
+        );
+        assert_eq!(
+            identity["given_name"], "Ada",
+            "named, of a scope the client may be given"
+        );
+        for absent in ["email", "dept", "nickname", "locale", "preferred_username"] {
+            assert!(identity.get(absent).is_none(), "{absent}: {identity}");
+        }
+        let told = ask(&scenario, "acme", &signed_in.tokens.access_token).expect("claims");
+        assert_eq!(told["given_name"], "Ada");
+        assert_eq!(told["dept"], "research", "its mapper writes it in userinfo");
+        assert_eq!(told["locale"], "en", "one of the values the client takes");
+        for absent in ["email", "nickname", "preferred_username", "name"] {
+            assert!(told.get(absent).is_none(), "{absent}: {told}");
+        }
+
+        let unnamed = scenario.sign_in_naming("lean", "openid", "{}");
+        let identity = read_token(
+            unnamed
+                .tokens
+                .id_token
+                .as_deref()
+                .expect("an identity token"),
+        );
+        assert!(identity.get("given_name").is_none(), "{identity}");
+        let told = ask(&scenario, "acme", &unnamed.tokens.access_token).expect("claims");
+        assert_eq!(
+            told.as_object().map(serde_json::Map::len),
+            Some(1),
+            "openid alone says who, and nothing of them: {told}"
+        );
+    }
+
+    #[test]
+    fn claims_named_are_read_from_the_person_again_at_each_renewal_and_the_sign_in_stays_as_it_was()
+    {
+        let scenario = Scenario::start();
+        scenario.register_lean();
+        scenario.write_ada_attributes(&json!({ "given_name": "Ada" }));
+        let named = r#"{"id_token": {"given_name": null}, "userinfo": {"given_name": null}}"#;
+        let first = scenario.sign_in_naming("lean", "openid", named);
+        let before = read_token(first.tokens.id_token.as_deref().expect("an identity token"));
+
+        scenario.write_ada_attributes(&json!({ "given_name": "Augusta" }));
+        scenario.clock.advance(std::time::Duration::from_secs(90));
+        let renewed = scenario
+            .refresh_as(
+                "lean",
+                first
+                    .tokens
+                    .refresh_token
+                    .as_deref()
+                    .expect("a refresh token"),
+                None,
+            )
+            .expect("tokens");
+
+        let after = read_token(renewed.id_token.as_deref().expect("an identity token"));
+        assert_eq!(after["given_name"], "Augusta", "what she holds now");
+        assert_eq!(after["acr"], before["acr"]);
+        assert_eq!(after["auth_time"], before["auth_time"]);
+        assert_ne!(after["iat"], before["iat"]);
+        let told = ask(&scenario, "acme", &renewed.access_token).expect("claims");
+        assert_eq!(told["given_name"], "Augusta");
+        let again = scenario
+            .refresh_as(
+                "lean",
+                renewed.refresh_token.as_deref().expect("a refresh token"),
+                None,
+            )
+            .expect("tokens");
+        let after = read_token(again.id_token.as_deref().expect("an identity token"));
+        assert_eq!(
+            after["given_name"], "Augusta",
+            "the next token of the family names it too"
+        );
+    }
+
+    #[test]
+    fn each_grant_of_one_client_in_one_session_is_told_what_it_named_and_no_other() {
+        use crate::tokens::FAMILY_CLAIM;
+
+        let scenario = Scenario::start();
+        scenario.register_lean();
+        scenario.write_ada_attributes(&json!({ "given_name": "Ada" }));
+        let named = r#"{"userinfo": {"given_name": null}}"#;
+        let first = scenario.sign_in_naming("lean", "openid", named);
+        let ticket = &first.ticket;
+
+        let plain = scenario.grant_in_session("lean", "openid", None, ticket);
+        let again = scenario.grant_in_session("lean", "openid", Some(named), ticket);
+        let for_identity = r#"{"id_token": {"given_name": null}}"#;
+        let identity = scenario.grant_in_session("lean", "openid", Some(for_identity), ticket);
+
+        let granted = [
+            (&first.tokens, true),
+            (&plain, false),
+            (&again, true),
+            (&identity, false),
+        ];
+        for (tokens, told) in granted {
+            let given =
+                ask(&scenario, "acme", &tokens.access_token).expect("claims")["given_name"].clone();
+            assert_eq!(given == "Ada", told, "{given}");
+        }
+        for (tokens, unnamed) in [(&plain, "nothing"), (&identity, "nothing for userinfo")] {
+            assert!(
+                read_token(&tokens.access_token).get(FAMILY_CLAIM).is_none(),
+                "a grant that named {unnamed} has its tokens said as before"
+            );
+        }
+        assert_ne!(
+            read_token(&first.tokens.access_token)[FAMILY_CLAIM],
+            read_token(&again.access_token)[FAMILY_CLAIM],
+            "each grant its family"
+        );
+    }
+
+    #[test]
+    fn whether_an_address_was_verified_goes_with_it_and_a_value_takes_both_away() {
+        let scenario = Scenario::start();
+        let verified_only = r#"{"userinfo": {"email_verified": {"value": true}},
+                                "id_token": {"email_verified": {"value": true}}}"#;
+
+        let asked = scenario.sign_in_naming("webapp", "openid email", verified_only);
+
+        let identity = read_token(asked.tokens.id_token.as_deref().expect("an identity token"));
+        let told = ask(&scenario, "acme", &asked.tokens.access_token).expect("claims");
+        for said in [&identity, &told] {
+            for claim in ["email", "email_verified"] {
+                assert!(
+                    said.get(claim).is_none(),
+                    "her address was not verified: {said}"
+                );
+            }
+        }
+
+        let named = scenario.sign_in_naming("webapp", "openid", r#"{"userinfo": {"email": null}}"#);
+        let told = ask(&scenario, "acme", &named.tokens.access_token).expect("claims");
+        assert_eq!(told["email"], "ada@example.org");
+        assert_eq!(told["email_verified"], false, "said with the address");
     }
 }

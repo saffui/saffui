@@ -15,6 +15,7 @@ use crate::query::insert::Insert;
 use crate::query::select::Select;
 use crate::query::update::Update;
 use crate::schema::{authorization_codes, authorization_requests};
+use crate::stores::claims::{read_kept_claims, write_kept_claims};
 use crate::work::PgUnitOfWork;
 
 const PENDING: &[Column] = &[
@@ -34,6 +35,7 @@ const PENDING: &[Column] = &[
     authorization_requests::CONSENT_SESSION_ID,
     authorization_requests::RESPONSE_TYPE,
     authorization_requests::RESPONSE_MODE,
+    authorization_requests::CLAIMS,
 ];
 
 /// The proof by a key a row keeps, when the two columns hold one.
@@ -69,6 +71,7 @@ fn read_pending_row(id: Uuid, row: &Row) -> Result<PendingAuthorization, Storage
         key_proof: read_key_proof(row.get(10), row.get(11)),
         consent_prompted: row.get(12),
         consent_session: row.get(13),
+        claims: read_kept_claims(row.get(16))?,
     })
 }
 
@@ -85,6 +88,7 @@ impl CodeStore for PgUnitOfWork {
             .map(|proof| proof.options.clone());
         let response_type = pending.response_type.name();
         let response_mode = pending.response_mode.name();
+        let claims = write_kept_claims(pending.claims.as_ref());
         let insert = Insert::into(
             authorization_requests::TABLE,
             vec![
@@ -123,6 +127,7 @@ impl CodeStore for PgUnitOfWork {
                     authorization_requests::CONSENT_SESSION_ID,
                     &pending.consent_session,
                 ),
+                col(authorization_requests::CLAIMS, &claims),
             ],
         )
         .build();
@@ -213,7 +218,7 @@ impl CodeStore for PgUnitOfWork {
                  RETURNING browser_digest, client_id, redirect_uri, scopes, state, nonce,
                            code_challenge, expires_at, expected_person, first_factor_person_id,
                            key_proof_state, key_proof_options, consent_prompted,
-                           consent_session_id, response_type, response_mode",
+                           consent_session_id, response_type, response_mode, claims",
                 &[&tenant, &realm, &id, &now],
             )
             .await?;
@@ -226,6 +231,7 @@ impl CodeStore for PgUnitOfWork {
         &mut self,
         code: &AuthorizationCode,
     ) -> Result<(), StorageError> {
+        let claims = write_kept_claims(code.claims.as_ref());
         let insert = Insert::into(
             authorization_codes::TABLE,
             vec![
@@ -242,6 +248,7 @@ impl CodeStore for PgUnitOfWork {
                     &code.authenticated_at,
                 ),
                 col(authorization_codes::EXPIRES_AT, &code.expires_at),
+                col(authorization_codes::CLAIMS, &claims),
             ],
         )
         .build();
@@ -263,22 +270,27 @@ impl CodeStore for PgUnitOfWork {
                  WHERE tenant_id = $1 AND realm_id = $2 AND code_digest = $3
                    AND spent_at IS NULL AND expires_at > $4
                  RETURNING client_id, person_id, session_id, redirect_uri, scopes, nonce,
-                           code_challenge, authenticated_at, expires_at",
+                           code_challenge, authenticated_at, expires_at, claims",
                 &[&tenant, &realm, &code_digest, &now],
             )
             .await?;
-        Ok(rows.first().map(|row| AuthorizationCode {
-            code_digest: code_digest.to_vec(),
-            client_id: row.get(0),
-            person: row.get(1),
-            session: row.get(2),
-            redirect_uri: row.get(3),
-            scopes: row.get(4),
-            nonce: row.get(5),
-            code_challenge: row.get(6),
-            authenticated_at: row.get(7),
-            expires_at: row.get(8),
-        }))
+        rows.first()
+            .map(|row| {
+                Ok(AuthorizationCode {
+                    code_digest: code_digest.to_vec(),
+                    client_id: row.get(0),
+                    person: row.get(1),
+                    session: row.get(2),
+                    redirect_uri: row.get(3),
+                    scopes: row.get(4),
+                    nonce: row.get(5),
+                    code_challenge: row.get(6),
+                    authenticated_at: row.get(7),
+                    expires_at: row.get(8),
+                    claims: read_kept_claims(row.get(9))?,
+                })
+            })
+            .transpose()
     }
 
     async fn bind_code_family(

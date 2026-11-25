@@ -9,7 +9,9 @@ use super::token::{Granted, TokenRequest, TokenResponse, answer_for_person, narr
 use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
+use crate::claims::rules::NamedClaims;
 use crate::clients::Client;
+use crate::consent::read_allowance;
 use crate::error::{ErrorCode, Failure};
 use crate::instant::write_instant;
 use crate::login::session::read_live_subject;
@@ -129,6 +131,12 @@ pub(super) async fn rotate_refresh_token(
         .filter(|(_, person)| person.id == spent.person)
         .ok_or_else(invalid)?;
     let scopes = narrow_scopes(request.scope, &spent.scopes)?;
+    // Read again at each renewal: a claim the person no longer allows is
+    // said no more.
+    let allowed = match spent.claims {
+        Some(_) => read_allowance(work.as_mut(), client, person.id).await?,
+        None => None,
+    };
 
     let granted = Granted {
         issuer,
@@ -141,11 +149,17 @@ pub(super) async fn rotate_refresh_token(
         id_token_algorithm: client
             .id_token_signed_response_alg
             .unwrap_or(DEFAULT_ALGORITHM),
+        named: spent.claims.as_ref().map(|request| NamedClaims {
+            request,
+            entitled: &client.scopes,
+            allowed: allowed.as_ref(),
+        }),
         family: RefreshGrant {
             family: spent.family,
             client_id: &client.client_id,
             session: &session,
             scopes: &spent.scopes,
+            claims: spent.claims.as_ref(),
         },
     };
     // No event: a rotation only carries on what the chain already says was

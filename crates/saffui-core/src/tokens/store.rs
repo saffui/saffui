@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::claims::request::ClaimsRequest;
 use crate::ports::storage::StorageError;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,6 +20,8 @@ pub struct RefreshToken {
     /// What was granted at first. A narrower request narrows the access
     /// token it gets, never this.
     pub scopes: Vec<String>,
+    /// The claims the request of the grant named, read again at each use.
+    pub claims: Option<ClaimsRequest>,
     pub issued_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
 }
@@ -103,6 +106,16 @@ pub trait RefreshStore {
         &mut self,
         token_digest: &[u8],
     ) -> Result<Option<StoredRefreshToken>, StorageError>;
+
+    /// The claims a family names, when it is the grant of `client_id` in
+    /// `session` and no revoked token refuses it. None when it named none, or
+    /// when no such family is left.
+    async fn read_family_claims(
+        &mut self,
+        family: Uuid,
+        session: Uuid,
+        client_id: &str,
+    ) -> Result<Option<ClaimsRequest>, StorageError>;
 
     /// Ends the active offline session a family lives in, if it lives in
     /// one, and returns it: it lived for that grant alone. Called before the

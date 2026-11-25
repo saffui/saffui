@@ -5,6 +5,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::MemoryUnitOfWork;
+use crate::claims::request::ClaimsRequest;
 use crate::login::session::{Session, SessionKind, SessionState};
 use crate::ports::storage::StorageError;
 use crate::tokens::store::{
@@ -169,6 +170,26 @@ impl RefreshStore for MemoryUnitOfWork {
                     .or_else(|| revoked_families.get(&stored.token.family).copied()),
                 ..stored.clone()
             }))
+    }
+
+    async fn read_family_claims(
+        &mut self,
+        family: Uuid,
+        session: Uuid,
+        client_id: &str,
+    ) -> Result<Option<ClaimsRequest>, StorageError> {
+        if self.read_revoked_families().contains_key(&family) {
+            return Ok(None);
+        }
+        Ok(self
+            .refresh_tokens_of_the_realm()
+            .iter()
+            .find(|stored| {
+                stored.token.family == family
+                    && stored.token.session == session
+                    && stored.token.client_id == client_id
+            })
+            .and_then(|kin| kin.token.claims.clone()))
     }
 
     async fn revoke_refresh_family(

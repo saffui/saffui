@@ -17,6 +17,11 @@ pub struct IssuedAccessToken {
 /// identity token for one, is never accepted in its place.
 pub const ACCESS_TOKEN_TYPE: &str = "at+jwt";
 
+/// The claim of an access token that names the family of refresh tokens of
+/// its grant, when that grant named claims for userinfo: short, as each
+/// token is resent with each request, and in no registry of claim names.
+pub const FAMILY_CLAIM: &str = "fam";
+
 /// The `typ` of an identity token.
 pub const IDENTITY_TOKEN_TYPE: &str = "JWT";
 

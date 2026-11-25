@@ -7,17 +7,19 @@ use uuid::Uuid;
 use super::jws::sign_compact;
 use super::store::RefreshToken;
 use super::{
-    ACCESS_TOKEN_LIFETIME_SECONDS, ACCESS_TOKEN_TYPE, IDENTITY_TOKEN_TYPE, IssuedAccessToken,
+    ACCESS_TOKEN_LIFETIME_SECONDS, ACCESS_TOKEN_TYPE, FAMILY_CLAIM, IDENTITY_TOKEN_TYPE,
+    IssuedAccessToken,
 };
 use crate::app::App;
 use crate::authz::admin::ADMIN_SCOPE;
+use crate::claims::request::ClaimsRequest;
 use crate::claims::rules::WrittenClaims;
 use crate::directory::Person;
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
 use crate::keys::SigningKey;
 use crate::keys::jwks::open_signing_keys;
-use crate::login::assurance::Assurance;
+use crate::login::assurance::{Assurance, RequiredLevel};
 use crate::login::session::{AuthenticationMethod, Session};
 use crate::ports::crypto::{Digester, SignatureAlgorithm};
 use crate::ports::storage::UnitOfWork;
@@ -34,6 +36,9 @@ pub struct AccessTokenSubject<'a> {
     pub scopes: &'a [String],
     /// The session behind the token, when a person is.
     pub session: Option<&'a Session>,
+    /// The family of refresh tokens of the grant, when it named claims for
+    /// userinfo: what finds them again. None for any other grant.
+    pub family: Option<Uuid>,
     /// What the evaluator wrote for this token: claims, audiences, and how
     /// long what it says stands.
     pub claims: Option<&'a WrittenClaims>,
@@ -50,6 +55,8 @@ pub struct IdentityTokenSubject<'a> {
     /// The session behind the token: when the person proved who they are,
     /// and with what.
     pub session: &'a Session,
+    /// What the request required of the level of its sign-in.
+    pub required_level: &'a RequiredLevel,
     /// What came back beside the token from the authorization endpoint: the
     /// token says their hashes, `at_hash` and `c_hash`, and so binds them.
     pub access_token: Option<&'a str>,
@@ -186,7 +193,15 @@ pub fn mint_access_token(
         // What a resource server weighs before an action that asks for more
         // (RFC 9068, section 2.2.1).
         claims["auth_time"] = json!(session.authenticated_at.unix_timestamp());
+        // What the sign-in reached, whatever a request named: the level an
+        // identity token names is said to its client alone.
         claims["acr"] = json!(Assurance::reached_by(session).name());
+    }
+    // An identifier, never an authority: a family named by a token is only
+    // read for the token that names it, once verified, in the session and
+    // for the client the token names.
+    if let Some(family) = subject.family {
+        claims[FAMILY_CLAIM] = Value::String(family.to_string());
     }
     if let Some(written) = subject.claims {
         add_evaluated_claims(&mut claims, written);
@@ -240,7 +255,7 @@ pub fn mint_identity_token(
         claims["c_hash"] = json!(write_half_hash(app.digester.as_ref(), algorithm, code)?);
     }
     claims["amr"] = write_methods(&subject.session.methods);
-    claims["acr"] = json!(Assurance::reached_by(subject.session).name());
+    claims["acr"] = write_level(subject.session, subject.required_level);
     add_evaluated_claims(&mut claims, subject.claims);
     sign_claims(app, key, IDENTITY_TOKEN_TYPE, &claims)
 }
@@ -276,6 +291,13 @@ pub fn write_half_hash(
     Ok(URL_SAFE_NO_PAD.encode(&digest[..digest.len() / 2]))
 }
 
+/// The level an identity token says its sign-in reached: never more than it
+/// did, and one the request named when it required some (OpenID Connect Core
+/// 1.0, section 5.5.1.1).
+fn write_level(session: &Session, required: &RequiredLevel) -> Value {
+    json!(required.name_reached(Assurance::reached_by(session)).name())
+}
+
 /// Names what proved the person (RFC 8176), and says so when it took more
 /// than one factor.
 fn write_methods(methods: &[AuthenticationMethod]) -> Value {
@@ -295,6 +317,8 @@ pub struct RefreshGrant<'a> {
     pub client_id: &'a str,
     pub session: &'a Session,
     pub scopes: &'a [String],
+    /// The claims the request of the grant named.
+    pub claims: Option<&'a ClaimsRequest>,
 }
 
 /// Mints a refresh token, keeps its digest, and returns the token itself:
@@ -321,6 +345,7 @@ pub async fn issue_refresh_token(
         person: grant.session.person,
         session: grant.session.id,
         scopes: grant.scopes.to_vec(),
+        claims: grant.claims.cloned(),
         issued_at: now,
         expires_at: (now + REFRESH_TOKEN_LIFETIME).min(grant.session.expires_at),
     })
@@ -366,6 +391,7 @@ mod tests {
                 client_id: "billing",
                 scopes: &scopes,
                 session: None,
+                family: None,
                 claims: Some(written),
             },
         )
@@ -479,6 +505,7 @@ mod tests {
                 client_id: "operator",
                 scopes: &scopes,
                 session: None,
+                family: None,
                 claims: Some(&written),
             },
         )

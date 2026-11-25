@@ -3,6 +3,7 @@
 
 use async_trait::async_trait;
 use saffui_core::authz::capability::Capability;
+use saffui_core::claims::request::{ClaimsRequest, read_claims_document};
 use saffui_core::claims::store::ClaimStore;
 use saffui_core::claims::{ClaimTarget, LockedClient, Mapper, MapperKind};
 use saffui_core::ports::storage::StorageError;
@@ -52,6 +53,18 @@ const LOCK_ATTRIBUTES: &str = "
 const WRITE_ATTRIBUTES: &str = "
     UPDATE persons SET attributes = $4
     WHERE tenant_id = $1 AND realm_id = $2 AND person_id = $3";
+
+/// Reads a claims request a column keeps. One this binary cannot read was
+/// not written by it: a failure, never a request that names nothing.
+pub(super) fn read_kept_claims(kept: Option<Value>) -> Result<Option<ClaimsRequest>, StorageError> {
+    kept.map(|document| read_claims_document(&document).ok_or(StorageError::Failed))
+        .transpose()
+}
+
+/// Writes a claims request as a column keeps it.
+pub(super) fn write_kept_claims(request: Option<&ClaimsRequest>) -> Option<Value> {
+    request.map(ClaimsRequest::write_document)
+}
 
 /// Reads a mapper from a row. A kind or a target this version does not know
 /// is a failure: a token never leaves a mapper out unsaid.

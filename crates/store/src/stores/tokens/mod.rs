@@ -1,6 +1,7 @@
 //! Refresh tokens.
 
 use async_trait::async_trait;
+use saffui_core::claims::request::ClaimsRequest;
 use saffui_core::login::session::{SessionKind, SessionState};
 use saffui_core::ports::storage::StorageError;
 use saffui_core::tokens::store::{
@@ -14,6 +15,7 @@ use uuid::Uuid;
 use crate::query::bind::col;
 use crate::query::insert::Insert;
 use crate::schema::refresh_tokens;
+use crate::stores::claims::{read_kept_claims, write_kept_claims};
 use crate::work::PgUnitOfWork;
 
 /// Constant SQL: one statement finds the token and marks it. Of two uses of
@@ -29,19 +31,32 @@ const SPEND_TOKEN: &str = "
           WHERE kin.tenant_id = $1 AND kin.realm_id = $2
             AND kin.family_id = token.family_id AND kin.revoked_at IS NOT NULL)
     RETURNING token_digest, family_id, client_id, person_id, session_id, scopes,
-              issued_at, expires_at";
+              issued_at, expires_at, claims";
 
 /// Constant SQL: a token reads as revoked from the first revocation in its
 /// family, so that one written while it ran reads as it is spent.
 const READ_TOKEN: &str = "
     SELECT token_digest, family_id, client_id, person_id, session_id, scopes,
-           issued_at, expires_at, used_at,
+           issued_at, expires_at, claims, used_at,
            coalesce(revoked_at, (
                SELECT min(kin.revoked_at) FROM refresh_tokens AS kin
                WHERE kin.tenant_id = $1 AND kin.realm_id = $2
                  AND kin.family_id = token.family_id AND kin.revoked_at IS NOT NULL))
     FROM refresh_tokens AS token
     WHERE tenant_id = $1 AND realm_id = $2 AND token_digest = $3";
+
+/// Constant SQL: each token of a family keeps what its grant named. One of
+/// them is found by the index of live families, and the family is refused
+/// by that of revoked ones, as a spend refuses it.
+const READ_FAMILY_CLAIMS: &str = "
+    SELECT claims FROM refresh_tokens
+    WHERE tenant_id = $1 AND realm_id = $2 AND family_id = $3 AND revoked_at IS NULL
+      AND session_id = $4 AND client_id = $5
+      AND NOT EXISTS (
+          SELECT 1 FROM refresh_tokens AS kin
+          WHERE kin.tenant_id = $1 AND kin.realm_id = $2
+            AND kin.family_id = $3 AND kin.revoked_at IS NOT NULL)
+    LIMIT 1";
 
 /// Constant SQL: the session a family lives in is found by a live token of
 /// it, and ended when it is offline: it lived for that grant alone.
@@ -207,10 +222,10 @@ const END_OLDEST_OFFLINE_SESSIONS: &str = "
           OFFSET $9))
     RETURNING session_id";
 
-/// Reads a token from the first eight columns of a row: what it is, then
+/// Reads a token from the first nine columns of a row: what it is, then
 /// what became of it follows.
-fn read_token_row(row: &Row) -> RefreshToken {
-    RefreshToken {
+fn read_token_row(row: &Row) -> Result<RefreshToken, StorageError> {
+    Ok(RefreshToken {
         token_digest: row.get(0),
         family: row.get(1),
         client_id: row.get(2),
@@ -219,12 +234,14 @@ fn read_token_row(row: &Row) -> RefreshToken {
         scopes: row.get(5),
         issued_at: row.get(6),
         expires_at: row.get(7),
-    }
+        claims: read_kept_claims(row.get(8))?,
+    })
 }
 
 #[async_trait]
 impl RefreshStore for PgUnitOfWork {
     async fn insert_refresh_token(&mut self, token: &RefreshToken) -> Result<(), StorageError> {
+        let claims = write_kept_claims(token.claims.as_ref());
         let insert = Insert::into(
             refresh_tokens::TABLE,
             vec![
@@ -236,6 +253,7 @@ impl RefreshStore for PgUnitOfWork {
                 col(refresh_tokens::SCOPES, &token.scopes),
                 col(refresh_tokens::ISSUED_AT, &token.issued_at),
                 col(refresh_tokens::EXPIRES_AT, &token.expires_at),
+                col(refresh_tokens::CLAIMS, &claims),
             ],
         )
         .build();
@@ -255,7 +273,7 @@ impl RefreshStore for PgUnitOfWork {
                 &[&tenant, &realm, &token_digest, &client_id, &now],
             )
             .await?;
-        Ok(rows.first().map(read_token_row))
+        rows.first().map(read_token_row).transpose()
     }
 
     async fn read_refresh_token(
@@ -266,11 +284,31 @@ impl RefreshStore for PgUnitOfWork {
         let rows = self
             .read_raw(READ_TOKEN, &[&tenant, &realm, &token_digest])
             .await?;
-        Ok(rows.first().map(|row| StoredRefreshToken {
-            token: read_token_row(row),
-            used_at: row.get(8),
-            revoked_at: row.get(9),
-        }))
+        rows.first()
+            .map(|row| {
+                Ok(StoredRefreshToken {
+                    token: read_token_row(row)?,
+                    used_at: row.get(9),
+                    revoked_at: row.get(10),
+                })
+            })
+            .transpose()
+    }
+
+    async fn read_family_claims(
+        &mut self,
+        family: Uuid,
+        session: Uuid,
+        client_id: &str,
+    ) -> Result<Option<ClaimsRequest>, StorageError> {
+        let (tenant, realm) = self.scope_keys();
+        let rows = self
+            .read_raw(
+                READ_FAMILY_CLAIMS,
+                &[&tenant, &realm, &family, &session, &client_id],
+            )
+            .await?;
+        read_kept_claims(rows.first().and_then(|row| row.get(0)))
     }
 
     async fn end_offline_session_of_family(

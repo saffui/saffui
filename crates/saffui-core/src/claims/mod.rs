@@ -5,6 +5,7 @@
 pub mod attributes;
 pub mod gather;
 pub mod manage;
+pub mod request;
 pub mod rules;
 pub mod store;
 

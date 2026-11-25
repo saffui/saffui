@@ -7,6 +7,7 @@ use serde_json::json;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use super::assurance::Assurance;
 use super::device::{DeviceMark, MOST_BROWSERS_PER_PERSON, issue_device_mark};
 use super::session::{AuthenticationMethod, SessionTicket, open_session};
 use super::steps::password::{ProvenPassword, verify_password};
@@ -29,6 +30,8 @@ use crate::tenancy::RealmScope;
 pub struct SignedIn {
     pub person: Person,
     pub session: Uuid,
+    /// What the sign-in reached, as the session it opened says.
+    pub reached: Assurance,
     pub ticket: SessionTicket,
     pub device_mark: DeviceMark,
 }
@@ -98,6 +101,7 @@ async fn open_session_for(
     Ok(SignedIn {
         person,
         session: session.id,
+        reached: Assurance::reached_by(&session),
         ticket,
         device_mark,
     })

@@ -132,7 +132,12 @@ fn write_authorize_path(response_type: &str, more: &str) -> String {
 /// Signs `ada` in on the hosted page for `spa` asking `response_type`, and
 /// returns the answer of the page.
 fn sign_in(node: &node::Node, response_type: &str, more: &str) -> http::Answer {
-    let sent = http::get(node.data, &write_authorize_path(response_type, more)).expect("an answer");
+    sign_in_at(node, &write_authorize_path(response_type, more))
+}
+
+/// Signs `ada` in on the hosted page for the request `path` asks.
+fn sign_in_at(node: &node::Node, path: &str) -> http::Answer {
+    let sent = http::get(node.data, path).expect("an answer");
     assert_eq!(sent.status, 303, "{}", sent.body);
     let login = read_header(&sent, "location")
         .expect("a location")
@@ -327,4 +332,95 @@ fn a_code_and_the_identity_token_that_binds_it_come_back_and_the_code_is_spent_a
         Some("unauthorized_client"),
         "a type the administrator did not declare"
     );
+}
+
+/// Percent-encodes a value for a query string.
+fn encode_query_value(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() {
+                char::from(byte).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn claims_with_a_control_character_are_told_to_the_client_before_anything_is_kept() {
+    let database = database::create_database(EMBEDDED);
+    let node = prepare_realm(&database);
+
+    for asked in [
+        r#"{"userinfo":{"name":{"value":"A\u0000da"}}}"#,
+        r#"{"userinfo":{"na\u0000me":null}}"#,
+    ] {
+        let path = write_authorize_path("code", &format!("&claims={}", encode_query_value(asked)));
+        let sent = http::get(node.data, &path).expect("an answer");
+
+        assert_eq!(sent.status, 303, "{asked}: {}", sent.body);
+        let location = read_header(&sent, "location").expect("a location");
+        assert!(location.starts_with(CALLBACK), "{location}");
+        assert_eq!(
+            read_parameter(location, '?', "error").as_deref(),
+            Some("invalid_request"),
+            "{asked}"
+        );
+    }
+}
+
+#[test]
+fn claims_a_request_names_travel_from_its_code_to_each_token_of_the_grant_and_to_userinfo() {
+    let database = database::create_database(EMBEDDED);
+    let node = prepare_realm(&database);
+    let asked = r#"{"id_token":{"email":null},"userinfo":{"email":{"essential":true},"email_verified":null}}"#;
+    let encoded = encode_query_value(asked);
+    let path = write_authorize_path("code", &format!("&claims={encoded}"))
+        .replace("scope=openid%20email", "scope=openid");
+
+    let back = sign_in_at(&node, &path);
+
+    assert_eq!(back.status, 303, "{}", back.body);
+    let location = read_header(&back, "location").expect("a location");
+    let code = read_parameter(location, '?', "code").expect("a code");
+    let granted = exchange_code(&node, &code);
+    assert_eq!(granted["scope"], "openid", "named, not asked by scope");
+    let (_, identity) =
+        verify_with_published_keys(&node, granted["id_token"].as_str().expect("one"));
+    assert_eq!(identity["email"], "ada@example.org");
+    assert_eq!(
+        identity["email_verified"], false,
+        "said with the address it goes with"
+    );
+    let read_userinfo = |access_token: &str| {
+        let told = http::send_request(
+            node.data,
+            "GET",
+            "/realms/acme/oauth2/userinfo",
+            &[("Authorization", format!("Bearer {access_token}").as_str())],
+            "",
+        )
+        .expect("an answer");
+        assert_eq!(told.status, 200, "{}", told.body);
+        read_json(&told.body)
+    };
+    let told = read_userinfo(granted["access_token"].as_str().expect("an access token"));
+    assert_eq!(told["email"], "ada@example.org");
+    assert_eq!(told["email_verified"], false);
+
+    let form = format!(
+        "grant_type=refresh_token&client_id=spa&refresh_token={}",
+        granted["refresh_token"].as_str().expect("a refresh token")
+    );
+    let renewed = http::send_request(node.data, "POST", TOKEN, &[FORM], &form).expect("an answer");
+    assert_eq!(renewed.status, 200, "{}", renewed.body);
+    let renewed = read_json(&renewed.body);
+    let (_, again) = verify_with_published_keys(&node, renewed["id_token"].as_str().expect("one"));
+    assert_eq!(again["email"], "ada@example.org", "kept with the grant");
+    assert_eq!(again["auth_time"], identity["auth_time"]);
+    assert_eq!(again["acr"], identity["acr"]);
+    let told = read_userinfo(renewed["access_token"].as_str().expect("an access token"));
+    assert_eq!(told["email_verified"], false);
 }

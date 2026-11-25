@@ -10,6 +10,16 @@ use crate::ids::mint_id;
 use crate::ports::storage::StorageError;
 use crate::tenancy::{Realm, RealmId, RealmName, RealmScope, Tenant, TenantId};
 
+/// A request that names `claim` for userinfo, with a value, and an essential
+/// level for the identity token: each part is kept.
+fn name_claim(claim: &str) -> crate::claims::request::ClaimsRequest {
+    let asked = serde_json::json!({
+        "userinfo": { claim: { "value": "x" } },
+        "id_token": { "acr": { "essential": true, "values": ["2"] } },
+    });
+    crate::claims::request::read_claims_parameter(&asked.to_string()).expect("a request")
+}
+
 fn describe_realm(app: &App, name: &str) -> (Tenant, Realm, RealmScope) {
     let tenant = Tenant {
         id: TenantId::from_uuid(mint_id(app).expect("an identifier")),
@@ -1293,6 +1303,7 @@ pub async fn check_codes_contract(app: &App) {
         key_proof: None,
         consent_prompted: true,
         consent_session: None,
+        claims: Some(name_claim("locale")),
     };
     work.insert_pending_authorization(&pending)
         .await
@@ -1433,6 +1444,7 @@ async fn check_that_a_code_is_spent_once(
         code_challenge: "challenge".to_owned(),
         authenticated_at: now,
         expires_at: now + Duration::minutes(1),
+        claims: Some(name_claim("given_name")),
     };
     work.insert_authorization_code(&code).await.expect("a code");
     assert_eq!(
@@ -1591,14 +1603,19 @@ pub async fn check_refresh_contract(app: &App) {
         person: ada.id,
         session: session.id,
         scopes: vec!["openid".to_owned(), "email".to_owned()],
+        claims: None,
         issued_at: now,
         expires_at: now + lifetime,
     };
     let family = mint_id(app).expect("an identifier");
     let other_family = mint_id(app).expect("an identifier");
-    let first = mint(1, family, &first_session, Duration::minutes(30));
+    let first = RefreshToken {
+        claims: Some(name_claim("locale")),
+        ..mint(1, family, &first_session, Duration::minutes(30))
+    };
     let second = RefreshToken {
         issued_at: now + Duration::minutes(1),
+        claims: Some(name_claim("locale")),
         ..mint(2, family, &first_session, Duration::minutes(30))
     };
     let stale = mint(3, other_family, &second_session, Duration::seconds(-1));
@@ -1634,6 +1651,12 @@ pub async fn check_refresh_contract(app: &App) {
         Ok(None)
     );
     assert_eq!(elsewhere.revoke_refresh_family(family, now).await, Ok(None));
+    assert_eq!(
+        elsewhere
+            .read_family_claims(family, first_session.id, "webapp")
+            .await,
+        Ok(None)
+    );
     drop(elsewhere);
 
     // Read back equal and unused. Not spent by another client, nor once expired.
@@ -1645,6 +1668,22 @@ pub async fn check_refresh_contract(app: &App) {
         .expect("the token");
     assert_eq!(stored.token, first);
     assert_eq!((stored.used_at, stored.revoked_at), (None, None));
+    assert_eq!(
+        work.read_family_claims(family, first_session.id, "webapp")
+            .await,
+        Ok(Some(name_claim("locale")))
+    );
+    for (named, session, client_id) in [
+        (family, first_session.id, "portal"),
+        (family, second_session.id, "webapp"),
+        (other_family, second_session.id, "webapp"),
+    ] {
+        assert_eq!(
+            work.read_family_claims(named, session, client_id).await,
+            Ok(None),
+            "a family is read in its session, for its client, and names what it kept"
+        );
+    }
     assert_eq!(
         work.spend_refresh_token(&first.token_digest, "another-client", now)
             .await,
@@ -1698,6 +1737,12 @@ pub async fn check_refresh_contract(app: &App) {
         work.revoke_refresh_family(family, now).await,
         Ok(None),
         "a family refused already is not revoked again"
+    );
+    assert_eq!(
+        work.read_family_claims(family, first_session.id, "webapp")
+            .await,
+        Ok(None),
+        "a revoked family names nothing, whichever of its tokens is read"
     );
     assert_eq!(
         work.end_offline_session_of_family(offline_family).await,
@@ -1840,6 +1885,7 @@ async fn check_that_the_oldest_offline_sessions_give_way(app: &App) {
             person: ada.id,
             session: session.id,
             scopes: vec!["openid".to_owned()],
+            claims: None,
             issued_at: now,
             expires_at: session.expires_at,
         })
@@ -2231,6 +2277,7 @@ pub async fn check_ended_sessions_contract(app: &App) {
         person: session.person,
         session: session.id,
         scopes: vec!["openid".to_owned()],
+        claims: None,
         issued_at: now,
         expires_at: now + Duration::minutes(30),
     };
@@ -3586,7 +3633,7 @@ pub async fn check_member_groups_contract(app: &App) {
 pub async fn check_consents_contract(app: &App) {
     use time::Duration;
 
-    use crate::consent::{Consent, ConsentHold, ConsentTerms, ListedConsent};
+    use crate::consent::{Allowance, Consent, ConsentHold, ConsentTerms, ListedConsent};
     use crate::testkit::fixtures::{
         Application, create_person, create_realm, register_application,
     };
@@ -3606,10 +3653,13 @@ pub async fn check_consents_contract(app: &App) {
         register_application(app, scope, application).await;
     }
     let now = app.now();
+    let names =
+        |named: &[&str]| -> Vec<String> { named.iter().map(|&name| name.to_owned()).collect() };
     let allow = |person: Uuid, client_id: &str, scopes: &[&str]| Consent {
         person,
         client_id: client_id.to_owned(),
-        scopes: scopes.iter().map(|&scope| scope.to_owned()).collect(),
+        scopes: names(scopes),
+        claims: Vec::new(),
         granted_at: now,
     };
     // The name of a client the fixture registers is its identifier.
@@ -3618,9 +3668,14 @@ pub async fn check_consents_contract(app: &App) {
         client_name: consent.client_id.clone(),
     };
 
-    let terms = |requires_consent: bool, allowed: Option<&[&str]>| ConsentTerms {
+    let terms = |requires_consent: bool, allowed: Option<(&[&str], &[&str])>| ConsentTerms {
         requires_consent,
-        allowed: allowed.map(|scopes| scopes.iter().map(|&scope| scope.to_owned()).collect()),
+        allowed: allowed.map(|(scopes, claims)| Allowance {
+            scopes: names(scopes),
+            claims: names(claims),
+        }),
+        // The scopes the fixture gives every application.
+        client_scopes: names(&["openid", "profile", "email", "roles", "offline_access"]),
     };
 
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
@@ -3644,18 +3699,35 @@ pub async fn check_consents_contract(app: &App) {
         Ok(None),
         "no such client"
     );
-    work.add_consent(&allow(ada.id, "webapp", &["openid", "email"]))
-        .await
-        .expect("a consent");
+    assert_eq!(
+        work.add_consent(&Consent {
+            claims: names(&["given_name"]),
+            ..allow(ada.id, "webapp", &["openid", "email"])
+        })
+        .await,
+        Ok(Allowance {
+            scopes: names(&["openid", "email"]),
+            claims: names(&["given_name"]),
+        }),
+        "what the write left"
+    );
     let later = now + Duration::minutes(1);
-    work.add_consent(&Consent {
-        granted_at: later,
-        ..allow(ada.id, "webapp", &["profile", "openid"])
-    })
-    .await
-    .expect("a wider consent");
+    assert_eq!(
+        work.add_consent(&Consent {
+            granted_at: later,
+            claims: names(&["locale", "given_name"]),
+            ..allow(ada.id, "webapp", &["profile", "openid"])
+        })
+        .await,
+        Ok(Allowance {
+            scopes: names(&["openid", "email", "profile"]),
+            claims: names(&["given_name", "locale"]),
+        }),
+        "what was allowed before, and the new after it"
+    );
     let wider = Consent {
         granted_at: later,
+        claims: names(&["given_name", "locale"]),
         ..allow(ada.id, "webapp", &["openid", "email", "profile"])
     };
     assert_eq!(
@@ -3663,16 +3735,23 @@ pub async fn check_consents_contract(app: &App) {
         Ok(Some(wider.clone())),
         "widened in place: what was allowed keeps its place, the new comes after"
     );
+    let held = Allowance {
+        scopes: wider.scopes.clone(),
+        claims: wider.claims.clone(),
+    };
     for hold in [ConsentHold::Shared, ConsentHold::Exclusive] {
         assert_eq!(
             work.hold_consent(ada.id, "webapp", hold).await,
-            Ok(Some(wider.scopes.clone())),
+            Ok(Some(held.clone())),
             "{hold:?}"
         );
     }
     assert_eq!(
         work.read_consent_terms(ada.id, "webapp").await,
-        Ok(Some(terms(true, Some(&["openid", "email", "profile"]))))
+        Ok(Some(terms(
+            true,
+            Some((&["openid", "email", "profile"], &["given_name", "locale"]))
+        )))
     );
     assert_eq!(
         work.read_consent_terms(bob.id, "webapp").await,
@@ -3728,6 +3807,17 @@ pub async fn check_consents_contract(app: &App) {
         Ok(vec![listed(&portal)])
     );
     work.commit().await.expect("a commit");
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(
+        work.add_consent(&allow(ada.id, "webapp", &["profile"]))
+            .await,
+        Ok(Allowance {
+            scopes: names(&["profile"]),
+            claims: Vec::new(),
+        }),
+        "a withdrawal before the write leaves nothing to add to"
+    );
+    drop(work);
 
     check_that_a_request_waits_for_one_consent(app, scope).await;
     check_that_a_client_loses_its_tokens_of_a_person(app, scope, ada.id, bob.id).await;
@@ -3759,6 +3849,7 @@ async fn check_that_a_request_waits_for_one_consent(app: &App, scope: RealmScope
         key_proof: None,
         consent_prompted: false,
         consent_session: None,
+        claims: None,
     };
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
     work.insert_pending_authorization(&pending)
@@ -3840,6 +3931,7 @@ async fn check_that_a_client_loses_its_tokens_of_a_person(
         person: session.person,
         session: session.id,
         scopes: vec!["openid".to_owned()],
+        claims: None,
         issued_at: now,
         expires_at: now + Duration::minutes(30),
     };
@@ -4590,6 +4682,7 @@ pub async fn check_client_grants_contract(app: &App) {
         person: session.person,
         session: session.id,
         scopes: vec!["openid".to_owned()],
+        claims: None,
         issued_at: now + Duration::seconds(i64::from(digest)),
         expires_at: now + Duration::minutes(30),
     };

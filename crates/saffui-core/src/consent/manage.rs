@@ -211,6 +211,7 @@ mod tests {
             person: ada,
             client_id: "partner".to_owned(),
             scopes: vec!["openid".to_owned()],
+            claims: Vec::new(),
             granted_at: now,
         }))
         .expect("a consent");
@@ -224,6 +225,7 @@ mod tests {
                 person: ada,
                 session,
                 scopes: vec!["openid".to_owned()],
+                claims: None,
                 issued_at: now,
                 expires_at: now + Duration::hours(1),
             }))

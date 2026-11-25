@@ -235,6 +235,10 @@ fn a_bootstrapped_realm_is_published_by_a_node_on_its_data_plane_only() {
             r#""RS256","PS256","EdDSA"],"#,
             r#""code_challenge_methods_supported":["S256"],"#,
             r#""scopes_supported":["openid","profile","email","roles","offline_access"],"#,
+            r#""claims_supported":["sub","iss","auth_time","acr","amr","sid","#,
+            r#""preferred_username","name","given_name","family_name","middle_name","#,
+            r#""nickname","profile","picture","website","gender","birthdate","zoneinfo","#,
+            r#""locale","email","email_verified"],"#,
             r#""acr_values_supported":["1","2"],"#,
             r#""authorization_response_iss_parameter_supported":true,"#,
             r#""response_modes_supported":["query","fragment","form_post"],"#,
@@ -242,7 +246,7 @@ fn a_bootstrapped_realm_is_published_by_a_node_on_its_data_plane_only() {
             r#""PS256","EdDSA"],"#,
             r#""request_parameter_supported":true,"#,
             r#""request_uri_parameter_supported":false,"#,
-            r#""claims_parameter_supported":false}"#,
+            r#""claims_parameter_supported":true}"#,
         )
     );
 

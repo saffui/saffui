@@ -13,8 +13,8 @@ use saffui_core::login::device::{
     DEVICE_MARK_LIFETIME, keep_device_marks, read_device_marks, write_device_marks,
 };
 use saffui_core::oidc::authorize::{
-    OwedSecondFactor, SignInAnswer, SignInStep, SignedInForConsent, SignedInForRequest,
-    TypedSignIn, describe_owed_second_factor, finish_sign_in,
+    OwedSecondFactor, SentBackWithoutSession, SignInAnswer, SignInStep, SignedInForConsent,
+    SignedInForRequest, TypedSignIn, describe_owed_second_factor, finish_sign_in,
 };
 use saffui_core::secret::Secret;
 use serde::Deserialize;
@@ -362,6 +362,36 @@ fn send_back_to_client(
     send_answer_to_client(product, response, &signed_in.response)
 }
 
+/// Where a browser goes once its person signed in for a request that named
+/// someone else: back to the client with no session, the mark of this
+/// sign-in kept beside the others, and the flow over.
+fn send_back_without_session(
+    product: &Product,
+    realm: &str,
+    flow_cookie: &str,
+    sent_back: SentBackWithoutSession,
+    known_browsers: &[DeviceMark],
+) -> HttpResponse {
+    let secure = is_served_over_tls(product);
+    let mut response = HttpResponse::SeeOther();
+    response
+        .append_header((
+            SET_COOKIE,
+            write_cookie(
+                &name_device_cookie(realm, secure),
+                &write_device_marks(&keep_device_marks(
+                    sent_back.device_mark,
+                    known_browsers,
+                    product.now(),
+                )),
+                Some(DEVICE_MARK_LIFETIME.whole_seconds()),
+                secure,
+            ),
+        ))
+        .append_header((SET_COOKIE, write_cookie(flow_cookie, "", Some(0), secure)));
+    send_answer_to_client(product, response, &sent_back.response)
+}
+
 /// Where a browser goes once its person signed in for a client they must
 /// allow first: on to the consent page, with its session and the mark of
 /// this sign-in. The flow goes on, and keeps its cookie.
@@ -521,6 +551,9 @@ pub async fn submit_sign_in(
             signed_in,
             &known_browsers,
         ),
+        Ok(SignInStep::SentBack(sent_back)) => {
+            send_back_without_session(&product, &realm, &flow_cookie, sent_back, &known_browsers)
+        }
         Ok(SignInStep::SecondFactorRequired(owed)) if is_realm_label(&realm) => {
             render_second_factor(&product, &realm, request, &owed, StatusCode::OK, "")
         }

@@ -129,6 +129,7 @@ mod tests {
                 person: Uuid::nil(),
                 client_id: HOSTILE.to_owned(),
                 scopes: vec![HOSTILE.to_owned(), HOSTILE.to_owned()],
+                claims: vec![HOSTILE.to_owned()],
                 granted_at: product.now(),
             },
             client_name: HOSTILE.to_owned(),
@@ -140,7 +141,7 @@ mod tests {
                     realm: HOSTILE,
                     listed: &listed,
                 },
-                5,
+                6,
             ),
         ];
 

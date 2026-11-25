@@ -524,6 +524,7 @@ async fn a_statement_under_one_scope_removes_no_consent_of_another_realm() {
             person: ada.id,
             client_id: "partner".to_owned(),
             scopes: vec!["openid".to_owned()],
+            claims: Vec::new(),
             granted_at: app.now(),
         })
         .await

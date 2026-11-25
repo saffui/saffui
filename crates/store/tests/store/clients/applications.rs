@@ -237,6 +237,7 @@ async fn a_waiting_request_asks_a_known_type_in_a_mode_it_may_travel_in_whatever
         key_proof: None,
         consent_prompted: false,
         consent_session: None,
+        claims: None,
     };
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
     work.insert_pending_authorization(&pending)

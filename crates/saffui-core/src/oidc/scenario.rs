@@ -383,6 +383,185 @@ impl Scenario {
         .ticket
     }
 
+    /// Signs `ada` in through the public client `client_id`, granted
+    /// `scope`, naming `claims`, and exchanges the code.
+    pub(crate) fn sign_in_naming(
+        &self,
+        client_id: &str,
+        scope: &str,
+        claims: &str,
+    ) -> SignedInApplication {
+        use base64::Engine as _;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+        use super::authorize::{
+            Authorization, AuthorizationParameters, SignInAnswer, TypedSignIn, begin_authorization,
+            finish_sign_in,
+        };
+
+        let challenge = URL_SAFE_NO_PAD.encode(self.app.digester.sha256(VERIFIER.as_bytes()));
+        let parameters = AuthorizationParameters {
+            response_type: Some("code"),
+            client_id: Some(client_id),
+            redirect_uri: Some(CALLBACK),
+            scope: Some(scope),
+            nonce: Some("a-nonce"),
+            code_challenge: Some(&challenge),
+            code_challenge_method: Some("S256"),
+            claims: Some(claims),
+            ..AuthorizationParameters::default()
+        };
+        let Ok(Authorization::SignInRequired {
+            request,
+            browser_secret,
+        }) = complete(begin_authorization(&self.app, "acme", parameters, None))
+        else {
+            panic!("a person without a session signs in first");
+        };
+        let typed = TypedSignIn {
+            answer: SignInAnswer::Password {
+                name: "ada",
+                password: Secret::new(PASSWORD.as_bytes().to_vec()),
+            },
+            caller: None,
+            known_browsers: &[],
+        };
+        let finished = complete(finish_sign_in(
+            &self.app,
+            "acme",
+            request,
+            &browser_secret,
+            typed,
+        ))
+        .expect("a signed-in person")
+        .into_finished()
+        .expect("a finished request");
+        let code = finished
+            .response
+            .read_parameter("code")
+            .expect("a code in the answer")
+            .to_owned();
+        SignedInApplication {
+            tokens: self.exchange_as(client_id, &code),
+            ticket: finished.ticket,
+            code,
+        }
+    }
+
+    /// Asks the public client `client_id` for a code, granted `scope` and
+    /// naming `claims` when given, in the session of `ticket`, which answers;
+    /// and exchanges the code.
+    pub(crate) fn grant_in_session(
+        &self,
+        client_id: &str,
+        scope: &str,
+        claims: Option<&str>,
+        ticket: &SessionTicket,
+    ) -> TokenResponse {
+        use base64::Engine as _;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+        use super::authorize::{Authorization, AuthorizationParameters, begin_authorization};
+
+        let challenge = URL_SAFE_NO_PAD.encode(self.app.digester.sha256(VERIFIER.as_bytes()));
+        let parameters = AuthorizationParameters {
+            response_type: Some("code"),
+            client_id: Some(client_id),
+            redirect_uri: Some(CALLBACK),
+            scope: Some(scope),
+            nonce: Some("a-nonce"),
+            code_challenge: Some(&challenge),
+            code_challenge_method: Some("S256"),
+            claims,
+            ..AuthorizationParameters::default()
+        };
+        let begun = complete(begin_authorization(
+            &self.app,
+            "acme",
+            parameters,
+            Some(ticket),
+        ));
+        let Ok(Authorization::Granted { response }) = begun else {
+            panic!("the session answers: {begun:?}");
+        };
+        let code = response.read_parameter("code").expect("a code").to_owned();
+        self.exchange_as(client_id, &code)
+    }
+
+    /// Registers `lean`, a public application that requires no consent and
+    /// may be given `openid` and `profile` alone.
+    pub(crate) fn register_lean(&self) {
+        use crate::clients::register::NewClient;
+        use crate::testkit::fixtures::check_and_register_client;
+
+        let (scopes, callbacks) = (
+            ["openid".to_owned(), "profile".to_owned()],
+            [CALLBACK.to_owned()],
+        );
+        let mut work = complete(self.app.storage.begin(self.scope)).expect("a unit of work");
+        let wanted = NewClient {
+            client_id: "lean",
+            name: "lean",
+            scopes: &scopes,
+            capabilities: &[],
+            redirect_uris: &callbacks,
+            post_logout_redirect_uris: &[],
+            response_types: &[],
+            public: true,
+            requires_consent: false,
+            id_token_signed_response_alg: None,
+            auth_method: None,
+            jwks: None,
+            jwks_uri: None,
+            auth_signing_alg: None,
+            request_object_signing_alg: None,
+            require_signed_request_object: false,
+            created_by: None,
+        };
+        complete(check_and_register_client(&self.app, work.as_mut(), wanted))
+            .expect("an application");
+        complete(work.commit()).expect("a commit");
+    }
+
+    /// Writes the attributes of `ada`, in place of those she had.
+    pub(crate) fn write_ada_attributes(&self, attributes: &serde_json::Value) {
+        let ada = self.find_ada();
+        let mut work = complete(self.app.storage.begin(self.scope)).expect("a unit of work");
+        complete(work.lock_person_attributes(ada)).expect("a lock");
+        let attributes = attributes.as_object().expect("an object");
+        complete(work.write_person_attributes(ada, attributes)).expect("attributes");
+        complete(work.commit()).expect("a commit");
+    }
+
+    /// Gives `client_id` a mapper that writes the attribute `attribute` of
+    /// a person as `claim` for `targets`, under `scope`.
+    pub(crate) fn map_attribute(
+        &self,
+        client_id: &str,
+        attribute: &str,
+        claim: &str,
+        targets: &[crate::claims::ClaimTarget],
+        scope: &str,
+    ) {
+        use crate::claims::{Mapper, MapperKind};
+
+        let mapper = Mapper {
+            id: crate::ids::mint_id(&self.app).expect("an identifier"),
+            client_id: client_id.to_owned(),
+            name: claim.to_owned(),
+            kind: MapperKind::Attribute {
+                attribute: attribute.to_owned(),
+            },
+            claim: Some(claim.to_owned()),
+            targets: targets.to_vec(),
+            scope: Some(scope.to_owned()),
+            created_at: self.app.now(),
+        };
+        let mut work = complete(self.app.storage.begin(self.scope)).expect("a unit of work");
+        assert_eq!(complete(work.insert_mapper(&mapper)), Ok(true));
+        complete(work.commit()).expect("a commit");
+    }
+
     /// The identifier of `ada`.
     pub(crate) fn find_ada(&self) -> uuid::Uuid {
         complete(async {

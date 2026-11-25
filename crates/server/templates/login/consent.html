@@ -23,6 +23,14 @@
         <li>{{ scope }}</li>
     {%- endfor -%}
 </ul>
+{%- if !prompt.claims.is_empty() -%}
+    <p>It also asks to be told, one by one:</p>{# -#}
+    <ul>
+        {%- for claim in prompt.claims -%}
+            <li>{{ claim }}</li>
+        {%- endfor -%}
+    </ul>
+{%- endif -%}
 {%- if let Some(lasts) = prompt.offline_access -%}
     <p>It may also go on acting in your name while you are away, for {{ lasts.whole_days() }} days, {# -#}
         even after you sign out. You can withdraw this from your account.</p>

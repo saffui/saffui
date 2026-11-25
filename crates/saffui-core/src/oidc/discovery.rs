@@ -6,6 +6,7 @@ use serde::Serialize;
 use super::response::{ResponseMode, ResponseType};
 use super::token::OFFLINE_ACCESS_SCOPE;
 use crate::app::App;
+use crate::claims::rules::list_scope_claims;
 use crate::clients::{AssertionAlgorithm, ClientAuthMethod};
 use crate::error::Failure;
 use crate::keys::rotate::list_active_algorithms;
@@ -51,7 +52,12 @@ pub struct ProviderMetadata {
     pub revocation_endpoint_auth_signing_alg_values_supported: Vec<&'static str>,
     pub code_challenge_methods_supported: Vec<&'static str>,
     pub scopes_supported: Vec<&'static str>,
-    /// What `acr` may say: the levels a sign-in can reach.
+    /// What the realm may say of a person, as far as it is listed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub claims_supported: Vec<String>,
+    /// What `acr` may say: the levels a sign-in can reach, weakest first.
+    /// A list of nothing is never published (Discovery 1.0, section 4.2).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub acr_values_supported: Vec<&'static str>,
     pub authorization_response_iss_parameter_supported: bool,
     pub response_modes_supported: Vec<&'static str>,
@@ -63,6 +69,17 @@ pub struct ProviderMetadata {
     pub request_parameter_supported: bool,
     pub request_uri_parameter_supported: bool,
     pub claims_parameter_supported: bool,
+}
+
+/// The claims a token says of a person: those of the protocol, then those
+/// of the scopes. Not those of the mappers: they say how each client is set
+/// up, and the list may leave claims out (Discovery 1.0, section 3).
+fn list_supported_claims() -> Vec<String> {
+    ["sub", "iss", "auth_time", "acr", "amr", "sid"]
+        .into_iter()
+        .chain(list_scope_claims())
+        .map(str::to_owned)
+        .collect()
 }
 
 /// The issuer of a realm: the public origin, then the realm, and nothing else.
@@ -94,6 +111,8 @@ pub async fn read_provider_metadata(app: &App, realm: &str) -> Result<ProviderMe
     Ok(document)
 }
 
+/// The discovery document of a realm whose keys sign in `signing`, and
+/// which verifies the keys of clients in `verifying`.
 #[must_use]
 pub fn describe_provider(
     settings: &Settings,
@@ -142,13 +161,14 @@ pub fn describe_provider(
         revocation_endpoint_auth_signing_alg_values_supported: assertion_algorithms.clone(),
         code_challenge_methods_supported: vec!["S256"],
         scopes_supported: vec!["openid", "profile", "email", "roles", OFFLINE_ACCESS_SCOPE],
+        claims_supported: list_supported_claims(),
         acr_values_supported: Assurance::ALL.map(Assurance::name).to_vec(),
         authorization_response_iss_parameter_supported: true,
         response_modes_supported: ResponseMode::ALL.map(ResponseMode::name).to_vec(),
         request_object_signing_alg_values_supported: assertion_algorithms,
         request_parameter_supported: true,
         request_uri_parameter_supported: false,
-        claims_parameter_supported: false,
+        claims_parameter_supported: true,
         issuer,
     }
 }
@@ -231,10 +251,7 @@ mod tests {
         assert_eq!(document.code_challenge_methods_supported, ["S256"]);
         assert_eq!(document.acr_values_supported, ["1", "2"]);
         assert!(document.scopes_supported.contains(&"offline_access"));
-        assert!(
-            !document.claims_parameter_supported,
-            "written, not left to its default"
-        );
+        assert!(document.claims_parameter_supported);
     }
 
     #[test]
@@ -295,5 +312,52 @@ mod tests {
             written.get("require_signed_request_object").is_none(),
             "a client says it of itself"
         );
+    }
+
+    #[test]
+    fn the_claims_supported_are_those_of_the_protocol_and_of_the_scopes() {
+        let settings = Settings::reached_directly(
+            PublicOrigin::parse("https://id.example.org").expect("an origin"),
+        );
+        let realm = RealmName::parse("acme").expect("a realm name");
+
+        let document = describe_provider(
+            &settings,
+            &realm,
+            &[SignatureAlgorithm::Es256],
+            &[SignatureAlgorithm::Es256],
+        );
+
+        let supported = &document.claims_supported;
+        for claim in ["sub", "auth_time", "acr", "name", "given_name", "email"] {
+            assert!(
+                supported.iter().any(|named| named == claim),
+                "{claim}: {supported:?}"
+            );
+        }
+        let written = serde_json::to_value(&document).expect("a document");
+        assert_eq!(written["claims_parameter_supported"], true);
+    }
+
+    #[test]
+    fn a_list_of_no_element_is_left_out_of_the_document() {
+        let settings = Settings::reached_directly(
+            PublicOrigin::parse("https://id.example.org").expect("an origin"),
+        );
+        let realm = RealmName::parse("acme").expect("a realm name");
+        let mut document = describe_provider(
+            &settings,
+            &realm,
+            &[SignatureAlgorithm::Es256],
+            &[SignatureAlgorithm::Es256],
+        );
+        document.acr_values_supported.clear();
+        document.claims_supported.clear();
+
+        let written = serde_json::to_value(&document).expect("a document");
+
+        for left_out in ["acr_values_supported", "claims_supported"] {
+            assert!(written.get(left_out).is_none(), "{left_out}");
+        }
     }
 }

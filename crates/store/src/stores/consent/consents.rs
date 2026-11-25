@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use saffui_core::consent::store::ConsentStore;
-use saffui_core::consent::{Consent, ConsentHold, ConsentTerms, ListedConsent};
+use saffui_core::consent::{Allowance, Consent, ConsentHold, ConsentTerms, ListedConsent};
 use saffui_core::ports::storage::StorageError;
 use uuid::Uuid;
 
@@ -12,49 +12,56 @@ use crate::query::select::Select;
 use crate::schema::consents;
 use crate::work::PgUnitOfWork;
 
-const CONSENT: &[Column] = &[consents::SCOPES, consents::GRANTED_AT];
+const CONSENT: &[Column] = &[consents::SCOPES, consents::GRANTED_AT, consents::CLAIMS];
 
 /// Constant SQL: the row stays locked until the commit. A withdrawal that
 /// comes after waits for it; one that came first leaves no row to lock.
 const HOLD_CONSENT_SHARED: &str = "
-    SELECT scopes FROM consents
+    SELECT scopes, claims FROM consents
     WHERE tenant_id = $1 AND realm_id = $2 AND person_id = $3 AND client_id = $4
     FOR SHARE";
 
 /// Constant SQL: as `HOLD_CONSENT_SHARED`, and another exchange that holds
 /// the row so waits its turn too. The key of the row never changes.
 const HOLD_CONSENT_EXCLUSIVE: &str = "
-    SELECT scopes FROM consents
+    SELECT scopes, claims FROM consents
     WHERE tenant_id = $1 AND realm_id = $2 AND person_id = $3 AND client_id = $4
     FOR NO KEY UPDATE";
 
 /// Constant SQL: the flag of the client and what the person allowed it, in
 /// one statement, each table under the keys of the scope.
 const READ_CONSENT_TERMS: &str = "
-    SELECT client.requires_consent, consent.scopes
+    SELECT client.requires_consent, consent.scopes, consent.claims, client.scopes
     FROM clients AS client
     LEFT JOIN consents AS consent ON consent.tenant_id = $1 AND consent.realm_id = $2
         AND consent.person_id = $3 AND consent.client_id = client.client_id
     WHERE client.tenant_id = $1 AND client.realm_id = $2 AND client.client_id = $4";
 
-/// Constant SQL: one statement writes the consent or widens the one kept.
-/// The row stays locked until the commit: a second answer waits for the
-/// first, then adds to what it allowed.
+/// Constant SQL: one statement writes the consent or widens the one kept,
+/// and says what it now holds. The row stays locked until the commit: a
+/// second answer waits for the first, then adds to what it allowed.
 const ADD_CONSENT: &str = "
-    INSERT INTO consents AS kept (tenant_id, realm_id, person_id, client_id, scopes, granted_at)
-    VALUES ($1, $2, $3, $4, $5, $6)
+    INSERT INTO consents AS kept (tenant_id, realm_id, person_id, client_id, scopes, granted_at,
+                                  claims)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
     ON CONFLICT (tenant_id, realm_id, person_id, client_id) DO UPDATE SET
         scopes = kept.scopes || ARRAY(
             SELECT asked.scope
             FROM unnest(EXCLUDED.scopes) WITH ORDINALITY AS asked (scope, place)
             WHERE asked.scope <> ALL (kept.scopes)
             ORDER BY asked.place),
-        granted_at = EXCLUDED.granted_at";
+        claims = kept.claims || ARRAY(
+            SELECT asked.claim
+            FROM unnest(EXCLUDED.claims) WITH ORDINALITY AS asked (claim, place)
+            WHERE asked.claim <> ALL (kept.claims)
+            ORDER BY asked.place),
+        granted_at = EXCLUDED.granted_at
+    RETURNING scopes, claims";
 
 /// Constant SQL: the name of each client is read with its consent, and the
 /// key of the table gives the order.
 const LIST_CONSENTS: &str = "
-    SELECT consent.client_id, consent.scopes, consent.granted_at, client.name
+    SELECT consent.client_id, consent.scopes, consent.granted_at, client.name, consent.claims
     FROM consents AS consent
     JOIN clients AS client ON client.tenant_id = consent.tenant_id
         AND client.realm_id = consent.realm_id AND client.client_id = consent.client_id
@@ -80,6 +87,7 @@ impl ConsentStore for PgUnitOfWork {
             person,
             client_id: client_id.to_owned(),
             scopes: row.get(0),
+            claims: row.get(2),
             granted_at: row.get(1),
         }))
     }
@@ -89,7 +97,7 @@ impl ConsentStore for PgUnitOfWork {
         person: Uuid,
         client_id: &str,
         hold: ConsentHold,
-    ) -> Result<Option<Vec<String>>, StorageError> {
+    ) -> Result<Option<Allowance>, StorageError> {
         let (tenant, realm) = self.scope_keys();
         let statement = match hold {
             ConsentHold::Shared => HOLD_CONSENT_SHARED,
@@ -98,7 +106,10 @@ impl ConsentStore for PgUnitOfWork {
         let rows = self
             .read_raw(statement, &[&tenant, &realm, &person, &client_id])
             .await?;
-        Ok(rows.first().map(|row| row.get(0)))
+        Ok(rows.first().map(|row| Allowance {
+            scopes: row.get(0),
+            claims: row.get(1),
+        }))
     }
 
     async fn read_consent_terms(
@@ -110,27 +121,40 @@ impl ConsentStore for PgUnitOfWork {
         let rows = self
             .read_raw(READ_CONSENT_TERMS, &[&tenant, &realm, &person, &client_id])
             .await?;
-        Ok(rows.first().map(|row| ConsentTerms {
-            requires_consent: row.get(0),
-            allowed: row.get(1),
+        Ok(rows.first().map(|row| {
+            let scopes: Option<Vec<String>> = row.get(1);
+            ConsentTerms {
+                requires_consent: row.get(0),
+                allowed: scopes.map(|scopes| Allowance {
+                    scopes,
+                    claims: row.get(2),
+                }),
+                client_scopes: row.get(3),
+            }
         }))
     }
 
-    async fn add_consent(&mut self, consent: &Consent) -> Result<(), StorageError> {
+    async fn add_consent(&mut self, consent: &Consent) -> Result<Allowance, StorageError> {
         let (tenant, realm) = self.scope_keys();
-        self.execute_raw(
-            ADD_CONSENT,
-            &[
-                &tenant,
-                &realm,
-                &consent.person,
-                &consent.client_id,
-                &consent.scopes,
-                &consent.granted_at,
-            ],
-        )
-        .await
-        .map(|_| ())
+        let rows = self
+            .read_raw(
+                ADD_CONSENT,
+                &[
+                    &tenant,
+                    &realm,
+                    &consent.person,
+                    &consent.client_id,
+                    &consent.scopes,
+                    &consent.granted_at,
+                    &consent.claims,
+                ],
+            )
+            .await?;
+        let row = rows.first().ok_or(StorageError::Failed)?;
+        Ok(Allowance {
+            scopes: row.get(0),
+            claims: row.get(1),
+        })
     }
 
     async fn list_consents(
@@ -149,6 +173,7 @@ impl ConsentStore for PgUnitOfWork {
                     person,
                     client_id: row.get(0),
                     scopes: row.get(1),
+                    claims: row.get(4),
                     granted_at: row.get(2),
                 },
                 client_name: row.get(3),

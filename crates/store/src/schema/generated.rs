@@ -83,6 +83,8 @@ pub(crate) mod authorization_codes {
     pub(crate) const FAMILY: Column = Column("family");
     /// timestamp with time zone, nullable
     pub(crate) const REPLAYED_AT: Column = Column("replayed_at");
+    /// jsonb, nullable
+    pub(crate) const CLAIMS: Column = Column("claims");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -99,6 +101,7 @@ pub(crate) mod authorization_codes {
         SPENT_AT,
         FAMILY,
         REPLAYED_AT,
+        CLAIMS,
     ];
 }
 
@@ -143,6 +146,8 @@ pub(crate) mod authorization_requests {
     pub(crate) const RESPONSE_TYPE: Column = Column("response_type");
     /// text
     pub(crate) const RESPONSE_MODE: Column = Column("response_mode");
+    /// jsonb, nullable
+    pub(crate) const CLAIMS: Column = Column("claims");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -163,6 +168,7 @@ pub(crate) mod authorization_requests {
         CONSENT_SESSION_ID,
         RESPONSE_TYPE,
         RESPONSE_MODE,
+        CLAIMS,
     ];
 }
 
@@ -407,9 +413,11 @@ pub(crate) mod consents {
     pub(crate) const SCOPES: Column = Column("scopes");
     /// timestamp with time zone
     pub(crate) const GRANTED_AT: Column = Column("granted_at");
+    /// ARRAY
+    pub(crate) const CLAIMS: Column = Column("claims");
 
     /// In the order the table declares them.
-    pub(crate) const ALL: &[Column] = &[PERSON_ID, CLIENT_ID, SCOPES, GRANTED_AT];
+    pub(crate) const ALL: &[Column] = &[PERSON_ID, CLIENT_ID, SCOPES, GRANTED_AT, CLAIMS];
 }
 
 pub(crate) mod group_members {
@@ -731,6 +739,8 @@ pub(crate) mod refresh_tokens {
     pub(crate) const USED_AT: Column = Column("used_at");
     /// timestamp with time zone, nullable
     pub(crate) const REVOKED_AT: Column = Column("revoked_at");
+    /// jsonb, nullable
+    pub(crate) const CLAIMS: Column = Column("claims");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -744,6 +754,7 @@ pub(crate) mod refresh_tokens {
         EXPIRES_AT,
         USED_AT,
         REVOKED_AT,
+        CLAIMS,
     ];
 }
 

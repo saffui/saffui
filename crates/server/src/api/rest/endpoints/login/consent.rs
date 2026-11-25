@@ -174,6 +174,7 @@ mod tests {
         let prompt = ConsentPrompt {
             client_name: HOSTILE.to_owned(),
             scopes: vec![HOSTILE.to_owned(), HOSTILE.to_owned()],
+            claims: vec![HOSTILE.to_owned(), HOSTILE.to_owned()],
             offline_access: Some(OFFLINE_SESSION_LIFETIME),
             origin: ClientOrigin::SelfRegistered {
                 client_id: HOSTILE.to_owned(),
@@ -190,7 +191,7 @@ mod tests {
             prompt: &prompt,
         });
 
-        assert_written_as_text(page, 9);
+        assert_written_as_text(page, 11);
     }
 
     #[test]
@@ -200,6 +201,7 @@ mod tests {
             let prompt = ConsentPrompt {
                 client_name: "Partner".to_owned(),
                 scopes: vec!["openid".to_owned()],
+                claims: Vec::new(),
                 offline_access: None,
                 origin,
                 shown: "c2hvd24".to_owned(),

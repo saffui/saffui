@@ -2,7 +2,7 @@
 //! the double does.
 
 use pgcore::pool::PoolSettings;
-use saffui_core::consent::ConsentHold;
+use saffui_core::consent::{Allowance, ConsentHold};
 use saffui_core::testkit::contract::{
     check_authenticators_contract, check_claims_contract, check_client_grants_contract,
     check_clients_contract, check_codes_contract, check_consents_contract,
@@ -250,6 +250,7 @@ async fn race_a_rotation_against_a_revocation(revocation: Revocation, used_befor
         person: ada.id,
         session: session.id,
         scopes: vec!["openid".to_owned()],
+        claims: None,
         issued_at: now,
         expires_at: now + Duration::minutes(30),
     };
@@ -409,6 +410,7 @@ async fn revoking_a_family_writes_a_row_or_two_however_many_rotations_it_had() {
         person: ada.id,
         session: session.id,
         scopes: vec!["openid".to_owned()],
+        claims: None,
         issued_at: now,
         expires_at: now + Duration::minutes(30),
     };
@@ -718,6 +720,7 @@ async fn of_two_consents_given_at_once_each_keeps_what_it_allowed() {
         person: ada.id,
         client_id: "partner".to_owned(),
         scopes: scopes.map(str::to_owned).to_vec(),
+        claims: Vec::new(),
         granted_at: now,
     };
 
@@ -729,15 +732,20 @@ async fn of_two_consents_given_at_once_each_keeps_what_it_allowed() {
     let storage = app.storage.clone();
     let second = tokio::spawn(async move {
         let mut work = storage.begin(scope).await.expect("a unit of work");
-        work.add_consent(&allow(["openid", "profile"]))
-            .await
-            .expect("a consent");
-        work.commit().await
+        let allowed = work.add_consent(&allow(["openid", "profile"])).await;
+        work.commit().await.map(|()| allowed)
     });
     tokio::time::sleep(Wait::from_millis(300)).await;
     assert!(!second.is_finished(), "the second waits for the first");
     first.commit().await.expect("a commit");
-    assert_eq!(second.await.expect("the second answer"), Ok(()));
+    assert_eq!(
+        second.await.expect("the second answer"),
+        Ok(Ok(Allowance {
+            scopes: ["openid", "email", "profile"].map(str::to_owned).to_vec(),
+            claims: Vec::new(),
+        })),
+        "the second is told what the first allowed too"
+    );
 
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
     let kept = work
@@ -746,6 +754,44 @@ async fn of_two_consents_given_at_once_each_keeps_what_it_allowed() {
         .expect("a read")
         .expect("the consent");
     assert_eq!(kept.scopes, ["openid", "email", "profile"]);
+}
+
+/// An answer that read the consent before a withdrawal, and writes after
+/// it, is told what its own write left: nothing withdrawn comes back.
+#[tokio::test]
+async fn an_answer_written_after_a_withdrawal_is_told_only_what_it_allowed() {
+    use saffui_core::consent::Consent;
+
+    let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let (scope, ada, _, _) = allow_partner_once(&app).await;
+    let mut answer = app.storage.begin(scope).await.expect("a unit of work");
+    let before = answer
+        .read_consent(ada.id, "partner")
+        .await
+        .expect("a read")
+        .expect("the consent");
+    assert_eq!(before.scopes, ["openid"]);
+
+    let mut withdrawal = app.storage.begin(scope).await.expect("a unit of work");
+    assert_eq!(withdrawal.delete_consent(ada.id, "partner").await, Ok(true));
+    withdrawal.commit().await.expect("a commit");
+    let allowed = answer
+        .add_consent(&Consent {
+            person: ada.id,
+            client_id: "partner".to_owned(),
+            scopes: vec!["email".to_owned()],
+            claims: Vec::new(),
+            granted_at: app.now(),
+        })
+        .await;
+
+    assert_eq!(
+        allowed,
+        Ok(Allowance {
+            scopes: vec!["email".to_owned()],
+            claims: Vec::new(),
+        })
+    );
 }
 
 /// The realm `consents-held`, `ada` with a session, and `partner`, which
@@ -804,6 +850,7 @@ async fn allow_partner_once(
         person: ada.id,
         client_id: "partner".to_owned(),
         scopes: vec!["openid".to_owned()],
+        claims: Vec::new(),
         granted_at: now,
     })
     .await
@@ -870,6 +917,7 @@ async fn a_withdrawal_waits_for_an_exchange_that_holds_the_consent_then_ends_its
         person: ada.id,
         session: session.id,
         scopes: vec!["openid".to_owned()],
+        claims: None,
         issued_at: now,
         expires_at: now + time::Duration::hours(1),
     };
@@ -880,7 +928,10 @@ async fn a_withdrawal_waits_for_an_exchange_that_holds_the_consent_then_ends_its
         exchange
             .hold_consent(ada.id, "partner", ConsentHold::Shared)
             .await,
-        Ok(Some(vec!["openid".to_owned()]))
+        Ok(Some(Allowance {
+            scopes: vec!["openid".to_owned()],
+            claims: Vec::new(),
+        }))
     );
     exchange
         .insert_refresh_token(&opened)
@@ -996,6 +1047,7 @@ async fn a_session_answer_that_comes_during_a_withdrawal_waits_for_it_and_signs_
         person: ada.id,
         client_id: "partner".to_owned(),
         scopes: vec!["openid".to_owned()],
+        claims: Vec::new(),
         granted_at: now,
     })
     .await

@@ -14,16 +14,17 @@ use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
 use crate::claims::gather::gather_claim_inputs;
-use crate::claims::rules::{ClaimGrant, WrittenClaims, write_claims};
+use crate::claims::rules::{ClaimGrant, NamedClaims, WrittenClaims, write_claims};
 use crate::claims::{ClaimInputs, ClaimTarget};
 use crate::clients::authenticate::{
     PresentedProof, PresentedSecret, identify_client, read_client_proof,
 };
 use crate::clients::{Client, check_scope_token};
-use crate::consent::{ConsentHold, ConsentTerms, grant_to_client, is_consent_owed};
+use crate::consent::{Allowance, ConsentHold, ConsentTerms, grant_to_client, is_consent_owed};
 use crate::directory::Person;
 use crate::error::{ErrorCode, Failure};
 use crate::ids::mint_id;
+use crate::login::assurance::RequiredLevel;
 use crate::login::session::{Session, open_offline_session, read_live_subject};
 use crate::ports::crypto::SignatureAlgorithm;
 use crate::ports::storage::UnitOfWork;
@@ -180,6 +181,7 @@ async fn grant_to_service(
         person: None,
         client_id: &client.client_id,
         scopes: &granted,
+        named: None,
     };
     let targets = [ClaimTarget::AccessToken];
     let inputs = gather_claim_inputs(work.as_mut(), &grant, &targets, app.now()).await?;
@@ -194,6 +196,7 @@ async fn grant_to_service(
             client_id: &client.client_id,
             scopes: &granted,
             session: None,
+            family: None,
             claims: Some(&written),
         },
     )?;
@@ -261,9 +264,11 @@ async fn exchange_code(
     // Whatever the code carries, a client that requires no consent is
     // granted nothing offline.
     let scopes = grant_to_client(client, &code.scopes);
-    if !hold_consent_for(work.as_mut(), client, person.id, &scopes).await? {
-        return Err(invalid());
-    }
+    let allowed = match hold_consent_for(work.as_mut(), client, person.id, &scopes).await? {
+        HeldConsent::NotRequired => None,
+        HeldConsent::Allowed(allowance) => Some(allowance),
+        HeldConsent::Short => return Err(invalid()),
+    };
 
     // Presented again meanwhile, the code obtains nothing. Bound before
     // anything is written: the event comes last, as the head of the chain
@@ -289,11 +294,17 @@ async fn exchange_code(
         id_token_algorithm: client
             .id_token_signed_response_alg
             .unwrap_or(DEFAULT_ALGORITHM),
+        named: code.claims.as_ref().map(|request| NamedClaims {
+            request,
+            entitled: &client.scopes,
+            allowed: allowed.as_ref(),
+        }),
         family: RefreshGrant {
             family,
             client_id: &client.client_id,
             session: held_in,
             scopes: &scopes,
+            claims: code.claims.as_ref(),
         },
     };
     let response = answer_for_person(app, work.as_mut(), granted).await?;
@@ -316,20 +327,30 @@ async fn exchange_code(
     Ok(response)
 }
 
+/// What a consent held for a grant answers.
+pub(super) enum HeldConsent {
+    /// The client asks nobody.
+    NotRequired,
+    /// What the person allowed, every scope of the grant among it.
+    Allowed(Allowance),
+    /// The person did not allow every scope of the grant.
+    Short,
+}
+
 /// Holds what the person allowed a client that requires consent, until the
 /// commit and before anything is locked: a withdrawal that comes meanwhile
 /// waits, then revokes the family this opens; one that came first left
 /// nothing to hold. An exchange that opens an offline grant holds it alone:
 /// two of them for one person take turns, and the second counts the grant of
-/// the first against the bound. Answers whether every scope was allowed.
+/// the first against the bound.
 pub(super) async fn hold_consent_for(
     work: &mut dyn UnitOfWork,
     client: &Client,
     person: Uuid,
     scopes: &[String],
-) -> Result<bool, Failure> {
+) -> Result<HeldConsent, Failure> {
     if !client.requires_consent {
-        return Ok(true);
+        return Ok(HeldConsent::NotRequired);
     }
     let hold = if scopes.iter().any(|scope| scope == OFFLINE_ACCESS_SCOPE) {
         ConsentHold::Exclusive
@@ -339,8 +360,13 @@ pub(super) async fn hold_consent_for(
     let terms = ConsentTerms {
         requires_consent: true,
         allowed: work.hold_consent(person, &client.client_id, hold).await?,
+        client_scopes: client.scopes.clone(),
     };
-    Ok(!is_consent_owed(&terms, false, scopes))
+    // The claims named one by one are weighed where each token is written.
+    if is_consent_owed(&terms, false, scopes, &[]) {
+        return Ok(HeldConsent::Short);
+    }
+    Ok(HeldConsent::Allowed(terms.allowed.unwrap_or_default()))
 }
 
 /// Opens the offline session a grant of `client_id` lives in, when it is
@@ -415,6 +441,8 @@ pub(super) struct Granted<'a> {
     pub(super) nonce: Option<&'a str>,
     /// The algorithm the client registered for its identity tokens.
     pub(super) id_token_algorithm: SignatureAlgorithm,
+    /// The claims the request of the grant named, and what bounds them.
+    pub(super) named: Option<NamedClaims<'a>>,
     pub(super) family: RefreshGrant<'a>,
 }
 
@@ -444,6 +472,13 @@ pub(super) async fn answer_for_person(
                 Signed::Access
             },
             code: None,
+            named: granted.named,
+            // Only a grant that named claims for userinfo has its access
+            // tokens name its family: any other is said as it was.
+            family: granted
+                .named
+                .filter(|named| !named.request.userinfo.is_empty())
+                .map(|_| granted.family.family),
         },
     )
     .await?;
@@ -489,12 +524,34 @@ pub(super) struct PersonTokens<'a> {
     pub(super) signed: Signed,
     /// The code the identity token is bound to, when one came back beside it.
     pub(super) code: Option<&'a str>,
+    /// The claims the request named, and what bounds them.
+    pub(super) named: Option<NamedClaims<'a>>,
+    /// The family of refresh tokens the access token names, for userinfo to
+    /// find what was named. None at the authorization endpoint, which opens
+    /// no family: what it signs is told what its scopes say.
+    pub(super) family: Option<Uuid>,
 }
 
 /// What [`sign_for_person`] signed.
 pub(super) struct SignedForPerson {
     pub(super) access: Option<IssuedAccessToken>,
     pub(super) identity: Option<String>,
+}
+
+/// What an identity token beside a code or an access token says beyond who
+/// signed in and how: the claims named for it, and nothing its scopes say.
+fn write_bound_claims(
+    grant: &ClaimGrant<'_>,
+    inputs: &ClaimInputs,
+) -> Result<WrittenClaims, Failure> {
+    if grant.named.is_none() {
+        return Ok(WrittenClaims::default());
+    }
+    let named_only = ClaimGrant {
+        scopes: &[],
+        ..*grant
+    };
+    write_claims(ClaimTarget::IdToken, &named_only, inputs)
 }
 
 /// Signs the tokens of one answer for a person, wherever it is given: the
@@ -513,16 +570,26 @@ pub(super) async fn sign_for_person(
         person: Some(asked.person),
         client_id: asked.client_id,
         scopes: asked.scopes,
+        named: asked.named,
     };
     // What each token says beyond who signed in and how. An identity token
     // that comes back beside a code or an access token says nothing more:
-    // the client asks the rest with them (OpenID Connect Core 1.0, 5.4).
-    let targets: &[ClaimTarget] = match asked.signed {
-        Signed::Access | Signed::AccessAndBoundIdentity => &[ClaimTarget::AccessToken],
-        Signed::Identity => &[ClaimTarget::IdToken],
-        Signed::BoundIdentity => &[],
-        Signed::AccessAndIdentity => &[ClaimTarget::AccessToken, ClaimTarget::IdToken],
+    // the client asks the rest with them (OpenID Connect Core 1.0, 5.4). It
+    // says what the request named for it all the same (section 5.5).
+    let names_identity = asked
+        .named
+        .is_some_and(|named| !named.request.id_token.is_empty());
+    let targets: &[ClaimTarget] = match (asked.signed, names_identity) {
+        (Signed::Access | Signed::AccessAndBoundIdentity, false) | (Signed::Access, true) => {
+            &[ClaimTarget::AccessToken]
+        }
+        (Signed::Identity, _) | (Signed::BoundIdentity, true) => &[ClaimTarget::IdToken],
+        (Signed::BoundIdentity, false) => &[],
+        (Signed::AccessAndIdentity, _) | (Signed::AccessAndBoundIdentity, true) => {
+            &[ClaimTarget::AccessToken, ClaimTarget::IdToken]
+        }
     };
+    let required_level = RequiredLevel::read(asked.named.map(|named| named.request));
     let inputs = if targets.is_empty() {
         ClaimInputs::default()
     } else {
@@ -552,6 +619,7 @@ pub(super) async fn sign_for_person(
                 client_id: asked.client_id,
                 scopes: asked.scopes,
                 session: Some(asked.session),
+                family: asked.family,
                 claims: Some(&for_access),
             },
         )?)
@@ -565,9 +633,9 @@ pub(super) async fn sign_for_person(
         Signed::Identity | Signed::AccessAndIdentity => {
             Some((write_claims(ClaimTarget::IdToken, &grant, &inputs)?, None))
         }
-        Signed::BoundIdentity => Some((WrittenClaims::default(), None)),
+        Signed::BoundIdentity => Some((write_bound_claims(&grant, &inputs)?, None)),
         Signed::AccessAndBoundIdentity => Some((
-            WrittenClaims::default(),
+            write_bound_claims(&grant, &inputs)?,
             access.as_ref().map(|minted| minted.token.as_str()),
         )),
     };
@@ -582,6 +650,7 @@ pub(super) async fn sign_for_person(
                 claims: &for_identity,
                 nonce: asked.nonce,
                 session: asked.session,
+                required_level: &required_level,
                 access_token: bound,
                 code: asked.code,
             },
@@ -906,6 +975,7 @@ mod tests {
                 URL_SAFE_NO_PAD.encode(scenario.app.digester.sha256(VERIFIER.as_bytes())),
             authenticated_at: now,
             expires_at: now + time::Duration::minutes(1),
+            claims: None,
         }))
         .expect("a code");
         complete(work.commit()).expect("a commit");

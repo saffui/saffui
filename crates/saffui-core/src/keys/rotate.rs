@@ -340,6 +340,7 @@ mod tests {
             capabilities: &[],
             redirect_uris: &redirect_uris,
             post_logout_redirect_uris: &[],
+            frontchannel_logout_uri: None,
             response_types: &[],
             public: true,
             requires_consent: false,
@@ -470,10 +471,12 @@ mod tests {
                 id_token_hint: Some(&identity),
                 post_logout_redirect_uri: Some(GOODBYE),
                 state: None,
+                ..LogoutParameters::default()
             };
             complete(begin_logout(&scenario.app, "acme", parameters, None))
                 == Ok(Logout::SignedOut {
                     location: Some(GOODBYE.to_owned()),
+                    frames: Vec::new(),
                 })
         };
         let first = read_header(&access, "kid");

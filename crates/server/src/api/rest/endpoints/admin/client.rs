@@ -100,6 +100,7 @@ pub async fn create_client(
             capabilities: &capabilities,
             redirect_uris: &wanted.redirect_uris,
             post_logout_redirect_uris: &wanted.post_logout_redirect_uris,
+            frontchannel_logout_uri: wanted.frontchannel_logout_uri.as_deref(),
             response_types: &response_types,
             public: wanted.public,
             requires_consent: wanted.consent,

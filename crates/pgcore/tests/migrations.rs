@@ -706,6 +706,7 @@ async fn no_migration_from_the_consent_on_blocks_writes_to_two_tables_served_bef
         "0048_response_types",
         "0051_request_objects",
         "0053_requested_claims",
+        "0057_session_clients",
     ];
     let first = EMBEDDED
         .iter()
@@ -771,6 +772,10 @@ async fn no_migration_from_the_consent_on_blocks_writes_to_two_tables_served_bef
 /// are checked by the migration after, under a lock that blocks no write.
 /// One database for each migration that sets rules.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one entry for each migration that sets rules"
+)]
 async fn a_rule_set_on_a_served_table_is_checked_apart_from_the_lock_that_sets_it() {
     for (set_by, rules) in [
         (
@@ -835,6 +840,10 @@ async fn a_rule_set_on_a_served_table_is_checked_apart_from_the_lock_that_sets_i
         (
             "0055_requested_claims_of_tokens",
             &["refresh_tokens_claims_object"],
+        ),
+        (
+            "0058_frontchannel_logout",
+            &["clients_frontchannel_for_applications"],
         ),
     ] {
         let set_at = EMBEDDED

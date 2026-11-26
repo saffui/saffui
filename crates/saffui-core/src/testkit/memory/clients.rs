@@ -209,6 +209,7 @@ impl MemoryUnitOfWork {
             scopes: client.scopes.clone(),
             redirect_uris: client.redirect_uris.clone(),
             post_logout_redirect_uris: client.post_logout_redirect_uris.clone(),
+            frontchannel_logout_uri: client.frontchannel_logout_uri.clone(),
             id_token_signed_response_alg: client.id_token_signed_response_alg,
             auth_signing_alg: client.auth_signing_alg,
             ..known

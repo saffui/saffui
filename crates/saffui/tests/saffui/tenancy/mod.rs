@@ -246,7 +246,9 @@ fn a_bootstrapped_realm_is_published_by_a_node_on_its_data_plane_only() {
             r#""PS256","EdDSA"],"#,
             r#""request_parameter_supported":true,"#,
             r#""request_uri_parameter_supported":false,"#,
-            r#""claims_parameter_supported":true}"#,
+            r#""claims_parameter_supported":true,"#,
+            r#""frontchannel_logout_supported":true,"#,
+            r#""frontchannel_logout_session_supported":true}"#,
         )
     );
 

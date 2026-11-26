@@ -550,6 +550,7 @@ pub async fn check_clients_contract(app: &App) {
         redirect_uris: Vec::new(),
         response_types: vec![ResponseType::Code],
         post_logout_redirect_uris: Vec::new(),
+        frontchannel_logout_uri: None,
         requires_consent: false,
         scopes: vec!["invoices:read".to_owned(), "invoices:write".to_owned()],
         capabilities: vec![
@@ -589,6 +590,7 @@ pub async fn check_clients_contract(app: &App) {
         allows_authorization_code: true,
         redirect_uris: vec!["https://app.example.org/callback".to_owned()],
         post_logout_redirect_uris: vec!["https://app.example.org/goodbye".to_owned()],
+        frontchannel_logout_uri: Some("https://app.example.org/signed-out?from=idp".to_owned()),
         requires_consent: true,
         capabilities: Vec::new(),
         id_token_signed_response_alg: Some(crate::ports::crypto::SignatureAlgorithm::Ps256),
@@ -2227,6 +2229,166 @@ pub async fn check_authenticators_contract(app: &App) {
     let mut work = app.storage.begin(scope).await.expect("a unit of work");
     check_that_code_attempts_are_forgotten_below_a_bound(work.as_mut(), ada.id, now).await;
     work.commit().await.expect("a commit");
+}
+
+/// What any storage owes to the clients a session served: a line written
+/// once while the session is active and unexpired; read back in the order of
+/// first service then of identifiers, a client gone or disabled left out,
+/// the first ones and the count of all, in its realm only.
+///
+/// # Panics
+///
+/// Panics when the storage breaks the contract.
+#[expect(clippy::too_many_lines, reason = "one realm, read from top to bottom")]
+pub async fn check_served_clients_contract(app: &App) {
+    use time::Duration;
+
+    use crate::clients::register::NewClient;
+    use crate::login::session::{AuthenticationMethod, Session, SessionKind, SessionState};
+    use crate::login::store::{ServedClient, ServedClients, ServedRecord};
+    use crate::testkit::fixtures::{check_and_register_client, create_person, create_realm};
+
+    let scope = create_realm(app, "contract-served").await;
+    let other = create_realm(app, "contract-served-other").await;
+    let ada = create_person(app, scope, "ada", "correct horse battery").await;
+    let callbacks = ["https://app.example.org/cb".to_owned()];
+    let scopes = ["openid".to_owned()];
+    for (client_id, frontchannel) in [
+        ("told", Some("https://app.example.org/out?from=idp")),
+        ("silent", None),
+        ("also", None),
+        ("disabled", Some("https://app.example.org/disabled")),
+    ] {
+        let mut work = app.storage.begin(scope).await.expect("a unit of work");
+        check_and_register_client(
+            app,
+            work.as_mut(),
+            NewClient {
+                client_id,
+                name: client_id,
+                scopes: &scopes,
+                capabilities: &[],
+                redirect_uris: &callbacks,
+                post_logout_redirect_uris: &[],
+                frontchannel_logout_uri: frontchannel,
+                response_types: &[],
+                public: true,
+                requires_consent: false,
+                id_token_signed_response_alg: None,
+                auth_method: None,
+                jwks: None,
+                jwks_uri: None,
+                auth_signing_alg: None,
+                request_object_signing_alg: None,
+                require_signed_request_object: false,
+                created_by: None,
+            },
+        )
+        .await
+        .expect("an application");
+        work.commit().await.expect("a commit");
+    }
+    let now = app.now();
+    let open = |state, expires_in| Session {
+        id: mint_id(app).expect("an identifier"),
+        person: ada.id,
+        secret_digest: vec![4; 32],
+        state,
+        kind: SessionKind::Browser,
+        methods: vec![AuthenticationMethod::Password],
+        authenticated_at: now - Duration::hours(1),
+        expires_at: now + expires_in,
+    };
+    let live = open(SessionState::Active, Duration::hours(1));
+    let ended = open(SessionState::Ended, Duration::hours(1));
+    let expired = open(SessionState::Active, Duration::seconds(0));
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    for session in [&live, &ended, &expired] {
+        work.insert_session(session).await.expect("a session");
+    }
+    work.commit().await.expect("a commit");
+
+    // Written once while the session is live, served first at the instant of
+    // the first write: the order of time goes against the order of names,
+    // and two served at one instant are told apart by their names.
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let later = now + Duration::seconds(5);
+    for (client_id, at, recorded) in [
+        ("told", now, ServedRecord::Written),
+        ("told", later, ServedRecord::AlreadyWritten),
+        ("silent", later, ServedRecord::Written),
+        ("also", later, ServedRecord::Written),
+        ("disabled", now, ServedRecord::Written),
+        ("gone", now, ServedRecord::Written),
+    ] {
+        assert_eq!(
+            work.record_served_client(live.id, client_id, at).await,
+            Ok(recorded),
+            "{client_id} at {at}"
+        );
+    }
+    for (session, why) in [
+        (ended.id, "an ended session"),
+        (expired.id, "a session expired at that instant"),
+        (Uuid::nil(), "no session"),
+    ] {
+        assert_eq!(
+            work.record_served_client(session, "told", now).await,
+            Ok(ServedRecord::SessionEnded),
+            "{why}"
+        );
+    }
+    assert_eq!(work.disable_client("disabled").await, Ok(true));
+    work.commit().await.expect("a commit");
+
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    let told = ServedClient {
+        client_id: "told".to_owned(),
+        frontchannel_logout_uri: Some("https://app.example.org/out?from=idp".to_owned()),
+    };
+    let unaddressed = |client_id: &str| ServedClient {
+        client_id: client_id.to_owned(),
+        frontchannel_logout_uri: None,
+    };
+    assert_eq!(
+        work.list_served_clients(live.id, 10).await,
+        Ok(ServedClients {
+            first: vec![told.clone(), unaddressed("also"), unaddressed("silent")],
+            count: 3,
+        }),
+        "a client gone or disabled is left out, the rest in the order served"
+    );
+    assert_eq!(
+        work.list_served_clients(live.id, 1).await,
+        Ok(ServedClients {
+            first: vec![told],
+            count: 3,
+        }),
+        "the first ones, and the count of all"
+    );
+    assert_eq!(
+        work.list_served_clients(live.id, 0).await,
+        Ok(ServedClients {
+            first: Vec::new(),
+            count: 3,
+        })
+    );
+    assert_eq!(
+        work.list_served_clients(ended.id, 10).await,
+        Ok(ServedClients::default())
+    );
+    drop(work);
+
+    let mut elsewhere = app.storage.begin(other).await.expect("a unit of work");
+    assert_eq!(
+        elsewhere.record_served_client(live.id, "told", now).await,
+        Ok(ServedRecord::SessionEnded),
+        "a session of another realm is no session here"
+    );
+    assert_eq!(
+        elsewhere.list_served_clients(live.id, 10).await,
+        Ok(ServedClients::default())
+    );
 }
 
 /// What any storage owes to the sessions of a person a factor ends: every
@@ -4487,6 +4649,7 @@ pub async fn check_registration_contract(app: &App) {
         scopes: vec!["openid".to_owned()],
         redirect_uris: vec!["https://app.example.org/other".to_owned()],
         post_logout_redirect_uris: vec!["https://app.example.org/bye".to_owned()],
+        frontchannel_logout_uri: Some("https://app.example.org/signed-out".to_owned()),
         id_token_signed_response_alg: Some(SignatureAlgorithm::Rs256),
         enabled: false,
         requires_consent: false,

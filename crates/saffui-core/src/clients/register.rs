@@ -7,8 +7,8 @@ use super::assertion::read_key_set;
 use super::authenticate::CLIENT_SECRET_PURPOSE;
 use super::{
     AssertionAlgorithm, Client, ClientAuthMethod, KeptProof, check_client_identifier,
-    check_redirect_uri, check_scope_token, is_deployment_page, is_loopback_host, is_unshowable,
-    read_redirect_host,
+    check_frontchannel_logout_uri, check_redirect_uri, check_scope_token, is_deployment_page,
+    is_loopback_host, is_unshowable, read_redirect_host,
 };
 use crate::app::App;
 use crate::audit::EventKind;
@@ -45,6 +45,8 @@ pub struct NewClient<'a> {
     pub capabilities: &'a [Capability],
     pub redirect_uris: &'a [String],
     pub post_logout_redirect_uris: &'a [String],
+    /// Where a browser loads it in a frame when a session it served ends.
+    pub frontchannel_logout_uri: Option<&'a str>,
     /// What it may ask the authorization endpoint to hand back. Empty: a
     /// code alone, the one way a client that names none is answered.
     pub response_types: &'a [ResponseType],
@@ -392,6 +394,11 @@ pub async fn check_new_client<'a>(
         return Err(Failure::new(ErrorCode::ClientJwksInvalid));
     }
     let method = choose_auth_method(&wanted)?;
+    if let Some(uri) = wanted.frontchannel_logout_uri {
+        let public = method == ClientAuthMethod::None;
+        let origin = &app.settings.public_origin;
+        check_frontchannel_logout_uri(uri, wanted.redirect_uris, public, origin)?;
+    }
     check_assertion_algorithm(app, method, wanted.auth_signing_alg)?;
     let jwks = keep_client_keys(app, checker, method, wanted.jwks, wanted.auth_signing_alg).await?;
     check_request_object_signing(app, &wanted, method, jwks.as_ref(), checker)?;
@@ -528,6 +535,7 @@ pub(crate) async fn insert_checked_client(
             wanted.response_types.to_vec()
         },
         post_logout_redirect_uris: wanted.post_logout_redirect_uris.to_vec(),
+        frontchannel_logout_uri: wanted.frontchannel_logout_uri.map(str::to_owned),
         requires_consent: wanted.requires_consent,
         scopes: wanted.scopes.to_vec(),
         capabilities: wanted.capabilities.to_vec(),
@@ -617,6 +625,7 @@ pub async fn rewrite_client(
         auth_signing_alg: wanted.auth_signing_alg,
         redirect_uris: wanted.redirect_uris.to_vec(),
         post_logout_redirect_uris: wanted.post_logout_redirect_uris.to_vec(),
+        frontchannel_logout_uri: wanted.frontchannel_logout_uri.map(str::to_owned),
         scopes: wanted.scopes.to_vec(),
         id_token_signed_response_alg: wanted.id_token_signed_response_alg,
         ..kept
@@ -648,6 +657,7 @@ pub async fn register_service_client(
             capabilities: wanted.capabilities,
             redirect_uris: &[],
             post_logout_redirect_uris: &[],
+            frontchannel_logout_uri: None,
             response_types: &[],
             public: false,
             requires_consent: false,
@@ -781,6 +791,7 @@ mod tests {
                 capabilities: &[],
                 redirect_uris: &callbacks,
                 post_logout_redirect_uris: &[],
+                frontchannel_logout_uri: None,
                 response_types: &[],
                 public: true,
                 requires_consent: false,
@@ -830,6 +841,7 @@ mod tests {
                     capabilities,
                     redirect_uris,
                     post_logout_redirect_uris: &[],
+                    frontchannel_logout_uri: None,
                     response_types: &[],
                     public,
                     requires_consent: false,
@@ -878,6 +890,7 @@ mod tests {
                 capabilities: &[],
                 redirect_uris,
                 post_logout_redirect_uris: &[],
+                frontchannel_logout_uri: None,
                 response_types,
                 public: false,
                 requires_consent: false,
@@ -969,6 +982,7 @@ mod tests {
                     capabilities: &[],
                     redirect_uris,
                     post_logout_redirect_uris: &goodbyes,
+                    frontchannel_logout_uri: None,
                     response_types: &[],
                     public: false,
                     requires_consent: false,
@@ -1024,6 +1038,7 @@ mod tests {
                     capabilities: &[],
                     redirect_uris: &native,
                     post_logout_redirect_uris: &[],
+                    frontchannel_logout_uri: None,
                     response_types,
                     public: true,
                     requires_consent: false,
@@ -1094,6 +1109,7 @@ mod tests {
                     capabilities: &[],
                     redirect_uris: &callbacks,
                     post_logout_redirect_uris: &goodbyes,
+                    frontchannel_logout_uri: None,
                     response_types: &[],
                     public: false,
                     requires_consent: false,
@@ -1155,6 +1171,7 @@ mod tests {
                     capabilities: &[],
                     redirect_uris,
                     post_logout_redirect_uris: &[],
+                    frontchannel_logout_uri: None,
                     response_types: &[],
                     public: false,
                     requires_consent: true,
@@ -1217,6 +1234,7 @@ mod tests {
                 capabilities: &[],
                 redirect_uris: &[],
                 post_logout_redirect_uris: &[],
+                frontchannel_logout_uri: None,
                 response_types: &[],
                 public: false,
                 requires_consent: false,
@@ -1544,6 +1562,7 @@ mod tests {
                     capabilities: &[],
                     redirect_uris: &callbacks,
                     post_logout_redirect_uris: &[],
+                    frontchannel_logout_uri: None,
                     response_types: &[],
                     public: true,
                     requires_consent: false,
@@ -1603,6 +1622,7 @@ mod tests {
                 capabilities: &[],
                 redirect_uris: wanted.callbacks,
                 post_logout_redirect_uris: &[],
+                frontchannel_logout_uri: None,
                 response_types: &[],
                 public: false,
                 requires_consent: false,

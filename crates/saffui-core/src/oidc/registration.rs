@@ -276,6 +276,7 @@ async fn check_registered_metadata<'a>(
         capabilities: &[],
         redirect_uris: &wanted.redirect_uris,
         post_logout_redirect_uris: &wanted.post_logout_redirect_uris,
+        frontchannel_logout_uri: wanted.frontchannel_logout_uri.as_deref(),
         response_types: &[ResponseType::Code],
         public: wanted.method == ClientAuthMethod::None,
         requires_consent: true,
@@ -556,6 +557,7 @@ pub async fn update_registered_client(
         "actor": { "client_id": client_id },
         "client_id": client_id,
         "redirect_uris": client.redirect_uris,
+        "frontchannel_logout_uri": client.frontchannel_logout_uri,
         "scopes": client.scopes,
     });
     if renewed {
@@ -716,6 +718,12 @@ fn describe_registered_client(
     });
     if let Some(algorithm) = client.id_token_signed_response_alg {
         described["id_token_signed_response_alg"] = json!(algorithm.name());
+    }
+    // The frame always carries `iss` and `sid`, whatever the client asked:
+    // what is registered is said (RFC 7591, section 3.2.1).
+    if let Some(uri) = &client.frontchannel_logout_uri {
+        described["frontchannel_logout_uri"] = json!(uri);
+        described["frontchannel_logout_session_required"] = json!(true);
     }
     if let Some(algorithm) = client.auth_signing_alg {
         described["token_endpoint_auth_signing_alg"] = json!(algorithm.name());
@@ -2045,6 +2053,7 @@ mod tests {
                 capabilities: &[],
                 redirect_uris: &[],
                 post_logout_redirect_uris: &[],
+                frontchannel_logout_uri: None,
                 response_types: &[],
                 public: false,
                 requires_consent: false,
@@ -2524,6 +2533,180 @@ mod tests {
     }
 
     #[test]
+    fn a_client_registers_where_a_sign_out_loads_it_and_moves_it_on_its_hosts_alone() {
+        let scenario = Scenario::start();
+        open(&scenario, RegistrationPolicy::Open);
+        let address = "https://app.example.org/signed-out?from=idp";
+        let registered = register(
+            &scenario,
+            &json!({
+                "redirect_uris": [CALLBACK],
+                "token_endpoint_auth_method": "none",
+                "frontchannel_logout_uri": address,
+                "frontchannel_logout_session_required": false,
+            }),
+        )
+        .expect("a public client");
+        let client_id = text(&registered, "client_id");
+        let token = text(&registered, "registration_access_token");
+
+        assert_eq!(registered["frontchannel_logout_uri"], address);
+        assert_eq!(
+            registered["frontchannel_logout_session_required"], true,
+            "the frame always carries the session, and says so"
+        );
+        assert_eq!(
+            read_client(&scenario, &client_id)
+                .frontchannel_logout_uri
+                .as_deref(),
+            Some(address)
+        );
+        let read = read_as(&scenario, &client_id, &token).expect("what was registered");
+        assert_eq!(read["frontchannel_logout_uri"], address);
+        assert_eq!(read["frontchannel_logout_session_required"], true);
+
+        let signed_in = scenario.sign_in_and_consent(&client_id, "openid");
+        let change = |token: &str, more: Value| {
+            let mut metadata = json!({
+                "client_id": client_id,
+                "redirect_uris": [CALLBACK],
+                "token_endpoint_auth_method": "none",
+            });
+            for (member, value) in more.as_object().expect("members") {
+                metadata[member] = value.clone();
+            }
+            update_as(&scenario, &client_id, token, &metadata)
+        };
+        let moved = change(
+            &text(&read, "registration_access_token"),
+            json!({ "frontchannel_logout_uri": "https://app.example.org/other" }),
+        )
+        .expect("a change");
+        assert_eq!(
+            moved["frontchannel_logout_uri"],
+            "https://app.example.org/other"
+        );
+        assert_eq!(
+            ask_silently(&scenario, &client_id, CALLBACK, &signed_in.ticket),
+            Ok(()),
+            "a frame on a known host asks nobody again"
+        );
+        let token = text(&moved, "registration_access_token");
+        assert_eq!(
+            change(
+                &token,
+                json!({ "frontchannel_logout_uri": "https://elsewhere.example.org/out" }),
+            )
+            .map(|_| ()),
+            Err(RegistrationError::InvalidClientMetadata),
+            "a frame on another host than it sends people back to"
+        );
+        let removed = change(
+            &token,
+            json!({ "frontchannel_logout_session_required": true }),
+        )
+        .expect("a change, with the token the refusal left");
+        assert!(
+            removed.get("frontchannel_logout_uri").is_none(),
+            "{removed}"
+        );
+        assert!(
+            removed
+                .get("frontchannel_logout_session_required")
+                .is_none(),
+            "without an address there is nothing to say of it: {removed}"
+        );
+        assert_eq!(
+            read_client(&scenario, &client_id).frontchannel_logout_uri,
+            None
+        );
+        let set_again = change(
+            &text(&removed, "registration_access_token"),
+            json!({ "frontchannel_logout_uri": "https://app.example.org/back" }),
+        )
+        .expect("a change");
+        assert_eq!(
+            set_again["frontchannel_logout_uri"],
+            "https://app.example.org/back"
+        );
+        assert_eq!(set_again["frontchannel_logout_session_required"], true);
+    }
+
+    #[test]
+    fn a_change_says_where_a_sign_out_loads_its_client() {
+        let scenario = Scenario::start();
+        open(&scenario, RegistrationPolicy::Open);
+        let registered =
+            register(&scenario, &json!({ "redirect_uris": [CALLBACK] })).expect("a client");
+        let client_id = text(&registered, "client_id");
+        let change = |token: &str, frontchannel: Option<&str>| {
+            let mut metadata = json!({ "client_id": client_id, "redirect_uris": [CALLBACK] });
+            if let Some(address) = frontchannel {
+                metadata["frontchannel_logout_uri"] = json!(address);
+            }
+            let changed = update_as(&scenario, &client_id, token, &metadata).expect("a change");
+            let said = scenario
+                .storage
+                .read_audit_envelopes(scenario.scope.realm())
+                .into_iter()
+                .rfind(|event| event["kind"] == "client.registration_updated")
+                .expect("the change is in the chain");
+            (
+                text(&changed, "registration_access_token"),
+                said["payload"]["frontchannel_logout_uri"].clone(),
+            )
+        };
+
+        let (token, said) = change(
+            &text(&registered, "registration_access_token"),
+            Some("https://app.example.org/signed-out"),
+        );
+        assert_eq!(said, "https://app.example.org/signed-out");
+        let (_, said) = change(&token, None);
+        assert_eq!(said, Value::Null, "loaded nowhere since");
+    }
+
+    #[test]
+    fn a_frame_on_another_host_is_refused_at_a_registration_in_its_own_words() {
+        let scenario = Scenario::start();
+        open(&scenario, RegistrationPolicy::Open);
+
+        let refused = register_with_cause(
+            &scenario,
+            None,
+            None,
+            json!({
+                "redirect_uris": [CALLBACK],
+                "frontchannel_logout_uri": "https://elsewhere.example.org/out",
+            })
+            .to_string()
+            .as_bytes(),
+        );
+
+        assert_eq!(
+            refused.map(|_| ()),
+            Err((
+                RegistrationError::InvalidClientMetadata,
+                ErrorCode::ClientMetadataInvalid
+            ))
+        );
+        let without_address = register(
+            &scenario,
+            &json!({
+                "redirect_uris": [CALLBACK],
+                "frontchannel_logout_session_required": true,
+            }),
+        )
+        .expect("a client");
+        assert!(
+            without_address
+                .get("frontchannel_logout_session_required")
+                .is_none(),
+            "{without_address}"
+        );
+    }
+
+    #[test]
     fn a_change_that_proves_the_client_with_other_keys_asks_each_person_again() {
         let scenario = Scenario::start();
         open(&scenario, RegistrationPolicy::Open);
@@ -2669,6 +2852,7 @@ mod tests {
                 id_token_hint: Some(hint),
                 post_logout_redirect_uri: Some(GOODBYE),
                 state: None,
+                ..LogoutParameters::default()
             };
             complete(begin_logout(&scenario.app, "acme", parameters, ticket)).expect("an answer")
         };
@@ -2681,13 +2865,17 @@ mod tests {
         assert_eq!(
             sign_out(&hint, Some(&signed_in.ticket)),
             Logout::SignedOut {
-                location: Some(GOODBYE.to_owned())
+                location: Some(GOODBYE.to_owned()),
+                frames: Vec::new(),
             },
             "this request ended the session the token names"
         );
         assert_eq!(
             sign_out(&hint, None),
-            Logout::SignedOut { location: None },
+            Logout::SignedOut {
+                location: None,
+                frames: Vec::new(),
+            },
             "a token of a session over sends the browser nowhere"
         );
         scenario.end_session(&made_by_the_realm.ticket);
@@ -2701,7 +2889,8 @@ mod tests {
                 None
             ),
             Logout::SignedOut {
-                location: Some(GOODBYE.to_owned())
+                location: Some(GOODBYE.to_owned()),
+                frames: Vec::new(),
             },
             "a client the realm made is trusted with its address"
         );
@@ -2741,6 +2930,7 @@ mod tests {
                 capabilities: &[],
                 redirect_uris: &callbacks,
                 post_logout_redirect_uris: &[],
+                frontchannel_logout_uri: None,
                 response_types: &[],
                 public: true,
                 requires_consent: true,

@@ -4,14 +4,15 @@ use async_trait::async_trait;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::{KeptCode, MemoryUnitOfWork};
+use super::{KeptCode, MemoryUnitOfWork, ServedLine};
 use crate::clients::store::ListWindow;
 use crate::directory::Person;
 use crate::directory::store::PersonStore;
 use crate::login::session::{AuthenticationMethod, ReadSession, Session, SessionState};
 use crate::login::store::{
     AuthenticatorStore, KnownBrowser, KnownBrowserStore, SecurityKey, SecurityKeyStore,
-    SessionStore, ThrottleStore, TotpAuthenticator, TotpUse,
+    ServedClient, ServedClients, ServedRecord, SessionStore, ThrottleStore, TotpAuthenticator,
+    TotpUse,
 };
 use crate::oidc::code::{
     AuthorizationCode, CodeStore, PendingAuthorization, PendingKeyProof, ReplayedCode,
@@ -201,6 +202,79 @@ impl SessionStore for MemoryUnitOfWork {
             }
         }
         Ok(ended)
+    }
+
+    async fn record_served_client(
+        &mut self,
+        session: Uuid,
+        client_id: &str,
+        now: OffsetDateTime,
+    ) -> Result<ServedRecord, StorageError> {
+        let outcome = self.refuse_in_snapshot();
+        self.record_refusal(outcome)?;
+        let realm = self.scope.realm().as_uuid();
+        let live = self.working.sessions.get(&realm).is_some_and(|sessions| {
+            sessions.iter().any(|known| {
+                known.id == session && known.state == SessionState::Active && known.expires_at > now
+            })
+        });
+        if !live {
+            return Ok(ServedRecord::SessionEnded);
+        }
+        let lines = self.working.served_clients.entry(realm).or_default();
+        if lines
+            .iter()
+            .any(|line| line.session == session && line.client_id == client_id)
+        {
+            return Ok(ServedRecord::AlreadyWritten);
+        }
+        lines.push(ServedLine {
+            session,
+            client_id: client_id.to_owned(),
+            first_served_at: now,
+        });
+        Ok(ServedRecord::Written)
+    }
+
+    async fn list_served_clients(
+        &mut self,
+        session: Uuid,
+        most: u32,
+    ) -> Result<ServedClients, StorageError> {
+        let realm = self.scope.realm().as_uuid();
+        let clients = self
+            .working
+            .clients
+            .get(&realm)
+            .map_or(&[][..], Vec::as_slice);
+        let mut served: Vec<(OffsetDateTime, ServedClient)> = self
+            .working
+            .served_clients
+            .get(&realm)
+            .into_iter()
+            .flatten()
+            .filter(|line| line.session == session)
+            .filter_map(|line| {
+                clients
+                    .iter()
+                    .find(|client| client.client_id == line.client_id && client.enabled)
+                    .map(|client| {
+                        let served = ServedClient {
+                            client_id: client.client_id.clone(),
+                            frontchannel_logout_uri: client.frontchannel_logout_uri.clone(),
+                        };
+                        (line.first_served_at, served)
+                    })
+            })
+            .collect();
+        served.sort_by(|one, other| (one.0, &one.1.client_id).cmp(&(other.0, &other.1.client_id)));
+        let count = u64::try_from(served.len()).map_err(|_| StorageError::Failed)?;
+        let first = served
+            .into_iter()
+            .take(usize::try_from(most).unwrap_or(usize::MAX))
+            .map(|(_, client)| client)
+            .collect();
+        Ok(ServedClients { first, count })
     }
 }
 

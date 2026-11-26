@@ -252,6 +252,7 @@ mod tests {
                 capabilities: &[],
                 redirect_uris: &callbacks,
                 post_logout_redirect_uris: &[],
+                frontchannel_logout_uri: None,
                 response_types,
                 public: true,
                 requires_consent,
@@ -1279,6 +1280,107 @@ mod tests {
             panic!("she is asked first: {step:?}");
         };
         (request, browser_secret, signed_in.ticket)
+    }
+
+    #[test]
+    fn every_answer_records_its_client_on_the_session_whatever_the_response_type() {
+        let (scenario, challenge) = start();
+        register(&scenario, "spa-again", &ResponseType::ALL, false, None);
+        register(&scenario, "partner-spa", &ResponseType::ALL, true, None);
+        for kind in ResponseType::ALL {
+            let asked = kind.name();
+            // After a sign-in.
+            let (_, ticket) = sign_in(&scenario, ask("spa", asked, &challenge));
+            // By the session, twice: one line.
+            for _ in 0..2 {
+                let answered = complete(begin_authorization(
+                    &scenario.app,
+                    "acme",
+                    ask("spa-again", asked, &challenge),
+                    Some(&ticket),
+                ));
+                assert!(
+                    matches!(answered, Ok(Authorization::Granted { .. })),
+                    "{asked}: {answered:?}"
+                );
+            }
+            assert_eq!(
+                scenario.list_served(&ticket),
+                ["spa", "spa-again"],
+                "{asked}"
+            );
+            // On the page of consent.
+            let asked_again = AuthorizationParameters {
+                prompt: Some("consent"),
+                ..ask("partner-spa", asked, &challenge)
+            };
+            let (request, browser_secret, ticket) = sign_in_to_consent(&scenario, asked_again);
+            let shown = complete(describe_consent(
+                &scenario.app,
+                "acme",
+                request,
+                &browser_secret,
+                Some(&ticket),
+            ))
+            .expect("the page")
+            .shown;
+            complete(answer_consent(
+                &scenario.app,
+                "acme",
+                request,
+                &browser_secret,
+                Some(&ticket),
+                ConsentDecision::Allow { shown },
+            ))
+            .expect("an allowed client");
+            assert_eq!(scenario.list_served(&ticket), ["partner-spa"], "{asked}");
+        }
+    }
+
+    #[test]
+    fn an_answer_for_a_session_that_ended_records_nothing_and_issues_nothing() {
+        use super::AnswerSubject;
+        use crate::oidc::authorize::{AnswerGrant, issue_answer};
+        use crate::tenancy::RealmName;
+
+        let (scenario, challenge) = start();
+        let (_, ticket) = sign_in(&scenario, ask("spa", "code", &challenge));
+        register(&scenario, "spa-again", &[ResponseType::Code], false, None);
+        scenario.end_session(&ticket);
+        let realm = RealmName::parse("acme").expect("a realm name");
+        let scopes = ["openid".to_owned()];
+        let mut work =
+            complete(scenario.app.storage.begin(scenario.scope)).expect("a unit of work");
+
+        let issued = complete(issue_answer(
+            &scenario.app,
+            work.as_mut(),
+            AnswerGrant {
+                realm: &realm,
+                subject: AnswerSubject::Named {
+                    client_id: "spa-again",
+                    session: ticket.session,
+                    person: scenario.find_ada(),
+                },
+                redirect_uri: CALLBACK,
+                scopes: &scopes,
+                state: None,
+                nonce: None,
+                response_type: ResponseType::Code,
+                response_mode: ResponseMode::Query,
+                code_challenge: Some(&challenge),
+                authenticated_at: scenario.app.now(),
+                claims: None,
+            },
+        ));
+
+        assert_eq!(
+            issued.map(|_| ()).map_err(|failure| failure.code),
+            Err(ErrorCode::SessionRequired),
+            "not even a code"
+        );
+        drop(work);
+        assert_eq!(scenario.list_served(&ticket), ["spa"]);
     }
 
     #[test]

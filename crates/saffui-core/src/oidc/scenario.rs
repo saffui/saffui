@@ -506,6 +506,7 @@ impl Scenario {
             capabilities: &[],
             redirect_uris: &callbacks,
             post_logout_redirect_uris: &[],
+            frontchannel_logout_uri: None,
             response_types: &[],
             public: true,
             requires_consent: false,
@@ -521,6 +522,51 @@ impl Scenario {
         complete(check_and_register_client(&self.app, work.as_mut(), wanted))
             .expect("an application");
         complete(work.commit()).expect("a commit");
+    }
+
+    /// Registers `client_id`, a public application that requires no consent,
+    /// sent back to the callback, and loaded at `frontchannel` when a session
+    /// it served ends.
+    pub(crate) fn register_framed(&self, client_id: &str, frontchannel: Option<&str>) {
+        use crate::clients::register::NewClient;
+        use crate::testkit::fixtures::check_and_register_client;
+
+        let (scopes, callbacks) = (["openid".to_owned()], [CALLBACK.to_owned()]);
+        let mut work = complete(self.app.storage.begin(self.scope)).expect("a unit of work");
+        let wanted = NewClient {
+            client_id,
+            name: client_id,
+            scopes: &scopes,
+            capabilities: &[],
+            redirect_uris: &callbacks,
+            post_logout_redirect_uris: &[],
+            frontchannel_logout_uri: frontchannel,
+            response_types: &[],
+            public: true,
+            requires_consent: false,
+            id_token_signed_response_alg: None,
+            auth_method: None,
+            jwks: None,
+            jwks_uri: None,
+            auth_signing_alg: None,
+            request_object_signing_alg: None,
+            require_signed_request_object: false,
+            created_by: None,
+        };
+        complete(check_and_register_client(&self.app, work.as_mut(), wanted))
+            .expect("an application");
+        complete(work.commit()).expect("a commit");
+    }
+
+    /// The clients the session of `ticket` served, as its ending reads them.
+    pub(crate) fn list_served(&self, ticket: &SessionTicket) -> Vec<String> {
+        let mut work = complete(self.app.storage.begin(self.scope)).expect("a unit of work");
+        complete(work.list_served_clients(ticket.session, 100))
+            .expect("a read")
+            .first
+            .into_iter()
+            .map(|served| served.client_id)
+            .collect()
     }
 
     /// Writes the attributes of `ada`, in place of those she had.

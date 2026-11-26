@@ -3,7 +3,8 @@
 //! exchanges its code for tokens anyone can verify, roles included; a
 //! service asks the point of decision about the person; a client that
 //! requires consent is allowed, then withdrawn; a client that shows nothing
-//! is answered at once, and a grant allowed offline outlives the sign-out.
+//! is answered at once, and a grant allowed offline outlives the sign-out;
+//! a sign-out loads in frames the clients the session served.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -1662,6 +1663,264 @@ fn read_last_withdrawal(database: &TestDatabase) -> Value {
         })
 }
 
+/// Where a sign-out page loads frames, and where it then refreshes to, read
+/// back from what the page writes.
+fn read_sign_out_page(body: &str) -> (Vec<String>, Vec<String>) {
+    let decode = |text: &str| text.replace("&#39;", "'").replace("&#38;", "&");
+    let frames = body
+        .split("<iframe ")
+        .skip(1)
+        .filter_map(|tag| tag.split_once(" src=\"")?.1.split('"').next().map(decode))
+        .collect();
+    let refreshes = body
+        .split("<meta http-equiv=\"refresh\" content=\"")
+        .skip(1)
+        .filter_map(|after| after.split('"').next().map(decode))
+        .collect();
+    (frames, refreshes)
+}
+
+/// The issuer of `acme`, as a frame carries it.
+const ISSUER_IN_A_QUERY: &str = "http%3A%2F%2Flocalhost%3A8080%2Frealms%2Facme";
+
+/// A journey through the real binary: a client registers through the
+/// protocol where a sign-out loads it, is given a code on the page of
+/// consent, and its identity token signs the person out: the page loads its
+/// frame with `iss` and `sid`, then leaves for the address it registered,
+/// and the session asks a sign-in again.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one journey, read from top to bottom"
+)]
+fn a_client_that_registered_itself_is_loaded_in_a_frame_when_its_session_ends() {
+    let database = database::create_database(EMBEDDED);
+    let (node, operator) = prepare_realm_with_operator(&database, support::saffui_command());
+    let bearer = ask_operator_token(&node, &operator);
+    let opened = send_json(
+        &node,
+        "PUT",
+        "/admin/v1/realms/acme/settings/registration",
+        &bearer,
+        &json!({ "registration": "open" }),
+    );
+    assert_eq!(opened.status, 200, "{}", opened.body);
+    let discovered = read_json(
+        &http::get(node.data, "/realms/acme/.well-known/openid-configuration")
+            .expect("an answer")
+            .body,
+    );
+    assert_eq!(discovered["frontchannel_logout_supported"], true);
+    assert_eq!(discovered["frontchannel_logout_session_supported"], true);
+    let registered = http::send_request(
+        node.data,
+        "POST",
+        "/realms/acme/oauth2/register",
+        &[JSON],
+        &json!({
+            "redirect_uris": ["https://app.example.test/callback"],
+            "post_logout_redirect_uris": ["https://app.example.test/goodbye"],
+            "token_endpoint_auth_method": "none",
+            "frontchannel_logout_uri": "https://app.example.test/signed-out?from=idp",
+            "frontchannel_logout_session_required": true,
+        })
+        .to_string(),
+    )
+    .expect("an answer");
+    assert_eq!(registered.status, 201, "{}", registered.body);
+    let registered = read_json(&registered.body);
+    assert_eq!(registered["frontchannel_logout_session_required"], true);
+    let client_id = registered["client_id"].as_str().expect("an identifier");
+
+    // The person signs in, and allows the client on the page.
+    let origin = ("Origin", node::PUBLIC_ORIGIN);
+    let asking = write_authorize_path_asking("openid")
+        .replace("client_id=portal", &format!("client_id={client_id}"));
+    let begun = http::get(node.data, &asking).expect("an answer");
+    let flow = read_cookie(&begun, "saffui_flow_").expect("a flow cookie");
+    let login = read_header(&begun, "location").expect("a location");
+    let request = read_parameter(login, "request").expect("a request");
+    let form = format!(
+        "request={request}&username=ada&password={}",
+        PASSWORD.replace(' ', "+")
+    );
+    let signed_in = http::send_request(
+        node.data,
+        "POST",
+        "/realms/acme/login",
+        &[FORM, ("Cookie", &flow), origin],
+        &form,
+    )
+    .expect("an answer");
+    let session = read_cookie(&signed_in, "saffui_session_acme=").expect("a session");
+    let both = format!("{flow}; {session}");
+    let page = http::send_request(
+        node.data,
+        "GET",
+        &format!("/realms/acme/consent?request={request}"),
+        &[("Cookie", &both)],
+        "",
+    )
+    .expect("an answer");
+    assert_eq!(page.status, 200, "{}", page.body);
+    let allowed = http::send_request(
+        node.data,
+        "POST",
+        "/realms/acme/consent",
+        &[FORM, ("Cookie", &both), origin],
+        &format!(
+            "request={request}&decision=allow&shown={}",
+            read_shown(&page.body)
+        ),
+    )
+    .expect("an answer");
+    assert_eq!(allowed.status, 303, "{}", allowed.body);
+    let code = read_header(&allowed, "location")
+        .and_then(|location| read_parameter(location, "code"))
+        .expect("a code");
+    let granted = http::send_request(
+        node.data,
+        "POST",
+        TOKEN,
+        &[FORM],
+        &format!(
+            "grant_type=authorization_code&client_id={client_id}&code={code}\
+             &redirect_uri=https%3A%2F%2Fapp.example.test%2Fcallback&code_verifier={VERIFIER}"
+        ),
+    )
+    .expect("an answer");
+    assert_eq!(granted.status, 200, "{}", granted.body);
+    let identity = read_json(&granted.body)["id_token"]
+        .as_str()
+        .expect("an identity token")
+        .to_owned();
+    let claims = decode_part(identity.split('.').nth(1).expect("claims"));
+    let sid = claims["sid"].as_str().expect("a session");
+
+    let out = http::send_request(
+        node.data,
+        "GET",
+        &format!(
+            "/realms/acme/oauth2/logout?id_token_hint={identity}\
+             &post_logout_redirect_uri=https%3A%2F%2Fapp.example.test%2Fgoodbye&state=bye"
+        ),
+        &[("Cookie", &session)],
+        "",
+    )
+    .expect("an answer");
+
+    assert_eq!(out.status, 200, "{}", out.body);
+    let (frames, refreshes) = read_sign_out_page(&out.body);
+    assert_eq!(
+        frames,
+        [format!(
+            "https://app.example.test/signed-out?from=idp&iss={ISSUER_IN_A_QUERY}&sid={sid}"
+        )]
+    );
+    assert_eq!(
+        refreshes,
+        ["0; url=https://app.example.test/goodbye?state=bye"]
+    );
+    let policy = read_header(&out, "content-security-policy").unwrap_or_default();
+    assert!(
+        policy.contains(" frame-src https://app.example.test;"),
+        "{policy}"
+    );
+    let silent = http::send_request(
+        node.data,
+        "GET",
+        &format!("{}&prompt=none", write_authorize_path()),
+        &[("Cookie", &session)],
+        "",
+    )
+    .expect("an answer");
+    assert_eq!(
+        read_header(&silent, "location").and_then(|location| read_parameter(location, "error")),
+        Some("login_required".to_owned()),
+        "the session the frame told of is over"
+    );
+}
+
+/// The same journey for a client an administrator made, handed back an
+/// identity token alone: the answer leaves no code and no refresh token,
+/// and its client is still loaded in a frame when the session ends.
+#[test]
+fn a_client_answered_with_an_identity_token_alone_is_loaded_in_a_frame_too() {
+    let database = database::create_database(EMBEDDED);
+    let (node, operator) = prepare_realm_with_operator(&database, support::saffui_command());
+    let bearer = ask_operator_token(&node, &operator);
+    let created = send_json(
+        &node,
+        "POST",
+        "/admin/v1/realms/acme/clients",
+        &bearer,
+        &json!({
+            "client_id": "spa",
+            "scopes": ["openid"],
+            "redirect_uris": ["https://spa.example.test/callback"],
+            "post_logout_redirect_uris": ["https://spa.example.test/goodbye"],
+            "response_types": ["id_token"],
+            "public": true,
+            "frontchannel_logout_uri": "https://spa.example.test/signed-out",
+        }),
+    );
+    assert_eq!(created.status, 201, "{}", created.body);
+    assert_eq!(
+        read_json(&created.body)["client"]["frontchannel_logout_uri"],
+        "https://spa.example.test/signed-out"
+    );
+    let asking = "/realms/acme/oauth2/authorize?response_type=id_token&client_id=spa\
+                  &redirect_uri=https%3A%2F%2Fspa.example.test%2Fcallback&scope=openid\
+                  &state=xyz&nonce=n-1";
+
+    let (answered, session) = sign_in_through(&node, PASSWORD, None, asking);
+
+    assert_eq!(answered.status, 303, "{}", answered.body);
+    let location = read_header(&answered, "location").expect("a location");
+    let (_, fragment) = location.split_once('#').expect("an answer after the hash");
+    let identity = fragment
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("id_token="))
+        .expect("an identity token");
+    let (_, claims) = verify_with_published_keys(&node, identity);
+    let sid = claims["sid"].as_str().expect("a session");
+    let session = session.expect("a session");
+
+    let out = http::send_request(
+        node.data,
+        "GET",
+        &format!(
+            "/realms/acme/oauth2/logout?id_token_hint={identity}\
+             &post_logout_redirect_uri=https%3A%2F%2Fspa.example.test%2Fgoodbye"
+        ),
+        &[("Cookie", &session)],
+        "",
+    )
+    .expect("an answer");
+
+    assert_eq!(out.status, 200, "{}", out.body);
+    let (frames, refreshes) = read_sign_out_page(&out.body);
+    assert_eq!(
+        frames,
+        [format!(
+            "https://spa.example.test/signed-out?iss={ISSUER_IN_A_QUERY}&sid={sid}"
+        )]
+    );
+    assert_eq!(refreshes, ["0; url=https://spa.example.test/goodbye"]);
+    let silent = http::send_request(
+        node.data,
+        "GET",
+        &format!("{}&prompt=none", write_authorize_path()),
+        &[("Cookie", &session)],
+        "",
+    )
+    .expect("an answer");
+    assert_eq!(
+        read_header(&silent, "location").and_then(|location| read_parameter(location, "error")),
+        Some("login_required".to_owned())
+    );
+}
+
 /// A journey through the real binary: a client that says to show nothing is
 /// answered at once, with a code or with what it would need; a grant the
 /// person allowed on the page to act while they are away outlives their
@@ -1806,7 +2065,7 @@ fn prompt_none_is_answered_at_once_and_an_offline_grant_outlives_the_sign_out() 
     let signed_out = http::send_request(
         node.data,
         "POST",
-        "/realms/acme/oauth2/logout",
+        "/realms/acme/oauth2/logout/confirm",
         &[FORM, ("Cookie", &session), origin],
         "",
     )

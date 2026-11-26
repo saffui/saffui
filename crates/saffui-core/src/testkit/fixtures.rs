@@ -296,6 +296,7 @@ pub async fn register_answered_application(
             capabilities: &[],
             redirect_uris: &callbacks,
             post_logout_redirect_uris: &goodbyes,
+            frontchannel_logout_uri: None,
             response_types,
             public: wanted.public,
             requires_consent: wanted.requires_consent,

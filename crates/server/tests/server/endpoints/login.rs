@@ -468,6 +468,7 @@ async fn a_request_without_an_object_from_a_client_that_requires_one_and_no_addr
         capabilities: &[],
         redirect_uris: &callbacks,
         post_logout_redirect_uris: &[],
+        frontchannel_logout_uri: None,
         response_types: &[],
         public: false,
         requires_consent: false,
@@ -936,7 +937,7 @@ async fn a_person_signs_out_at_once_with_the_identity_token_of_the_session_and_i
     assert!(
         asked
             .body
-            .contains("<form method=\"post\" action=\"/realms/acme/oauth2/logout\">"),
+            .contains("<form method=\"post\" action=\"/realms/acme/oauth2/logout/confirm\">"),
         "{}",
         asked.body
     );
@@ -946,7 +947,7 @@ async fn a_person_signs_out_at_once_with_the_identity_token_of_the_session_and_i
     // A form another site posts is refused by name.
     let from_elsewhere = post(
         &product,
-        "/realms/acme/oauth2/logout",
+        "/realms/acme/oauth2/logout/confirm",
         &[
             (COOKIE.as_str(), &session),
             (ORIGIN.as_str(), "https://evil.example"),
@@ -955,6 +956,7 @@ async fn a_person_signs_out_at_once_with_the_identity_token_of_the_session_and_i
     )
     .await;
     assert_eq!(from_elsewhere.status, StatusCode::FORBIDDEN);
+    assert!(from_elsewhere.cookies.is_empty(), "nothing ends");
 
     // With it, the session ends at once, and the browser goes back to the
     // address the application registered.
@@ -994,7 +996,7 @@ async fn a_person_signs_out_at_once_with_the_identity_token_of_the_session_and_i
     // Confirmed on the page of the realm, a sign-out ends what is left.
     let confirmed = post(
         &product,
-        "/realms/acme/oauth2/logout",
+        "/realms/acme/oauth2/logout/confirm",
         &[(COOKIE.as_str(), &session)],
         "",
     )

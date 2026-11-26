@@ -1,7 +1,8 @@
 //! Retention: what has no use left is removed. A pending request past its
 //! expiry can never be finished, a session past its expiry answers nothing,
-//! nor do its refresh tokens, a browser kept past its mark proves nothing,
-//! the enrollment of a key nobody finished in time finishes nothing, the
+//! nor do its refresh tokens, and no client it served is told it ended, a
+//! browser kept past its mark proves nothing, the enrollment of a key
+//! nobody finished in time finishes nothing, the
 //! identifier of an assertion past its expiry guards nothing, and a counter
 //! of the brake older than every window that reads it counts for nothing.
 //! A spent code is kept while what it obtained could still be taken back.
@@ -85,6 +86,8 @@ pub struct PurgeReport {
     pub pending_requests: TablePurge,
     pub codes: TablePurge,
     pub refresh_tokens: TablePurge,
+    /// The clients each session that expired served.
+    pub served_clients: TablePurge,
     pub sessions: TablePurge,
     pub known_browsers: TablePurge,
     pub failure_counters: TablePurge,
@@ -97,11 +100,12 @@ pub struct PurgeReport {
 impl PurgeReport {
     /// Each table under the name the journal gives it, in the order of a pass.
     #[must_use]
-    pub fn list_tables(&self) -> [(&'static str, TablePurge); 9] {
+    pub fn list_tables(&self) -> [(&'static str, TablePurge); 10] {
         [
             ("pending_requests", self.pending_requests),
             ("codes", self.codes),
             ("refresh_tokens", self.refresh_tokens),
+            ("served_clients", self.served_clients),
             ("sessions", self.sessions),
             ("known_browsers", self.known_browsers),
             ("failure_counters", self.failure_counters),

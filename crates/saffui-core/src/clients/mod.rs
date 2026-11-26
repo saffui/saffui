@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::authz::capability::Capability;
 use crate::error::{ErrorCode, Failure};
-use crate::oidc::response::ResponseType;
+use crate::oidc::response::{ResponseType, write_frame_source};
 use crate::ports::crypto::SignatureAlgorithm;
 use crate::ports::storage::{StorageError, UnitOfWork};
 use crate::settings::PublicOrigin;
@@ -128,6 +128,8 @@ pub struct Client {
     pub response_types: Vec<ResponseType>,
     /// Where a person may be sent after signing out, by exact equality too.
     pub post_logout_redirect_uris: Vec<String>,
+    /// Where a browser loads it in a frame when a session it served ends.
+    pub frontchannel_logout_uri: Option<String>,
     /// Each person is asked before the client gets a code in their name, and
     /// asked again for a scope they did not allow it.
     pub requires_consent: bool,
@@ -348,6 +350,26 @@ impl ReturnAddress<'_> {
         let same_port = ours.secure || port(self) == port(&ours);
         self.secure == ours.secure && same_port && same_host
     }
+
+    /// Whether two addresses share their scheme, their host and their port,
+    /// over https as over http: a port left out is that of the scheme. A
+    /// host is read in any case and with or without a final dot, an IPv6
+    /// address as an address.
+    fn is_same_origin_as(&self, other: &ReturnAddress<'_>) -> bool {
+        let port =
+            |read: &ReturnAddress<'_>| read.port.unwrap_or(if read.secure { 443 } else { 80 });
+        let same_host = match (
+            self.host.parse::<Ipv6Addr>(),
+            other.host.parse::<Ipv6Addr>(),
+        ) {
+            (Ok(one), Ok(another)) => one == another,
+            _ => self
+                .host
+                .trim_end_matches('.')
+                .eq_ignore_ascii_case(other.host.trim_end_matches('.')),
+        };
+        self.secure == other.secure && port(self) == port(other) && same_host
+    }
 }
 
 /// Whether an address leads to a page this deployment serves itself: on
@@ -387,6 +409,101 @@ pub fn check_redirect_uri(text: &str) -> Result<(), Failure> {
     } else {
         Err(Failure::new(ErrorCode::RedirectUriInvalid))
     }
+}
+
+/// Checks where a client is loaded in a frame when a session it served ends
+/// (OpenID Connect Front-Channel Logout 1.0, section 2): an address
+/// [`check_redirect_uri`] takes, over http for a client that is not
+/// `public` alone, on the scheme, the host and the port of one of its
+/// `redirect_uris`, never on `origin`, that a `frame-src` names as it is
+/// written and in no more than [`LONGEST_FRAME_SOURCE`] bytes, on a host the
+/// DNS could hold, and whose query reads as a form that names neither `iss`
+/// nor `sid`, which the frame adds.
+///
+/// # Errors
+///
+/// Returns [`ErrorCode::ClientMetadataInvalid`], naming the member.
+pub fn check_frontchannel_logout_uri(
+    text: &str,
+    redirect_uris: &[String],
+    public: bool,
+    origin: &PublicOrigin,
+) -> Result<(), Failure> {
+    let refused =
+        || Failure::with_detail(ErrorCode::ClientMetadataInvalid, "frontchannel_logout_uri");
+    check_redirect_uri(text).map_err(|_| refused())?;
+    let address = read_return_address(text).ok_or_else(refused)?;
+    // The frame keeps its origin and runs scripts: on the origin of the page
+    // that loads it, it could lift its own sandbox and act as the deployment.
+    let fits = (address.secure || !public)
+        && !address.is_on(origin)
+        && write_frame_source(text).is_some_and(|source| is_frame_source_bounded(&source))
+        && is_within_dns_lengths(address.host)
+        && redirect_uris
+            .iter()
+            .filter_map(|uri| read_return_address(uri))
+            .any(|registered| address.is_same_origin_as(&registered))
+        && text
+            .split_once('?')
+            .is_none_or(|(_, query)| is_frontchannel_query(query));
+    if fits { Ok(()) } else { Err(refused()) }
+}
+
+/// The longest origin a policy names for a frame: `https://`, a host of 253
+/// bytes, and a colon before a port of five digits.
+const LONGEST_FRAME_SOURCE: usize = 8 + 253 + 6;
+
+/// Whether a policy names the origin of a frame in no more than
+/// [`LONGEST_FRAME_SOURCE`] bytes, a port it writes without a leading zero:
+/// a browser never writes `:0443` for `:443`, and zeros only make an origin
+/// longer.
+fn is_frame_source_bounded(source: &str) -> bool {
+    let leading_zero = source
+        .rsplit_once(':')
+        .is_some_and(|(_, port)| port.starts_with('0'));
+    source.len() <= LONGEST_FRAME_SOURCE && !leading_zero
+}
+
+/// Whether a host keeps to the lengths of a name in the DNS: 253 bytes as
+/// it is written, and 63 a label (RFC 1035, section 2.3.4). A longer one
+/// resolves nowhere, and only fills the policy of the page that frames it.
+/// A final dot needs no allowance: no `frame-src` names a host that ends
+/// with one.
+fn is_within_dns_lengths(host: &str) -> bool {
+    host.len() <= 253 && host.split('.').all(|label| label.len() <= 63)
+}
+
+/// Whether a query reads as `application/x-www-form-urlencoded` writes it:
+/// pairs between `&`, a name before the first `=`, `+` for a space, and `%`
+/// before two hexadecimal digits for a byte, the bytes of each name and value
+/// UTF-8. A `%` before anything else is refused, as is a name that reads as
+/// `iss` or `sid`: the frame would carry two.
+fn is_frontchannel_query(query: &str) -> bool {
+    query.split('&').all(|pair| {
+        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+        match (decode_form_text(name), decode_form_text(value)) {
+            (Some(name), Some(_)) => name != "iss" && name != "sid",
+            _ => false,
+        }
+    })
+}
+
+/// Decodes a name or a value of a form, or nothing when it is not one.
+fn decode_form_text(text: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(text.len());
+    let mut rest = text.bytes();
+    while let Some(byte) = rest.next() {
+        match byte {
+            b'+' => bytes.push(b' '),
+            b'%' => {
+                let high = char::from(rest.next()?).to_digit(16)?;
+                let low = char::from(rest.next()?).to_digit(16)?;
+                bytes.push(u8::try_from(high * 16 + low).ok()?);
+            }
+            other => bytes.push(other),
+        }
+    }
+    String::from_utf8(bytes).ok()
 }
 
 /// Whether a page cannot show a character as it is: a control, a format
@@ -528,10 +645,189 @@ pub async fn read_client_keys(
 #[cfg(test)]
 mod tests {
     use super::{
-        check_client_identifier, check_redirect_uri, check_scope_token, is_deployment_page,
-        is_loopback_host, is_on_origin, is_unshowable, neutralize_unshowable, read_redirect_host,
+        check_client_identifier, check_frontchannel_logout_uri, check_redirect_uri,
+        check_scope_token, is_deployment_page, is_loopback_host, is_on_origin, is_unshowable,
+        neutralize_unshowable, read_redirect_host,
     };
+    use crate::error::{ErrorCode, Failure};
     use crate::settings::PublicOrigin;
+
+    /// Where the clients of the tests of frames send people back: one
+    /// origin for each rule, so that each address is refused by one alone.
+    const RETURNS: [&str; 9] = [
+        "https://app.example.org/callback",
+        "http://127.0.0.1:8080/cb",
+        "http://app.example.org/cb",
+        "https://id.example.test/app/cb",
+        "https://[::1]/cb",
+        "https://app_x.example.org/cb",
+        "https://app..example.org/cb",
+        "https://other.example.org:8443/cb",
+        "com.example.app:/cb",
+    ];
+
+    fn check_frame(uri: &str, public: bool) -> Result<(), Failure> {
+        let origin = PublicOrigin::parse("https://id.example.test").expect("an origin");
+        let returns: Vec<String> = RETURNS.iter().map(|uri| (*uri).to_owned()).collect();
+        check_frontchannel_logout_uri(uri, &returns, public, &origin)
+    }
+
+    #[test]
+    fn the_address_of_a_frame_is_on_the_origin_of_a_redirect_uri_with_a_query_kept_as_written() {
+        for uri in [
+            "https://app.example.org/out",
+            "https://APP.example.org/out?from=idp",
+            "https://app.example.org:443/out?a=1&&b=%20+c",
+            "https://app.example.org/out?",
+            "https://app.example.org/out?issuer=x&sids=y&ISS=z",
+        ] {
+            assert_eq!(check_frame(uri, true), Ok(()), "{uri}");
+        }
+        assert_eq!(
+            check_frame("http://127.0.0.1:8080/out", false),
+            Ok(()),
+            "a confidential client loaded on this machine"
+        );
+    }
+
+    #[test]
+    fn an_address_of_a_frame_is_refused_for_each_rule_and_names_its_member() {
+        let refused = Err(Failure::with_detail(
+            ErrorCode::ClientMetadataInvalid,
+            "frontchannel_logout_uri",
+        ));
+        let long = format!("https://app.example.org/{}", "a".repeat(2000));
+        for (uri, public, why) in [
+            ("https://elsewhere.example.org/out", false, "another host"),
+            (
+                "https://other.example.org/out",
+                false,
+                "another port over https",
+            ),
+            ("http://127.0.0.1:9090/out", false, "another port over http"),
+            (
+                "http://127.0.0.1/out",
+                false,
+                "the port of the scheme over http",
+            ),
+            ("https://127.0.0.1:8080/out", false, "another scheme"),
+            ("https://app.example.org/out#top", false, "a fragment"),
+            ("https://ada:pw@app.example.org/out", false, "credentials"),
+            ("/out", false, "a relative address"),
+            (
+                "com.example.app:/out",
+                false,
+                "the scheme of an application",
+            ),
+            (
+                "https://id.example.test/app/out",
+                false,
+                "the public origin",
+            ),
+            (
+                "https://id.example.test/realms/acme/oauth2/logout",
+                false,
+                "a page of the deployment",
+            ),
+            ("https://[::1]/out", false, "an IPv6 address"),
+            (
+                "https://app_x.example.org/out",
+                false,
+                "a name with an underscore",
+            ),
+            ("https://app..example.org/out", false, "an empty label"),
+            ("https://app.example.org:/out", false, "a port left empty"),
+            (
+                "http://127.0.0.1:8080/out",
+                true,
+                "http for a public client",
+            ),
+            (
+                "http://app.example.org/out",
+                false,
+                "http elsewhere than this machine",
+            ),
+            ("https://app.example.org/out?iss=x", false, "a key iss"),
+            (
+                "https://app.example.org/out?a=1&sid",
+                false,
+                "a key sid without a value",
+            ),
+            ("https://app.example.org/out?%69ss=x", false, "iss encoded"),
+            ("https://app.example.org/out?s%69d=1", false, "sid encoded"),
+            (
+                "https://app.example.org/out?x=%zz",
+                false,
+                "a percent sign before no digits",
+            ),
+            (
+                "https://app.example.org/out?x=%2",
+                false,
+                "a percent sign cut short",
+            ),
+            (
+                "https://app.example.org/out?x=%C3%28",
+                false,
+                "bytes that are not UTF-8",
+            ),
+            (&long, false, "longer than an address is kept"),
+        ] {
+            assert_eq!(check_frame(uri, public), refused, "{why}: {uri}");
+        }
+        let origin = PublicOrigin::parse("https://id.example.test").expect("an origin");
+        assert_eq!(
+            check_frontchannel_logout_uri("https://app.example.org/out", &[], false, &origin),
+            refused,
+            "a client that sends nobody back is loaded nowhere"
+        );
+    }
+
+    #[test]
+    fn the_host_of_a_frame_keeps_to_the_lengths_the_dns_holds() {
+        let origin = PublicOrigin::parse("https://id.example.test").expect("an origin");
+        let check = |authority: &str| {
+            let returns = [format!("https://{authority}/cb")];
+            check_frontchannel_logout_uri(
+                &format!("https://{authority}/out"),
+                &returns,
+                false,
+                &origin,
+            )
+        };
+        let label = |length: usize| "a".repeat(length);
+        let name = |last: usize| format!("{0}.{0}.{0}.{1}", label(63), label(last));
+        let refused = Err(Failure::with_detail(
+            ErrorCode::ClientMetadataInvalid,
+            "frontchannel_logout_uri",
+        ));
+
+        assert_eq!(name(61).len(), 253);
+        assert_eq!(check(&name(61)), Ok(()), "253 bytes");
+        assert_eq!(check(&name(62)), refused, "254 bytes");
+        assert_eq!(
+            check(&format!("{}.example.org", label(63))),
+            Ok(()),
+            "a label of 63 bytes"
+        );
+        assert_eq!(
+            check(&format!("{}.example.org", label(64))),
+            refused,
+            "a label of 64 bytes"
+        );
+        let longest = format!("{}:65535", name(61));
+        assert_eq!(format!("https://{longest}").len(), 267);
+        assert_eq!(check(&longest), Ok(()), "the longest origin");
+        assert_eq!(
+            check("app.example.org:0443"),
+            refused,
+            "a port with a leading zero"
+        );
+        assert_eq!(
+            check(&format!("app.example.org:{}443", "0".repeat(300))),
+            refused,
+            "a port of three hundred zeros"
+        );
+    }
 
     #[test]
     fn an_https_url_and_an_http_url_of_this_machine_may_be_registered() {

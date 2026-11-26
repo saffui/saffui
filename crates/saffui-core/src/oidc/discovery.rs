@@ -69,6 +69,10 @@ pub struct ProviderMetadata {
     pub request_parameter_supported: bool,
     pub request_uri_parameter_supported: bool,
     pub claims_parameter_supported: bool,
+    /// A sign-out loads each client that registered an address in a frame,
+    /// with `iss` and `sid`, which every identity token carries.
+    pub frontchannel_logout_supported: bool,
+    pub frontchannel_logout_session_supported: bool,
 }
 
 /// The claims a token says of a person: those of the protocol, then those
@@ -169,6 +173,8 @@ pub fn describe_provider(
         request_parameter_supported: true,
         request_uri_parameter_supported: false,
         claims_parameter_supported: true,
+        frontchannel_logout_supported: true,
+        frontchannel_logout_session_supported: true,
         issuer,
     }
 }
@@ -337,6 +343,40 @@ mod tests {
         }
         let written = serde_json::to_value(&document).expect("a document");
         assert_eq!(written["claims_parameter_supported"], true);
+    }
+
+    #[test]
+    fn a_sign_out_is_said_to_load_each_client_in_a_frame_and_nothing_else_is_promised() {
+        let settings = Settings::reached_directly(
+            PublicOrigin::parse("https://id.example.org").expect("an origin"),
+        );
+        let realm = RealmName::parse("acme").expect("a realm name");
+
+        let written = serde_json::to_value(describe_provider(
+            &settings,
+            &realm,
+            &[SignatureAlgorithm::Es256],
+            &[SignatureAlgorithm::Es256],
+        ))
+        .expect("a document");
+
+        for told in [
+            "frontchannel_logout_supported",
+            "frontchannel_logout_session_supported",
+        ] {
+            assert_eq!(written[told], serde_json::Value::Bool(true), "{told}");
+        }
+        for unsaid in [
+            "backchannel_logout_supported",
+            "backchannel_logout_session_supported",
+            "check_session_iframe",
+        ] {
+            assert!(written.get(unsaid).is_none(), "{unsaid}");
+        }
+        assert_eq!(
+            written["end_session_endpoint"],
+            "https://id.example.org/realms/acme/oauth2/logout"
+        );
     }
 
     #[test]

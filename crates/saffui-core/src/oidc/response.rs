@@ -214,18 +214,7 @@ pub fn choose_refusal_mode(
 /// or an empty label, a port left empty, or a host a browser would read
 /// otherwise.
 fn write_form_action_source(redirect_uri: &str) -> Option<String> {
-    let host = read_redirect_host(redirect_uri);
-    let nameable = |byte: u8| byte.is_ascii_alphanumeric() || b"-.".contains(&byte);
-    if host.split('.').any(str::is_empty) || !host.bytes().all(nameable) {
-        return None;
-    }
-    let address = redirect_uri.split(['?', '#']).next().unwrap_or_default();
-    let (scheme, rest) = address.split_once("://")?;
-    let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
-    if authority.ends_with(':') {
-        return None;
-    }
-    let mut source = format!("{scheme}://{authority}");
+    let (mut source, path) = split_nameable_origin(redirect_uri)?;
     for byte in path.bytes() {
         if byte.is_ascii_alphanumeric() || b"-._~/:@!$&()*+=%".contains(&byte) {
             source.push(char::from(byte));
@@ -234,6 +223,30 @@ fn write_form_action_source(redirect_uri: &str) -> Option<String> {
         }
     }
     Some(source)
+}
+
+/// What a page that loads `uri` in a frame names in its `frame-src`: the
+/// scheme, the host and the port as the address writes them, without its
+/// path. Nothing for an address a policy cannot name as it is written.
+pub(crate) fn write_frame_source(uri: &str) -> Option<String> {
+    split_nameable_origin(uri).map(|(origin, _)| origin)
+}
+
+/// The origin of an address as a policy names it, and the path after it:
+/// nothing for what [`write_form_action_source`] says no policy names.
+fn split_nameable_origin(uri: &str) -> Option<(String, &str)> {
+    let host = read_redirect_host(uri);
+    let nameable = |byte: u8| byte.is_ascii_alphanumeric() || b"-.".contains(&byte);
+    if host.split('.').any(str::is_empty) || !host.bytes().all(nameable) {
+        return None;
+    }
+    let address = uri.split(['?', '#']).next().unwrap_or_default();
+    let (scheme, rest) = address.split_once("://")?;
+    let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    if authority.ends_with(':') {
+        return None;
+    }
+    Some((format!("{scheme}://{authority}"), path))
 }
 
 /// An answer of the authorization endpoint: where it goes, how, and what it

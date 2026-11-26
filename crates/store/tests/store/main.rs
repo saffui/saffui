@@ -7,6 +7,7 @@ mod claims;
 mod clients;
 mod contract;
 mod keys;
+mod login;
 mod retention;
 mod support;
 mod tenancy;

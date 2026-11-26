@@ -80,6 +80,7 @@ async fn an_application_with_a_capability_a_service_without_a_secret_and_a_flow_
         redirect_uris: vec!["https://app.example.org/callback".to_owned()],
         response_types: vec![ResponseType::Code],
         post_logout_redirect_uris: vec!["https://app.example.org/goodbye".to_owned()],
+        frontchannel_logout_uri: None,
         requires_consent: true,
         scopes: vec!["openid".to_owned()],
         capabilities: Vec::new(),
@@ -138,6 +139,7 @@ async fn an_application_with_a_capability_a_service_without_a_secret_and_a_flow_
             auth_method: ClientAuthMethod::ClientSecretBasic,
             redirect_uris: Vec::new(),
             post_logout_redirect_uris: Vec::new(),
+            frontchannel_logout_uri: None,
             ..application.clone()
         },
         // A client registered by anyone is handed back a code alone.
@@ -159,6 +161,59 @@ async fn an_application_with_a_capability_a_service_without_a_secret_and_a_flow_
     }
 }
 
+/// Only an application that signs people in is loaded in a frame when a
+/// session ends: a service has no session to be told of.
+#[tokio::test]
+async fn a_service_is_given_no_address_to_be_loaded_at_whatever_writes_it() {
+    let (app, _database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let scope = create_realm(&app, "acme").await;
+    let service = Client {
+        id: mint_id(&app).expect("an identifier"),
+        client_id: "billing".to_owned(),
+        name: "Billing".to_owned(),
+        auth_method: ClientAuthMethod::ClientSecretBasic,
+        auth_signing_alg: None,
+        allows_client_credentials: true,
+        allows_authorization_code: false,
+        redirect_uris: Vec::new(),
+        response_types: vec![ResponseType::Code],
+        post_logout_redirect_uris: Vec::new(),
+        frontchannel_logout_uri: None,
+        requires_consent: false,
+        scopes: vec!["invoices:read".to_owned()],
+        capabilities: Vec::new(),
+        id_token_signed_response_alg: None,
+        request_object_signing_alg: None,
+        require_signed_request_object: false,
+        enabled: true,
+        self_registered: false,
+        created_at: app.now(),
+    };
+    let insert = |client: Client| {
+        let app = app.clone();
+        async move {
+            let proof = KeptProof {
+                secret_digest: Some(vec![7; 32]),
+                sealed_secret: None,
+                jwks: None,
+            };
+            let mut work = app.storage.begin(scope).await.expect("a unit of work");
+            work.insert_client(&client, &proof).await
+        }
+    };
+
+    assert_eq!(
+        insert(Client {
+            frontchannel_logout_uri: Some("https://billing.example.org/out".to_owned()),
+            ..service.clone()
+        })
+        .await,
+        Err(StorageError::Failed),
+        "a service with an address to be loaded at"
+    );
+    assert_eq!(insert(service).await, Ok(()), "the same service without");
+}
+
 #[tokio::test]
 async fn a_client_is_handed_back_six_known_types_at_most_whatever_writes_it() {
     let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
@@ -174,6 +229,7 @@ async fn a_client_is_handed_back_six_known_types_at_most_whatever_writes_it() {
         redirect_uris: vec!["https://app.example.org/callback".to_owned()],
         response_types: vec![ResponseType::Code],
         post_logout_redirect_uris: Vec::new(),
+        frontchannel_logout_uri: None,
         requires_consent: false,
         scopes: vec!["openid".to_owned()],
         capabilities: Vec::new(),

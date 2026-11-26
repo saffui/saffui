@@ -43,6 +43,7 @@ use crate::login::flow::{
     FirstStep, SignedIn, finish_sign_in_with_code, finish_sign_in_with_key, sign_in_with_password,
 };
 use crate::login::session::{Session, SessionTicket, close_session, find_answering_session};
+use crate::login::store::ServedRecord;
 use crate::login::throttle::admit_pending_sign_in;
 use crate::ports::storage::UnitOfWork;
 use crate::secret::Secret;
@@ -618,13 +619,28 @@ async fn issue_code(
 }
 
 /// Issues what the request asked for: a code, the tokens signed here, or
-/// both, the code first since the identity token may bind it. Records
-/// nothing: the caller says in the chain what was signed, last.
+/// both, the code first since the identity token may bind it. Before
+/// anything, the session records that it served the client, which only a
+/// session still active does: one that ended meanwhile is answered nothing.
+/// The caller says in the chain what was signed, last.
+///
+/// # Errors
+///
+/// Returns [`ErrorCode::SessionRequired`] for a session that ended or
+/// expired meanwhile, or what issuing fails with.
 pub(crate) async fn issue_answer(
     app: &App,
     work: &mut dyn UnitOfWork,
     grant: AnswerGrant<'_>,
 ) -> Result<IssuedAnswer, Failure> {
+    let (session, client_id) = (grant.subject.session(), grant.subject.client_id());
+    match work
+        .record_served_client(session, client_id, app.now())
+        .await?
+    {
+        ServedRecord::Written | ServedRecord::AlreadyWritten => {}
+        ServedRecord::SessionEnded => return Err(Failure::new(ErrorCode::SessionRequired)),
+    }
     let issuer = name_issuer(&app.settings, grant.realm);
     let code = if grant.response_type.issues_code() {
         Some(issue_code(app, work, &grant).await?)
@@ -1372,6 +1388,7 @@ async fn end_orphan_session(app: &App, scope: RealmScope, session: Uuid) {
     let ended = async {
         let mut work = app.storage.begin(scope).await?;
         if let Some(orphan) = work.read_session(session).await? {
+            // It answered nothing: no client it served is told.
             close_session(app, work.as_mut(), &orphan.session).await?;
             work.commit().await?;
         }
@@ -2445,6 +2462,7 @@ mod tests {
             capabilities: &[],
             redirect_uris: &callbacks,
             post_logout_redirect_uris: &[],
+            frontchannel_logout_uri: None,
             response_types: &[],
             public: true,
             requires_consent: false,
@@ -2823,6 +2841,7 @@ mod tests {
                 capabilities: &[],
                 redirect_uris: &callbacks,
                 post_logout_redirect_uris: &[],
+                frontchannel_logout_uri: None,
                 response_types: &[],
                 public: false,
                 requires_consent: false,
@@ -3611,6 +3630,7 @@ mod tests {
             capabilities: &[],
             redirect_uris: &callbacks,
             post_logout_redirect_uris: &[],
+            frontchannel_logout_uri: None,
             response_types: &[],
             public,
             requires_consent: true,
@@ -3702,6 +3722,7 @@ mod tests {
             ],
             response_types: vec![crate::oidc::response::ResponseType::Code],
             post_logout_redirect_uris: Vec::new(),
+            frontchannel_logout_uri: None,
             requires_consent: true,
             scopes: vec!["openid".to_owned()],
             capabilities: Vec::new(),
@@ -3856,6 +3877,7 @@ mod tests {
             capabilities: &[],
             redirect_uris: &callbacks,
             post_logout_redirect_uris: &[],
+            frontchannel_logout_uri: None,
             response_types: &[],
             public: true,
             requires_consent: false,

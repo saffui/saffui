@@ -5,6 +5,32 @@ use uuid::Uuid;
 use super::session::{AuthenticationMethod, ReadSession, Session};
 use crate::ports::storage::StorageError;
 
+/// What became of a client recorded on a session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServedRecord {
+    Written,
+    /// The session had served the client already.
+    AlreadyWritten,
+    /// The session ended or expired: nothing is written.
+    SessionEnded,
+}
+
+/// A client a session served, as the ending of the session reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServedClient {
+    pub client_id: String,
+    /// Where the browser loads it when the session ends, if it registered one.
+    pub frontchannel_logout_uri: Option<String>,
+}
+
+/// The clients a session served, the first of them, and how many there are.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServedClients {
+    /// In the order they were first served, then of their identifiers.
+    pub first: Vec<ServedClient>,
+    pub count: u64,
+}
+
 #[async_trait]
 pub trait SessionStore {
     async fn insert_session(&mut self, session: &Session) -> Result<(), StorageError>;
@@ -26,6 +52,26 @@ pub trait SessionStore {
         methods: &[AuthenticationMethod],
         kept: Option<Uuid>,
     ) -> Result<Vec<Uuid>, StorageError>;
+
+    /// Records, once, that `session` served `client_id`, in one statement:
+    /// only while the session is active and not expired at `now`, read under
+    /// a lock shared until the commit, so that an ending in flight is waited
+    /// for and the session read as it committed. The line lives as long as
+    /// its session.
+    async fn record_served_client(
+        &mut self,
+        session: Uuid,
+        client_id: &str,
+        now: OffsetDateTime,
+    ) -> Result<ServedRecord, StorageError>;
+
+    /// The clients `session` served that exist and are enabled: the first
+    /// `most` of them, and how many there are, in one statement.
+    async fn list_served_clients(
+        &mut self,
+        session: Uuid,
+        most: u32,
+    ) -> Result<ServedClients, StorageError>;
 }
 
 #[async_trait]

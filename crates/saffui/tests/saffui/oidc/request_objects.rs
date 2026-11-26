@@ -65,6 +65,7 @@ async fn register(
             capabilities: &[],
             redirect_uris: &callbacks,
             post_logout_redirect_uris: &[],
+            frontchannel_logout_uri: None,
             response_types: &[],
             public: false,
             requires_consent: false,

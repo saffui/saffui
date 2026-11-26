@@ -16,10 +16,11 @@ use tokio_postgres::Client;
 pub const RETENTION_LOCK: i64 = 0x7361_6666_7569_0003;
 
 /// The tables a pass removes from, and the only ones its role may.
-const PURGED_TABLES: [&str; 10] = [
+const PURGED_TABLES: [&str; 11] = [
     "authorization_requests",
     "authorization_codes",
     "refresh_tokens",
+    "session_clients",
     "sessions",
     "known_browsers",
     "login_failures",
@@ -159,7 +160,7 @@ const BATCH_ROWS: i64 = 1_000;
 /// use left, and nothing else, finds it by an index, and asks again of each
 /// row it removes whether it still has none: a row made to live longer
 /// meanwhile stays. Names are qualified: the link sets no search path.
-const PURGES: [(&str, &str); 9] = [
+const PURGES: [(&str, &str); 10] = [
     (
         "authorization_requests",
         "DELETE FROM public.authorization_requests
@@ -181,21 +182,42 @@ const PURGES: [(&str, &str); 9] = [
                                  WHERE expires_at < $1 LIMIT $2))
            AND expires_at < $1",
     ),
-    // A session takes its refresh tokens along in the statement that removes
-    // it: one that still has some waits for them to go, so that no batch
-    // removes more than its rows.
+    // A line keeps the expiry of its session: the lines go in the order
+    // their sessions expired, those of the first sessions first, by the index
+    // of that expiry in any plan. Without the order, a plan may read the
+    // table from its start, past the lines still of use.
+    (
+        "session_clients",
+        "DELETE FROM public.session_clients
+         WHERE ctid = ANY (ARRAY(SELECT ctid FROM public.session_clients
+                                 WHERE expires_at < $1
+                                 ORDER BY expires_at
+                                 LIMIT $2))
+           AND expires_at < $1",
+    ),
+    // A session takes its refresh tokens and the clients it served along in
+    // the statement that removes it: one that still has some waits for them
+    // to go, so that no batch removes more than its rows. A batch is chosen
+    // first, in the order sessions expired, and only those sessions are
+    // asked: one that still has some keeps its place, and a batch that comes
+    // back short ends the table for this pass, the next one going on from
+    // there. The lines go in that same order, the first sessions first.
     (
         "sessions",
-        "DELETE FROM public.sessions
-         WHERE ctid = ANY (ARRAY(
-                   SELECT ctid FROM public.sessions AS session
-                   WHERE expires_at < $1
-                     AND NOT EXISTS (SELECT 1 FROM public.refresh_tokens AS token
-                                     WHERE token.tenant_id = session.tenant_id
-                                       AND token.realm_id = session.realm_id
-                                       AND token.session_id = session.session_id)
-                   LIMIT $2))
-           AND expires_at < $1",
+        "DELETE FROM public.sessions AS session
+         WHERE ctid = ANY (ARRAY(SELECT ctid FROM public.sessions
+                                 WHERE expires_at < $1
+                                 ORDER BY expires_at
+                                 LIMIT $2))
+           AND expires_at < $1
+           AND NOT EXISTS (SELECT 1 FROM public.refresh_tokens AS token
+                           WHERE token.tenant_id = session.tenant_id
+                             AND token.realm_id = session.realm_id
+                             AND token.session_id = session.session_id)
+           AND NOT EXISTS (SELECT 1 FROM public.session_clients AS served
+                           WHERE served.tenant_id = session.tenant_id
+                             AND served.realm_id = session.realm_id
+                             AND served.session_id = session.session_id)",
     ),
     (
         "known_browsers",
@@ -333,17 +355,18 @@ impl Retention for PgRetention {
             cutoffs.expired_before,
             cutoffs.expired_before,
             cutoffs.expired_before,
+            cutoffs.expired_before,
             cutoffs.counters_before,
             cutoffs.expired_before,
             cutoffs.expired_before,
             cutoffs.registrations_ended_before,
         ];
         let started = Instant::now();
-        let mut purged = [TablePurge::default(); 9];
+        let mut purged = [TablePurge::default(); 10];
         // Each table is given an equal part of what is left: one that anybody
         // can fill spends its own part only, and one done early leaves its
         // part to the tables after it. Each gets a batch at least.
-        let mut tables_left = 9_u32;
+        let mut tables_left = 10_u32;
         let tables = PURGES.into_iter().zip(cutoff_of_each);
         for (slot, ((table, statement), before)) in purged.iter_mut().zip(tables) {
             let share = budget.saturating_sub(started.elapsed()) / tables_left;
@@ -364,6 +387,7 @@ impl Retention for PgRetention {
             pending_requests,
             codes,
             refresh_tokens,
+            served_clients,
             sessions,
             known_browsers,
             failure_counters,
@@ -375,6 +399,7 @@ impl Retention for PgRetention {
             pending_requests,
             codes,
             refresh_tokens,
+            served_clients,
             sessions,
             known_browsers,
             failure_counters,

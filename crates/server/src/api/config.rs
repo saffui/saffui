@@ -44,6 +44,7 @@ pub fn register_data_plane(
                     .service(oidc::introspect::describe_token)
                     .service(oidc::revoke::take_back_token)
                     .service(oidc::logout::begin)
+                    .service(oidc::logout::relay_posted_logout)
                     .service(oidc::logout::confirm)
                     .service(oidc::authorize::begin)
                     .service(oidc::register::create_registration)

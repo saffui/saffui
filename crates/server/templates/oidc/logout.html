@@ -1,13 +1,44 @@
 {% extends "base.html" %}
+{#- Leaves on markup, never a script: a refresh comes due once the document
+    and each of its frames loaded, so the frames go out before the browser
+    does. -#}
+{%- block head -%}
+{%- if let Some(location) = leaving -%}
+    <meta http-equiv="refresh" content="0; url={{ location }}">
+{%- endif -%}
+{%- endblock -%}
 {%- block body -%}
 {%- match shown -%}
-    {%- when Shown::SignedOut -%}
+    {%- when Shown::SignedOut with { frames } -%}
         <h1>Signed out</h1>{# -#}
         <p>You are signed out.</p>
-    {%- when Shown::Confirmation with { realm } -%}
-        <h1>Sign out</h1>{# -#}
+        {%- if !frames.is_empty() -%}
+            <p>The applications you used here were asked to sign you out. If one still shows you signed in, sign out there too.</p>
+            {%- for request in frames -%}
+                <iframe hidden sandbox="allow-scripts allow-same-origin allow-forms" {# -#}
+                    title="Signing out of an application" src="{{ request.url }}"></iframe>
+            {%- endfor -%}
+        {%- endif -%}
+        {%- if let Some(location) = leaving -%}
+            <p><a href="{{ location }}">Continue</a></p>
+        {%- endif -%}
+    {%- when Shown::Confirmation with { realm, cause } -%}
+        <h1>Sign out</h1>
+        {%- match cause -%}
+            {%- when ConfirmationCause::NoHint -%}
+                <p>An application asked to sign you out without saying who you are.</p>
+            {%- when ConfirmationCause::HintNotOfSession -%}
+                <p>An application asked to sign you out, and what it sent does not prove it asks for this session.</p>
+        {%- endmatch -%}
         <p>Do you want to sign out?</p>{# -#}
-        <form method="post" action="/realms/{{ realm }}/oauth2/logout">{# -#}
+        <form method="post" action="/realms/{{ realm }}/oauth2/logout/confirm">{# -#}
+            <button type="submit">Sign out</button>{# -#}
+        </form>
+    {%- when Shown::ReturnUnregistered with { realm, address } -%}
+        <h1>Sign out</h1>{# -#}
+        <p class="error">The application asked to send you to <code>{{ address }}</code> after you sign out, and that address is not registered for it. You stay here.</p>{# -#}
+        <p>Do you want to sign out?</p>{# -#}
+        <form method="post" action="/realms/{{ realm }}/oauth2/logout/confirm">{# -#}
             <button type="submit">Sign out</button>{# -#}
         </form>
 {%- endmatch -%}

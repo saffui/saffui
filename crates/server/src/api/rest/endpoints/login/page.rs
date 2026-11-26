@@ -112,7 +112,7 @@ pub(crate) fn render_page<P: Template>(
     status: StatusCode,
     page: impl FnOnce(Frame) -> P,
 ) -> HttpResponse {
-    write_page(product, status, PageScript::Nothing, page)
+    write_page(product, status, PageScript::Nothing, &[], page)
 }
 
 /// Renders a page that runs the script of a security key, and nothing else:
@@ -122,13 +122,25 @@ pub(crate) fn render_scripted_page<P: Template>(
     status: StatusCode,
     page: impl FnOnce(Frame) -> P,
 ) -> HttpResponse {
-    write_page(product, status, PageScript::SecurityKey, page)
+    write_page(product, status, PageScript::SecurityKey, &[], page)
+}
+
+/// Renders a page that loads other pages in frames, from the origins
+/// `sources` names and from no other: it runs no script of its own.
+pub(crate) fn render_framing_page<P: Template>(
+    product: &Product,
+    status: StatusCode,
+    sources: &[&str],
+    page: impl FnOnce(Frame) -> P,
+) -> HttpResponse {
+    write_page(product, status, PageScript::Nothing, sources, page)
 }
 
 fn write_page<P: Template>(
     product: &Product,
     status: StatusCode,
     script: PageScript,
+    sources: &[&str],
     page: impl FnOnce(Frame) -> P,
 ) -> HttpResponse {
     let mut nonce = [0_u8; 16];
@@ -139,20 +151,31 @@ fn write_page<P: Template>(
         nonce: drawn.then(|| URL_SAFE_NO_PAD.encode(nonce)),
         script,
     };
-    let policy = write_policy(&frame);
+    let policy = write_policy(&frame, sources);
     answer_rendered(status, &policy, page(frame).render())
 }
 
 /// The policy of a page: nothing styles it or runs on it but what its
-/// nonces name.
-fn write_policy(frame: &Frame) -> String {
+/// nonces name, and it frames nothing but the origins of `sources`.
+fn write_policy(frame: &Frame, sources: &[&str]) -> String {
     let style = frame
         .style_nonce()
         .map_or_else(String::new, |nonce| format!(" style-src 'nonce-{nonce}';"));
     let script = frame
         .script_nonce()
         .map_or_else(String::new, |nonce| format!(" script-src 'nonce-{nonce}';"));
-    format!("default-src 'none';{style}{script} frame-ancestors 'none'; base-uri 'none'")
+    let mut named: Vec<&str> = Vec::new();
+    for source in sources {
+        if !named.contains(source) {
+            named.push(source);
+        }
+    }
+    let framed = if named.is_empty() {
+        String::new()
+    } else {
+        format!(" frame-src {};", named.join(" "))
+    };
+    format!("default-src 'none';{style}{script}{framed} frame-ancestors 'none'; base-uri 'none'")
 }
 
 /// The answer that carries a rendered page. A page that could not be
@@ -241,7 +264,7 @@ fn render_second_factor(
         code: owed.code,
         key,
     };
-    write_page(product, status, script, |frame| SignInPage {
+    write_page(product, status, script, &[], |frame| SignInPage {
         frame,
         message,
         asked,

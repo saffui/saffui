@@ -47,7 +47,7 @@ const DISABLE_CLIENT: &str = "
 const WRITE_CLIENT_METADATA: &str = "
     UPDATE clients SET name = $4, scopes = $5, redirect_uris = $6,
         post_logout_redirect_uris = $7, id_token_signed_response_alg = $8,
-        auth_signing_alg = $9, jwks = $10
+        auth_signing_alg = $9, jwks = $10, frontchannel_logout_uri = $11
     WHERE tenant_id = $1 AND realm_id = $2 AND client_id = $3 AND self_registered
       AND EXISTS (
           SELECT 1 FROM client_registrations AS registration
@@ -76,6 +76,7 @@ const CLIENT: &[Column] = &[
     clients::RESPONSE_TYPES,
     clients::REQUEST_OBJECT_SIGNING_ALG,
     clients::REQUIRE_SIGNED_REQUEST_OBJECT,
+    clients::FRONTCHANNEL_LOGOUT_URI,
 ];
 
 /// Constant SQL: the columns of [`CLIENT`], in its order, and the row stays
@@ -85,7 +86,7 @@ const READ_CLIENT_FOR_UPDATE: &str = "
         enabled, created_at, allows_authorization_code, redirect_uris,
         post_logout_redirect_uris, requires_consent, id_token_signed_response_alg, auth_method,
         auth_signing_alg, self_registered, response_types, request_object_signing_alg,
-        require_signed_request_object
+        require_signed_request_object, frontchannel_logout_uri
     FROM clients
     WHERE tenant_id = $1 AND realm_id = $2 AND client_id = $3
     FOR NO KEY UPDATE";
@@ -98,7 +99,7 @@ const READ_CLIENT_FOR_SHARE: &str = "
         enabled, created_at, allows_authorization_code, redirect_uris,
         post_logout_redirect_uris, requires_consent, id_token_signed_response_alg, auth_method,
         auth_signing_alg, self_registered, response_types, request_object_signing_alg,
-        require_signed_request_object
+        require_signed_request_object, frontchannel_logout_uri
     FROM clients
     WHERE tenant_id = $1 AND realm_id = $2 AND client_id = $3
     FOR SHARE";
@@ -127,6 +128,7 @@ const CLIENT_WITH_PROOF: &[Column] = &[
     clients::RESPONSE_TYPES,
     clients::REQUEST_OBJECT_SIGNING_ALG,
     clients::REQUIRE_SIGNED_REQUEST_OBJECT,
+    clients::FRONTCHANNEL_LOGOUT_URI,
     clients::SECRET_DIGEST,
     clients::SEALED_SECRET,
     clients::JWKS,
@@ -157,6 +159,7 @@ fn read_client_row(row: &Row) -> Result<Client, StorageError> {
             .map(|name| ResponseType::read(name).ok_or(StorageError::Failed))
             .collect::<Result<_, _>>()?,
         post_logout_redirect_uris: row.get(10),
+        frontchannel_logout_uri: row.get(19),
         requires_consent: row.get(11),
         scopes: row.get(4),
         capabilities: capabilities
@@ -247,6 +250,10 @@ impl ClientStore for PgUnitOfWork {
                 col(
                     clients::POST_LOGOUT_REDIRECT_URIS,
                     &client.post_logout_redirect_uris,
+                ),
+                col(
+                    clients::FRONTCHANNEL_LOGOUT_URI,
+                    &client.frontchannel_logout_uri,
                 ),
                 col(clients::REQUIRES_CONSENT, &client.requires_consent),
                 col(clients::SELF_REGISTERED, &client.self_registered),
@@ -426,6 +433,7 @@ impl ClientStore for PgUnitOfWork {
                     &id_token_algorithm,
                     &auth_signing_alg,
                     &jwks,
+                    &client.frontchannel_logout_uri,
                 ],
             )
             .await?;

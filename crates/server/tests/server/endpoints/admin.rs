@@ -511,6 +511,91 @@ async fn an_administrator_registers_an_application_that_holds_no_secret_and_no_c
 }
 
 #[actix_web::test]
+async fn an_administrator_names_where_an_application_is_loaded_at_a_sign_out_and_reads_it_back() {
+    let (product, token) = start(&[Capability::ClientRead, Capability::ClientWrite]).await;
+    let path = "/admin/v1/realms/acme/clients";
+    let address = "https://app.example.org/signed-out?from=idp";
+    let wanted = json!({
+        "client_id": "webapp",
+        "scopes": ["openid"],
+        "redirect_uris": ["https://app.example.org/callback"],
+        "frontchannel_logout_uri": address,
+    })
+    .to_string();
+
+    let created = call(&product, Method::POST, path, Some(&token), Some(&wanted)).await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(created.body["client"]["frontchannel_logout_uri"], address);
+    let read = call(
+        &product,
+        Method::GET,
+        &format!("{path}/webapp"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(
+        read.body["frontchannel_logout_uri"], address,
+        "{}",
+        read.body
+    );
+
+    for (refused, why) in [
+        (
+            json!({
+                "client_id": "elsewhere",
+                "redirect_uris": ["https://app.example.org/callback"],
+                "frontchannel_logout_uri": "https://elsewhere.example.org/out",
+            }),
+            "on no origin it sends people back to",
+        ),
+        (
+            json!({
+                "client_id": "billing",
+                "scopes": ["invoices:read"],
+                "frontchannel_logout_uri": "https://app.example.org/out",
+            }),
+            "a service has no session to be told of",
+        ),
+        (
+            json!({
+                "client_id": "flagged",
+                "redirect_uris": ["https://app.example.org/callback"],
+                "frontchannel_logout_session_required": true,
+            }),
+            "a field this version does not read",
+        ),
+    ] {
+        let answer = call(
+            &product,
+            Method::POST,
+            path,
+            Some(&token),
+            Some(&refused.to_string()),
+        )
+        .await;
+        assert_eq!(
+            answer.status,
+            StatusCode::BAD_REQUEST,
+            "{why}: {}",
+            answer.body
+        );
+    }
+    let plain = json!({
+        "client_id": "plain",
+        "redirect_uris": ["https://app.example.org/callback"],
+    })
+    .to_string();
+    let created = call(&product, Method::POST, path, Some(&token), Some(&plain)).await;
+    assert_eq!(
+        created.body["client"]["frontchannel_logout_uri"],
+        Value::Null,
+        "{}",
+        created.body
+    );
+}
+
+#[actix_web::test]
 async fn an_administrator_turns_a_secret_over_and_the_old_one_proves_nothing_from_then_on() {
     use saffui_core::clients::authenticate::PresentedSecret;
     use saffui_core::oidc::token::{TokenRequest, grant_token};

@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use serde_json::json;
 
+use super::store::ServedClients;
 use crate::app::App;
 use crate::audit::EventKind;
 use crate::audit::append::record_event;
@@ -23,6 +24,10 @@ pub const SESSION_LIFETIME: Duration = Duration::hours(12);
 
 /// How long an offline session lasts, whatever is done with it.
 pub const OFFLINE_SESSION_LIFETIME: Duration = Duration::days(90);
+
+/// How many of the clients a session served its ending reads, and names in
+/// its event: the rest are counted. Each is one row read and one name kept.
+pub const MOST_NAMED_SERVED_CLIENTS: u32 = 100;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionState {
@@ -311,8 +316,9 @@ pub async fn read_live_subject(
     Ok(person.map(|person| (read.session, person)))
 }
 
-/// Ends a session, and with it every refresh token it gave. A session
-/// another request ended meanwhile is left to it: it was said ended once.
+/// Ends a session, and with it every refresh token it gave, and returns the
+/// clients it served. A session another request ended meanwhile is left to
+/// it: it was said ended once, and `None` is returned.
 ///
 /// # Errors
 ///
@@ -321,19 +327,30 @@ pub async fn close_session(
     app: &App,
     work: &mut dyn UnitOfWork,
     session: &Session,
-) -> Result<(), Failure> {
+) -> Result<Option<ServedClients>, Failure> {
     if !work.end_session(session.id).await? {
-        return Ok(());
+        return Ok(None);
     }
     let revoked = work
         .revoke_refresh_tokens_of_session(session.id, app.now())
         .await?;
+    let served = work
+        .list_served_clients(session.id, MOST_NAMED_SERVED_CLIENTS)
+        .await?;
+    let named: Vec<&str> = served
+        .first
+        .iter()
+        .map(|client| client.client_id.as_str())
+        .collect();
     let ended = json!({
+        "clients_served": named,
+        "clients_served_count": served.count,
         "person_id": session.person.to_string(),
         "refresh_tokens_revoked": revoked,
         "session_id": session.id.to_string(),
     });
-    record_event(app, work, EventKind::SessionEnded, ended).await
+    record_event(app, work, EventKind::SessionEnded, ended).await?;
+    Ok(Some(served))
 }
 
 #[cfg(test)]

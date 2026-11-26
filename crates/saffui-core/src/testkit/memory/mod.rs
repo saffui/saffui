@@ -71,6 +71,8 @@ pub(crate) struct State {
     pub(crate) passwords: HashMap<Uuid, String>,
     /// The sessions of each realm, by realm.
     pub(crate) sessions: HashMap<Uuid, Vec<Session>>,
+    /// The clients each session served, by realm.
+    pub(crate) served_clients: HashMap<Uuid, Vec<ServedLine>>,
     /// The counters of the brake, by realm, digest and start of bucket.
     pub(crate) login_failures: HashMap<(Uuid, Vec<u8>, OffsetDateTime), u32>,
     /// The requests that wait for their person, by realm.
@@ -128,6 +130,14 @@ pub(crate) struct HeldRegistration {
     pub(crate) token_digest: Option<Vec<u8>>,
     pub(crate) registered_at: OffsetDateTime,
     pub(crate) ended_at: Option<OffsetDateTime>,
+}
+
+/// A client a session served, as the double keeps it.
+#[derive(Clone, Debug)]
+pub(crate) struct ServedLine {
+    pub(crate) session: Uuid,
+    pub(crate) client_id: String,
+    pub(crate) first_served_at: OffsetDateTime,
 }
 
 /// A code as the double keeps it: spent codes stay, so that a replay is told.
@@ -536,7 +546,8 @@ mod tests {
         check_keys_contract, check_known_browsers_contract, check_member_groups_contract,
         check_persons_contract, check_policies_contract, check_refresh_contract,
         check_registration_contract, check_relations_contract, check_roles_contract,
-        check_security_keys_contract, check_sign_in_contract, check_tenancy_contract,
+        check_security_keys_contract, check_served_clients_contract, check_sign_in_contract,
+        check_tenancy_contract,
     };
     use crate::testkit::drive::complete;
 
@@ -598,6 +609,12 @@ mod tests {
     fn the_double_passes_the_authenticators_contract() {
         let (app, _storage) = MemoryStorage::wire();
         complete(check_authenticators_contract(&app));
+    }
+
+    #[test]
+    fn the_double_passes_the_served_clients_contract() {
+        let (app, _storage) = MemoryStorage::wire();
+        complete(check_served_clients_contract(&app));
     }
 
     #[test]

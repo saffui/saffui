@@ -58,6 +58,7 @@ pub(super) fn show_client(client: &Client) -> ClientView {
         public: client.is_public(),
         redirect_uris: client.redirect_uris.clone(),
         post_logout_redirect_uris: client.post_logout_redirect_uris.clone(),
+        frontchannel_logout_uri: client.frontchannel_logout_uri.clone(),
         response_types: client
             .response_types
             .iter()

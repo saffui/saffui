@@ -352,6 +352,8 @@ pub(crate) mod clients {
     /// boolean
     pub(crate) const REQUIRE_SIGNED_REQUEST_OBJECT: Column =
         Column("require_signed_request_object");
+    /// text, nullable
+    pub(crate) const FRONTCHANNEL_LOGOUT_URI: Column = Column("frontchannel_logout_uri");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -377,6 +379,7 @@ pub(crate) mod clients {
         RESPONSE_TYPES,
         REQUEST_OBJECT_SIGNING_ALG,
         REQUIRE_SIGNED_REQUEST_OBJECT,
+        FRONTCHANNEL_LOGOUT_URI,
     ];
 }
 
@@ -910,6 +913,26 @@ pub(crate) mod security_keys {
     pub(crate) const ALL: &[Column] = &[CREDENTIAL_ID, PERSON_ID, RECORD, CREATED_AT, LAST_USED_AT];
 }
 
+pub(crate) mod session_clients {
+    use super::{Column, ScopeKeys, Table};
+
+    pub(crate) const TABLE: Table = Table {
+        name: "session_clients",
+        keys: ScopeKeys::TenantAndRealm,
+    };
+    /// uuid
+    pub(crate) const SESSION_ID: Column = Column("session_id");
+    /// text
+    pub(crate) const CLIENT_ID: Column = Column("client_id");
+    /// timestamp with time zone
+    pub(crate) const FIRST_SERVED_AT: Column = Column("first_served_at");
+    /// timestamp with time zone
+    pub(crate) const EXPIRES_AT: Column = Column("expires_at");
+
+    /// In the order the table declares them.
+    pub(crate) const ALL: &[Column] = &[SESSION_ID, CLIENT_ID, FIRST_SERVED_AT, EXPIRES_AT];
+}
+
 pub(crate) mod sessions {
     use super::{Column, ScopeKeys, Table};
 
@@ -1062,6 +1085,7 @@ pub(crate) const TABLES: &[(Table, &[Column])] = &[
         security_key_enrollments::ALL,
     ),
     (security_keys::TABLE, security_keys::ALL),
+    (session_clients::TABLE, session_clients::ALL),
     (sessions::TABLE, sessions::ALL),
     (signing_keys::TABLE, signing_keys::ALL),
     (tenants::TABLE, tenants::ALL),

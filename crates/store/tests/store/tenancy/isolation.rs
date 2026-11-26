@@ -805,6 +805,7 @@ async fn an_operator_the_serving_role_plants_does_not_unbind_a_change_of_method(
             capabilities: &[],
             redirect_uris: &callbacks,
             post_logout_redirect_uris: &[],
+            frontchannel_logout_uri: None,
             response_types: &[],
             public: false,
             requires_consent: false,
@@ -1275,6 +1276,11 @@ async fn a_client_turned_off_stays_off_and_only_a_live_registration_is_rewritten
             SqlState::CHECK_VIOLATION,
             kept_by_the_trigger,
         ),
+        (
+            rewrite("frontchannel_logout_uri = 'https://evil.example/out'"),
+            SqlState::CHECK_VIOLATION,
+            kept_by_the_trigger,
+        ),
     ] {
         session
             .batch_execute(&format!(
@@ -1339,6 +1345,7 @@ async fn plant_registered_client(
         redirect_uris: vec!["https://registered.example.org/cb".to_owned()],
         response_types: vec![saffui_core::oidc::response::ResponseType::Code],
         post_logout_redirect_uris: Vec::new(),
+        frontchannel_logout_uri: None,
         requires_consent: true,
         scopes: vec!["openid".to_owned()],
         capabilities: Vec::new(),

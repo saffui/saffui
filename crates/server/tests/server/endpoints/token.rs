@@ -113,6 +113,7 @@ async fn register_service(
             capabilities: &[],
             redirect_uris: &[],
             post_logout_redirect_uris: &[],
+            frontchannel_logout_uri: None,
             response_types: &[],
             public: false,
             requires_consent: false,

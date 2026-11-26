@@ -38,6 +38,8 @@ pub struct ClientView {
     pub public: bool,
     pub redirect_uris: Vec<String>,
     pub post_logout_redirect_uris: Vec<String>,
+    /// Where a browser loads it in a frame when a session it served ends.
+    pub frontchannel_logout_uri: Option<String>,
     /// What it may ask the authorization endpoint to hand back.
     pub response_types: Vec<String>,
     /// Whether each person is asked before it gets a code in their name.
@@ -77,6 +79,10 @@ pub struct NewClient {
     /// Where people may be sent after they sign out.
     #[serde(default)]
     pub post_logout_redirect_uris: Vec<String>,
+    /// Where a browser loads it in a frame when a session it served ends,
+    /// with `iss` and `sid` added: on the origin of one of its redirect URIs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frontchannel_logout_uri: Option<String>,
     /// What it may ask the authorization endpoint to hand back, each named
     /// once. Empty: a code alone. One with `token` puts an access token in
     /// an address the browser holds: it is named here or nowhere.
@@ -478,6 +484,7 @@ mod tests {
                 public: false,
                 redirect_uris: Vec::new(),
                 post_logout_redirect_uris: Vec::new(),
+                frontchannel_logout_uri: None,
                 response_types: vec!["code".to_owned()],
                 consent: false,
                 scopes: Vec::new(),

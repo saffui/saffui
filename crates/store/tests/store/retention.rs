@@ -8,7 +8,7 @@ use saffui_core::app::App;
 use saffui_core::directory::Person;
 use saffui_core::ids::mint_id;
 use saffui_core::login::session::{AuthenticationMethod, Session, SessionKind, SessionState};
-use saffui_core::login::store::KnownBrowser;
+use saffui_core::login::store::{KnownBrowser, ServedRecord};
 use saffui_core::oidc::code::{AuthorizationCode, PendingAuthorization};
 use saffui_core::ports::storage::{StorageError, StorageUnavailable};
 use saffui_core::retention::{PurgeOutcome, PurgeReport, run_retention_pass};
@@ -25,7 +25,7 @@ use crate::support;
 const TIME_ENOUGH: std::time::Duration = std::time::Duration::from_mins(1);
 
 /// Writes, in one realm, a row past its keeping and a row still of use in
-/// each of the nine tables retention reads.
+/// each of the ten tables retention reads.
 #[expect(clippy::too_many_lines, reason = "one realm, filled table by table")]
 async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
     let identify = || mint_id(app).expect("an identifier");
@@ -66,6 +66,11 @@ async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
             expires_at,
         };
         work.insert_session(&session).await.expect("a session");
+        // Recorded while the session was live, an hour before.
+        let served = work
+            .record_served_client(session.id, "portal", now - Duration::hours(1))
+            .await;
+        assert_eq!(served, Ok(ServedRecord::Written));
         let enrolling = if digest == 1 { person.id } else { other.id };
         work.write_key_enrollment(enrolling, &[digest; 8], expires_at)
             .await
@@ -148,6 +153,7 @@ async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
             redirect_uris: vec!["https://app.example.org/cb".to_owned()],
             response_types: vec![saffui_core::oidc::response::ResponseType::Code],
             post_logout_redirect_uris: Vec::new(),
+            frontchannel_logout_uri: None,
             requires_consent: true,
             scopes: vec!["openid".to_owned()],
             capabilities: Vec::new(),
@@ -184,10 +190,11 @@ async fn fill_realm(app: &App, scope: RealmScope, now: OffsetDateTime) {
     work.commit().await.expect("a commit");
 }
 
-const TABLES: [&str; 9] = [
+const TABLES: [&str; 10] = [
     "authorization_requests",
     "authorization_codes",
     "refresh_tokens",
+    "session_clients",
     "sessions",
     "known_browsers",
     "login_failures",
@@ -200,7 +207,7 @@ const TABLES: [&str; 9] = [
 /// of `TABLES`.
 fn summarize(
     report: Result<Option<PurgeReport>, StorageError>,
-) -> Result<Option<[(u64, PurgeOutcome); 9]>, StorageError> {
+) -> Result<Option<[(u64, PurgeOutcome); 10]>, StorageError> {
     report.map(|report| {
         report.map(|report| {
             report
@@ -212,8 +219,8 @@ fn summarize(
 
 const DONE: PurgeOutcome = PurgeOutcome::Done;
 
-async fn count_rows(client: &Client) -> [i64; 9] {
-    let mut counted = [0; 9];
+async fn count_rows(client: &Client) -> [i64; 10] {
+    let mut counted = [0; 10];
     for (slot, table) in TABLES.into_iter().enumerate() {
         counted[slot] = client
             .query_one(&format!("SELECT count(*) FROM {table}"), &[])
@@ -237,19 +244,19 @@ async fn a_pass_removes_what_expired_in_every_realm_and_leaves_what_is_still_of_
         .connect_directly()
         .await
         .expect("a connection");
-    assert_eq!(count_rows(&maintenance).await, [4; 9]);
+    assert_eq!(count_rows(&maintenance).await, [4; 10]);
     let retention = PgRetention::new(database.plan(RETENTION_ROLE));
 
     let first = run_retention_pass(&retention, now, TIME_ENOUGH).await;
 
     assert_eq!(
         summarize(first),
-        Ok(Some([(2, DONE); 9])),
+        Ok(Some([(2, DONE); 10])),
         "two of each, one in each realm"
     );
     assert_eq!(
         count_rows(&maintenance).await,
-        [2; 9],
+        [2; 10],
         "what is still of use stays, in both realms"
     );
     assert_eq!(
@@ -275,7 +282,7 @@ async fn a_pass_under_the_role_that_serves_is_refused_and_removes_nothing() {
         .connect_directly()
         .await
         .expect("a connection");
-    assert_eq!(count_rows(&maintenance).await, [2; 9]);
+    assert_eq!(count_rows(&maintenance).await, [2; 10]);
 }
 
 #[tokio::test]
@@ -300,7 +307,7 @@ async fn a_pass_under_a_role_that_may_do_more_than_purge_is_refused_and_removes_
         .connect_directly()
         .await
         .expect("a connection");
-    assert_eq!(count_rows(&maintenance).await, [2; 9]);
+    assert_eq!(count_rows(&maintenance).await, [2; 10]);
     let under_retention = PgRetention::new(database.plan(RETENTION_ROLE));
     assert_eq!(under_retention.verify_role().await, Ok(()));
 }
@@ -313,9 +320,9 @@ async fn a_retention_role_with_any_right_beyond_purging_is_refused() {
         .connect_directly()
         .await
         .expect("a connection");
-    let purged = "authorization_requests, authorization_codes, refresh_tokens, sessions, \
-                  known_browsers, login_failures, security_key_enrollments, client_assertions, \
-                  client_registrations, clients";
+    let purged = "authorization_requests, authorization_codes, refresh_tokens, session_clients, \
+                  sessions, known_browsers, login_failures, security_key_enrollments, \
+                  client_assertions, client_registrations, clients";
     // Each bypasses row security as retention does, and holds one thing more.
     for role in [
         "saffui_test_retention_reads_all",
@@ -477,7 +484,7 @@ async fn a_table_of_a_schema_named_after_the_role_stands_in_for_no_purged_table(
     let report = run_retention_pass(&retention, now, TIME_ENOUGH).await;
 
     assert_eq!(
-        summarize(report).map(|report| report.map(|tables| tables[5])),
+        summarize(report).map(|report| report.map(|tables| tables[6])),
         Ok(Some((1, DONE))),
         "the counters of the product are purged"
     );
@@ -561,7 +568,7 @@ async fn a_pass_goes_on_while_its_batches_come_back_full_and_still_leaves_what_i
     let report = run_retention_pass(&retention, now, TIME_ENOUGH).await;
 
     assert_eq!(
-        summarize(report).map(|report| report.map(|tables| tables[5])),
+        summarize(report).map(|report| report.map(|tables| tables[6])),
         Ok(Some((50_001, DONE))),
         "every full batch is followed by another"
     );
@@ -571,7 +578,7 @@ async fn a_pass_goes_on_while_its_batches_come_back_full_and_still_leaves_what_i
         .await
         .expect("a connection");
     assert_eq!(
-        count_rows(&maintenance).await[5],
+        count_rows(&maintenance).await[6],
         1,
         "the counter still read stays"
     );
@@ -584,7 +591,7 @@ async fn a_pass_that_spent_its_time_leaves_the_rest_to_the_next_one() {
     let scope = create_realm(&app, "retention-out-of-time").await;
     plant_counters(&database, scope, 1_001, now - Duration::days(3)).await;
     let retention = PgRetention::new(database.plan(RETENTION_ROLE));
-    let counters = |report| summarize(report).map(|report| report.map(|tables| tables[5]));
+    let counters = |report| summarize(report).map(|report| report.map(|tables| tables[6]));
 
     // Out of time from the start: each table gets its one batch.
     let first = run_retention_pass(&retention, now, std::time::Duration::ZERO).await;
@@ -626,7 +633,7 @@ async fn a_table_that_fails_is_reported_and_the_pass_goes_on_with_the_others() {
 
     let report = run_retention_pass(&retention, now, TIME_ENOUGH).await;
 
-    let mut all_but_codes = [(1, DONE); 9];
+    let mut all_but_codes = [(1, DONE); 10];
     all_but_codes[1] = (0, PurgeOutcome::Failed);
     assert_eq!(
         summarize(report),
@@ -640,7 +647,7 @@ async fn a_table_that_fails_is_reported_and_the_pass_goes_on_with_the_others() {
         .expect("a connection");
     assert_eq!(
         count_rows(&maintenance).await,
-        [1, 2, 1, 1, 1, 1, 1, 1, 1],
+        [1, 2, 1, 1, 1, 1, 1, 1, 1, 1],
         "both codes stay"
     );
 }
@@ -722,7 +729,7 @@ async fn only_the_sessions_that_still_have_refresh_tokens_wait_for_them() {
     plant_expired_sessions(&app, scope, now, 1_000).await;
     let retention = PgRetention::new(database.plan(RETENTION_ROLE));
     let tokens_and_sessions =
-        |report| summarize(report).map(|report| report.map(|tables| (tables[2], tables[3])));
+        |report| summarize(report).map(|report| report.map(|tables| (tables[2], tables[4])));
 
     let first = run_retention_pass(&retention, now, std::time::Duration::ZERO).await;
     assert_eq!(
@@ -769,7 +776,7 @@ async fn while_refresh_tokens_fail_no_session_that_has_some_is_purged() {
     let report = run_retention_pass(&retention, now, TIME_ENOUGH).await;
 
     assert_eq!(
-        summarize(report).map(|report| report.map(|tables| (tables[2], tables[3]))),
+        summarize(report).map(|report| report.map(|tables| (tables[2], tables[4]))),
         Ok(Some(((0, PurgeOutcome::Failed), (1, DONE)))),
         "the session without tokens goes, the other waits"
     );
@@ -782,6 +789,220 @@ async fn while_refresh_tokens_fail_no_session_that_has_some_is_purged() {
         count_session_and_tokens(&maintenance, &refreshed).await,
         (1, 4),
         "the session that has tokens stays, and its tokens with it"
+    );
+}
+
+/// The clients a session that expired served go before it, by batches, and
+/// the session waits for the last of them: a session still live keeps its own.
+#[tokio::test]
+async fn the_clients_a_session_served_go_in_batches_before_it_and_a_live_one_keeps_its_own() {
+    let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let now = app.now();
+    let scope = create_realm(&app, "retention-served").await;
+    let identify = || mint_id(&app).expect("an identifier");
+    let person = Person {
+        id: identify(),
+        username: "ada".to_owned(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        enabled: true,
+        created_at: now,
+    };
+    let session = |digest, expires_in| Session {
+        id: identify(),
+        person: person.id,
+        secret_digest: vec![digest; 32],
+        state: SessionState::Active,
+        kind: SessionKind::Browser,
+        methods: vec![AuthenticationMethod::Password],
+        authenticated_at: now - Duration::hours(13),
+        expires_at: now + expires_in,
+    };
+    let (expired, live) = (
+        session(1, Duration::hours(-1)),
+        session(2, Duration::hours(1)),
+    );
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.insert_person(&person).await.expect("a person");
+    work.insert_session(&expired).await.expect("a session");
+    work.insert_session(&live).await.expect("a session");
+    work.commit().await.expect("a commit");
+    // A batch of the live one first, then more than a batch for the one that
+    // expired, as the owner would write them: a pass that took lines by their
+    // order alone would find the live ones, and stop.
+    let mut owner = database
+        .plan("saffui_owner")
+        .connect_directly()
+        .await
+        .expect("a connection");
+    let (tenant, realm) = (scope.tenant().as_uuid(), scope.realm().as_uuid());
+    let planting = owner.transaction().await.expect("a transaction");
+    planting
+        .execute(
+            "SELECT set_config('saffui.tenant', $1, true), set_config('saffui.realm', $2, true)",
+            &[&tenant.to_string(), &realm.to_string()],
+        )
+        .await
+        .expect("the scope");
+    for (session, count) in [(&live, 1_000), (&expired, 1_001)] {
+        planting
+            .execute(
+                "INSERT INTO session_clients
+                     (tenant_id, realm_id, session_id, client_id, first_served_at, expires_at)
+                 SELECT $1, $2, $3, 'client-' || n, $4, $6 FROM generate_series(1, $5) AS n",
+                &[
+                    &tenant,
+                    &realm,
+                    &session.id,
+                    &(now - Duration::hours(2)),
+                    &count,
+                    &session.expires_at,
+                ],
+            )
+            .await
+            .expect("the clients it served");
+    }
+    planting.commit().await.expect("a commit");
+    let retention = PgRetention::new(database.plan(RETENTION_ROLE));
+    let served_and_sessions =
+        |report| summarize(report).map(|report| report.map(|tables| (tables[3], tables[4])));
+
+    let first = run_retention_pass(&retention, now, std::time::Duration::ZERO).await;
+    assert_eq!(
+        served_and_sessions(first),
+        Ok(Some(((1_000, PurgeOutcome::RowsLeft), (0, DONE)))),
+        "a line is left: its session waits"
+    );
+    let next = run_retention_pass(&retention, now, std::time::Duration::ZERO).await;
+    assert_eq!(
+        served_and_sessions(next),
+        Ok(Some(((1, DONE), (1, DONE)))),
+        "its last line gone, the session goes"
+    );
+    let maintenance = database
+        .plan(MAINTENANCE_ROLE)
+        .connect_directly()
+        .await
+        .expect("a connection");
+    let left: Vec<(uuid::Uuid, i64)> = maintenance
+        .query(
+            "SELECT session_id, count(*) FROM session_clients GROUP BY session_id",
+            &[],
+        )
+        .await
+        .expect("the lines")
+        .iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    assert_eq!(left, [(live.id, 1_000)], "the live session keeps its lines");
+}
+
+/// Sessions go in the order they expired, a batch at a time, after their
+/// lines: a batch held back by sessions whose lines are still there ends the
+/// table for the pass, though a session that expired after them has none,
+/// and the next pass goes on from there.
+#[tokio::test]
+async fn expired_sessions_go_in_the_order_they_expired_and_a_batch_held_back_ends_the_pass() {
+    let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let now = app.now();
+    let scope = create_realm(&app, "retention-in-order").await;
+    let identify = || mint_id(&app).expect("an identifier");
+    let person = Person {
+        id: identify(),
+        username: "ada".to_owned(),
+        email: None,
+        email_verified: false,
+        display_name: None,
+        enabled: true,
+        created_at: now,
+    };
+    let session = |digest: u16, expired_for: Duration| Session {
+        id: identify(),
+        person: person.id,
+        secret_digest: digest.to_be_bytes().repeat(16),
+        state: SessionState::Active,
+        kind: SessionKind::Browser,
+        methods: vec![AuthenticationMethod::Password],
+        authenticated_at: now - Duration::hours(13),
+        expires_at: now - expired_for,
+    };
+    // Written the last to expire first, so that the order of the rows is not
+    // the order they expired in: each of these served two clients, and the
+    // session written after them, which expired last, none.
+    let served: Vec<Session> = (1..=1_500_u16)
+        .map(|at| session(at, Duration::hours(1) + Duration::seconds(i64::from(at))))
+        .collect();
+    let later = session(0, Duration::minutes(30));
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    work.insert_person(&person).await.expect("a person");
+    for session in served.iter().chain([&later]) {
+        work.insert_session(session).await.expect("a session");
+    }
+    work.commit().await.expect("a commit");
+    let mut owner = database
+        .plan("saffui_owner")
+        .connect_directly()
+        .await
+        .expect("a connection");
+    let (tenant, realm) = (scope.tenant().as_uuid(), scope.realm().as_uuid());
+    let planting = owner.transaction().await.expect("a transaction");
+    planting
+        .execute(
+            "SELECT set_config('saffui.tenant', $1, true), set_config('saffui.realm', $2, true)",
+            &[&tenant.to_string(), &realm.to_string()],
+        )
+        .await
+        .expect("the scope");
+    planting
+        .execute(
+            "INSERT INTO session_clients
+                 (tenant_id, realm_id, session_id, client_id, first_served_at, expires_at)
+             SELECT tenant_id, realm_id, session_id, 'client-' || n, $1, expires_at
+             FROM sessions CROSS JOIN generate_series(1, 2) AS n
+             WHERE session_id <> $2",
+            &[&(now - Duration::hours(2)), &later.id],
+        )
+        .await
+        .expect("the clients they served");
+    planting.commit().await.expect("a commit");
+    let retention = PgRetention::new(database.plan(RETENTION_ROLE));
+    let served_and_sessions =
+        |report| summarize(report).map(|report| report.map(|tables| (tables[3], tables[4])));
+
+    let first = run_retention_pass(&retention, now, std::time::Duration::ZERO).await;
+    assert_eq!(
+        served_and_sessions(first),
+        Ok(Some(((1_000, PurgeOutcome::RowsLeft), (500, DONE)))),
+        "the lines of the first five hundred go, then those sessions alone"
+    );
+    let maintenance = database
+        .plan(MAINTENANCE_ROLE)
+        .connect_directly()
+        .await
+        .expect("a connection");
+    let left = maintenance
+        .query_one(
+            "SELECT count(*) FILTER (WHERE expires_at < $1),
+                    count(*) FILTER (WHERE session_id = $2)
+             FROM sessions",
+            &[
+                &(now - Duration::hours(1) - Duration::seconds(1_000)),
+                &later.id,
+            ],
+        )
+        .await
+        .expect("a count");
+    assert_eq!(
+        (left.get::<_, i64>(0), left.get::<_, i64>(1)),
+        (0, 1),
+        "the first to expire went, and the one that waited for nothing stays"
+    );
+    let next = run_retention_pass(&retention, now, TIME_ENOUGH).await;
+    assert_eq!(
+        served_and_sessions(next),
+        Ok(Some(((2_000, DONE), (1_001, DONE)))),
+        "the next pass goes on from there"
     );
 }
 
@@ -863,7 +1084,7 @@ async fn a_table_anybody_can_fill_spends_its_own_part_of_the_pass_and_no_more() 
     );
     assert!(report[0].0 < 6_000, "and not the whole pass: {report:?}");
     assert_eq!(
-        report[5],
+        report[6],
         (2_001, DONE),
         "the counters, after the requests, still get their part of what is left: {report:?}"
     );
@@ -939,7 +1160,7 @@ async fn a_pass_whose_link_closes_is_a_failure_and_stops_there() {
         .expect("a connection");
     assert_eq!(
         count_rows(&maintenance).await,
-        [2; 9],
+        [2; 10],
         "nothing was removed after the link closed"
     );
 }
@@ -1033,7 +1254,7 @@ async fn keep_a_browser_again_while_its_batch_waits(
     let report = pass.await.expect("the pass");
 
     assert_eq!(
-        summarize(report).map(|report| report.map(|tables| tables[4])),
+        summarize(report).map(|report| report.map(|tables| tables[5])),
         Ok(Some((0, DONE))),
         "the browser kept again is not removed"
     );
@@ -1042,7 +1263,7 @@ async fn keep_a_browser_again_while_its_batch_waits(
         .connect_directly()
         .await
         .expect("a connection");
-    assert_eq!(count_rows(&maintenance).await[4], 2, "both browsers stay");
+    assert_eq!(count_rows(&maintenance).await[5], 2, "both browsers stay");
 }
 
 /// An offline session lives far longer than one of a browser, and goes at
@@ -1171,6 +1392,7 @@ async fn retention_removes_a_client_whose_registration_ended_and_no_other() {
         redirect_uris: vec!["https://app.example.org/cb".to_owned()],
         response_types: vec![saffui_core::oidc::response::ResponseType::Code],
         post_logout_redirect_uris: Vec::new(),
+        frontchannel_logout_uri: None,
         requires_consent: true,
         scopes: vec!["openid".to_owned()],
         capabilities: Vec::new(),
@@ -1315,7 +1537,7 @@ async fn retention_removes_a_client_whose_registration_ended_and_no_other() {
     let report = run_retention_pass(&retention, now, TIME_ENOUGH).await;
 
     assert_eq!(
-        summarize(report).map(|tables| tables.map(|tables| tables[8])),
+        summarize(report).map(|tables| tables.map(|tables| tables[9])),
         Ok(Some((1, DONE))),
         "the client whose registration ended, and its batch done"
     );

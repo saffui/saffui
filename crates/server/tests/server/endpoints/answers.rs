@@ -335,6 +335,7 @@ async fn plant_relay(product: &saffui_core::app::App, scope: RealmScope, redirec
         redirect_uris: redirect_uris.iter().map(|uri| (*uri).to_owned()).collect(),
         response_types: vec![ResponseType::Code],
         post_logout_redirect_uris: Vec::new(),
+        frontchannel_logout_uri: None,
         requires_consent: false,
         scopes: vec!["openid".to_owned()],
         capabilities: Vec::new(),

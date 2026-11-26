@@ -15,7 +15,7 @@ use crate::tenancy::settings::RealmSettings;
 
 /// Known, and not honored. Each asks for a safeguard or a path this realm
 /// does not hold.
-pub const UNHONORED_MEMBERS: [&str; 32] = [
+pub const UNHONORED_MEMBERS: [&str; 30] = [
     // Keys and lists fetched from an address of the client.
     "jwks_uri",
     "sector_identifier_uri",
@@ -50,9 +50,7 @@ pub const UNHONORED_MEMBERS: [&str; 32] = [
     "tls_client_auth_san_uri",
     "tls_client_auth_san_ip",
     "tls_client_auth_san_email",
-    // Sign-outs told to the client.
-    "frontchannel_logout_uri",
-    "frontchannel_logout_session_required",
+    // Sign-outs told to the client by this server, not through the browser.
     "backchannel_logout_uri",
     "backchannel_logout_session_required",
 ];
@@ -64,6 +62,9 @@ pub struct WantedMetadata {
     pub name: Option<String>,
     pub redirect_uris: Vec<String>,
     pub post_logout_redirect_uris: Vec<String>,
+    /// `frontchannel_logout_session_required` is read and kept nowhere: the
+    /// frame always carries `iss` and `sid`.
+    pub frontchannel_logout_uri: Option<String>,
     pub method: ClientAuthMethod,
     pub signing: Option<AssertionAlgorithm>,
     /// RS256 when it names none (OpenID Connect Dynamic Client
@@ -92,6 +93,14 @@ fn read_text<'a>(members: &'a Map<String, Value>, name: &str) -> Result<Option<&
     match members.get(name) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(text)) => Ok(Some(text)),
+        Some(_) => Err(refuse(name)),
+    }
+}
+
+/// Checks that a member is a boolean, or null, which is no member.
+fn check_flag(members: &Map<String, Value>, name: &str) -> Result<(), Failure> {
+    match members.get(name) {
+        None | Some(Value::Null | Value::Bool(_)) => Ok(()),
         Some(_) => Err(refuse(name)),
     }
 }
@@ -209,6 +218,7 @@ pub fn read_client_metadata(document: &Value) -> Result<WantedMetadata, Failure>
     }
     let post_logout_redirect_uris =
         read_texts(members, "post_logout_redirect_uris")?.unwrap_or_default();
+    check_flag(members, "frontchannel_logout_session_required")?;
     // A refresh token comes with a code: asking for both asks nothing more.
     let grants = read_texts(members, "grant_types")?
         .unwrap_or_else(|| vec!["authorization_code".to_owned()]);
@@ -250,6 +260,7 @@ pub fn read_client_metadata(document: &Value) -> Result<WantedMetadata, Failure>
         name: read_text(members, "client_name")?.map(str::to_owned),
         redirect_uris,
         post_logout_redirect_uris,
+        frontchannel_logout_uri: read_text(members, "frontchannel_logout_uri")?.map(str::to_owned),
         method,
         signing,
         id_token_alg,
@@ -334,6 +345,53 @@ mod tests {
                     "{member}: {asking_nothing} asks for nothing"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn the_address_of_a_frame_is_text_and_whether_it_wants_the_session_a_boolean() {
+        let read_address = |value: Value| {
+            read(&with("frontchannel_logout_uri", value)).map(|read| read.frontchannel_logout_uri)
+        };
+        assert_eq!(
+            read_address(json!("https://registered.example.org/out")),
+            Ok(Some("https://registered.example.org/out".to_owned()))
+        );
+        assert_eq!(read_address(Value::Null), Ok(None), "null is no member");
+        for flag in [json!(true), json!(false), Value::Null] {
+            assert!(
+                read(&with("frontchannel_logout_session_required", flag.clone())).is_ok(),
+                "{flag}"
+            );
+        }
+        for (member, value) in [
+            ("frontchannel_logout_uri", json!(60)),
+            ("frontchannel_logout_uri", json!(true)),
+            (
+                "frontchannel_logout_uri",
+                json!(["https://registered.example.org/out"]),
+            ),
+            ("frontchannel_logout_session_required", json!("yes")),
+            ("frontchannel_logout_session_required", json!(60)),
+        ] {
+            let refused = read_client_metadata(&with(member, value.clone()));
+            assert_eq!(
+                refused.as_ref().map(|_| ()).map_err(|failure| failure.code),
+                Err(ErrorCode::ClientMetadataInvalid),
+                "{member}: {value}"
+            );
+            assert_eq!(
+                refused.err().and_then(|failure| failure.detail).as_deref(),
+                Some(member),
+                "the refusal names {member}"
+            );
+        }
+        // Told by this server rather than through the browser: not yet.
+        for member in [
+            "backchannel_logout_uri",
+            "backchannel_logout_session_required",
+        ] {
+            assert!(UNHONORED_MEMBERS.contains(&member), "{member}");
         }
     }
 

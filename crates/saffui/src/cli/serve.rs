@@ -25,6 +25,7 @@ use crate::config::database::{
 use crate::config::hashing::{PASSWORD_HASHERS, PasswordHashersError, resolve_password_hashers};
 use crate::config::origin::{PUBLIC_ORIGIN, PublicOriginSettingError, resolve_public_origin};
 use crate::config::proxy::{TrustedProxiesError, resolve_trusted_proxies};
+use crate::config::throttle::{AddressBoundError, list_changed_bounds, resolve_address_bounds};
 use crate::jobs;
 use store::retention::PgRetention;
 use tracing::{info, warn};
@@ -104,6 +105,7 @@ enum ServeError {
     Settings(ServingSettingsError),
     Origin(PublicOriginSettingError),
     Proxies(TrustedProxiesError),
+    Bounds(AddressBoundError),
     Hashers(PasswordHashersError),
     Database(DatabaseSettingsError),
     Retention(RetentionSettingError),
@@ -121,6 +123,7 @@ impl ServeError {
             Self::Settings(_)
             | Self::Origin(_)
             | Self::Proxies(_)
+            | Self::Bounds(_)
             | Self::Hashers(_)
             | Self::Database(_)
             | Self::Retention(_)
@@ -138,6 +141,7 @@ impl fmt::Display for ServeError {
             Self::Settings(error) => error.fmt(formatter),
             Self::Origin(error) => error.fmt(formatter),
             Self::Proxies(error) => error.fmt(formatter),
+            Self::Bounds(error) => error.fmt(formatter),
             Self::Hashers(error) => error.fmt(formatter),
             Self::Database(error) => error.fmt(formatter),
             Self::Retention(error) => error.fmt(formatter),
@@ -168,6 +172,7 @@ fn serve_until_signal(options: &ServeOptions) -> Result<(), ServeError> {
         .map_err(ServeError::Database)?;
     let root_key = resolve_root_key(read_variable).map_err(ServeError::RootKey)?;
     let trusted_proxies = resolve_trusted_proxies(read_variable).map_err(ServeError::Proxies)?;
+    let address_bounds = resolve_address_bounds(read_variable).map_err(ServeError::Bounds)?;
     let password_hashers =
         resolve_password_hashers(options.password_hashers.as_deref(), read_variable)
             .map_err(ServeError::Hashers)?;
@@ -183,6 +188,7 @@ fn serve_until_signal(options: &ServeOptions) -> Result<(), ServeError> {
     let settings_of_the_product = Settings {
         public_origin,
         trusted_proxies,
+        address_bounds,
     };
     let wired = wire_product(
         settings_of_the_product,
@@ -230,6 +236,9 @@ fn serve_until_signal(options: &ServeOptions) -> Result<(), ServeError> {
                 "listening"
             );
             // After the node said it listens: its first line is where it serves.
+            for (variable, bound, default) in list_changed_bounds(address_bounds) {
+                warn!("{variable} is {bound} in every realm of this node, where the default is {default}");
+            }
             if let Some(retention) = retention {
                 jobs::start_retention(Arc::new(retention), Arc::clone(&wired.app.clock));
             } else {

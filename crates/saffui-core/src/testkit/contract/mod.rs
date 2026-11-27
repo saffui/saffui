@@ -560,6 +560,7 @@ pub async fn check_clients_contract(app: &App) {
         id_token_signed_response_alg: None,
         request_object_signing_alg: None,
         require_signed_request_object: false,
+        require_pkce: true,
         enabled: true,
         self_registered: false,
         created_at: app.now(),
@@ -639,6 +640,51 @@ pub async fn check_clients_contract(app: &App) {
         .await
         .expect("the same identifier in another realm");
     work.commit().await.expect("a commit");
+
+    // A confidential application may be let off binding its codes to a
+    // verifier, and is read back so. One that proves nothing, or that
+    // registered itself, never is.
+    let let_off = Client {
+        id: mint_id(app).expect("an identifier"),
+        client_id: "portal".to_owned(),
+        auth_method: ClientAuthMethod::ClientSecretBasic,
+        self_registered: false,
+        require_pkce: false,
+        ..application.clone()
+    };
+    for (refused, kept) in [
+        (
+            Client {
+                auth_method: ClientAuthMethod::None,
+                ..let_off.clone()
+            },
+            nothing(),
+        ),
+        (
+            Client {
+                self_registered: true,
+                ..let_off.clone()
+            },
+            digested(),
+        ),
+    ] {
+        let mut work = app.storage.begin(scopes[0]).await.expect("a unit of work");
+        assert_eq!(
+            work.insert_client(&refused, &kept).await,
+            Err(StorageError::Failed),
+            "{refused:?}"
+        );
+    }
+    let mut work = app.storage.begin(scopes[0]).await.expect("a unit of work");
+    work.insert_client(&let_off, &digested())
+        .await
+        .expect("a confidential application let off");
+    assert_eq!(
+        work.read_client("portal").await,
+        Ok(Some(let_off)),
+        "a confidential application let off is read back as written"
+    );
+    drop(work);
 
     // A list runs in the order of the identifiers, cut by its window, and
     // its count is the size of the realm, not of the page.
@@ -1443,7 +1489,7 @@ async fn check_that_a_code_is_spent_once(
         redirect_uri: "https://app.example.org/cb".to_owned(),
         scopes: vec!["openid".to_owned()],
         nonce: Some("nonce".to_owned()),
-        code_challenge: "challenge".to_owned(),
+        code_challenge: Some("challenge".to_owned()),
         authenticated_at: now,
         expires_at: now + Duration::minutes(1),
         claims: Some(name_claim("given_name")),
@@ -1467,6 +1513,21 @@ async fn check_that_a_code_is_spent_once(
     assert_eq!(
         work.spend_authorization_code(&code.code_digest, now).await,
         Ok(None)
+    );
+    // A code of a client let off is bound to no challenge, and read back so.
+    let unbound = AuthorizationCode {
+        code_digest: vec![11; 32],
+        code_challenge: None,
+        ..code.clone()
+    };
+    work.insert_authorization_code(&unbound)
+        .await
+        .expect("a code bound to no challenge");
+    assert_eq!(
+        work.spend_authorization_code(&unbound.code_digest, now)
+            .await,
+        Ok(Some(unbound)),
+        "a code bound to no challenge is spent as written"
     );
     work.commit().await.expect("a commit");
     check_what_a_replayed_code_finds(app, scope, other, &code, session).await;
@@ -2281,6 +2342,7 @@ pub async fn check_served_clients_contract(app: &App) {
                 auth_signing_alg: None,
                 request_object_signing_alg: None,
                 require_signed_request_object: false,
+                require_pkce: true,
                 created_by: None,
             },
         )

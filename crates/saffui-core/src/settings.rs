@@ -3,6 +3,11 @@
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+use crate::login::throttle::{
+    MAX_PENDING_SIGN_INS_PER_ADDRESS, MAX_RECENT_ATTEMPTS_PER_ADDRESS,
+    MAX_RECENT_REGISTRATIONS_PER_ADDRESS,
+};
+
 /// Where the public reaches this deployment: a scheme and an authority,
 /// nothing after. Every issuer starts with it, and an issuer is compared byte
 /// for byte by every relying party: it carries no product name and no version.
@@ -163,12 +168,33 @@ fn to_bits(address: IpAddr) -> u128 {
     }
 }
 
+/// What one address may do in a realm in the window of the brake, the same
+/// in every realm of the node: the node pays for each hash, never a realm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AddressBounds {
+    pub sign_in_attempts: u32,
+    /// Counted under a browser the realm knows as well, in its place.
+    pub pending_sign_ins: u32,
+    pub registrations: u32,
+}
+
+impl Default for AddressBounds {
+    fn default() -> Self {
+        Self {
+            sign_in_attempts: MAX_RECENT_ATTEMPTS_PER_ADDRESS,
+            pending_sign_ins: MAX_PENDING_SIGN_INS_PER_ADDRESS,
+            registrations: MAX_RECENT_REGISTRATIONS_PER_ADDRESS,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub public_origin: PublicOrigin,
     /// The proxies in front of this deployment. Only a peer in one of these
     /// ranges is believed when it says who the request comes from.
     pub trusted_proxies: Vec<AddressRange>,
+    pub address_bounds: AddressBounds,
 }
 
 impl Settings {
@@ -178,6 +204,7 @@ impl Settings {
         Self {
             public_origin,
             trusted_proxies: Vec::new(),
+            address_bounds: AddressBounds::default(),
         }
     }
 }

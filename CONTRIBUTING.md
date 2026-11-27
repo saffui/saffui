@@ -49,6 +49,78 @@ its binding exposes nothing, allows `unsafe` back in the five modules
 that need it, and holds only its adapters to the pedantic lints. CI
 treats every warning as an error.
 
+## The conformance bench
+
+`conformance/run.sh` runs the conformance suite of the OpenID Foundation
+against a node built from your tree: nine plans for an OpenID provider
+with static clients (Basic, Implicit, Hybrid, each also with Form Post,
+Config, RP-Initiated Logout and Front-Channel Logout). It tells, it never
+gates: no pull request requires it, and `.github/workflows/conformance.yml`
+runs it once a day and on demand. GitHub turns that schedule off after
+60 days without activity in the repository; turn it back on in the Actions
+tab.
+
+```sh
+conformance/run.sh
+```
+
+It needs Docker with Compose v2, run with root (a daemon without root
+cannot let the runner write its exports, and the script stops), `python3`
+3.11 or later with `pip`, and the PostgreSQL that `scripts/dev-postgres.sh`
+looks for. It builds the binary, starts a node on a database of its own,
+provisions a person and five clients, and runs the plans; every secret it
+draws, the root key included, is new for each run. `conformance/run.sh
+check-tree` refuses under `conformance/` any file but its scripts, lists
+and settings in printable ASCII, any it cannot read, and any that holds
+PEM armor, a PuTTY key or the member `kty` of a JSON Web Key; a key in
+another form that is printable ASCII, base64 for one, it does not see.
+
+On your machine, as you, run the node, its cluster, `pip`, which fetches
+the wheels of the runner and installs nothing, and the two scripts of the
+bench that provision the node and summarize the run. In containers run the
+suite, its database, the proxies, and the runner of the suite with its
+wheels: the runner runs as your user, on a root it cannot write, with its
+scripts, its wheels and the configurations read-only and the exports alone
+writable. Only `conformance/` and four directories of `target/conformance/`
+(`runner`, `wheels`, `configs` and `exports`) are mounted in it; your home
+directory is not.
+
+It fetches five images, pinned by digest in `conformance/compose.yaml`, the
+scripts of the runner at the commit `conformance/suite.lock` names, each
+checked against its SHA-256, and the wheels of
+`conformance/requirements.txt`, each checked against its hash. A fetch that
+fails, or a file that does not match its pin, stops the run before anything
+of it runs: that is not a deviation of saffui. Nothing updates these pins:
+to move to a new release of the suite, read its tag, take the digests of
+both its images and of the four scripts at its commit, check the wheels the
+runner needs, and change the three files together.
+
+The suite, its database and its runner are on a network with no way out.
+Each run checks it from the server of the suite before it provisions
+anything: its gateway must be no address at all (under Linux, none of this
+host either), an address off the network unreachable or silent, no name
+known, and IPv6 off there and in the runner; anything else stops the run.
+Only nginx and Caddy, which give the node its origin `https://saffui.test`,
+reach the host. The API of the suite is published on `127.0.0.1:8443`
+without any credential: do not browse the web while a run lasts, since a
+page could reach it through your browser.
+
+What a run leaves is under `target/conformance/`, never committed: the
+exports of the suite, which hold the whole configuration and its secrets,
+the journals, and `summary.txt`, which says for each module its result,
+how long it ran, and the name of each condition that failed or warned. A
+run cut short, by an interrupt or by the 38 minutes CI gives its step,
+still summarizes the plans that ended. CI keeps the summary alone, for
+seven days.
+
+The runner exits with 1 on a warning, a skip or a failure it was not told
+to expect, and on an expected one that did not happen: the two lists of
+`conformance/expected-*.json` say what is expected. An entry names its
+module, condition and block as `--verbose` prints them, and its comment
+says the standard that allows the result and why saffui answers so; a
+deviation with no such standard is a defect to fix. Options after `--` go
+to the runner: `-- --verbose`, or `-- --rerun 2:6` for one module again.
+
 ## What a change looks like
 
 A pull request does one thing: a behaviour that fits in one sentence. That

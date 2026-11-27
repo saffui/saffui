@@ -1,0 +1,12 @@
+# The https origin of the node the suite tests, on a certificate of an
+# authority Caddy makes for itself in a volume thrown away with it: the
+# suite accepts any certificate, and nothing else is shown this one.
+{
+	admin off
+	skip_install_trust
+}
+
+saffui.test {
+	tls internal
+	reverse_proxy {$SAFFUI_UPSTREAM}
+}

@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use super::discovery::name_issuer;
 use super::errors::OAuthFailure;
-use super::pkce::matches_challenge;
+use super::pkce::matches_bound_challenge;
 use super::refresh::{end_grant, rotate_refresh_token};
 use crate::app::App;
 use crate::audit::EventKind;
@@ -96,6 +96,11 @@ pub async fn grant_token(
     realm: &str,
     mut request: TokenRequest<'_>,
 ) -> Result<TokenResponse, OAuthFailure> {
+    // A parameter sent without a value is one that was not sent (RFC 6749,
+    // section 3.2).
+    request.code_verifier = request
+        .code_verifier
+        .filter(|verifier| !verifier.is_empty());
     // Judged before the realm is looked for: a grant that is not served is
     // refused alike in a realm that exists and in one that does not.
     let grant = match request.grant_type {
@@ -110,10 +115,10 @@ pub async fn grant_token(
         if request.client_id.is_none() && request.client_assertion.is_none() {
             return Err(ErrorCode::ClientAuthenticationFailed.into());
         }
+        // The verifier is owed by the client, or by what its code was bound
+        // to: judged once both are known.
         let complete = if grant == "authorization_code" {
-            request.code.is_some()
-                && request.redirect_uri.is_some()
-                && request.code_verifier.is_some()
+            request.code.is_some() && request.redirect_uri.is_some()
         } else {
             request.refresh_token.is_some()
         };
@@ -222,14 +227,17 @@ async fn exchange_code(
     client: &Client,
     request: &TokenRequest<'_>,
 ) -> Result<TokenResponse, OAuthFailure> {
-    let (Some(code), Some(redirect_uri), Some(verifier)) =
-        (request.code, request.redirect_uri, request.code_verifier)
-    else {
+    let (Some(code), Some(redirect_uri)) = (request.code, request.redirect_uri) else {
         return Err(ErrorCode::RequestInvalid.into());
     };
     let invalid = || OAuthFailure::from(ErrorCode::GrantInvalid);
     if !client.allows_authorization_code {
         return Err(ErrorCode::GrantNotAllowed.into());
+    }
+    // Every code of such a client is bound to a verifier: a request without
+    // one is incomplete, and leaves the code to the request that has it.
+    if client.is_pkce_required() && request.code_verifier.is_none() {
+        return Err(ErrorCode::RequestInvalid.into());
     }
 
     // The code is spent first, in the unit identify_client returned, which
@@ -251,7 +259,11 @@ async fn exchange_code(
     // Compared to what was bound to the code, not to what the client has registered.
     if code.client_id != client.client_id
         || code.redirect_uri != redirect_uri
-        || !matches_challenge(app.digester.as_ref(), verifier, &code.code_challenge)
+        || !matches_bound_challenge(
+            app.digester.as_ref(),
+            request.code_verifier,
+            code.code_challenge.as_deref(),
+        )
     {
         return Err(invalid());
     }
@@ -971,8 +983,9 @@ mod tests {
             redirect_uri: CALLBACK.to_owned(),
             scopes: vec!["openid".to_owned(), "offline_access".to_owned()],
             nonce: None,
-            code_challenge:
+            code_challenge: Some(
                 URL_SAFE_NO_PAD.encode(scenario.app.digester.sha256(VERIFIER.as_bytes())),
+            ),
             authenticated_at: now,
             expires_at: now + time::Duration::minutes(1),
             claims: None,

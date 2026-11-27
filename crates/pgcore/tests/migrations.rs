@@ -707,6 +707,7 @@ async fn no_migration_from_the_consent_on_blocks_writes_to_two_tables_served_bef
         "0051_request_objects",
         "0053_requested_claims",
         "0057_session_clients",
+        "0060_require_pkce",
     ];
     let first = EMBEDDED
         .iter()
@@ -845,6 +846,17 @@ async fn a_rule_set_on_a_served_table_is_checked_apart_from_the_lock_that_sets_i
             "0058_frontchannel_logout",
             &["clients_frontchannel_for_applications"],
         ),
+        (
+            "0060_require_pkce",
+            &[
+                "clients_public_require_pkce",
+                "clients_registered_require_pkce",
+            ],
+        ),
+        (
+            "0061_require_pkce_checked",
+            &["authorization_requests_challenge_only_for_a_code"],
+        ),
     ] {
         let set_at = EMBEDDED
             .iter()
@@ -880,6 +892,36 @@ async fn a_rule_set_on_a_served_table_is_checked_apart_from_the_lock_that_sets_i
             assert!(read_validated(rule).await, "{rule} checked by the next one");
         }
     }
+}
+
+/// Each rule a migration sets on a table that serves is checked by one that
+/// comes after: once every migration ran, none is left unchecked. A rule
+/// never checked binds new rows alone, and rows before it may break it unseen.
+#[tokio::test]
+async fn every_rule_is_checked_once_every_migration_ran() {
+    let database = TestDatabase::create(EMBEDDED).await;
+    let unchecked: Vec<String> = database
+        .plan(OWNER)
+        .connect_directly()
+        .await
+        .expect("a connection")
+        .query(
+            "SELECT conname::text FROM pg_constraint
+             WHERE connamespace = 'public'::regnamespace AND NOT convalidated
+             ORDER BY conname",
+            &[],
+        )
+        .await
+        .expect("the rules")
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+
+    assert_eq!(
+        unchecked,
+        Vec::<String>::new(),
+        "each rule set NOT VALID is checked by a later migration"
+    );
 }
 
 /// A client written before its method was kept proves itself as it did: by
@@ -948,6 +990,71 @@ async fn a_client_made_before_its_method_was_kept_proves_itself_as_it_did_in_eve
             ("billing".to_owned(), "client_secret_basic".to_owned()),
             ("webapp".to_owned(), "none".to_owned()),
         ]
+    );
+}
+
+/// A client written before the binding of its codes could be lifted has
+/// each of its codes bound to a verifier, as it had, whatever its method:
+/// the rules of the binding then hold for it as for any other.
+#[tokio::test]
+async fn a_client_made_before_its_codes_could_be_let_off_binds_them_to_a_verifier() {
+    let setting_at = EMBEDDED
+        .iter()
+        .position(|migration| migration.name == "0060_require_pkce")
+        .expect("the migration of the setting");
+    let database = TestDatabase::create(&EMBEDDED[..setting_at]).await;
+    let owner = database.plan(OWNER);
+    let tenant = "00000000-0000-0000-0000-000000000001";
+    let realm = "00000000-0000-0000-0000-000000000101";
+    owner
+        .connect_directly()
+        .await
+        .expect("a connection")
+        .batch_execute(&format!(
+            "BEGIN;
+             SELECT set_config('saffui.tenant', '{tenant}', true),
+                    set_config('saffui.realm', '{realm}', true);
+             INSERT INTO tenants VALUES ('{tenant}', 'Tenant', now());
+             INSERT INTO realms VALUES ('{tenant}', '{realm}', 'realm', true, now());
+             INSERT INTO clients (tenant_id, realm_id, client_row_id, client_id, name,
+                                  secret_digest, allows_client_credentials, scopes, enabled,
+                                  created_at, allows_authorization_code, redirect_uris,
+                                  post_logout_redirect_uris, requires_consent, auth_method,
+                                  self_registered)
+                 VALUES ('{tenant}', '{realm}', gen_random_uuid(), 'portal', 'portal',
+                         decode('07', 'hex'), false, '{{openid}}', true, now(), true,
+                         '{{https://app.example.org/cb}}', '{{}}', false, 'client_secret_basic',
+                         false),
+                        ('{tenant}', '{realm}', gen_random_uuid(), 'spa', 'spa', NULL, false,
+                         '{{openid}}', true, now(), true, '{{https://app.example.org/cb}}', '{{}}',
+                         false, 'none', false);
+             COMMIT"
+        ))
+        .await
+        .expect("two clients");
+
+    apply_pending(&owner, EMBEDDED)
+        .await
+        .expect("the setting, then its rules checked");
+
+    let bound: Vec<(String, bool)> = database
+        .plan(MAINTENANCE_ROLE)
+        .connect_directly()
+        .await
+        .expect("a connection")
+        .query(
+            "SELECT client_id, require_pkce FROM clients ORDER BY client_id",
+            &[],
+        )
+        .await
+        .expect("the clients")
+        .iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    assert_eq!(
+        bound,
+        [("portal".to_owned(), true), ("spa".to_owned(), true)],
+        "a client made before is held to its verifier, whatever its method"
     );
 }
 

@@ -1,0 +1,146 @@
+[
+    {
+        "test-name": "oidcc-userinfo-post-body",
+        "variant": "*",
+        "configuration-filename": "*",
+        "current-block": "",
+        "condition": "UserInfoEndpointWithAccessTokenInBodyNotSupported",
+        "expected-result": "warning",
+        "comment": "RFC 6750, section 2.2: a resource server MAY read a token in the body of a request, and section 2.1 has it read in the Authorization header. saffui reads it there alone, where no form nor log of a proxy keeps it."
+    },
+    {
+        "test-name": "oidcc-scope-email",
+        "variant": {
+            "response_type": "code"
+        },
+        "configuration-filename": "*",
+        "current-block": "Verify authorization endpoint response",
+        "condition": "EnsureIdTokenDoesNotContainEmailForScopeEmail",
+        "expected-result": "warning",
+        "comment": "OpenID Connect Core 1.0, section 2: an identity token MAY contain other claims. saffui returns the claims of a scope from the userinfo endpoint when an access token is issued, as section 5.4 asks, and says email in the identity token too, as its clients already read it there."
+    },
+    {
+        "test-name": "oidcc-scope-email",
+        "variant": {
+            "response_type": "code id_token"
+        },
+        "configuration-filename": "*",
+        "current-block": "Verify authorization endpoint response",
+        "condition": "EnsureIdTokenDoesNotContainEmailForScopeEmail",
+        "expected-result": "warning",
+        "comment": "OpenID Connect Core 1.0, section 2: an identity token MAY contain other claims. saffui returns the claims of a scope from the userinfo endpoint when an access token is issued, as section 5.4 asks, and says email in the identity token too, as its clients already read it there."
+    },
+    {
+        "test-name": "oidcc-scope-email",
+        "variant": {
+            "response_type": "code token"
+        },
+        "configuration-filename": "*",
+        "current-block": "",
+        "condition": "EnsureIdTokenDoesNotContainEmailForScopeEmail",
+        "expected-result": "warning",
+        "comment": "OpenID Connect Core 1.0, section 2: an identity token MAY contain other claims. saffui returns the claims of a scope from the userinfo endpoint when an access token is issued, as section 5.4 asks, and says email in the identity token too, as its clients already read it there."
+    },
+    {
+        "test-name": "oidcc-scope-email",
+        "variant": {
+            "response_type": "code id_token token"
+        },
+        "configuration-filename": "*",
+        "current-block": "",
+        "condition": "EnsureIdTokenDoesNotContainEmailForScopeEmail",
+        "expected-result": "warning",
+        "comment": "OpenID Connect Core 1.0, section 2: an identity token MAY contain other claims. saffui returns the claims of a scope from the userinfo endpoint when an access token is issued, as section 5.4 asks, and says email in the identity token too, as its clients already read it there."
+    },
+    {
+        "test-name": "oidcc-alternate-happy-flow",
+        "variant": {
+            "response_type": "code"
+        },
+        "configuration-filename": "*",
+        "current-block": "Verify authorization endpoint response",
+        "condition": "EnsureIdTokenDoesNotContainEmailForScopeEmail",
+        "expected-result": "warning",
+        "comment": "OpenID Connect Core 1.0, section 2: an identity token MAY contain other claims. saffui returns the claims of a scope from the userinfo endpoint when an access token is issued, as section 5.4 asks, and says email in the identity token too, as its clients already read it there."
+    },
+    {
+        "test-name": "oidcc-alternate-happy-flow",
+        "variant": {
+            "response_type": "code id_token"
+        },
+        "configuration-filename": "*",
+        "current-block": "Verify authorization endpoint response",
+        "condition": "EnsureIdTokenDoesNotContainEmailForScopeEmail",
+        "expected-result": "warning",
+        "comment": "OpenID Connect Core 1.0, section 2: an identity token MAY contain other claims. saffui returns the claims of a scope from the userinfo endpoint when an access token is issued, as section 5.4 asks, and says email in the identity token too, as its clients already read it there."
+    },
+    {
+        "test-name": "oidcc-scope-profile",
+        "variant": "*",
+        "configuration-filename": "*basic.json",
+        "current-block": "",
+        "condition": "VerifyScopesReturnedInUserInfoClaims",
+        "expected-result": "warning",
+        "comment": "OpenID Connect Core 1.0, section 5.4: the claims a scope asks for are voluntary, and section 5.3.2: not returning a claim asked for is no error. saffui keeps no time of the last change of a person, and says no updated_at rather than a false one."
+    },
+    {
+        "test-name": "oidcc-scope-profile",
+        "variant": "*",
+        "configuration-filename": "*hybrid.json",
+        "current-block": "",
+        "condition": "VerifyScopesReturnedInUserInfoClaims",
+        "expected-result": "warning",
+        "comment": "OpenID Connect Core 1.0, section 5.4: the claims a scope asks for are voluntary, and section 5.3.2: not returning a claim asked for is no error. saffui keeps no time of the last change of a person, and says no updated_at rather than a false one."
+    },
+    {
+        "test-name": "oidcc-scope-profile",
+        "variant": {
+            "response_type": "id_token token"
+        },
+        "configuration-filename": "*implicit.json",
+        "current-block": "",
+        "condition": "VerifyScopesReturnedInUserInfoClaims",
+        "expected-result": "warning",
+        "comment": "OpenID Connect Core 1.0, section 5.4: the claims a scope asks for are voluntary, and section 5.3.2: not returning a claim asked for is no error. saffui keeps no time of the last change of a person, and says no updated_at rather than a false one."
+    },
+    {
+        "test-name": "oidcc-scope-profile",
+        "variant": {
+            "response_type": "id_token"
+        },
+        "configuration-filename": "*implicit.json",
+        "current-block": "Verify authorization endpoint response",
+        "condition": "VerifyScopesReturnedInAuthorizationEndpointIdToken",
+        "expected-result": "warning",
+        "comment": "OpenID Connect Core 1.0, section 5.4: the claims a scope asks for are voluntary, and returned in the identity token when no access token is issued. saffui keeps no time of the last change of a person, and says no updated_at rather than a false one."
+    },
+    {
+        "test-name": "oidcc-claims-essential",
+        "variant": {
+            "response_type": "id_token token"
+        },
+        "configuration-filename": "*implicit.json",
+        "current-block": "",
+        "condition": "EnsureUserInfoContainsName",
+        "expected-result": "warning",
+        "comment": "OpenID Connect Core 1.0, section 5.5.1: the server MUST NOT fail a request when a claim is not returned, essential or voluntary. The userinfo of an access token from the authorization endpoint says what its scopes say: that token names no grant whose claims it could find."
+    },
+    {
+        "test-name": "oidcc-codereuse-30seconds",
+        "variant": "*",
+        "configuration-filename": "*basic.json",
+        "current-block": "Testing if access token was revoked after authorization code reuse (the AS 'should' have revoked the access token)",
+        "condition": "EnsureHttpStatusCodeIs4xx",
+        "expected-result": "warning",
+        "comment": "RFC 6749, section 4.1.2: a code used twice MUST be refused, and the tokens it gave SHOULD be revoked when possible. saffui refuses it, ends the refresh tokens and the offline session of the first exchange, and declines the rest of that SHOULD: its access token lives out its few minutes."
+    },
+    {
+        "test-name": "oidcc-codereuse-30seconds",
+        "variant": "*",
+        "configuration-filename": "*hybrid.json",
+        "current-block": "Testing if access token was revoked after authorization code reuse (the AS 'should' have revoked the access token)",
+        "condition": "EnsureHttpStatusCodeIs4xx",
+        "expected-result": "warning",
+        "comment": "RFC 6749, section 4.1.2: a code used twice MUST be refused, and the tokens it gave SHOULD be revoked when possible. saffui refuses it, ends the refresh tokens and the offline session of the first exchange, and declines the rest of that SHOULD: its access token lives out its few minutes."
+    }
+]

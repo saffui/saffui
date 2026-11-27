@@ -82,6 +82,7 @@ pub(super) fn show_client(client: &Client) -> ClientView {
             .request_object_signing_alg
             .map(|algorithm| algorithm.name().to_owned()),
         require_signed_request_object: client.require_signed_request_object,
+        require_pkce: client.require_pkce,
         enabled: client.enabled,
         created_at: write_instant(client.created_at),
     }

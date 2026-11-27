@@ -77,6 +77,7 @@ const CLIENT: &[Column] = &[
     clients::REQUEST_OBJECT_SIGNING_ALG,
     clients::REQUIRE_SIGNED_REQUEST_OBJECT,
     clients::FRONTCHANNEL_LOGOUT_URI,
+    clients::REQUIRE_PKCE,
 ];
 
 /// Constant SQL: the columns of [`CLIENT`], in its order, and the row stays
@@ -86,7 +87,7 @@ const READ_CLIENT_FOR_UPDATE: &str = "
         enabled, created_at, allows_authorization_code, redirect_uris,
         post_logout_redirect_uris, requires_consent, id_token_signed_response_alg, auth_method,
         auth_signing_alg, self_registered, response_types, request_object_signing_alg,
-        require_signed_request_object, frontchannel_logout_uri
+        require_signed_request_object, frontchannel_logout_uri, require_pkce
     FROM clients
     WHERE tenant_id = $1 AND realm_id = $2 AND client_id = $3
     FOR NO KEY UPDATE";
@@ -99,7 +100,7 @@ const READ_CLIENT_FOR_SHARE: &str = "
         enabled, created_at, allows_authorization_code, redirect_uris,
         post_logout_redirect_uris, requires_consent, id_token_signed_response_alg, auth_method,
         auth_signing_alg, self_registered, response_types, request_object_signing_alg,
-        require_signed_request_object, frontchannel_logout_uri
+        require_signed_request_object, frontchannel_logout_uri, require_pkce
     FROM clients
     WHERE tenant_id = $1 AND realm_id = $2 AND client_id = $3
     FOR SHARE";
@@ -129,6 +130,7 @@ const CLIENT_WITH_PROOF: &[Column] = &[
     clients::REQUEST_OBJECT_SIGNING_ALG,
     clients::REQUIRE_SIGNED_REQUEST_OBJECT,
     clients::FRONTCHANNEL_LOGOUT_URI,
+    clients::REQUIRE_PKCE,
     clients::SECRET_DIGEST,
     clients::SEALED_SECRET,
     clients::JWKS,
@@ -173,6 +175,7 @@ fn read_client_row(row: &Row) -> Result<Client, StorageError> {
             .map(|name| AssertionAlgorithm::parse(&name).ok_or(StorageError::Failed))
             .transpose()?,
         require_signed_request_object: row.get(18),
+        require_pkce: row.get(20),
         enabled: row.get(6),
         self_registered: row.get(15),
         created_at: row.get(7),
@@ -268,6 +271,7 @@ impl ClientStore for PgUnitOfWork {
                     clients::REQUIRE_SIGNED_REQUEST_OBJECT,
                     &client.require_signed_request_object,
                 ),
+                col(clients::REQUIRE_PKCE, &client.require_pkce),
                 col(clients::ENABLED, &client.enabled),
                 col(clients::CREATED_AT, &client.created_at),
             ],

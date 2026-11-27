@@ -31,7 +31,8 @@ const BUCKET_SECONDS: i64 = 300;
 /// together before every attempt is refused.
 pub const MAX_RECENT_FAILURES: u32 = 5;
 
-/// How many times one address may try to sign in to a realm in the window.
+/// How many times one address may try to sign in to a realm in the window,
+/// unless the node sets another bound.
 pub const MAX_RECENT_ATTEMPTS_PER_ADDRESS: u32 = 30;
 
 /// How many times a browser the realm knows may try in the window. Counted
@@ -55,13 +56,14 @@ pub const MAX_DAILY_FAILURES: u32 = 100;
 pub const MAX_DAILY_FAILURES_PER_BROWSER: u32 = 20;
 
 /// How many sign-ins one address, or one known browser, may leave waiting
-/// in a realm in the window, before any session: each keeps a row for ten
-/// minutes, and asking for one takes nothing but a request.
+/// in a realm in the window, before any session, unless the node sets another
+/// bound: each keeps a row for ten minutes, and asking for one takes nothing
+/// but a request.
 pub const MAX_PENDING_SIGN_INS_PER_ADDRESS: u32 = 60;
 
 /// How many clients one address may register in a realm in the window,
-/// changes and ends of a registration included: each may check keys, and
-/// writes a client nobody vetted.
+/// changes and ends of a registration included, unless the node sets another
+/// bound: each may check keys, and writes a client nobody vetted.
 pub const MAX_RECENT_REGISTRATIONS_PER_ADDRESS: u32 = 10;
 
 /// As many from the /48 of an IPv6 caller, whatever its /64: a site holds
@@ -213,6 +215,8 @@ pub(crate) struct Brake {
     name: Vec<u8>,
     name_today: Vec<u8>,
     address: Option<Vec<u8>>,
+    /// How many attempts the address may make in the window, as the node set it.
+    most_per_address: u32,
     address_and_name: Option<Vec<u8>>,
     browser: Option<BrowserCounters>,
 }
@@ -237,6 +241,7 @@ impl Brake {
             address: address
                 .map(|address| digest_counter(app, scope, 2, &[address.as_bytes()]))
                 .transpose()?,
+            most_per_address: app.settings.address_bounds.sign_in_attempts,
             address_and_name: address
                 .map(|address| digest_counter(app, scope, 3, &[address.as_bytes(), typed]))
                 .transpose()?,
@@ -279,7 +284,7 @@ impl Brake {
     ) -> Result<(), Failure> {
         let (counter, most) = match &self.browser {
             Some(browser) => (Some(&browser.attempts), MAX_RECENT_ATTEMPTS_PER_BROWSER),
-            None => (self.address.as_ref(), MAX_RECENT_ATTEMPTS_PER_ADDRESS),
+            None => (self.address.as_ref(), self.most_per_address),
         };
         let Some(counter) = counter else {
             return Ok(());
@@ -401,7 +406,8 @@ pub(crate) async fn admit_pending_sign_in(
         .sealer
         .digest_typed_name(scope.tenant().as_uuid(), scope.realm().as_uuid(), &written)
         .map_err(|_| Failure::new(ErrorCode::CryptoUnavailable))?;
-    if count_one_more(work, &counter, now, MAX_PENDING_SIGN_INS_PER_ADDRESS).await? {
+    let most = app.settings.address_bounds.pending_sign_ins;
+    if count_one_more(work, &counter, now, most).await? {
         Ok(())
     } else {
         Err(Failure::new(ErrorCode::SignInRequestsTooFrequent))
@@ -419,7 +425,7 @@ fn digest_registration_counters(
     let address = write_address_bucket(caller);
     let mut counters = vec![(
         digest_counter(app, scope, 12, &[address.as_bytes()])?,
-        MAX_RECENT_REGISTRATIONS_PER_ADDRESS,
+        app.settings.address_bounds.registrations,
     )];
     if let Some(network) = write_network_bucket(caller) {
         counters.push((

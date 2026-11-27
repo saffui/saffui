@@ -261,8 +261,8 @@ async fn look_at_id_token_algorithm(
 /// by [`check_new_client`]: its addresses, name, method, keys with the share
 /// of the realm, and algorithms. Registered by anyone the realm let in, it
 /// asks each person before it acts in their name, holds no capability, and
-/// is handed back a code alone. Its scopes are judged on the settings held
-/// where it is written.
+/// is handed back a code alone, bound to a verifier whatever it says of
+/// itself. Its scopes are judged on the settings held where it is written.
 async fn check_registered_metadata<'a>(
     app: &App,
     scope: RealmScope,
@@ -287,6 +287,7 @@ async fn check_registered_metadata<'a>(
         auth_signing_alg: wanted.signing,
         request_object_signing_alg: None,
         require_signed_request_object: false,
+        require_pkce: true,
         created_by: None,
     };
     check_new_client(app, ClientChecker::Registration(scope.realm()), wanted).await
@@ -1389,6 +1390,47 @@ mod tests {
     }
 
     #[test]
+    fn a_client_registered_by_anyone_binds_its_codes_to_a_verifier_whatever_it_says() {
+        let scenario = Scenario::start();
+        open(&scenario, RegistrationPolicy::Open);
+        let registered = register(
+            &scenario,
+            &json!({
+                "redirect_uris": [CALLBACK],
+                "token_endpoint_auth_method": "client_secret_basic",
+                "require_pkce": false,
+            }),
+        )
+        .expect("a confidential client");
+        let client_id = text(&registered, "client_id");
+
+        assert!(
+            read_client(&scenario, &client_id).require_pkce,
+            "a client registered by anyone is held to its verifier"
+        );
+        assert!(
+            registered.get("require_pkce").is_none(),
+            "a member it does not know is not told back: {registered}"
+        );
+        let unbound = AuthorizationParameters {
+            response_type: Some("code"),
+            client_id: Some(&client_id),
+            redirect_uri: Some(CALLBACK),
+            scope: Some("openid"),
+            ..AuthorizationParameters::default()
+        };
+        let refused = complete(begin_authorization(&scenario.app, "acme", unbound, None));
+        let Err(AuthorizationRefusal::Returned { response }) = refused else {
+            panic!("returned to the client: {refused:?}");
+        };
+        assert_eq!(
+            response.read_parameter("error"),
+            Some("invalid_request"),
+            "a request without a challenge"
+        );
+    }
+
+    #[test]
     fn a_realm_takes_registered_clients_up_to_its_bound_an_ended_one_counted() {
         let scenario = Scenario::start();
         open_with(
@@ -1479,6 +1521,28 @@ mod tests {
         assert!(
             register_as(&scenario, Some(caller), None, metadata.as_bytes()).is_ok(),
             "the window moved on"
+        );
+    }
+
+    #[test]
+    fn a_bound_the_node_raises_lets_an_address_register_past_the_default_and_no_further() {
+        let mut scenario = Scenario::start();
+        let raised = MAX_RECENT_REGISTRATIONS_PER_ADDRESS + 5;
+        scenario.app.settings.address_bounds.registrations = raised;
+        open(&scenario, RegistrationPolicy::Open);
+        let caller: IpAddr = "203.0.113.7".parse().expect("an address");
+        for _ in 0..raised {
+            assert_eq!(
+                register_as(&scenario, Some(caller), None, b"not JSON").map(|_| ()),
+                Err(RegistrationError::InvalidClientMetadata),
+                "a registration within the raised bound is judged"
+            );
+        }
+
+        assert_eq!(
+            register_as(&scenario, Some(caller), None, b"not JSON").map(|_| ()),
+            Err(RegistrationError::TemporarilyUnavailable),
+            "the registration past the raised bound is turned away"
         );
     }
 
@@ -2064,6 +2128,7 @@ mod tests {
                 auth_signing_alg: None,
                 request_object_signing_alg: None,
                 require_signed_request_object: false,
+                require_pkce: true,
                 created_by: None,
             },
         ));
@@ -2941,6 +3006,7 @@ mod tests {
                 auth_signing_alg: None,
                 request_object_signing_alg: None,
                 require_signed_request_object: false,
+                require_pkce: true,
                 created_by: Some("operator"),
             },
         ))

@@ -47,6 +47,7 @@ pub fn register_data_plane(
                     .service(oidc::logout::relay_posted_logout)
                     .service(oidc::logout::confirm)
                     .service(oidc::authorize::begin)
+                    .service(oidc::authorize::relay_posted_authorization)
                     .service(oidc::register::create_registration)
                     .service(oidc::register::read_registration)
                     .service(oidc::register::update_registration)

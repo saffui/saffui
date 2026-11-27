@@ -111,6 +111,7 @@ pub async fn create_client(
             auth_signing_alg,
             request_object_signing_alg,
             require_signed_request_object: wanted.require_signed_request_object,
+            require_pkce: wanted.require_pkce,
             created_by: None,
         };
         manage::create_client(&product, &caller, client).await

@@ -2,6 +2,7 @@
 //! waits for one, whatever the product writes: the rules of applications
 //! hold for a write from anywhere.
 
+use pgcore::APP_ROLE;
 use pgcore::pool::PoolSettings;
 use pgcore::testkit::TestDatabase;
 use saffui_core::authz::capability::Capability;
@@ -87,6 +88,7 @@ async fn an_application_with_a_capability_a_service_without_a_secret_and_a_flow_
         id_token_signed_response_alg: None,
         request_object_signing_alg: None,
         require_signed_request_object: false,
+        require_pkce: true,
         enabled: true,
         self_registered: false,
         created_at: app.now(),
@@ -185,6 +187,7 @@ async fn a_service_is_given_no_address_to_be_loaded_at_whatever_writes_it() {
         id_token_signed_response_alg: None,
         request_object_signing_alg: None,
         require_signed_request_object: false,
+        require_pkce: true,
         enabled: true,
         self_registered: false,
         created_at: app.now(),
@@ -236,6 +239,7 @@ async fn a_client_is_handed_back_six_known_types_at_most_whatever_writes_it() {
         id_token_signed_response_alg: None,
         request_object_signing_alg: None,
         require_signed_request_object: false,
+        require_pkce: true,
         enabled: true,
         self_registered: false,
         created_at: app.now(),
@@ -307,18 +311,19 @@ async fn a_waiting_request_asks_a_known_type_in_a_mode_it_may_travel_in_whatever
     };
 
     assert_eq!(change("response_mode = 'form_post'").await, None);
+    assert_eq!(
+        change("code_challenge = NULL").await,
+        None,
+        "a code of a client let off is bound to no challenge"
+    );
     for (refused, rule) in [
         (
             "response_type = 'code token'",
             "authorization_requests_response_mode_known",
         ),
         (
-            "code_challenge = NULL",
-            "authorization_requests_challenge_for_a_code",
-        ),
-        (
             "response_type = 'id_token', response_mode = 'fragment'",
-            "authorization_requests_challenge_for_a_code",
+            "authorization_requests_challenge_only_for_a_code",
         ),
         (
             "response_type = 'token', response_mode = 'fragment', code_challenge = NULL",
@@ -327,4 +332,110 @@ async fn a_waiting_request_asks_a_known_type_in_a_mode_it_may_travel_in_whatever
     ] {
         assert_eq!(change(refused).await.as_deref(), Some(rule), "{refused}");
     }
+}
+
+/// Only a confidential client an administrator made is let off binding its
+/// codes to a verifier, whatever writes it, and the role that serves never
+/// changes the setting once the client is made.
+#[tokio::test]
+async fn a_client_is_let_off_its_verifier_when_it_keeps_a_secret_and_was_vetted_and_never_after() {
+    let (app, database) = support::wire_on_postgres(PoolSettings::default()).await;
+    let scope = create_realm(&app, "acme").await;
+    let confidential = Client {
+        id: mint_id(&app).expect("an identifier"),
+        client_id: "portal".to_owned(),
+        name: "Portal".to_owned(),
+        auth_method: ClientAuthMethod::ClientSecretBasic,
+        auth_signing_alg: None,
+        allows_client_credentials: false,
+        allows_authorization_code: true,
+        redirect_uris: vec!["https://app.example.org/callback".to_owned()],
+        response_types: vec![ResponseType::Code],
+        post_logout_redirect_uris: Vec::new(),
+        frontchannel_logout_uri: None,
+        requires_consent: false,
+        scopes: vec!["openid".to_owned()],
+        capabilities: Vec::new(),
+        id_token_signed_response_alg: None,
+        request_object_signing_alg: None,
+        require_signed_request_object: false,
+        require_pkce: true,
+        enabled: true,
+        self_registered: false,
+        created_at: app.now(),
+    };
+    let public = Client {
+        id: mint_id(&app).expect("an identifier"),
+        client_id: "spa".to_owned(),
+        auth_method: ClientAuthMethod::None,
+        ..confidential.clone()
+    };
+    let registered = Client {
+        id: mint_id(&app).expect("an identifier"),
+        client_id: "partner".to_owned(),
+        requires_consent: true,
+        self_registered: true,
+        ..confidential.clone()
+    };
+    let mut work = app.storage.begin(scope).await.expect("a unit of work");
+    for client in [&confidential, &public, &registered] {
+        let proof = KeptProof {
+            secret_digest: (!client.is_public()).then(|| vec![7; 32]),
+            sealed_secret: None,
+            jwks: None,
+        };
+        work.insert_client(client, &proof).await.expect("a client");
+    }
+    work.commit().await.expect("a commit");
+
+    for (client, rule) in [
+        (&confidential, None),
+        (&public, Some("clients_public_require_pkce")),
+        (&registered, Some("clients_registered_require_pkce")),
+    ] {
+        let refused = update_as_owner(
+            &database,
+            scope,
+            "UPDATE clients SET require_pkce = false WHERE client_row_id = $1",
+            client.id,
+        )
+        .await;
+        assert_eq!(refused.as_deref(), rule, "{}", client.client_id);
+    }
+
+    let mut serving = support::connect(&database, APP_ROLE).await;
+    let writing = serving.transaction().await.expect("a transaction");
+    writing
+        .execute(
+            "SELECT set_config('saffui.tenant', $1, true), set_config('saffui.realm', $2, true)",
+            &[
+                &scope.tenant().as_uuid().to_string(),
+                &scope.realm().as_uuid().to_string(),
+            ],
+        )
+        .await
+        .expect("the scope");
+    assert_eq!(
+        writing
+            .execute(
+                "UPDATE clients SET capabilities = capabilities WHERE client_row_id = $1",
+                &[&confidential.id],
+            )
+            .await
+            .expect("a column the role may change"),
+        1,
+        "the row is reached"
+    );
+    let changed = writing
+        .execute(
+            "UPDATE clients SET require_pkce = false WHERE client_row_id = $1",
+            &[&confidential.id],
+        )
+        .await
+        .expect_err("a change of the setting");
+    assert_eq!(
+        changed.code(),
+        Some(&SqlState::INSUFFICIENT_PRIVILEGE),
+        "the serving role changes no setting of a verifier: {changed}"
+    );
 }

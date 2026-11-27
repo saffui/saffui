@@ -1,0 +1,47 @@
+name: Conformance
+
+# The conformance suite of the OpenID Foundation, run against this tree: it
+# tells, it never gates. No pull request requires it.
+on:
+  schedule:
+    # Daily, two hours before ci.yml, so that the two never share a runner hour.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: conformance
+  cancel-in-progress: false
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    cache-mode: none
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Refuse under conformance/ any file it may not hold
+        run: conformance/run.sh check-tree
+      # The secrets of the run are masked before anything is printed. No
+      # journal of the node or of the suite is printed, even on a failure:
+      # a secret shows there in forms a mask does not see. Cut short before
+      # the job is, a run still leaves its summary.
+      - name: Run the suite against this tree
+        timeout-minutes: 38
+        # Run in place of the shell of the step, which receives the interrupt.
+        run: exec conformance/run.sh
+      # The summary alone: an export holds the configuration, secrets included.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: conformance-summary
+          path: target/conformance/summary.txt
+          if-no-files-found: warn
+          retention-days: 7

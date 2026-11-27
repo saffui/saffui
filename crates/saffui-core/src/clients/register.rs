@@ -38,6 +38,10 @@ pub enum ClientChecker {
 
 /// A client to register. With redirect URIs it sends people through the
 /// authorization endpoint; without, it asks for tokens as itself.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each is a member of the client its administrator names"
+)]
 pub struct NewClient<'a> {
     pub client_id: &'a str,
     pub name: &'a str,
@@ -69,6 +73,9 @@ pub struct NewClient<'a> {
     pub request_object_signing_alg: Option<AssertionAlgorithm>,
     /// Each of its requests is to be a request object.
     pub require_signed_request_object: bool,
+    /// Each of its codes is to be bound to a verifier. Off, the client keeps
+    /// a secret and sends people back elsewhere than this machine.
+    pub require_pkce: bool,
     /// The client of the administration plane that asks, when one does.
     pub created_by: Option<&'a str>,
 }
@@ -365,9 +372,11 @@ pub async fn check_new_client<'a>(
         }
     }
     // Only a client that signs people in has anyone to send back after they
-    // sign out, or anyone to ask.
+    // sign out, anyone to ask, or a code to bind.
     if wanted.redirect_uris.is_empty()
-        && (!wanted.post_logout_redirect_uris.is_empty() || wanted.requires_consent)
+        && (!wanted.post_logout_redirect_uris.is_empty()
+            || wanted.requires_consent
+            || !wanted.require_pkce)
     {
         return Err(Failure::new(ErrorCode::RequestInvalid));
     }
@@ -394,6 +403,19 @@ pub async fn check_new_client<'a>(
         return Err(Failure::new(ErrorCode::ClientJwksInvalid));
     }
     let method = choose_auth_method(&wanted)?;
+    // A client that proves nothing, or whatever listens on this machine,
+    // holds a code that only its verifier binds to the request (RFC 9700,
+    // section 2.1.1; RFC 8252, section 8.1).
+    let native = wanted
+        .redirect_uris
+        .iter()
+        .any(|uri| is_loopback_host(read_redirect_host(uri)));
+    if !wanted.require_pkce && (method == ClientAuthMethod::None || native) {
+        return Err(Failure::with_detail(
+            ErrorCode::ClientMetadataInvalid,
+            "require_pkce",
+        ));
+    }
     if let Some(uri) = wanted.frontchannel_logout_uri {
         let public = method == ClientAuthMethod::None;
         let origin = &app.settings.public_origin;
@@ -542,6 +564,7 @@ pub(crate) async fn insert_checked_client(
         id_token_signed_response_alg: wanted.id_token_signed_response_alg,
         request_object_signing_alg: wanted.request_object_signing_alg,
         require_signed_request_object: wanted.require_signed_request_object,
+        require_pkce: wanted.require_pkce,
         enabled: true,
         self_registered: matches!(checker, ClientChecker::Registration(_)),
         created_at: app.now(),
@@ -584,6 +607,11 @@ pub(crate) async fn insert_checked_client(
             .map(|kind| kind.name())
             .collect();
         created["response_types"] = json!(declared);
+    }
+    // Said only of a client let off: the chain is where an administrator
+    // finds who lifted the binding of its codes, and when.
+    if !client.require_pkce {
+        created["require_pkce"] = json!(false);
     }
     Ok((client, secret, created))
 }
@@ -668,6 +696,7 @@ pub async fn register_service_client(
             auth_signing_alg: None,
             request_object_signing_alg: None,
             require_signed_request_object: false,
+            require_pkce: true,
             created_by: None,
         },
     )
@@ -802,6 +831,7 @@ mod tests {
                 auth_signing_alg: None,
                 request_object_signing_alg: None,
                 require_signed_request_object: false,
+                require_pkce: true,
                 created_by: Some("operator"),
             },
         ))
@@ -818,6 +848,108 @@ mod tests {
             .expect("an event");
         assert_eq!(created["payload"]["public"], true);
         assert_eq!(created["payload"]["actor"]["client_id"], "operator");
+    }
+
+    #[test]
+    fn only_a_confidential_client_sent_back_elsewhere_than_this_machine_is_let_off_its_verifier() {
+        use super::NewClient;
+
+        let (app, storage) = MemoryStorage::wire();
+        let scope = complete(create_realm(&app, "acme"));
+        let register = |client_id: &str, callbacks: &[&str], public: bool, require_pkce| {
+            let callbacks: Vec<String> = callbacks.iter().map(|uri| (*uri).to_owned()).collect();
+            let mut work = complete(app.storage.begin(scope)).expect("a unit of work");
+            let registered = complete(check_and_register_client(
+                &app,
+                work.as_mut(),
+                NewClient {
+                    client_id,
+                    name: client_id,
+                    scopes: &[],
+                    capabilities: &[],
+                    redirect_uris: &callbacks,
+                    post_logout_redirect_uris: &[],
+                    frontchannel_logout_uri: None,
+                    response_types: &[],
+                    public,
+                    requires_consent: false,
+                    id_token_signed_response_alg: None,
+                    auth_method: None,
+                    jwks: None,
+                    jwks_uri: None,
+                    auth_signing_alg: None,
+                    request_object_signing_alg: None,
+                    require_signed_request_object: false,
+                    require_pkce,
+                    created_by: None,
+                },
+            ))
+            .map(|(client, _)| client.require_pkce)
+            .map_err(|failure| (failure.code, failure.detail));
+            let _ = complete(work.commit());
+            registered
+        };
+        let created_by = |client_id: &str| {
+            storage
+                .read_audit_envelopes(scope.realm())
+                .into_iter()
+                .find(|event| event["payload"]["client_id"] == client_id)
+                .expect("the creation of the client")["payload"]
+                .clone()
+        };
+        let named = || {
+            Err((
+                ErrorCode::ClientMetadataInvalid,
+                Some("require_pkce".to_owned()),
+            ))
+        };
+
+        assert_eq!(
+            register("portal", &["https://app.example.org/cb"], false, false),
+            Ok(false),
+            "a confidential client sent back to a public address"
+        );
+        assert_eq!(
+            created_by("portal")["require_pkce"],
+            false,
+            "the creation of a client let off says so"
+        );
+        assert_eq!(
+            register("held", &["https://app.example.org/cb"], false, true),
+            Ok(true),
+            "a confidential client held to its verifier"
+        );
+        assert!(
+            created_by("held").get("require_pkce").is_none(),
+            "a client held to its verifier is said as before"
+        );
+        assert_eq!(
+            register("spa", &["https://app.example.org/cb"], true, false),
+            named(),
+            "a client that proves nothing"
+        );
+        for callback in ["http://127.0.0.1:8080/cb", "http://localhost:8080/cb"] {
+            assert_eq!(
+                register("native", &[callback], false, false),
+                named(),
+                "{callback}"
+            );
+        }
+        assert_eq!(
+            register(
+                "desktop",
+                &["https://app.example.org/cb", "http://127.0.0.1:8080/cb"],
+                false,
+                false
+            ),
+            named(),
+            "a client sent back to a public address and to this machine"
+        );
+        assert_eq!(
+            register("billing", &[], false, false),
+            Err((ErrorCode::RequestInvalid, None)),
+            "a client given no code"
+        );
     }
 
     #[test]
@@ -852,6 +984,7 @@ mod tests {
                     auth_signing_alg: None,
                     request_object_signing_alg: None,
                     require_signed_request_object: false,
+                    require_pkce: true,
                     created_by: None,
                 },
             ))
@@ -901,6 +1034,7 @@ mod tests {
                 auth_signing_alg: None,
                 request_object_signing_alg: None,
                 require_signed_request_object: false,
+                require_pkce: true,
                 created_by: None,
             };
             let checked = complete(check_new_client(&app, checker, wanted))
@@ -993,6 +1127,7 @@ mod tests {
                     auth_signing_alg: None,
                     request_object_signing_alg: None,
                     require_signed_request_object: false,
+                    require_pkce: true,
                     created_by: None,
                 },
             ))
@@ -1049,6 +1184,7 @@ mod tests {
                     auth_signing_alg: None,
                     request_object_signing_alg: None,
                     require_signed_request_object: false,
+                    require_pkce: true,
                     created_by: None,
                 },
             ))
@@ -1120,6 +1256,7 @@ mod tests {
                     auth_signing_alg: None,
                     request_object_signing_alg: None,
                     require_signed_request_object: false,
+                    require_pkce: true,
                     created_by: None,
                 },
             ))
@@ -1182,6 +1319,7 @@ mod tests {
                     auth_signing_alg: None,
                     request_object_signing_alg: None,
                     require_signed_request_object: false,
+                    require_pkce: true,
                     created_by: None,
                 },
             ))
@@ -1245,6 +1383,7 @@ mod tests {
                 auth_signing_alg: proof.signing,
                 request_object_signing_alg: None,
                 require_signed_request_object: false,
+                require_pkce: true,
                 created_by: None,
             },
         ))
@@ -1573,6 +1712,7 @@ mod tests {
                     auth_signing_alg: None,
                     request_object_signing_alg: None,
                     require_signed_request_object: false,
+                    require_pkce: true,
                     created_by: None,
                 },
             ))
@@ -1633,6 +1773,7 @@ mod tests {
                 auth_signing_alg: None,
                 request_object_signing_alg: wanted.algorithm,
                 require_signed_request_object: wanted.required,
+                require_pkce: true,
                 created_by: None,
             },
         ))

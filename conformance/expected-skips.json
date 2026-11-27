@@ -1,0 +1,32 @@
+[
+    {
+        "test-name": "oidcc-scope-address",
+        "variant": "*",
+        "configuration-filename": "*",
+        "comment": "OpenID Connect Core 1.0, section 5.4, makes the scopes address and phone OPTIONAL, and section 15.1 does not make them mandatory: saffui serves neither, lists neither in scopes_supported, and the module skips itself on reading so."
+    },
+    {
+        "test-name": "oidcc-scope-phone",
+        "variant": "*",
+        "configuration-filename": "*",
+        "comment": "OpenID Connect Core 1.0, section 5.4, makes the scopes address and phone OPTIONAL, and section 15.1 does not make them mandatory: saffui serves neither, lists neither in scopes_supported, and the module skips itself on reading so."
+    },
+    {
+        "test-name": "oidcc-scope-all",
+        "variant": "*",
+        "configuration-filename": "*",
+        "comment": "OpenID Connect Core 1.0, section 5.4, makes the scopes address and phone OPTIONAL, and section 15.1 does not make them mandatory: saffui serves neither, lists neither in scopes_supported, and the module skips itself on reading so."
+    },
+    {
+        "test-name": "oidcc-unsigned-request-object-supported-correctly-or-rejected-as-unsupported",
+        "variant": "*",
+        "configuration-filename": "*",
+        "comment": "Discovery 1.0, section 3, says servers SHOULD support none for request objects: saffui declines that SHOULD, since a request object that is not signed binds nothing to its client. It leaves none out of request_object_signing_alg_values_supported, and the module skips itself on reading so."
+    },
+    {
+        "test-name": "oidcc-ensure-request-object-with-redirect-uri",
+        "variant": "*",
+        "configuration-filename": "*",
+        "comment": "Discovery 1.0, section 3, says servers SHOULD support none for request objects: saffui declines that SHOULD, since a request object that is not signed binds nothing to its client. It leaves none out of request_object_signing_alg_values_supported, and the module skips itself on reading so."
+    }
+]

@@ -76,6 +76,7 @@ async fn register(
             auth_signing_alg: None,
             request_object_signing_alg,
             require_signed_request_object,
+            require_pkce: true,
             created_by: None,
         },
     )

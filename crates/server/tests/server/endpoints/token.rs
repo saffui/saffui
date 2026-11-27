@@ -124,6 +124,7 @@ async fn register_service(
             auth_signing_alg: None,
             request_object_signing_alg: None,
             require_signed_request_object: false,
+            require_pkce: true,
             created_by: None,
         },
     )

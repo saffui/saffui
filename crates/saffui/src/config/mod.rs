@@ -5,3 +5,4 @@ pub(crate) mod hashing;
 pub(crate) mod origin;
 pub(crate) mod proxy;
 pub(crate) mod serving;
+pub(crate) mod throttle;

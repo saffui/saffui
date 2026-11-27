@@ -1,0 +1,13 @@
+# The plans the bench runs, one a line: the plan and the variants it leaves
+# free, then the configuration provision.py writes for it. Discovery and the
+# clients run.sh provisions are the variants wherever they are free; a plan
+# of sign-out is run for the code flow alone.
+oidcc-basic-certification-test-plan[server_metadata=discovery][client_registration=static_client] basic.json
+oidcc-formpost-basic-certification-test-plan[server_metadata=discovery][client_registration=static_client] formpost-basic.json
+oidcc-implicit-certification-test-plan[server_metadata=discovery][client_registration=static_client] implicit.json
+oidcc-formpost-implicit-certification-test-plan[server_metadata=discovery][client_registration=static_client] formpost-implicit.json
+oidcc-hybrid-certification-test-plan[server_metadata=discovery][client_registration=static_client] hybrid.json
+oidcc-formpost-hybrid-certification-test-plan[server_metadata=discovery][client_registration=static_client] formpost-hybrid.json
+oidcc-config-certification-test-plan config.json
+oidcc-rp-initiated-logout-certification-test-plan[client_registration=static_client][response_type=code] rp-initiated-logout.json
+oidcc-frontchannel-rp-initiated-logout-certification-test-plan[client_registration=static_client][response_type=code] frontchannel-logout.json

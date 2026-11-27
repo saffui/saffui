@@ -371,6 +371,7 @@ mod tests {
             auth_signing_alg: signing,
             request_object_signing_alg: None,
             require_signed_request_object: false,
+            require_pkce: true,
             created_by: None,
         };
         let (_client, secret) = complete(check_and_register_client(

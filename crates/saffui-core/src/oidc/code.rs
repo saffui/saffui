@@ -25,7 +25,8 @@ pub struct PendingAuthorization {
     pub response_type: ResponseType,
     pub response_mode: ResponseMode,
     /// The challenge of the verifier the code will be spent with. None for
-    /// a request that asks for no code.
+    /// a request that asks for no code, or whose client was let off and
+    /// sent none.
     pub code_challenge: Option<String>,
     pub expires_at: OffsetDateTime,
     /// The person an identity token hint named: anyone else who signs in
@@ -66,7 +67,9 @@ pub struct AuthorizationCode {
     pub redirect_uri: String,
     pub scopes: Vec<String>,
     pub nonce: Option<String>,
-    pub code_challenge: String,
+    /// The challenge of the verifier it is spent with. None for a code of a
+    /// client let off that sent none: it is spent with no verifier.
+    pub code_challenge: Option<String>,
     pub authenticated_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
     /// The claims the request named one by one, when it named any.

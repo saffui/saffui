@@ -14,7 +14,7 @@ use pgcore::migrate::{EMBEDDED, Migration};
 use pgcore::testkit::TestDatabase;
 use pgcore::{APP_ROLE, MAINTENANCE_ROLE};
 
-use crate::support::node::read_address;
+use crate::support::node::{Node, read_address};
 use crate::support::{self, database};
 
 /// Longer than anything here should take, so that a hang fails instead of lasting.
@@ -366,6 +366,61 @@ fn a_number_of_password_hashers_out_of_bounds_is_named_on_stderr_and_exits_with_
     assert!(
         stderr.contains("SAFFUI_PASSWORD_HASHERS: \"0\""),
         "the setting is not named: {stderr}"
+    );
+}
+
+#[test]
+fn a_bound_per_address_out_of_bounds_is_named_on_stderr_and_exits_with_2() {
+    for variable in [
+        "SAFFUI_SIGN_IN_ATTEMPTS_PER_ADDRESS",
+        "SAFFUI_PENDING_SIGN_INS_PER_ADDRESS",
+        "SAFFUI_REGISTRATIONS_PER_ADDRESS",
+    ] {
+        let refused = Serve::spawn(|command| {
+            command.env(variable, "1001");
+        });
+
+        let (code, stderr) = refused.wait_for_exit();
+        assert_eq!(code, Some(2), "stderr was: {stderr}");
+        assert!(
+            stderr.contains(&format!("{variable}: \"1001\"")),
+            "the setting is not named: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn a_node_says_each_bound_per_address_its_variable_set_and_a_node_at_the_defaults_says_none() {
+    let database = database::create_database(EMBEDDED);
+    let raised = [
+        ("SAFFUI_SIGN_IN_ATTEMPTS_PER_ADDRESS", "300"),
+        ("SAFFUI_PENDING_SIGN_INS_PER_ADDRESS", "400"),
+        ("SAFFUI_REGISTRATIONS_PER_ADDRESS", "200"),
+    ];
+    let mut command = support::saffui_command();
+    command.envs(raised);
+    let node = Node::start(command, &database);
+    for (variable, bound) in raised {
+        let said = format!("{variable} is {bound} in every realm of this node");
+        assert!(
+            node.wait_for_journal_line(&["WARN", &said], PATIENCE)
+                .is_some(),
+            "{said}"
+        );
+    }
+    drop(node);
+
+    let node = Node::start(support::saffui_command(), &database);
+    // Said after the bounds: once it is there, a bound would be too.
+    assert!(
+        node.wait_for_journal_line(&["SAFFUI_RETENTION is off"], PATIENCE)
+            .is_some(),
+        "the line said after the bounds"
+    );
+    assert_eq!(
+        node.wait_for_journal_line(&["_PER_ADDRESS"], Duration::ZERO),
+        None,
+        "a node at the defaults says no bound"
     );
 }
 

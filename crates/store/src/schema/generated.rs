@@ -71,7 +71,7 @@ pub(crate) mod authorization_codes {
     pub(crate) const SCOPES: Column = Column("scopes");
     /// text, nullable
     pub(crate) const NONCE: Column = Column("nonce");
-    /// text
+    /// text, nullable
     pub(crate) const CODE_CHALLENGE: Column = Column("code_challenge");
     /// timestamp with time zone
     pub(crate) const AUTHENTICATED_AT: Column = Column("authenticated_at");
@@ -354,6 +354,8 @@ pub(crate) mod clients {
         Column("require_signed_request_object");
     /// text, nullable
     pub(crate) const FRONTCHANNEL_LOGOUT_URI: Column = Column("frontchannel_logout_uri");
+    /// boolean
+    pub(crate) const REQUIRE_PKCE: Column = Column("require_pkce");
 
     /// In the order the table declares them.
     pub(crate) const ALL: &[Column] = &[
@@ -380,6 +382,7 @@ pub(crate) mod clients {
         REQUEST_OBJECT_SIGNING_ALG,
         REQUIRE_SIGNED_REQUEST_OBJECT,
         FRONTCHANNEL_LOGOUT_URI,
+        REQUIRE_PKCE,
     ];
 }
 

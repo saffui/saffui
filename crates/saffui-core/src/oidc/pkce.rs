@@ -30,12 +30,29 @@ pub fn matches_challenge(digester: &dyn Digester, verifier: &str, challenge: &st
     digester.equal_in_constant_time(computed.as_bytes(), challenge.as_bytes())
 }
 
+/// Tells whether an exchange presents what its code was bound to: the
+/// verifier of its challenge, or none for a code bound to none. A verifier
+/// for a code bound to none is refused: the request lost its challenge on
+/// the way (RFC 9700, section 4.8.2).
+#[must_use]
+pub fn matches_bound_challenge(
+    digester: &dyn Digester,
+    verifier: Option<&str>,
+    challenge: Option<&str>,
+) -> bool {
+    match (verifier, challenge) {
+        (Some(verifier), Some(challenge)) => matches_challenge(digester, verifier, challenge),
+        (None, None) => true,
+        (Some(_), None) | (None, Some(_)) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use base64::Engine as _;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-    use super::{is_well_formed_challenge, matches_challenge};
+    use super::{is_well_formed_challenge, matches_bound_challenge, matches_challenge};
     use crate::ports::crypto::Digester;
     use crate::testkit::digest::WeakDigester;
 
@@ -70,6 +87,34 @@ mod tests {
                 "{verifier}"
             );
         }
+    }
+
+    #[test]
+    fn an_exchange_presents_the_verifier_of_its_challenge_or_none_when_it_was_bound_to_none() {
+        let challenge = challenge_of(VERIFIER);
+        let answers =
+            |verifier, challenge| matches_bound_challenge(&WeakDigester, verifier, challenge);
+
+        assert!(
+            answers(Some(VERIFIER), Some(&challenge)),
+            "the verifier of the challenge"
+        );
+        assert!(answers(None, None), "a code bound to no challenge");
+        assert!(
+            !answers(None, Some(&challenge)),
+            "a challenge without its verifier"
+        );
+        assert!(
+            !answers(Some(VERIFIER), None),
+            "a verifier for a request that lost its challenge"
+        );
+        assert!(
+            !answers(
+                Some("another-verifier-of-the-right-length-0123456789"),
+                Some(&challenge)
+            ),
+            "a verifier of another challenge"
+        );
     }
 
     #[test]

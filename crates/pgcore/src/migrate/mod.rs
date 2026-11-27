@@ -80,6 +80,9 @@ pub const EMBEDDED: &[Migration] = &[
     embed!(57, "0057_session_clients"),
     embed!(58, "0058_frontchannel_logout"),
     embed!(59, "0059_frontchannel_logout_checked"),
+    embed!(60, "0060_require_pkce"),
+    embed!(61, "0061_require_pkce_checked"),
+    embed!(62, "0062_challenge_of_codes"),
 ];
 
 /// One numbered step of the schema, as SQL text.

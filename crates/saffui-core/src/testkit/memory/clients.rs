@@ -41,7 +41,8 @@ impl HeldProof {
 
 /// As the rules of the table: the form of the secret, the keys and the
 /// algorithms of a client follow its method, a public client never acts as
-/// itself, and one that registered itself signs no request object.
+/// itself, one that registered itself signs no request object, and neither
+/// is let off binding its codes to a verifier.
 fn fits_method(client: &Client, proof: &HeldProof) -> bool {
     let (digest, sealed) = (proof.secret_digest.is_some(), proof.sealed_secret.is_some());
     let keys = proof.jwks.as_ref();
@@ -76,7 +77,9 @@ fn fits_method(client: &Client, proof: &HeldProof) -> bool {
         _ => false,
     };
     let bounded = keys.is_none_or(|keys| keys.is_object() && keys.to_string().len() <= 32 * 1024);
-    fits && algorithm && request_objects && bounded
+    let verifier = client.require_pkce
+        || (client.auth_method != ClientAuthMethod::None && !client.self_registered);
+    fits && algorithm && request_objects && bounded && verifier
 }
 
 /// As the trigger of the table: a method changes between the two ways of

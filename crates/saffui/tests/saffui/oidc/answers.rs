@@ -2,7 +2,8 @@
 //! application is handed back; a person signs in, and the application gets a
 //! code posted by a page whose policy lets only that post run, an identity
 //! token and an access token after the `#`, then a code and an identity token
-//! that binds it, each verifiable with what the realm publishes.
+//! that binds it, each verifiable with what the realm publishes. A request
+//! posted is carried on to the endpoint, where the session answers it.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -423,4 +424,50 @@ fn claims_a_request_names_travel_from_its_code_to_each_token_of_the_grant_and_to
     assert_eq!(again["acr"], identity["acr"]);
     let told = read_userinfo(renewed["access_token"].as_str().expect("an access token"));
     assert_eq!(told["email_verified"], false);
+}
+
+#[test]
+fn a_request_posted_is_carried_on_and_the_navigation_that_follows_gets_a_code_from_the_session() {
+    let database = database::create_database(EMBEDDED);
+    let node = prepare_realm(&database);
+    let signed_in = sign_in(&node, "code", "");
+    assert_eq!(signed_in.status, 303, "{}", signed_in.body);
+    let session = read_cookie(&signed_in, "saffui_session_acme=").expect("a session");
+    let asked = write_authorize_path("code", "");
+    let (endpoint, query) = asked.split_once('?').expect("a query");
+
+    let posted = http::send_request(
+        node.data,
+        "POST",
+        endpoint,
+        &[FORM, ("Cookie", session.as_str())],
+        query,
+    )
+    .expect("an answer");
+    assert_eq!(posted.status, 303, "{}", posted.body);
+    assert_eq!(
+        read_header(&posted, "location"),
+        Some(asked.as_str()),
+        "the request carried on as it was posted"
+    );
+    assert_eq!(
+        read_header(&posted, "cache-control"),
+        Some("no-store"),
+        "the relay is kept by no cache"
+    );
+    assert!(read_cookie(&posted, "saffui_").is_none(), "{}", posted.head);
+
+    let answered = http::send_request(
+        node.data,
+        "GET",
+        &asked,
+        &[("Cookie", session.as_str())],
+        "",
+    )
+    .expect("an answer");
+    assert_eq!(answered.status, 303, "{}", answered.body);
+    let back = read_header(&answered, "location").expect("a location");
+    let code = read_parameter(back, '?', "code").expect("a code");
+    let tokens = exchange_code(&node, &code);
+    assert!(tokens["id_token"].is_string(), "{tokens}");
 }

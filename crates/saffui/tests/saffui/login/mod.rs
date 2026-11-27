@@ -458,6 +458,24 @@ fn guesses_lock_out_the_address_they_come_from_and_a_header_is_believed_from_a_n
     );
 }
 
+#[test]
+fn an_address_leaves_no_more_sign_ins_waiting_than_the_node_was_told() {
+    let database = database::create_database(EMBEDDED);
+    let mut held_to_one = support::saffui_command();
+    held_to_one.env("SAFFUI_PENDING_SIGN_INS_PER_ADDRESS", "1");
+    let node = prepare_realm(&database, held_to_one);
+
+    let waiting = http::get(node.data, &write_authorize_path()).expect("an answer");
+    assert_eq!(waiting.status, 303, "{}", waiting.body);
+    let refused = http::get(node.data, &write_authorize_path()).expect("an answer");
+    assert_eq!(refused.status, 503, "{}", refused.body);
+    assert!(
+        read_header(&refused, "location").is_none(),
+        "a request turned away is sent nowhere: {}",
+        refused.head
+    );
+}
+
 /// Spends a refresh token of `portal` for the next one.
 fn refresh(node: &node::Node, refresh_token: &str) -> http::Answer {
     let form = format!("grant_type=refresh_token&client_id=portal&refresh_token={refresh_token}");
@@ -1819,7 +1837,7 @@ fn a_client_that_registered_itself_is_loaded_in_a_frame_when_its_session_ends() 
     );
     assert_eq!(
         refreshes,
-        ["0; url=https://app.example.test/goodbye?state=bye"]
+        ["0; url=https://app.example.test/goodbye?state=%62%79%65"]
     );
     let policy = read_header(&out, "content-security-policy").unwrap_or_default();
     assert!(

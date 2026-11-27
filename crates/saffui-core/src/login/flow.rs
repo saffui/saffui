@@ -718,6 +718,41 @@ mod tests {
     }
 
     #[test]
+    fn a_bound_the_node_raises_lets_an_address_attempt_past_the_default_and_no_further() {
+        use crate::login::throttle::MAX_RECENT_ATTEMPTS_PER_ADDRESS;
+
+        let mut scenario = Scenario::start();
+        let raised = MAX_RECENT_ATTEMPTS_PER_ADDRESS + 5;
+        scenario.app.settings.address_bounds.sign_in_attempts = raised;
+        let address = std::net::IpAddr::from([203, 0, 113, 7]);
+        let attempt = || {
+            complete(sign_in_with_password(
+                &scenario.app,
+                scenario.scope,
+                "nobody",
+                Secret::new(b"a guess".to_vec()),
+                Some(address),
+                &[],
+            ))
+            .map(|_| ())
+            .map_err(|failure| failure.code)
+        };
+        for _ in 0..raised {
+            assert_eq!(
+                attempt(),
+                Err(ErrorCode::SignInFailed),
+                "an attempt within the raised bound is judged"
+            );
+        }
+
+        assert_eq!(
+            attempt(),
+            Err(ErrorCode::HashingBusy),
+            "the attempt past the raised bound is turned away"
+        );
+    }
+
+    #[test]
     fn a_second_step_is_not_counted_against_what_its_address_may_attempt() {
         let address = std::net::IpAddr::from([203, 0, 113, 7]);
         let (scenario, secret) = start_enrolled();

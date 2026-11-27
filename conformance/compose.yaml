@@ -1,0 +1,147 @@
+# The conformance suite of the OpenID Foundation, its runner, and the proxy
+# that gives the node run.sh starts its https origin. run.sh sets
+# SAFFUI_UPSTREAM, SAFFUI_HOST_GATEWAY and SAFFUI_RUNNER_USER. Each image is
+# pinned by the digest of its index, its tag beside it.
+#
+# The suite, which runs pages and follows the requests its tests name, its
+# database and its runner sit on a network with no way out: only nginx and
+# Caddy, which relay and nothing else, reach the host. A cluster of the host
+# that trusts its loopback stays out of reach of whatever the suite is made
+# to request.
+
+services:
+  mongodb:
+    # 6.0.13, the version the compose file of the suite names at its tag.
+    image: mongo@sha256:b415b12f638e2685d06c58ab7fb5943577c50fadec6d9340ef67d21aeac72070
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 1
+      net.ipv6.conf.default.disable_ipv6: 1
+    # Nor does it forge packets of its own.
+    cap_drop:
+      - NET_RAW
+    networks:
+      - suite
+
+  server:
+    # release-v5.3.5
+    image: registry.gitlab.com/openid/conformance-suite@sha256:576ad9d6ea4230a6d58623a03c17c74e2ae1438cceec252f8721daa53a705961
+    environment:
+      BASE_URL: https://localhost.emobix.co.uk:8443
+      BASE_MTLS_URL: https://localhost.emobix.co.uk:8444
+      MONGODB_HOST: mongodb
+      SPRING_PROFILES_ACTIVE: dev
+      # Read by the image's entrypoint.
+      OIDC_GOOGLE_CLIENTID: unused
+      OIDC_GOOGLE_SECRET: unused
+      OIDC_GITLAB_CLIENTID: unused
+      OIDC_GITLAB_SECRET: unused
+    depends_on:
+      - mongodb
+    # Its network has no route for IPv6, and none is left any service on it,
+    # as run.sh checks here and in the runner before anything is
+    # provisioned. Nor does it forge packets of its own.
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 1
+      net.ipv6.conf.default.disable_ipv6: 1
+    cap_drop:
+      - NET_RAW
+    networks:
+      - suite
+
+  nginx:
+    # release-v5.3.5
+    image: registry.gitlab.com/openid/conformance-suite/nginx@sha256:fd5ae05bf2a8f246f600b16a198dd670051bbad44f0b59d903da6e294e02707d
+    # The API of the suite asks for no credential: it is published on this
+    # machine alone, and its mTLS port nowhere.
+    ports:
+      - "127.0.0.1:8443:8443"
+    depends_on:
+      - server
+    # On both networks, it relays as a proxy and forwards no packet.
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 1
+      net.ipv6.conf.default.disable_ipv6: 1
+      net.ipv4.ip_forward: 0
+    networks:
+      suite:
+        # The suite reaches its own pages by the name its tests are given.
+        aliases:
+          - localhost.emobix.co.uk
+      edge: {}
+
+  caddy:
+    # 2.11.9
+    image: caddy@sha256:4851e54a46b206517c574821bb5cc67f170d2156041e9fbc4c9193b45e84a75b
+    environment:
+      SAFFUI_UPSTREAM: ${SAFFUI_UPSTREAM:?}
+    extra_hosts:
+      - "host.docker.internal:${SAFFUI_HOST_GATEWAY:?}"
+    # On both networks, it relays as a proxy and forwards no packet.
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 1
+      net.ipv6.conf.default.disable_ipv6: 1
+      net.ipv4.ip_forward: 0
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    networks:
+      suite:
+        aliases:
+          - saffui.test
+      edge:
+        # The one peer the node believes when it says who a request is from.
+        ipv4_address: 172.29.11.10
+
+  runner:
+    # 3.13.17-slim, which 3.13-slim named until 24 November 2026.
+    image: python@sha256:d98cc29d3266e535dd9da1099688d9cb3ca4753813571e071763d17725460962
+    # Run by run.sh alone, once the suite is up and the node provisioned.
+    profiles:
+      - runner
+    # The user who runs run.sh, on a root that cannot be written: the
+    # runner writes its exports, and its environment in /tmp, nothing else.
+    user: ${SAFFUI_RUNNER_USER:?}
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 1
+      net.ipv6.conf.default.disable_ipv6: 1
+    # No variable CI comes in, which the runner would read as the CI of the
+    # suite itself.
+    environment:
+      HOME: /tmp
+      PYTHONDONTWRITEBYTECODE: "1"
+      CONFORMANCE_SERVER: https://localhost.emobix.co.uk:8443/
+      CONFORMANCE_DEV_MODE: "1"
+    entrypoint: ["sh", "/conformance/runner.sh"]
+    volumes:
+      - .:/conformance:ro
+      - ../target/conformance/runner:/runner:ro
+      - ../target/conformance/wheels:/wheels:ro
+      - ../target/conformance/configs:/configs:ro
+      - ../target/conformance/exports:/exports
+    networks:
+      - suite
+
+networks:
+  suite:
+    internal: true
+    driver_opts:
+      # The gateway of a network is an address of the host, which reaches
+      # what listens on all of them: this one is given to no interface.
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+    ipam:
+      config:
+        - subnet: 172.29.10.0/24
+          # Named, or a container would take it and the probe of run.sh
+          # would reach that container.
+          gateway: 172.29.10.1
+  edge:
+    ipam:
+      config:
+        - subnet: 172.29.11.0/24
+          gateway: 172.29.11.1

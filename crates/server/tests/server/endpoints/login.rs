@@ -479,6 +479,7 @@ async fn a_request_without_an_object_from_a_client_that_requires_one_and_no_addr
         auth_signing_alg: None,
         request_object_signing_alg: Some(AssertionAlgorithm::Hs256),
         require_signed_request_object: true,
+        require_pkce: true,
         created_by: None,
     };
     let mut work = product.storage.begin(scope).await.expect("a unit of work");

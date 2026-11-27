@@ -342,6 +342,7 @@ async fn plant_relay(product: &saffui_core::app::App, scope: RealmScope, redirec
         id_token_signed_response_alg: None,
         request_object_signing_alg: None,
         require_signed_request_object: false,
+        require_pkce: true,
         enabled: true,
         self_registered: false,
         created_at: product.now(),

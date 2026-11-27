@@ -421,7 +421,7 @@ async fn a_claims_request_written_by_hand_that_cannot_be_read_fails_each_read_of
         redirect_uri: "https://app.example.org/cb".to_owned(),
         scopes: vec!["openid".to_owned()],
         nonce: None,
-        code_challenge: "challenge".to_owned(),
+        code_challenge: Some("challenge".to_owned()),
         authenticated_at: now,
         expires_at: now + Duration::minutes(1),
         claims: asked.clone(),

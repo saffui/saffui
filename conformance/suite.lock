@@ -1,0 +1,11 @@
+# The release of the suite the bench runs, the commit of its tag, and the
+# SHA-256 of each script of the runner at that commit, by its path there.
+# The runner talks to the server of the same release only. A digest pins the
+# file as it was first read, from the same origin: it does not prove that
+# origin. Read as name=value, never run.
+tag=release-v5.3.5
+commit=246b2c14b8562012b02d0ac462d667fe49e1a937
+scripts/run-test-plan.py=30bffed4f9796701eeb0d78a853010a9fdc16aad7e10a054a14f12bf19b4ef25
+scripts/conformance.py=660214cc6ca9b3c09297f61908a575db7b1552e8f44eecd5740d1c27fa2cfca8
+scripts/test_plan_parser.py=2b00870b2dc46f1d44d047c715c0ef6978f24ece97a4a9d3b48ceeea8d01830f
+scripts/requirements.txt=05176cbcaf1a221a8943f8534d14d70c45237b3f28d055f3a55d0633d63a3085

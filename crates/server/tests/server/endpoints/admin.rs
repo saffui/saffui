@@ -511,6 +511,87 @@ async fn an_administrator_registers_an_application_that_holds_no_secret_and_no_c
 }
 
 #[actix_web::test]
+async fn an_administrator_lets_a_confidential_application_off_its_verifier_and_no_other() {
+    let (product, token) = start(&[Capability::ClientRead, Capability::ClientWrite]).await;
+    let path = "/admin/v1/realms/acme/clients";
+    let create = |wanted: Value| {
+        let product = product.clone();
+        let token = token.clone();
+        async move {
+            call(
+                &product,
+                Method::POST,
+                path,
+                Some(&token),
+                Some(&wanted.to_string()),
+            )
+            .await
+        }
+    };
+
+    let held = create(json!({
+        "client_id": "held",
+        "redirect_uris": ["https://app.example.org/callback"],
+    }))
+    .await;
+    assert_eq!(held.status, StatusCode::CREATED, "{}", held.body);
+    assert_eq!(held.body["client"]["require_pkce"], true, "left out");
+    let let_off = create(json!({
+        "client_id": "portal",
+        "redirect_uris": ["https://app.example.org/callback"],
+        "require_pkce": false,
+    }))
+    .await;
+    assert_eq!(let_off.status, StatusCode::CREATED, "{}", let_off.body);
+    assert_eq!(
+        let_off.body["client"]["require_pkce"], false,
+        "the client is shown let off"
+    );
+    let read = call(
+        &product,
+        Method::GET,
+        &format!("{path}/portal"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(read.body["require_pkce"], false, "{}", read.body);
+
+    for (refused, code) in [
+        (
+            json!({
+                "client_id": "spa",
+                "redirect_uris": ["https://app.example.org/callback"],
+                "public": true,
+                "require_pkce": false,
+            }),
+            "client.metadata_invalid",
+        ),
+        (
+            json!({
+                "client_id": "native",
+                "redirect_uris": ["http://127.0.0.1:8080/callback"],
+                "require_pkce": false,
+            }),
+            "client.metadata_invalid",
+        ),
+        (
+            json!({ "client_id": "billing", "require_pkce": false }),
+            "platform.request_invalid",
+        ),
+    ] {
+        let answer = create(refused.clone()).await;
+        assert_eq!(answer.status, StatusCode::BAD_REQUEST, "{refused}");
+        assert_eq!(answer.body["code"], code, "{refused}: {}", answer.body);
+        assert!(
+            !answer.body.to_string().contains("require_pkce"),
+            "the detail of a refusal stays in the journal: {}",
+            answer.body
+        );
+    }
+}
+
+#[actix_web::test]
 async fn an_administrator_names_where_an_application_is_loaded_at_a_sign_out_and_reads_it_back() {
     let (product, token) = start(&[Capability::ClientRead, Capability::ClientWrite]).await;
     let path = "/admin/v1/realms/acme/clients";

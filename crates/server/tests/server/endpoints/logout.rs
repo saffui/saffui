@@ -41,16 +41,11 @@ fn encode(value: &str) -> String {
         .collect()
 }
 
-/// Percent-encodes a value as the endpoint does: all but what RFC 3986
-/// leaves unreserved.
-fn encode_unreserved(value: &str) -> String {
+/// Escapes every byte of a value, as a page that loads frames writes a state.
+fn escape_every_byte(value: &str) -> String {
     let mut written = String::new();
     for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
-            written.push(char::from(byte));
-        } else {
-            let _ = write!(written, "%{byte:02X}");
-        }
+        let _ = write!(written, "%{byte:02X}");
     }
     written
 }
@@ -130,6 +125,7 @@ async fn start() -> (App, Arc<MemoryStorage>) {
             auth_signing_alg: None,
             request_object_signing_alg: None,
             require_signed_request_object: false,
+            require_pkce: true,
             created_by: None,
         },
     )
@@ -251,7 +247,7 @@ async fn a_sign_out_loads_the_frame_of_each_client_it_tells_then_leaves_on_marku
         [format!("{FRAMED}&iss={ISSUER}&sid={sid}")],
         "the address it registered, then iss and sid, and nothing else"
     );
-    let leaving = format!("{GOODBYE}?state={}", encode_unreserved(&state));
+    let leaving = format!("{GOODBYE}?state={}", escape_every_byte(&state));
     assert_eq!(
         read_refreshes(&out.body),
         [format!("0; url={leaving}")],

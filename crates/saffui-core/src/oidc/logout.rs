@@ -6,7 +6,7 @@
 //! arriving. The session ends at once only when the request carries an
 //! identity token of that very session. Otherwise the person is asked.
 
-use std::fmt;
+use std::fmt::{self, Write as _};
 
 use uuid::Uuid;
 
@@ -178,18 +178,26 @@ pub async fn begin_logout(
     // browser on, and only to an address it registered. A client that
     // registered itself does so only when this request ended the session its
     // token names: a token kept from a session long over sends it nowhere.
-    let location = client
+    let returned_to = client
         .filter(|client| {
             client.enabled
                 && (closed_named_session || !client.self_registered)
                 && registered(client)
         })
-        .and(asked)
-        .map(|asked| write_return_location(asked, parameters.state));
+        .and(asked);
     work.commit().await?;
     let frames = ended.map_or_else(Vec::new, |(session, served)| {
         write_frames(&issuer, session, &served)
     });
+    // A page that loads frames leaves by a refresh, and the browser of the
+    // conformance suite folds the target of a refresh to lower case.
+    let spelling = if frames.is_empty() {
+        StateSpelling::Plain
+    } else {
+        StateSpelling::Escaped
+    };
+    let location =
+        returned_to.map(|asked| write_return_location(asked, parameters.state, spelling));
     Ok(Logout::SignedOut { location, frames })
 }
 
@@ -218,12 +226,32 @@ fn write_shown_address(address: &str) -> String {
     }
 }
 
-fn write_return_location(registered: &str, state: Option<&str>) -> String {
+/// How a state is written on the address the browser goes back to.
+/// `Escaped` goes against RFC 3986, section 2.3, which asks that a letter, a
+/// digit or `-._~` be left as it is: the browser of the conformance suite
+/// folds the case of a letter. An escaped byte reads as the byte (section
+/// 6.2.2.2), in either case of its hexadecimal digits (section 2.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StateSpelling {
+    /// What RFC 3986 leaves unreserved as it is, every other byte escaped.
+    Plain,
+    /// Every byte escaped, on the page that loads frames alone.
+    Escaped,
+}
+
+fn write_return_location(registered: &str, state: Option<&str>, spelling: StateSpelling) -> String {
     let mut location = registered.to_owned();
     if let Some(state) = state.filter(|state| state.len() <= STATE_MAX_BYTES) {
         location.push(if registered.contains('?') { '&' } else { '?' });
         location.push_str("state=");
-        write_query_value(&mut location, state);
+        match spelling {
+            StateSpelling::Plain => write_query_value(&mut location, state),
+            StateSpelling::Escaped => {
+                for byte in state.bytes() {
+                    let _ = write!(location, "%{byte:02X}");
+                }
+            }
+        }
     }
     location
 }
@@ -328,8 +356,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        ConfirmationCause, FrontChannelLogout, Logout, LogoutParameters, begin_logout,
-        confirm_logout, write_frames, write_logout_query,
+        ConfirmationCause, FrontChannelLogout, Logout, LogoutParameters, StateSpelling,
+        begin_logout, confirm_logout, write_frames, write_logout_query, write_return_location,
     };
     use crate::login::session::{
         MOST_NAMED_SERVED_CLIENTS, SessionTicket, close_session, find_live_session,
@@ -762,6 +790,72 @@ mod tests {
             );
             assert!(!is_signed_in(&scenario, &signed_in.ticket), "{empty}");
         }
+    }
+
+    /// The state a query carries, as its reader decodes it.
+    fn read_state(location: &str) -> Option<String> {
+        let (_, written) = location.split_once("state=")?;
+        let mut bytes = Vec::new();
+        let mut rest = written.bytes();
+        while let Some(byte) = rest.next() {
+            if byte == b'%' {
+                let digits = [rest.next()?, rest.next()?];
+                bytes.push(u8::from_str_radix(std::str::from_utf8(&digits).ok()?, 16).ok()?);
+            } else {
+                bytes.push(byte);
+            }
+        }
+        String::from_utf8(bytes).ok()
+    }
+
+    #[test]
+    fn a_state_escaped_whole_reaches_its_client_through_a_browser_that_folds_the_case_of_its_target()
+     {
+        let state = "RbpoyN'(&`./-!$&|{$'#'/$?-@'>.{$)[=~ \u{e9}";
+
+        let escaped = write_return_location(GOODBYE, Some(state), StateSpelling::Escaped);
+        assert_eq!(
+            read_state(&escaped.to_lowercase()).as_deref(),
+            Some(state),
+            "{escaped}"
+        );
+
+        let plain = write_return_location(GOODBYE, Some(state), StateSpelling::Plain);
+        assert_eq!(read_state(&plain).as_deref(), Some(state), "{plain}");
+        assert_ne!(
+            read_state(&plain.to_lowercase()).as_deref(),
+            Some(state),
+            "the letters of a plain state do not survive the folding"
+        );
+    }
+
+    #[test]
+    fn a_sign_out_that_loads_frames_escapes_every_byte_of_the_state_it_returns() {
+        let scenario = Scenario::start();
+        scenario.register_framed("framed", Some("https://app.example.org/signed-out"));
+        let signed_in = scenario.sign_in("openid");
+        scenario.grant_in_session("framed", "openid", None, &signed_in.ticket);
+        let identity = signed_in.tokens.id_token.expect("an identity token");
+
+        let outcome = complete(begin_logout(
+            &scenario.app,
+            "acme",
+            LogoutParameters {
+                state: Some("AbC~"),
+                ..hint(&identity, Some(GOODBYE))
+            },
+            Some(&signed_in.ticket),
+        ));
+
+        let Ok(Logout::SignedOut { location, frames }) = outcome else {
+            panic!("the identity token of the session ends it: {outcome:?}");
+        };
+        assert_eq!(frames.len(), 1, "{frames:?}");
+        assert_eq!(
+            location,
+            Some(format!("{GOODBYE}?state=%41%62%43%7E")),
+            "each byte of the state escaped, in upper case"
+        );
     }
 
     #[test]

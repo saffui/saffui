@@ -179,7 +179,8 @@ struct TrustedRequest {
     nonce: Option<String>,
     response_type: ResponseType,
     response_mode: ResponseMode,
-    /// None for a request that asks for no code.
+    /// None for a request that asks for no code, or whose client was let
+    /// off and sent none.
     code_challenge: Option<String>,
     /// How the person must have proved who they are for a session to serve.
     proof: ProofAsked,
@@ -262,6 +263,61 @@ pub(super) fn write_query_value(location: &mut String, value: &str) {
             let _ = write!(location, "%{byte:02X}");
         }
     }
+}
+
+/// The query that carries a request posted to the authorization endpoint
+/// on to the endpoint itself (OpenID Connect Core 1.0, section 3.1.2.1):
+/// each parameter it named once, in one order, an empty value kept empty.
+/// Every field is named: one added to the request does not compile here
+/// until it is carried, or said not to be.
+#[must_use]
+pub fn write_authorization_query(parameters: &AuthorizationParameters<'_>) -> String {
+    let AuthorizationParameters {
+        response_type,
+        client_id,
+        redirect_uri,
+        scope,
+        state,
+        nonce,
+        code_challenge,
+        code_challenge_method,
+        response_mode,
+        prompt,
+        max_age,
+        id_token_hint,
+        request,
+        request_uri,
+        claims,
+        // Read from the request that comes with the cookies, not from the post.
+        caller: _,
+        known_browsers: _,
+    } = *parameters;
+    let mut query = String::new();
+    for (name, value) in [
+        ("response_type", response_type),
+        ("client_id", client_id),
+        ("redirect_uri", redirect_uri),
+        ("scope", scope),
+        ("state", state),
+        ("nonce", nonce),
+        ("code_challenge", code_challenge),
+        ("code_challenge_method", code_challenge_method),
+        ("response_mode", response_mode),
+        ("prompt", prompt),
+        ("max_age", max_age),
+        ("id_token_hint", id_token_hint),
+        ("request", request),
+        ("request_uri", request_uri),
+        ("claims", claims),
+    ] {
+        if let Some(value) = value {
+            query.push(if query.is_empty() { '?' } else { '&' });
+            query.push_str(name);
+            query.push('=');
+            write_query_value(&mut query, value);
+        }
+    }
+    query
 }
 
 /// The scopes a request asks, each once and in its order. Nothing when one
@@ -475,6 +531,8 @@ async fn trust_request(
     let query = AuthorizationParameters {
         request: query.request.filter(|text| !text.is_empty()),
         request_uri: query.request_uri.filter(|text| !text.is_empty()),
+        code_challenge: query.code_challenge.filter(|text| !text.is_empty()),
+        code_challenge_method: query.code_challenge_method.filter(|text| !text.is_empty()),
         ..*query
     };
     // Shown, never returned: there is nowhere trusted to return to yet.
@@ -512,16 +570,15 @@ async fn trust_request(
         &redirect_uri,
     )
     .map_err(returned)?;
-    let code_challenge = if response_type.issues_code() {
-        let challenge = parameters
-            .code_challenge
-            .filter(|challenge| is_well_formed_challenge(challenge));
-        let (Some(challenge), Some("S256")) = (challenge, parameters.code_challenge_method) else {
-            return Err(returned(OAuthError::InvalidRequest));
-        };
-        Some(challenge.to_owned())
-    } else {
-        None
+    // A challenge sent is held to, whoever sends it: only a client let off
+    // may send none, and then no method either (RFC 9700, section 2.1.1).
+    let code_challenge = match (parameters.code_challenge, parameters.code_challenge_method) {
+        _ if !response_type.issues_code() => None,
+        (None, None) if !client.is_pkce_required() => None,
+        (Some(challenge), Some("S256")) if is_well_formed_challenge(challenge) => {
+            Some(challenge.to_owned())
+        }
+        _ => return Err(returned(OAuthError::InvalidRequest)),
     };
     // Nothing else binds an identity token signed here to the request that
     // asked for it (OpenID Connect Core 1.0, sections 3.2.2.1 and 3.3.2.11).
@@ -593,9 +650,6 @@ async fn issue_code(
     work: &mut dyn UnitOfWork,
     grant: &AnswerGrant<'_>,
 ) -> Result<String, Failure> {
-    let code_challenge = grant
-        .code_challenge
-        .ok_or(Failure::new(ErrorCode::Internal))?;
     let mut random = [0_u8; 32];
     app.random
         .fill(&mut random)
@@ -609,7 +663,7 @@ async fn issue_code(
         redirect_uri: grant.redirect_uri.to_owned(),
         scopes: grant.scopes.to_vec(),
         nonce: grant.nonce.map(str::to_owned),
-        code_challenge: code_challenge.to_owned(),
+        code_challenge: grant.code_challenge.map(str::to_owned),
         authenticated_at: grant.authenticated_at,
         expires_at: app.now() + CODE_LIFETIME,
         claims: grant.claims.cloned(),
@@ -1817,6 +1871,324 @@ mod tests {
         assert!(exchange(&app, &code, None, VERIFIER, CALLBACK).is_ok());
     }
 
+    /// The realm `acme`, the person `ada`, and the confidential application
+    /// `webapp`, let off binding its codes to a verifier. Returns its secret.
+    fn start_let_off() -> (App, Secret) {
+        use crate::clients::register::NewClient;
+        use crate::testkit::fixtures::check_and_register_client;
+
+        let (app, _storage, _clock) = MemoryStorage::wire_with_clock();
+        let scope = complete(create_realm(&app, "acme"));
+        complete(create_person(&app, scope, "ada", PASSWORD));
+        let scopes = ["openid", "profile", "email"].map(str::to_owned);
+        let callbacks = [CALLBACK.to_owned()];
+        let mut work = complete(app.storage.begin(scope)).expect("a unit of work");
+        let (_, secret) = complete(check_and_register_client(
+            &app,
+            work.as_mut(),
+            NewClient {
+                client_id: "webapp",
+                name: "webapp",
+                scopes: &scopes,
+                capabilities: &[],
+                redirect_uris: &callbacks,
+                post_logout_redirect_uris: &[],
+                frontchannel_logout_uri: None,
+                response_types: &[],
+                public: false,
+                requires_consent: false,
+                id_token_signed_response_alg: None,
+                auth_method: None,
+                jwks: None,
+                jwks_uri: None,
+                auth_signing_alg: None,
+                request_object_signing_alg: None,
+                require_signed_request_object: false,
+                require_pkce: false,
+                created_by: None,
+            },
+        ))
+        .expect("a client let off");
+        complete(work.commit()).expect("a commit");
+        (app, secret.expect("a confidential client keeps a secret"))
+    }
+
+    /// Asks with `parameters`, signs `ada` in, and returns the code the
+    /// client is sent back with.
+    fn sign_in_for_code(app: &App, parameters: &AuthorizationParameters<'_>) -> String {
+        let Ok(Authorization::SignInRequired {
+            request,
+            browser_secret,
+        }) = complete(begin_authorization(app, "acme", *parameters, None))
+        else {
+            panic!("a person without a session signs in first");
+        };
+        let location = complete(finish_sign_in(
+            app,
+            "acme",
+            request,
+            &browser_secret,
+            TypedSignIn {
+                answer: SignInAnswer::Password {
+                    name: "ada",
+                    password: Secret::new(PASSWORD.as_bytes().to_vec()),
+                },
+                caller: None,
+                known_browsers: &[],
+            },
+        ))
+        .expect("a signed-in person")
+        .into_finished()
+        .expect("a person who owes no code")
+        .response
+        .write_location()
+        .expect("an address");
+        read_query(&location, "code").expect("a code")
+    }
+
+    /// Exchanges a code of `webapp` with its secret, presenting `verifier`.
+    fn exchange_presenting(
+        app: &App,
+        code: &str,
+        secret: &Secret,
+        verifier: Option<&str>,
+    ) -> Result<(), OAuthError> {
+        let request = TokenRequest {
+            grant_type: Some("authorization_code"),
+            client_id: Some("webapp"),
+            client_secret: Some(crate::clients::authenticate::PresentedSecret::Basic(
+                Secret::new(secret.expose().to_vec()),
+            )),
+            code: Some(code),
+            redirect_uri: Some(CALLBACK),
+            code_verifier: verifier,
+            ..TokenRequest::default()
+        };
+        complete(grant_token(app, "acme", request))
+            .map(|_| ())
+            .map_err(|failure| failure.error)
+    }
+
+    #[test]
+    fn a_client_let_off_gets_a_code_bound_to_no_challenge_and_spends_it_without_a_verifier() {
+        let (app, secret) = start_let_off();
+        let challenge = challenge();
+        let unbound = AuthorizationParameters {
+            nonce: None,
+            code_challenge: None,
+            code_challenge_method: None,
+            ..ask(&challenge)
+        };
+
+        let code = sign_in_for_code(&app, &unbound);
+
+        assert_eq!(
+            exchange_presenting(&app, &code, &secret, None),
+            Ok(()),
+            "a code bound to no challenge, spent without a verifier"
+        );
+    }
+
+    #[test]
+    fn a_challenge_a_client_let_off_sends_is_held_to_and_a_method_without_one_is_refused() {
+        let (app, secret) = start_let_off();
+        let challenge = challenge();
+        let code = sign_in_for_code(&app, &ask(&challenge));
+        assert_eq!(
+            exchange_presenting(
+                &app,
+                &code,
+                &secret,
+                Some("another-verifier-of-the-right-length-0123456789")
+            ),
+            Err(OAuthError::InvalidGrant),
+            "a verifier that does not answer the challenge sent"
+        );
+        let code = sign_in_for_code(&app, &ask(&challenge));
+        assert_eq!(
+            exchange_presenting(&app, &code, &secret, Some(VERIFIER)),
+            Ok(()),
+            "the verifier of the challenge sent"
+        );
+
+        for (sent, method) in [
+            (Some("plain-text-challenge"), Some("S256")),
+            (Some(challenge.as_str()), Some("plain")),
+            (Some(challenge.as_str()), None),
+            (None, Some("S256")),
+        ] {
+            let parameters = AuthorizationParameters {
+                code_challenge: sent,
+                code_challenge_method: method,
+                ..ask(&challenge)
+            };
+            let Err(AuthorizationRefusal::Returned { response }) =
+                complete(begin_authorization(&app, "acme", parameters, None))
+            else {
+                panic!("returned to the client: {sent:?} {method:?}");
+            };
+            let location = response.write_location().expect("an address");
+            assert_eq!(
+                read_query(&location, "error").as_deref(),
+                Some(OAuthError::InvalidRequest.name()),
+                "{sent:?} {method:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_verifier_for_a_code_bound_to_none_or_none_for_a_code_bound_to_one_is_refused_once_spent() {
+        let (app, secret) = start_let_off();
+        let challenge = challenge();
+        let unbound = AuthorizationParameters {
+            code_challenge: None,
+            code_challenge_method: None,
+            ..ask(&challenge)
+        };
+
+        let code = sign_in_for_code(&app, &unbound);
+        assert_eq!(
+            exchange_presenting(&app, &code, &secret, Some(VERIFIER)),
+            Err(OAuthError::InvalidGrant),
+            "the request lost its challenge on the way"
+        );
+        assert_eq!(
+            exchange_presenting(&app, &code, &secret, None),
+            Err(OAuthError::InvalidGrant),
+            "the code was spent"
+        );
+
+        let code = sign_in_for_code(&app, &ask(&challenge));
+        assert_eq!(
+            exchange_presenting(&app, &code, &secret, None),
+            Err(OAuthError::InvalidGrant),
+            "a challenge without its verifier"
+        );
+        assert_eq!(
+            exchange_presenting(&app, &code, &secret, Some(VERIFIER)),
+            Err(OAuthError::InvalidGrant),
+            "the code was spent"
+        );
+    }
+
+    #[test]
+    fn a_client_held_to_its_verifier_that_presents_none_is_refused_before_its_code_is_spent() {
+        let (app, _storage, _clock, secret) = start(false);
+        let secret = secret.expect("a confidential client keeps a secret");
+        let challenge = challenge();
+        let without = AuthorizationParameters {
+            code_challenge: None,
+            code_challenge_method: None,
+            ..ask(&challenge)
+        };
+        let Err(AuthorizationRefusal::Returned { .. }) =
+            complete(begin_authorization(&app, "acme", without, None))
+        else {
+            panic!("a client held to its verifier sends a challenge");
+        };
+        let code = sign_in_for_code(&app, &ask(&challenge));
+
+        assert_eq!(
+            exchange_presenting(&app, &code, &secret, None),
+            Err(OAuthError::InvalidRequest),
+            "a client held to its verifier presents one"
+        );
+        assert_eq!(
+            exchange_presenting(&app, &code, &secret, Some(VERIFIER)),
+            Ok(()),
+            "the code was left to the request that has its verifier"
+        );
+    }
+
+    #[test]
+    fn a_challenge_or_a_method_sent_without_a_value_is_none_for_a_client_let_off() {
+        let (app, secret) = start_let_off();
+        let challenge = challenge();
+        for (sent, method) in [(Some(""), Some("")), (Some(""), None), (None, Some(""))] {
+            let empty = AuthorizationParameters {
+                code_challenge: sent,
+                code_challenge_method: method,
+                ..ask(&challenge)
+            };
+            let code = sign_in_for_code(&app, &empty);
+            assert_eq!(
+                exchange_presenting(&app, &code, &secret, Some("")),
+                Ok(()),
+                "a code bound to no challenge, spent without a verifier: {sent:?} {method:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_client_held_to_its_verifier_that_presents_an_empty_one_is_refused_before_its_code_is_spent()
+     {
+        let (app, _storage, _clock, secret) = start(false);
+        let secret = secret.expect("a confidential client keeps a secret");
+        let challenge = challenge();
+        let code = sign_in_for_code(&app, &ask(&challenge));
+
+        assert_eq!(
+            exchange_presenting(&app, &code, &secret, Some("")),
+            Err(OAuthError::InvalidRequest),
+            "a verifier sent without a value is none"
+        );
+        assert_eq!(
+            exchange_presenting(&app, &code, &secret, Some(VERIFIER)),
+            Ok(()),
+            "the code was left to the request that has its verifier"
+        );
+    }
+
+    #[test]
+    fn a_request_posted_is_carried_on_with_each_parameter_it_named_once_in_one_order() {
+        use super::write_authorization_query;
+
+        let every = AuthorizationParameters {
+            response_type: Some("1"),
+            client_id: Some("2"),
+            redirect_uri: Some("3"),
+            scope: Some("4"),
+            state: Some("5"),
+            nonce: Some("6"),
+            code_challenge: Some("7"),
+            code_challenge_method: Some("8"),
+            response_mode: Some("9"),
+            prompt: Some("10"),
+            max_age: Some("11"),
+            id_token_hint: Some("12"),
+            request: Some("13"),
+            request_uri: Some("14"),
+            claims: Some("15"),
+            caller: Some("203.0.113.7".parse().expect("an address")),
+            known_browsers: &[],
+        };
+        assert_eq!(
+            write_authorization_query(&every),
+            "?response_type=1&client_id=2&redirect_uri=3&scope=4&state=5&nonce=6\
+             &code_challenge=7&code_challenge_method=8&response_mode=9&prompt=10&max_age=11\
+             &id_token_hint=12&request=13&request_uri=14&claims=15",
+            "each parameter once, in one order"
+        );
+
+        let written = AuthorizationParameters {
+            redirect_uri: Some("https://app.example.org/cb?a=1&b=2"),
+            state: Some("50% off+more é"),
+            nonce: Some(""),
+            ..AuthorizationParameters::default()
+        };
+        assert_eq!(
+            write_authorization_query(&written),
+            "?redirect_uri=https%3A%2F%2Fapp.example.org%2Fcb%3Fa%3D1%26b%3D2\
+             &state=50%25%20off%2Bmore%20%C3%A9&nonce=",
+            "an empty value stays empty, and one not sent is not written"
+        );
+        assert_eq!(
+            write_authorization_query(&AuthorizationParameters::default()),
+            "",
+            "a request that named nothing"
+        );
+    }
+
     #[test]
     fn nothing_is_sent_to_a_client_or_a_redirect_uri_that_is_not_trusted() {
         let (app, _storage, _clock, _secret) = start(false);
@@ -2094,6 +2466,41 @@ mod tests {
         assert_eq!(ask_from("203.0.113.7"), Ok(()), "another address");
         clock.advance(Duration::from_mins(11));
         assert_eq!(ask_from("2001:db8:1:2::9"), Ok(()), "a window later");
+    }
+
+    #[test]
+    fn a_bound_the_node_raises_lets_an_address_leave_sign_ins_waiting_past_the_default_and_no_further()
+     {
+        use crate::login::throttle::MAX_PENDING_SIGN_INS_PER_ADDRESS;
+
+        let (mut app, _storage, _clock, _secret) = start(true);
+        let raised = MAX_PENDING_SIGN_INS_PER_ADDRESS + 5;
+        app.settings.address_bounds.pending_sign_ins = raised;
+        let challenge = challenge();
+        let ask_from_one_address = || {
+            let parameters = AuthorizationParameters {
+                caller: Some("203.0.113.7".parse().expect("an address")),
+                ..ask(&challenge)
+            };
+            match complete(begin_authorization(&app, "acme", parameters, None)) {
+                Ok(Authorization::SignInRequired { .. }) => Ok(()),
+                Err(AuthorizationRefusal::Shown(failure)) => Err(failure.code),
+                _ => panic!("neither a sign-in nor a refusal shown"),
+            }
+        };
+        for _ in 0..raised {
+            assert_eq!(
+                ask_from_one_address(),
+                Ok(()),
+                "a sign-in within the raised bound waits"
+            );
+        }
+
+        assert_eq!(
+            ask_from_one_address(),
+            Err(ErrorCode::SignInRequestsTooFrequent),
+            "the sign-in past the raised bound is turned away"
+        );
     }
 
     #[test]
@@ -2473,6 +2880,7 @@ mod tests {
             auth_signing_alg: None,
             request_object_signing_alg: None,
             require_signed_request_object: false,
+            require_pkce: true,
             created_by: Some("operator"),
         };
         let mut work = complete(app.storage.begin(scenario.scope)).expect("a unit");
@@ -2852,6 +3260,7 @@ mod tests {
                 auth_signing_alg: None,
                 request_object_signing_alg: Some(AssertionAlgorithm::Hs256),
                 require_signed_request_object: false,
+                require_pkce: true,
                 created_by: None,
             };
             let (_, secret) = complete(check_and_register_client(&app, work.as_mut(), wanted))
@@ -3641,6 +4050,7 @@ mod tests {
             auth_signing_alg: None,
             request_object_signing_alg: None,
             require_signed_request_object: false,
+            require_pkce: true,
             created_by: Some("operator"),
         };
         let mut work = complete(scenario.app.storage.begin(scenario.scope)).expect("a unit");
@@ -3729,6 +4139,7 @@ mod tests {
             id_token_signed_response_alg: None,
             request_object_signing_alg: None,
             require_signed_request_object: false,
+            require_pkce: true,
             enabled: true,
             self_registered: false,
             created_at: scenario.app.now(),
@@ -3888,6 +4299,7 @@ mod tests {
             auth_signing_alg: None,
             request_object_signing_alg: None,
             require_signed_request_object: false,
+            require_pkce: true,
             created_by: Some("operator"),
         };
         complete(check_and_register_client(

@@ -56,6 +56,8 @@ pub struct ClientView {
     pub request_object_signing_alg: Option<String>,
     /// Whether each of its requests must be a request object.
     pub require_signed_request_object: bool,
+    /// Whether each of its codes is bound to a verifier.
+    pub require_pkce: bool,
     pub enabled: bool,
     pub created_at: String,
 }
@@ -64,6 +66,10 @@ pub struct ClientView {
 /// request that asks for more than it gets must not look accepted.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each is a member of the client the administration API names"
+)]
 pub struct NewClient {
     pub client_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -117,6 +123,15 @@ pub struct NewClient {
     /// Each of its requests must be a request object, signed in that algorithm.
     #[serde(default)]
     pub require_signed_request_object: bool,
+    /// Each of its codes must be bound to a verifier. False is taken for a
+    /// confidential client alone, whose people are sent back elsewhere.
+    #[serde(default = "require_pkce_unless_told")]
+    pub require_pkce: bool,
+}
+
+/// Left out, a client binds its codes to a verifier.
+fn require_pkce_unless_told() -> bool {
+    true
 }
 
 /// A client that was just created, with the one showing of its secret.
@@ -472,8 +487,28 @@ impl fmt::Debug for CreatedInitialToken {
 #[cfg(test)]
 mod tests {
     use super::{
-        ClientView, CreatedClient, CreatedInitialToken, InitialTokenView, NewUser, RotatedSecret,
+        ClientView, CreatedClient, CreatedInitialToken, InitialTokenView, NewClient, NewUser,
+        RotatedSecret,
     };
+
+    #[test]
+    fn a_client_to_create_binds_its_codes_to_a_verifier_unless_told_otherwise() {
+        let read = |written: &str| {
+            serde_json::from_str::<NewClient>(written)
+                .expect("a client to create")
+                .require_pkce
+        };
+
+        assert!(read(r#"{"client_id": "webapp"}"#), "left out");
+        assert!(
+            read(r#"{"client_id": "webapp", "require_pkce": true}"#),
+            "held to its verifier"
+        );
+        assert!(
+            !read(r#"{"client_id": "webapp", "require_pkce": false}"#),
+            "let off"
+        );
+    }
 
     #[test]
     fn a_created_client_does_not_print_its_secret() {
@@ -494,6 +529,7 @@ mod tests {
                 token_endpoint_auth_signing_alg: None,
                 request_object_signing_alg: None,
                 require_signed_request_object: false,
+                require_pkce: true,
                 enabled: true,
                 created_at: "2026-10-31T00:00:00Z".to_owned(),
             },

@@ -51,6 +51,7 @@ async fn start(name: &str) -> (saffui_core::app::App, RealmScope) {
             auth_signing_alg: None,
             request_object_signing_alg: None,
             require_signed_request_object: false,
+            require_pkce: true,
             created_by: None,
         },
     )
@@ -361,6 +362,7 @@ async fn a_name_that_changes_direction_is_shown_with_the_change_replaced() {
         id_token_signed_response_alg: None,
         request_object_signing_alg: None,
         require_signed_request_object: false,
+        require_pkce: true,
         enabled: true,
         self_registered: false,
         created_at: product.now(),

@@ -143,6 +143,9 @@ pub struct Client {
     pub request_object_signing_alg: Option<AssertionAlgorithm>,
     /// Every request of the client is a request object (RFC 9101, 10.5).
     pub require_signed_request_object: bool,
+    /// Every code of the client is bound to a verifier. Off for a
+    /// confidential client alone, which answers for its `nonce` instead.
+    pub require_pkce: bool,
     pub enabled: bool,
     /// Registered by itself through the protocol, vetted by nobody of the
     /// realm. Written when it is made, never after.
@@ -155,6 +158,14 @@ impl Client {
     #[must_use]
     pub fn is_public(&self) -> bool {
         self.auth_method == ClientAuthMethod::None
+    }
+
+    /// Whether each code of the client is bound to a verifier. Read from its
+    /// method and its origin too, whatever the column says: a client that
+    /// proves nothing, or that nobody of the realm vetted, is never let off.
+    #[must_use]
+    pub fn is_pkce_required(&self) -> bool {
+        self.require_pkce || self.is_public() || self.self_registered
     }
 }
 
@@ -645,12 +656,62 @@ pub async fn read_client_keys(
 #[cfg(test)]
 mod tests {
     use super::{
-        check_client_identifier, check_frontchannel_logout_uri, check_redirect_uri,
-        check_scope_token, is_deployment_page, is_loopback_host, is_on_origin, is_unshowable,
-        neutralize_unshowable, read_redirect_host,
+        Client, ClientAuthMethod, check_client_identifier, check_frontchannel_logout_uri,
+        check_redirect_uri, check_scope_token, is_deployment_page, is_loopback_host, is_on_origin,
+        is_unshowable, neutralize_unshowable, read_redirect_host,
     };
     use crate::error::{ErrorCode, Failure};
+    use crate::oidc::response::ResponseType;
     use crate::settings::PublicOrigin;
+
+    #[test]
+    fn a_client_that_proves_nothing_or_registered_itself_is_held_to_its_verifier_whatever_its_column_says()
+     {
+        let let_off = Client {
+            id: uuid::Uuid::nil(),
+            client_id: "portal".to_owned(),
+            name: "Portal".to_owned(),
+            auth_method: ClientAuthMethod::ClientSecretBasic,
+            auth_signing_alg: None,
+            allows_client_credentials: false,
+            allows_authorization_code: true,
+            redirect_uris: vec!["https://app.example.org/cb".to_owned()],
+            response_types: vec![ResponseType::Code],
+            post_logout_redirect_uris: Vec::new(),
+            frontchannel_logout_uri: None,
+            requires_consent: false,
+            scopes: Vec::new(),
+            capabilities: Vec::new(),
+            id_token_signed_response_alg: None,
+            request_object_signing_alg: None,
+            require_signed_request_object: false,
+            require_pkce: false,
+            enabled: true,
+            self_registered: false,
+            created_at: time::OffsetDateTime::UNIX_EPOCH,
+        };
+
+        assert!(
+            !let_off.is_pkce_required(),
+            "a confidential client the administrator let off"
+        );
+        for held in [
+            Client {
+                require_pkce: true,
+                ..let_off.clone()
+            },
+            Client {
+                auth_method: ClientAuthMethod::None,
+                ..let_off.clone()
+            },
+            Client {
+                self_registered: true,
+                ..let_off.clone()
+            },
+        ] {
+            assert!(held.is_pkce_required(), "{held:?}");
+        }
+    }
 
     /// Where the clients of the tests of frames send people back: one
     /// origin for each rule, so that each address is refused by one alone.

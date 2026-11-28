@@ -2,7 +2,9 @@
 # Runs the conformance suite of the OpenID Foundation against a node built
 # from this tree: the node and the cluster of scripts/dev-postgres.sh on this
 # machine, the suite and the proxy that gives the node its https origin in
-# containers. What a run leaves is under target/conformance/, never tracked.
+# containers. What a run leaves is under target/conformance/, never tracked,
+# but for its lock, in the home directory of the account, and the cluster of
+# .pg/, which it makes and starts when it must, and leaves running.
 # Usage: conformance/run.sh [check-tree | -- OPTION...]
 #   check-tree   refuses under conformance/ any file but its scripts, lists
 #                and settings, in printable ASCII, with no key in them
@@ -100,7 +102,16 @@ case "${1:-}" in
   *) fail "usage: conformance/run.sh [check-tree | -- OPTION...]" ;;
 esac
 
-step_started="$(date +%s)"
+# The children this script was handed at its start, by an exec: they are not
+# its own, and its cleaning leaves them and what they started alone.
+inherited="$(python3 -I -c '
+import os, subprocess, sys
+here = {os.getpid(), os.getppid()}
+listed = subprocess.run(["ps", "-A", "-o", "pid=", "-o", "ppid="], capture_output=True, text=True).stdout
+print(" ".join(pid for pid, parent in (line.split() for line in listed.splitlines())
+               if parent == sys.argv[1] and int(pid) not in here))
+' "$$")" || inherited=""
+
 say_step() {
   now="$(date +%s)"
   echo "run.sh: ${1} took $((now - step_started)) s" || :
@@ -108,11 +119,21 @@ say_step() {
 }
 
 check_tree
+# The runner mounts conformance/ whole: nothing may be there that git does
+# not track, ignored files included.
+untracked="$(git -C "${root}" -c core.quotePath=false ls-files --others -- conformance)" \
+  || fail "git could not list what conformance/ holds untracked"
+if [ -n "${untracked}" ]; then
+  printf '%s\n' "run.sh: conformance/ holds files git does not track, which the runner would see:" \
+    "${untracked}" | strip_controls >&2
+  exit 1
+fi
 
 need() {
   command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
 }
 need git
+need ps
 need cargo
 need curl
 need docker
@@ -144,8 +165,50 @@ done
 
 mkdir -p "${out}"
 chmod 700 "${out}"
+# One run at a time on a machine, whatever its tree: the project of compose
+# and the ports of the node and of the suite are those of the machine. The
+# lock is held on descriptor 9 by the processes of a run that keep it, and
+# the system lets it go with the last of them. A run whose whole group is
+# killed outright leaves its containers, the runner's among them, and its
+# database: the next run of this tree takes the containers down and says
+# so, and drops the database before it makes its own. This script killed
+# alone leaves its node alive, and with it the lock: the next run waits two
+# minutes for it, then stops and gives the command that names what holds
+# it. Of a cleaning cut short, only the step under way in a session of its
+# own ends by itself. A lock file left behind holds nothing. Its place comes
+# from the base of accounts, never from the environment, which two runs
+# could set apart. It is one lock for each user of the machine: two users
+# of one daemon do not see each other.
+account_home="$(python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')" \
+  || fail "the home directory of this account could not be read"
+case "${account_home}" in
+  /*) ;;
+  *) fail "the home directory of this account is no absolute path: ${account_home}" ;;
+esac
+locks="${account_home}/.cache/saffui"
+mkdir -p "${locks}"
+chmod 700 "${locks}"
+lock="${locks}/conformance.lock"
+exec 9>>"${lock}"
+python3 -I -c '
+import fcntl, sys, time
+deadline = time.monotonic() + 120
+told = False
+while True:
+    try:
+        fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        break
+    except BlockingIOError:
+        if time.monotonic() > deadline:
+            sys.exit(1)
+        if not told:
+            print("run.sh: another run holds the lock of this machine, " + sys.argv[1]
+                  + ": waiting for it, two minutes at most", file=sys.stderr)
+            told = True
+        time.sleep(1)
+' "${lock}" || fail "another run still holds ${lock} after two minutes: lsof ${lock} names its processes"
 # Nothing of a run before is taken for this one.
-rm -rf "${out}/exports" "${out}/summary.txt"
+rm -rf "${out}/exports" "${out}/summary.txt" "${out}/summary.txt.part"
 mkdir -p "${out}/exports"
 
 # Where the node listens, and the one peer it believes. On macOS, Docker
@@ -172,6 +235,8 @@ suite=https://localhost.emobix.co.uk:8443
 saffui_pid=""
 compose_started=""
 database_made=""
+# What went wrong while the run was cleaned, said again after the summary.
+cleaning_said=""
 
 # Runs a command in a session of its own, its input from /dev/null: an
 # interrupt or a quit sent to the group of this script, or typed at its
@@ -180,36 +245,138 @@ run_apart() {
   python3 -I -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$@" </dev/null
 }
 
-# What runs psql and compose: nothing, or run_apart while the run is cleaned.
+# What runs compose, docker and psql: nothing, or run_apart while the run is
+# cleaned. Descriptor 9 holds the lock of the machine: only the node, the
+# runner of the plans, the summary and the steps of the cleaning keep it, so
+# that what outlives this script holds the lock as long as it lives, and
+# nothing else.
 launcher=""
+keeping_lock=""
+
+# Stops the children of a process and all those they started, as they are
+# found: a termination first, the table read again each tenth of a second
+# so that a process started in between goes too, and after the seconds
+# given a kill. A process ended but not yet waited for counts as stopped.
+# Arguments: the seconds, the process whose children go, and those of its
+# children that stay, with what they started.
+stop_processes() {
+  python3 -I -c '
+import os, signal, subprocess, sys, time
+
+seconds, given = float(sys.argv[1]), [int(pid) for pid in sys.argv[2:] if pid]
+
+def read_table():
+    listed = subprocess.run(["ps", "-A", "-o", "pid=", "-o", "ppid=", "-o", "stat="],
+                            capture_output=True, text=True).stdout
+    return [[int(row[0]), int(row[1]), row[2]] for row in (line.split() for line in listed.splitlines())
+            if len(row) == 3]
+
+def read_descendants(table, roots):
+    found, todo = set(), list(roots)
+    while todo:
+        pid = todo.pop()
+        if pid not in found:
+            found.add(pid)
+            todo.extend(child for child, parent, _ in table if parent == pid)
+    return found
+
+found, kept, termed = set(), set(), set()
+deadline = time.monotonic() + seconds
+while True:
+    table = read_table()
+    kept |= read_descendants(table, [os.getpid()] + given[1:])
+    roots = [child for child, parent, _ in table if parent == given[0]]
+    found |= read_descendants(table, roots + sorted(found)) - kept
+    living = {pid for pid, _, state in table if not state.startswith("Z")} & found
+    if not living:
+        break
+    if time.monotonic() > deadline:
+        for pid in living:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        break
+    for pid in living - termed:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    termed |= living
+    time.sleep(0.1)
+' "$@"
+}
+
+# The drop of the database of the run, bounded: five seconds to connect,
+# five to wait for a lock on the database, which someone else holds past
+# that, and five more for what WITH (FORCE) waits for: fifteen at most.
+drop_database() {
+  ${launcher} env PGCONNECT_TIMEOUT=5 PGOPTIONS='-c lock_timeout=5s' \
+    "${pg_bin}/psql" --no-psqlrc --quiet --set ON_ERROR_STOP=1 --host 127.0.0.1 \
+    --port "${pg_port}" --username postgres --dbname postgres \
+    --command "DROP DATABASE IF EXISTS saffui_conformance WITH (FORCE)"
+}
 
 psql_admin() {
-  ${launcher} "${pg_bin}/psql" --no-psqlrc --quiet --set ON_ERROR_STOP=1 --host 127.0.0.1 \
-    --port "${pg_port}" --username postgres --dbname postgres "$@"
+  "${pg_bin}/psql" --no-psqlrc --quiet --set ON_ERROR_STOP=1 --host 127.0.0.1 \
+    --port "${pg_port}" --username postgres --dbname postgres "$@" 9>&-
+}
+
+# Runs docker as compose runs it: none of the environment of this machine
+# but for what names the daemon.
+with_docker_env() {
+  (
+    [ -n "${keeping_lock}" ] || exec 9>&-
+    ${launcher} env -i PATH="${PATH}" HOME="${HOME}" \
+      ${DOCKER_HOST:+"DOCKER_HOST=${DOCKER_HOST}"} \
+      ${DOCKER_CONTEXT:+"DOCKER_CONTEXT=${DOCKER_CONTEXT}"} "$@"
+  )
 }
 
 compose() {
-  ${launcher} env -i PATH="${PATH}" HOME="${HOME}" \
-    ${DOCKER_HOST:+"DOCKER_HOST=${DOCKER_HOST}"} \
-    ${DOCKER_CONTEXT:+"DOCKER_CONTEXT=${DOCKER_CONTEXT}"} \
-    SAFFUI_UPSTREAM="host.docker.internal:${node_port}" SAFFUI_HOST_GATEWAY="${gateway}" \
-    SAFFUI_RUNNER_USER="$(id -u):$(id -g)" \
+  with_docker_env SAFFUI_UPSTREAM="host.docker.internal:${node_port}" \
+    SAFFUI_HOST_GATEWAY="${gateway}" SAFFUI_RUNNER_USER="$(id -u):$(id -g)" \
     docker compose --project-name saffui-conformance --file "${here}/compose.yaml" "$@"
 }
 
-# Writes what the exports hold, within a minute, once. A summary that could
-# not be written is said.
-summarized=""
+# The containers of the project, each with the directory of the compose
+# file that made it, then its networks, which say none.
+project=label=com.docker.compose.project=saffui-conformance
+list_project() {
+  with_docker_env docker ps --all --filter "${project}" \
+    --format '{{.Names}} {{.Label "com.docker.compose.project.working_dir"}}' \
+    && with_docker_env docker network ls --filter "${project}" --format '{{.Name}}'
+}
+# What takes the project down by hand, from any directory and with none of
+# the variables of compose.yaml: compose down by the name of the project
+# alone spares the container compose run made for the runner, and the
+# network that container holds.
+take_project_down="docker rm -f -v \$(docker ps -aq --filter ${project}); docker network rm \$(docker network ls -q --filter ${project})"
+
+# Writes what the exports hold, within a minute. It is tried once: marked
+# so as soon as it ends, written or not, and summary.txt appears whole or
+# not at all. A summary that could not be written is said.
+summary_tried=""
 write_summary() {
-  summarized=yes
+  written=0
   python3 -I "${here}/summarize.py" --exports "${out}/exports" --plans "${here}/plans.txt" \
     --expected-skips "${here}/expected-skips.json" --out "${out}/summary.txt" --within 60 \
-    || { echo "run.sh: the exports could not be summarized" >&2; return 1; }
+    || written=$?
+  summary_tried=yes
+  [ "${written}" = 0 ] || { echo "run.sh: the exports could not be summarized" >&2; return 1; }
 }
 
 # Shows the summary written, to an output that may be gone.
 show_summary() {
   [ -f "${out}/summary.txt" ] && strip_controls <"${out}/summary.txt"
+}
+
+# Says what went wrong while the run was cleaned, and keeps it to say again.
+say_cleaning() {
+  said="$(printf 'run.sh: %s\n' "$*" | strip_controls)"
+  printf '%s\n' "${said}" >&2
+  cleaning_said="${cleaning_said}${said}
+"
 }
 
 # The node, the containers and the database go with the run, whatever fails
@@ -225,35 +392,47 @@ clean_up() {
   # A run cut short writes what it got, first: what follows may be cut
   # too. Another interrupt stops that summary, never what follows it.
   trap : INT TERM HUP QUIT
-  if [ -z "${summarized}" ] && ls "${out}/exports/"*.zip >/dev/null 2>&1; then
+  if [ -z "${summary_tried}" ] && [ ! -f "${out}/summary.txt" ] \
+    && ls "${out}/exports/"*.zip >/dev/null 2>&1; then
     write_summary
   fi
-  # This script now ignores those signals, and runs compose and psql in a
-  # session of their own: an interrupt or a quit at the terminal reaches
-  # neither, though each sets its own handlers.
+  # This script now ignores those signals, and runs compose, docker and psql
+  # in a session of their own: an interrupt or a quit at the terminal
+  # reaches none of them, though each sets its own handlers.
   trap '' INT TERM HUP QUIT
   launcher=run_apart
-  if [ -n "${saffui_pid}" ]; then
-    kill "${saffui_pid}" 2>/dev/null || true
-    wait "${saffui_pid}" 2>/dev/null || true
-  fi
+  keeping_lock=yes
+  # Whatever this script still runs goes first, but what it was handed at
+  # its start: the node, wherever it is in its start, and the runner, which
+  # could make a container or a network again once they are taken down.
+  stop_processes 10 "$$" ${inherited}
+  wait 2>/dev/null || true
   if [ -n "${compose_started}" ]; then
-    compose --profile runner down --volumes --remove-orphans >/dev/null 2>&1 \
-      || echo "run.sh: the containers could not be removed: docker compose -p saffui-conformance down -v" >&2
+    if compose --profile runner down --volumes --remove-orphans --timeout 10 >/dev/null 2>&1 \
+      && left="$(list_project 2>/dev/null)"; then
+      [ -z "${left}" ] || say_cleaning "containers or networks of the run remain: ${take_project_down}"
+    else
+      say_cleaning "the containers and networks of the run could not be checked: ${take_project_down}"
+    fi
   fi
   if [ -n "${database_made}" ]; then
-    # Tried three times: a drop that failed once may pass the next.
+    # Tried three times: a drop that failed once may pass the next. Why the
+    # last one failed is kept in drop.log and said in one line.
     dropped=""
-    for attempt in 1 2 3; do
-      if psql_admin --command "DROP DATABASE IF EXISTS saffui_conformance WITH (FORCE)" >/dev/null 2>&1; then
+    for _ in 1 2 3; do
+      if drop_database >/dev/null 2>"${out}/drop.log"; then
         dropped=yes
         break
       fi
     done
-    [ -n "${dropped}" ] || echo "run.sh: the database saffui_conformance could not be dropped" >&2
+    [ -n "${dropped}" ] || say_cleaning "the database saffui_conformance could not be dropped ($(tail -n 1 "${out}/drop.log")): psql -h 127.0.0.1 -p ${pg_port} -U postgres -d postgres -c 'DROP DATABASE saffui_conformance WITH (FORCE)'"
   fi
-  # Shown once all is gone, to a terminal that may be gone too.
-  [ -n "${summarized}" ] && show_summary
+  # Shown once all is gone, to a terminal that may be gone too, and what
+  # went wrong said again after it, where it is seen.
+  if [ -f "${out}/summary.txt" ]; then
+    show_summary
+    [ -z "${cleaning_said}" ] || printf '%s' "${cleaning_said}" >&2
+  fi
   exit "${status}"
 }
 trap clean_up EXIT
@@ -268,24 +447,55 @@ say_fetch_failed() {
   fail "$1 could not be fetched: this says nothing of saffui, run again"
 }
 
-cargo build --locked -p saffui
+# With the lock held, what the project still has was left by a run that
+# died. What a run of this tree left goes, and that is said; what a run of
+# another tree left stays, and this run does not start. A run that does not
+# start takes down nothing it did not bring up.
+listed="$(list_project)" || fail "the containers of the project could not be listed: is docker up?"
+if [ -n "${listed}" ]; then
+  # A line of a container is its name, which holds no space, then its tree,
+  # which may hold any; a line of a network is its name alone. A container
+  # that names no tree is of another.
+  others="$(printf '%s\n' "${listed}" | here="${here}" awk '
+    { tree = substr($0, index($0, " ") + 1) }
+    index($0, " ") && tree != ENVIRON["here"] { print (tree == "" ? "(a container that names no tree)" : tree) }
+  ' | sort -u)"
+  if [ -n "${others}" ]; then
+    printf '%s\n' "run.sh: containers of the project saffui-conformance were made from another tree:" \
+      "${others}" "take them down from there, or with: ${take_project_down}" | strip_controls >&2
+    exit 1
+  fi
+  compose --profile runner down --volumes --remove-orphans --timeout 10 >/dev/null 2>&1 \
+    || fail "what a run of this tree left could not be taken down: ${take_project_down}"
+  left="$(list_project)" \
+    || fail "what a run of this tree left could not be checked once taken down: ${take_project_down}"
+  [ -z "${left}" ] || fail "containers or networks a run of this tree left remain: ${take_project_down}"
+  # Its runner, alive until now, may have exported since the exports were emptied.
+  rm -rf "${out}/exports"
+  mkdir -p "${out}/exports"
+  printf '%s\n' "run.sh: took down what a run of this tree left:" "${listed}" | strip_controls >&2
+fi
+
+step_started="$(date +%s)"
+cargo build --locked -p saffui 9>&-
 saffui="${CARGO_TARGET_DIR:-target}/debug/saffui"
 [ -x "${saffui}" ] || fail "no binary at ${saffui}"
 say_step "the build"
 
 # The cluster runs on one port: another would be another cluster to this script.
-if "${pg_bin}/pg_ctl" --pgdata "${root}/.pg/data" status >/dev/null 2>&1; then
+if "${pg_bin}/pg_ctl" --pgdata "${root}/.pg/data" status >/dev/null 2>&1 9>&-; then
   running="$(sed -n 4p "${root}/.pg/data/postmaster.pid")"
   [ "${running}" = "${pg_port}" ] \
     || fail "the cluster of .pg/ runs on port ${running}, not ${pg_port}: set SAFFUI_DEV_PG_PORT=${running}"
 fi
-SAFFUI_DEV_PG_PORT="${pg_port}" SAFFUI_DEV_PG_BIN="${pg_bin}" scripts/dev-postgres.sh start >/dev/null
+# The cluster outlives the run: it does not keep the lock.
+SAFFUI_DEV_PG_PORT="${pg_port}" SAFFUI_DEV_PG_BIN="${pg_bin}" scripts/dev-postgres.sh start >/dev/null 9>&-
 database_made=yes
 psql_admin --command "DROP DATABASE IF EXISTS saffui_conformance WITH (FORCE)" \
   --command "CREATE DATABASE saffui_conformance OWNER saffui_owner"
 owner_url="host=127.0.0.1 port=${pg_port} user=saffui_owner dbname=saffui_conformance"
 app_url="host=127.0.0.1 port=${pg_port} user=saffui_app dbname=saffui_conformance"
-SAFFUI_MIGRATION_DATABASE_URL="${owner_url}" "${saffui}" migrate >/dev/null
+SAFFUI_MIGRATION_DATABASE_URL="${owner_url}" "${saffui}" migrate >/dev/null 9>&-
 
 # Drawn for this run, and given to the commands of saffui alone.
 root_key="$(python3 -I -c 'import base64, secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())')"
@@ -295,7 +505,7 @@ fi
 SAFFUI_CONFORMANCE_ROOT_KEY="${root_key}" SAFFUI_ROOT_KEY=env://SAFFUI_CONFORMANCE_ROOT_KEY \
   SAFFUI_DATABASE_URL="${app_url}" SAFFUI_PUBLIC_ORIGIN="${origin}" \
   "${saffui}" bootstrap --tenant Conformance --realm conformance --client operator --admin \
-  >"${out}/bootstrap.txt"
+  >"${out}/bootstrap.txt" 9>&-
 sed -n 's/^client_secret //p' "${out}/bootstrap.txt" >"${out}/admin-secret"
 admin_secret="$(cat "${out}/admin-secret")"
 [ -n "${admin_secret}" ] || fail "bootstrap gave no secret"
@@ -319,7 +529,7 @@ for name in run-test-plan.py conformance.py test_plan_parser.py requirements.txt
     curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
       --fail --silent --show-error --location \
       --output "${runner}/${name}.part" \
-      "https://gitlab.com/openid/conformance-suite/-/raw/${commit}/scripts/${name}" \
+      "https://gitlab.com/openid/conformance-suite/-/raw/${commit}/scripts/${name}" 9>&- \
       || say_fetch_failed "scripts/${name}"
     python3 -I -c 'import hashlib, sys; sys.exit(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest() != sys.argv[2])' \
       "${runner}/${name}.part" "${digest}" \
@@ -340,7 +550,7 @@ if [ "$(cat "${wheels}/requirements.sha256" 2>/dev/null || true)" != "${wanted}"
   # The version of Python follows the image of the runner in compose.yaml.
   python3 -I -m pip download --isolated --disable-pip-version-check --no-cache-dir --quiet \
     --require-hashes --no-deps --only-binary :all: --python-version 3.13 \
-    --dest "${wheels}" -r "${here}/requirements.txt" \
+    --dest "${wheels}" -r "${here}/requirements.txt" 9>&- \
     || say_fetch_failed "a dependency of the runner"
   printf '%s\n' "${wanted}" >"${wheels}/requirements.sha256"
 fi
@@ -359,7 +569,7 @@ import socket, sys
 probe = socket.socket()
 probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 probe.bind((sys.argv[1], int(sys.argv[2])))
-' "${listen%:*}" "${node_port}" 2>/dev/null \
+' "${listen%:*}" "${node_port}" 2>/dev/null 9>&- \
   || fail "${listen} is taken: the node listens there, and the proxy was told so"
 SAFFUI_CONFORMANCE_ROOT_KEY="${root_key}" SAFFUI_ROOT_KEY=env://SAFFUI_CONFORMANCE_ROOT_KEY \
   SAFFUI_DATABASE_URL="${app_url}" SAFFUI_PUBLIC_ORIGIN="${origin}" \
@@ -432,9 +642,11 @@ echo "probe: done"
 '
 run_probe() {
   probed="$("$@" 2>&1)" || :
-  case "${probed}" in
-    *"probe: done"*) printf '%s\n' "${probed}" | strip_controls ;;
-    *"probe: stopped"*)
+  # Its last line alone decides.
+  case "${probed##*
+}" in
+    "probe: done") printf '%s\n' "${probed}" | strip_controls ;;
+    "probe: stopped")
       printf '%s\n' "${probed}" | strip_controls >&2
       fail "the network of the suite reaches out: nothing is provisioned"
       ;;
@@ -464,7 +676,7 @@ run_probe compose --progress quiet run --rm --no-deps -T --entrypoint bash runne
 say_step "the probe of the network"
 
 python3 -I "${here}/provision.py" --node "${node}" --issuer "${issuer}" --suite "${suite}" \
-  --alias saffui --admin-client operator --admin-secret-file "${out}/admin-secret" --out "${out}"
+  --alias saffui --admin-client operator --admin-secret-file "${out}/admin-secret" --out "${out}" 9>&-
 say_step "the node"
 
 set --
@@ -485,6 +697,8 @@ show_runner() {
   LC_ALL=C sed -E -e '/^([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} )?Log entry: /d' \
     -e 's/[^[:print:][:blank:]]//g'
 }
+# The runner of the plans keeps the lock while it runs.
+keeping_lock=yes
 {
   status=0
   # The options of the caller are split into their words.
@@ -494,7 +708,8 @@ show_runner() {
     --expected-skips-file /conformance/expected-skips.json "$@" </dev/null || status=$?
   echo "${status}" >"${out}/runner.status"
 } 2>&1 | tee "${out}/runner.log" | show_runner &
-wait "$!"
+chain_pid=$!
+wait "${chain_pid}"
 status="$(cat "${out}/runner.status")"
 say_step "the plans"
 

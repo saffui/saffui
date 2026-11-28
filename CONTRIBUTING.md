@@ -105,13 +105,40 @@ reach the host. The API of the suite is published on `127.0.0.1:8443`
 without any credential: do not browse the web while a run lasts, since a
 page could reach it through your browser.
 
-What a run leaves is under `target/conformance/`, never committed: the
-exports of the suite, which hold the whole configuration and its secrets,
-the journals, and `summary.txt`, which says for each module its result,
-how long it ran, and the name of each condition that failed or warned. A
-run cut short, by an interrupt or by the 38 minutes CI gives its step,
-still summarizes the plans that ended. CI keeps the summary alone, for
-seven days.
+What a run leaves, but for its lock, is under `target/conformance/`, never
+committed: the exports of the suite, which hold the whole configuration and
+its secrets, the journals, and `summary.txt`, which says for each module
+its result, how long it ran, and the name of each condition that failed or
+warned. A run cut short, by an interrupt or by the 38 minutes CI gives its
+step, still summarizes the plans that ended. CI keeps the summary alone,
+for seven days.
+
+One run at a time on a machine, whatever its tree, since the project of
+compose and the ports of the node and of the suite are those of the
+machine: a run takes the lock `.cache/saffui/conformance.lock` in the home
+directory the base of accounts gives, whatever `HOME` or `XDG_CACHE_HOME`
+say, and waits for it two minutes at most. Two users of one Docker daemon
+take two locks, and do not see each other. A run whose whole group is
+killed outright leaves its containers, the runner's among them, and its
+database: the next run of the same tree takes the containers down, checks
+them gone, and says so, and drops the database before it makes its own.
+What a run of another tree left, or a container that names no tree, the
+next run names, and it does not start. A `run.sh` killed alone leaves its
+node alive, and with it the lock, the containers and the database: the next
+run waits two minutes for the lock, then stops and gives the `lsof` command
+that names what holds it. Of a cleaning cut short, only the step under way
+in a session of its own ends by itself. A run also refuses to start while
+`conformance/` holds a file git does not track, ignored ones included,
+since the runner would see it.
+
+At the end of a run, or when it is cut short, the node, the containers and
+the database go. An interrupt at the terminal does not stop that cleaning,
+and each of its steps has a bound: a minute for the summary, ten seconds
+for what the run still runs, ten for each of its five containers to stop,
+and fifteen for each of three tries at dropping the database, under three
+minutes in all. Docker itself has none: a daemon that does not answer holds
+the cleaning as long. What went wrong in it is said again after the
+summary.
 
 The runner exits with 1 on a warning, a skip or a failure it was not told
 to expect, and on an expected one that did not happen: the two lists of
